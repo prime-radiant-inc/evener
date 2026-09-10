@@ -490,10 +490,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	}
 	commit := &foldCommit{}
 	commit.resetEnvContextTrackerLocked = func() {
-		if len(pendingCompactionTurns) == 0 {
-			return
+		if len(pendingCompactionTurns) > 0 {
+			s.resetEnvContextTrackerLocked()
 		}
-		s.resetEnvContextTrackerLocked()
 	}
 	flush := func() {
 		// Deferred last-write-wins effects (compaction naming, task-list

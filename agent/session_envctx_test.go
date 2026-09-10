@@ -238,6 +238,17 @@ drainedAfterRetry:
 
 func environmentTurnsInBytes(t *testing.T, fs afero.Fs, path string) []schema.Turn {
 	t.Helper()
+	var result []schema.Turn
+	for _, turn := range transcriptTurnsInBytes(t, fs, path) {
+		if turn.Kind == schema.TurnEnvironment {
+			result = append(result, turn)
+		}
+	}
+	return result
+}
+
+func transcriptTurnsInBytes(t *testing.T, fs afero.Fs, path string) []schema.Turn {
+	t.Helper()
 	contents, err := afero.ReadFile(fs, path)
 	if err != nil {
 		t.Fatalf("read transcript bytes: %v", err)
@@ -261,9 +272,7 @@ func environmentTurnsInBytes(t *testing.T, fs afero.Fs, path string) []schema.Tu
 		if err != nil {
 			t.Fatalf("decode transcript entry: %v", err)
 		}
-		if entry.Turn.Kind == schema.TurnEnvironment {
-			turns = append(turns, entry.Turn)
-		}
+		turns = append(turns, entry.Turn)
 	}
 	return turns
 }
@@ -310,6 +319,7 @@ func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testin
 	for _, kind := range []string{"direct", "start", "queue"} {
 		t.Run(kind, func(t *testing.T) {
 			s := newTestSessionForEnvctx(t, withSteps(repeatFinalResponse(2, "ok")...))
+			s.cfg.MaxTurns = 1
 			fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
 			writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
 			if err != nil {
@@ -317,6 +327,10 @@ func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testin
 			}
 			t.Cleanup(func() { _ = writer.Close() })
 			s.mu.Lock()
+			original := s.transcript
+			if original != nil {
+				t.Cleanup(func() { _ = original.Close() })
+			}
 			s.transcript = writer
 			s.transcriptReady = true
 			s.mu.Unlock()
@@ -345,6 +359,11 @@ func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testin
 			if failed.AcceptedTurns != uint64(s.turns) {
 				t.Fatalf("accepted turns after failed %s = %d, want %d", kind, failed.AcceptedTurns, s.turns)
 			}
+			for _, turn := range transcriptTurnsInBytes(t, fs, "/session.jsonl") {
+				if turn.Kind == schema.TurnEnvironment || turn.Kind == schema.TurnUserInput {
+					t.Fatalf("failed %s persisted %s", kind, turn.Kind)
+				}
+			}
 			fs.fail = false
 			if err := run(); err != nil {
 				t.Fatalf("retry %s: %v", kind, err)
@@ -360,6 +379,15 @@ func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testin
 			}
 			if inputCount != 1 {
 				t.Fatalf("retry %s user input turns = %d, want 1", kind, inputCount)
+			}
+			var durableKinds []schema.TurnKind
+			for _, turn := range transcriptTurnsInBytes(t, fs, "/session.jsonl") {
+				if turn.Kind == schema.TurnEnvironment || turn.Kind == schema.TurnUserInput {
+					durableKinds = append(durableKinds, turn.Kind)
+				}
+			}
+			if len(durableKinds) != 2 || durableKinds[0] != schema.TurnEnvironment || durableKinds[1] != schema.TurnUserInput {
+				t.Fatalf("retry %s durable input sequence = %v, want environment then exactly one user input", kind, durableKinds)
 			}
 		})
 	}
@@ -577,5 +605,88 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 	restoredMeta := loadMetaForTest(t, restored)
 	if restoredMeta.EnvContext == nil || !restoredMeta.EnvContext.HasSent {
 		t.Fatalf("EnvContext not persisted after restore re-emit: %+v", restoredMeta.EnvContext)
+	}
+}
+
+func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "env-fold-provider", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSaved work summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir(), testOnly: testConfig{
+		envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }},
+	}}))
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("initial environment turns = %d, want 1", got)
+	}
+	seedNumberedSessionHistory(t, s, 12)
+	s.contextMgr.PreserveRecentTurns = 1
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldSideEffectsFlush = func() {
+			close(parked)
+			<-release
+		}
+	})
+	done := make(chan struct{})
+	var compactErr error
+	go func() {
+		defer close(done)
+		compactErr = s.Compact(context.Background())
+	}()
+	t.Cleanup(func() { unblock(); <-done })
+	select {
+	case <-parked:
+	case <-done:
+		t.Fatalf("Compact returned before publication barrier: %v", compactErr)
+	}
+	if got := countEnvironmentTurns(s); got != 0 {
+		t.Fatalf("fold retained %d environment turns, want folded prefix removed", got)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("published fold must permit fresh environment before deferred flush: got %d turns", got)
+	}
+	var environmentID string
+	for _, turn := range currentHistory(t, s) {
+		if turn.Kind == schema.TurnEnvironment {
+			environmentID = turn.StableTurnID
+		}
+	}
+	unblock()
+	<-done
+	if compactErr != nil {
+		t.Fatal(compactErr)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("deferred fold flush reset the fresh tracker: got %d environment turns", got)
+	}
+	data, err := readTranscriptFull(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durableEnvironmentIDs []string
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Kind == schema.TurnEnvironment {
+			durableEnvironmentIDs = append(durableEnvironmentIDs, turn.StableTurnID)
+		}
+	}
+	if len(durableEnvironmentIDs) != 1 || durableEnvironmentIDs[0] != environmentID {
+		t.Fatalf("reloaded environment IDs = %v, want exactly %s", durableEnvironmentIDs, environmentID)
+	}
+	meta := loadMetaForTest(t, s)
+	if meta.EnvContext == nil || !meta.EnvContext.HasSent {
+		t.Fatalf("fresh environment tracker not persisted: %+v", meta.EnvContext)
 	}
 }
