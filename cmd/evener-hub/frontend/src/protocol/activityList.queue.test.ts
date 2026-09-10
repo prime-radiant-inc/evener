@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import type { ActivityTree } from "./activityData";
 import { type ActivityClient, ActivityList } from "./activityList";
+import { WireError } from "./errors";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -162,4 +163,42 @@ test("does not issue a queued continuation after refresh removes that branch", a
   await Promise.all([refresh, more]);
 
   expect(boundary.requests.map(({ params }) => params)).toEqual([{ ref: "local:session" }]);
+});
+
+test.each([
+  ["unsupported", new WireError("unsupported", -32000, { evenerErrorInfo: "actionUnavailable" })],
+  ["ended", new WireError("thread not found: session", -32000, { evenerErrorInfo: "sessionUnavailable" })],
+  ["transient", new Error("activity server unavailable")],
+])("failed refresh does not drain queued pagination (%s)", async (kind, failure) => {
+  const current = activityTree([delegateEntry("delegate", "old-page")]);
+  let requests = 0;
+  let rejectRefresh!: (reason?: unknown) => void;
+  const client: ActivityClient = {
+    onNotification: () => () => undefined,
+    request: () => {
+      requests++;
+      if (requests === 1)
+        return new Promise<{ data: ActivityTree }>((_resolve, reject) => {
+          rejectRefresh = reject;
+        });
+      return Promise.resolve({ data: current });
+    },
+  };
+  const list = new ActivityList(client, "local:session", "session", current);
+  const refresh = list.refresh();
+  const more = list.loadMore("delegate:delegate", "old-page");
+  rejectRefresh(failure);
+  await refresh;
+  await more;
+
+  expect(requests).toBe(1);
+  expect(list.getSnapshot().tree).toBe(current);
+  expect(list.getSnapshot().error).toBe(
+    kind === "transient" ? "Could not load activity: activity server unavailable" : null,
+  );
+  expect(list.getSnapshot().unsupported).toBe(kind === "unsupported");
+  expect(list.getSnapshot().ended).toBe(kind === "ended");
+
+  await list.loadMore("delegate:delegate", "old-page");
+  expect(requests).toBe(kind === "transient" ? 2 : 1);
 });
