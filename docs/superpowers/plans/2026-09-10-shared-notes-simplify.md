@@ -100,7 +100,7 @@ Require zero exit codes. Stage only paths actually changed for this task; commit
 
 **Interfaces:** Keep existing agent-note and URL tool/RPC contracts. Hold `notesUpdateMu` for event ordering and acquire `metaSaveMu` before tentative metadata mutation; keep it through persistence and rollback. File-URL parsing passes a decoded path to `canonicalFilePath`; bare paths pass their literal spelling.
 
-- [ ] **Write and run the literal-percent regression.** This catches decoding a bare filename as URL syntax; the standard-library URL constructor is the independent reference.
+- [x] **Write and run the literal-percent regression.** This catches decoding a bare filename as URL syntax; the standard-library URL constructor is the independent reference.
 
 ```go
 func TestBarePercentFilenamePreserved(t *testing.T) {
@@ -117,11 +117,11 @@ func TestBarePercentFilenamePreserved(t *testing.T) {
 
 Run `GOMAXPROCS=4 go test -p 4 ./agent -run '^TestBarePercentFilenamePreserved$' -count=1`; expect the old code to identify the wrong path.
 
-- [ ] **Fix decoding at the boundary.** Use `parsed.Path` from `url.Parse` for a file URL and remove `url.PathUnescape` from `canonicalFilePath`. The existing scope check still receives the decoded file-URL path before traversal validation. Add encoded traversal and literal `%2F`/`%25` controls to existing canonicalization coverage.
+- [x] **Fix decoding at the boundary.** Use `parsed.Path` from `url.Parse` for a file URL and remove `url.PathUnescape` from `canonicalFilePath`. The existing scope check still receives the decoded file-URL path before traversal validation. Add encoded traversal and literal `%2F`/`%25` controls to existing canonicalization coverage.
 
-- [ ] **Write red tests for metadata save failures racing autosave.** Use a filesystem Rename seam and channels/locks to control the real save boundaries. Assert independently loaded metadata matches the rolled-back live agent note or URL list, and rejected changes produce no success event. Move the metadata lock ahead of mutation, preserving existing serializer order. Keep mutation, persist, rollback and release in one path; do not add a second journal for agent-note writes.
+- [x] **Write red tests for metadata save failures racing autosave.** Use a filesystem Rename seam and channels/locks to control the real save boundaries. Assert independently loaded metadata matches the rolled-back live agent note or URL list, and rejected changes produce no success event. Move the metadata lock ahead of mutation, preserving existing serializer order. Keep mutation, persist, rollback and release in one path; do not add a second journal for agent-note writes.
 
-- [ ] **Run checks and commit.**
+- [x] **Run checks and commit.**
 
 ```sh
 GOMAXPROCS=4 go test -p 4 ./agent -run '(Notes|Note|URL|Url|Canonical|BarePercent)' -count=1
