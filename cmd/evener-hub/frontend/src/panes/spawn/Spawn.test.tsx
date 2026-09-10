@@ -2831,6 +2831,49 @@ test("a successful submit closes the slash menu with the cleared prompt", async 
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 });
 
+test("a same-cwd catalog refresh hides stale rows until the new response lands", async () => {
+  const user = userEvent.setup();
+  let resolveRefresh!: (response: { commands: { name: string; description: string }[]; skills: never[] }) => void;
+  let requests = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => {
+      requests += 1;
+      if (requests === 1) {
+        return { commands: [{ name: "review", description: "review the diff" }], skills: [] };
+      }
+      return new Promise((done) => {
+        resolveRefresh = done as (response: {
+          commands: { name: string; description: string }[];
+          skills: never[];
+        }) => void;
+      });
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/rev");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+
+  // A plugin change starts a same-cwd refresh; the v1 rows must not stay
+  // offered while the new config loads — the new session may no longer load
+  // them, and a picked stale entry would submit as literal text.
+  await act(async () => {
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} } as AnyNotification);
+  });
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  // Wait for the refresh request to go out (debounced) before resolving it.
+  await waitFor(() => {
+    expect(fake.calls.filter((c) => c.method === "evener/spawn/slashCatalog")).toHaveLength(2);
+  });
+  await act(async () => {
+    resolveRefresh({ commands: [{ name: "revamp", description: "revamp the turn" }], skills: [] });
+  });
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/revamp")]);
+});
+
 test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {

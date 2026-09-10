@@ -435,10 +435,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // Fail-soft: loading and error both render from the last (or empty)
   // response, never an empty loading flash or a guessed zero.
   const catalogResponse = slashCatalog.state.response ?? { commands: [], skills: [] };
+  // Interaction honesty: while a same-cwd refresh is in flight — or the last
+  // refresh errored — the hook retains the previous response, but the menu
+  // must not offer rows the new config may have removed: a picked stale
+  // entry would submit as literal text once the session no longer loads it.
+  // Only ready rows complete; the pre-session builtins stay offered throughout.
+  const slashCatalogResponse = slashCatalog.state.status === "ready" ? catalogResponse : { commands: [], skills: [] };
   const slashMenuCatalog = mergeSlashCommands(
     spawnBuiltinCommands(),
-    catalogResponse.commands,
-    catalogResponse.skills ?? [],
+    slashCatalogResponse.commands,
+    slashCatalogResponse.skills ?? [],
   );
   // The menu is only ever open when a token matched AND the merged catalog
   // has at least one fuzzy label hit for it - a matched-but-empty token
