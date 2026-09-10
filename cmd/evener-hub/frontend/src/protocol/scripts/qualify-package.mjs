@@ -27,15 +27,33 @@ async function qualify() {
   );
   writeFileSync(
     join(consumerDir, "esm.mts"),
-    `import { AppwireClient, APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
+    `import {
+  AppwireClient,
+  APPWIRE_PROTOCOL_VERSION,
+  ConnectionClosedError,
+  RequestTimeoutError,
+  WireError,
+  rpcURLFromLocation,
+  composeAskAnswers,
+  METHOD_NAMES,
+  NOTIFICATION_NAMES,
+  STEERING_KINDS,
+  THREAD_ITEM_EVENT_KINDS,
+} from "@evener/appwire-client";
 const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
 const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;
+void ConnectionClosedError; void RequestTimeoutError; void WireError;
+void rpcURLFromLocation; void composeAskAnswers; void METHOD_NAMES;
+void NOTIFICATION_NAMES; void STEERING_KINDS; void THREAD_ITEM_EVENT_KINDS;
 `,
   );
   writeFileSync(
     join(consumerDir, "commonjs.cts"),
     `import client = require("@evener/appwire-client");
 const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;
+void client.ConnectionClosedError; void client.RequestTimeoutError; void client.WireError;
+void client.rpcURLFromLocation; void client.composeAskAnswers; void client.METHOD_NAMES;
+void client.NOTIFICATION_NAMES; void client.STEERING_KINDS; void client.THREAD_ITEM_EVENT_KINDS;
 `,
   );
   run(
@@ -56,11 +74,21 @@ const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.
   );
   writeFileSync(
     join(consumerDir, "esm-runtime.mjs"),
-    `import { AppwireClient } from "@evener/appwire-client"; if (typeof AppwireClient !== "function") process.exit(1);`,
+    `import * as client from "@evener/appwire-client";
+for (const name of ["AppwireClient", "ConnectionClosedError", "RequestTimeoutError", "WireError", "rpcURLFromLocation", "composeAskAnswers", "METHOD_NAMES", "NOTIFICATION_NAMES", "STEERING_KINDS", "THREAD_ITEM_EVENT_KINDS"]) {
+  if (!(name in client)) process.exit(1);
+}
+if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocation !== "function" || typeof client.composeAskAnswers !== "function") process.exit(1);
+`,
   );
   writeFileSync(
     join(consumerDir, "commonjs-runtime.cjs"),
-    `const { AppwireClient } = require("@evener/appwire-client"); if (typeof AppwireClient !== "function") process.exit(1);`,
+    `const client = require("@evener/appwire-client");
+for (const name of ["AppwireClient", "ConnectionClosedError", "RequestTimeoutError", "WireError", "rpcURLFromLocation", "composeAskAnswers", "METHOD_NAMES", "NOTIFICATION_NAMES", "STEERING_KINDS", "THREAD_ITEM_EVENT_KINDS"]) {
+  if (!(name in client)) process.exit(1);
+}
+if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocation !== "function" || typeof client.composeAskAnswers !== "function") process.exit(1);
+`,
   );
   run(process.execPath, [join(consumerDir, "esm-runtime.mjs")], consumerDir);
   run(process.execPath, [join(consumerDir, "commonjs-runtime.cjs")], consumerDir);
@@ -81,7 +109,7 @@ const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.
         entry.startsWith("package/examples/"),
       `unexpected shipped path ${entry}`,
     );
-    assert(!entry.endsWith(".ts") || entry.startsWith("package/dist/"), `source leak ${entry}`);
+    assert(!entry.endsWith(".ts") || entry.endsWith(".d.ts"), `source leak ${entry}`);
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
@@ -99,6 +127,7 @@ const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.
   ]);
   const observedMethods = [];
   const controller = new AbortController();
+  let serverError;
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   server.on("connection", (socket) => {
     socket.on("message", (data) => {
@@ -136,11 +165,15 @@ const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.
         }
         socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
       } catch (error) {
+        serverError ??= error;
         controller.abort(error);
       }
     });
   });
-  server.on("error", (error) => controller.abort(error));
+  server.on("error", (error) => {
+    serverError ??= error;
+    controller.abort(error);
+  });
   try {
     await once(server, "listening", { signal: controller.signal });
     const address = server.address();
@@ -168,6 +201,8 @@ const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.
       repositoryTrust: "absent",
       diagnostics: 0,
     });
+  } catch (error) {
+    throw serverError ?? error;
   } finally {
     for (const socket of server.clients) socket.terminate();
     await new Promise((resolveClose) => server.close(resolveClose));
