@@ -726,9 +726,9 @@ func (s *Session) popQueueHead() queuedInput {
 	return queued
 }
 
-func (s *Session) pushQueueHead(entry queuedInput) {
+func (s *Session) pushQueueHead(entry queuedInput) error {
 	if strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0 {
-		return
+		return nil
 	}
 	if entry.ClientMutationID != "" {
 		err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
@@ -763,10 +763,10 @@ func (s *Session) pushQueueHead(entry queuedInput) {
 		})
 		if err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("return claimed input failed: %v", err)})
-			return
+			return err
 		}
 		s.reflectDurableInputQueue()
-		return
+		return nil
 	}
 	s.mu.Lock()
 	s.inputQueue = append([]queuedInput{entry}, s.inputQueue...)
@@ -774,6 +774,7 @@ func (s *Session) pushQueueHead(entry queuedInput) {
 	s.mu.Unlock()
 	s.persistQueuesSnapshot()
 	s.emit(events.EventQueueChanged, data)
+	return nil
 }
 
 // QueueIDs returns the stable per-entry ids of the queued messages in FIFO
