@@ -33,7 +33,15 @@ const preview: PluginPreviewResponse = {
       mcpCount: 1,
     },
   ],
-  diagnostics: [{ name: "ignored", source: "directory", message: "could not be loaded" }],
+  diagnostics: [
+    { name: "ignored", source: "directory", message: "could not be loaded" },
+    {
+      name: "superpowers",
+      source: "installed",
+      path: "/cache/superpowers",
+      message: 'duplicate plugin name "superpowers"; keeping the first of: /dev/superpowers, /cache/superpowers',
+    },
+  ],
   selectionErrors: [{ name: "missing", reason: "no valid current winner" }],
 };
 
@@ -107,6 +115,26 @@ test("exposes diagnostics and blocking selection errors without relying on color
   const details = screen.getByText(/preview diagnostic/);
   await user.click(details);
   expect(screen.getByText("could not be loaded")).toBeTruthy();
+});
+
+test("diagnostics render above the plugin list", () => {
+  renderPanel();
+
+  const text = screen.getByTestId("plugin-selection-panel").textContent ?? "";
+  const diagnosticAt = text.indexOf("could not be loaded");
+  const firstRowAt = text.indexOf("2 skills · 1 agent · 1 command");
+  expect(diagnosticAt).toBeGreaterThanOrEqual(0);
+  expect(diagnosticAt).toBeLessThan(firstRowAt);
+});
+
+test("a diagnostic whose message already names its path does not repeat it in parentheses", () => {
+  renderPanel();
+
+  const item = screen.getByText(/duplicate plugin name/).closest("li");
+  if (item === null) throw new Error("duplicate diagnostic list item not found");
+  expect(item.textContent).toBe(
+    'superpowers: duplicate plugin name "superpowers"; keeping the first of: /dev/superpowers, /cache/superpowers',
+  );
 });
 
 test("uses explicit names over preview selected flags", () => {
