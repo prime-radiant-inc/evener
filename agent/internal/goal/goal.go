@@ -1821,10 +1821,10 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 			out.Budgets.MaxContinuations = MaxContinuationsCap
 			break
 		}
-		if new := out.Budgets.MaxContinuations + int(ext.Value); new < out.Budgets.MaxContinuations || new > MaxContinuationsCap {
+		if raised := out.Budgets.MaxContinuations + int(ext.Value); raised < out.Budgets.MaxContinuations || raised > MaxContinuationsCap {
 			out.Budgets.MaxContinuations = MaxContinuationsCap
 		} else {
-			out.Budgets.MaxContinuations = new
+			out.Budgets.MaxContinuations = raised
 		}
 	case ExtendDeadline:
 		if ext.Value <= 0 {
@@ -1856,10 +1856,10 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
 			break
 		}
-		if new := out.Budgets.MaxParkedTotal + time.Duration(ext.Value)*time.Second; new < out.Budgets.MaxParkedTotal || new > MaxParkedTotalCap {
+		if raised := out.Budgets.MaxParkedTotal + time.Duration(ext.Value)*time.Second; raised < out.Budgets.MaxParkedTotal || raised > MaxParkedTotalCap {
 			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
 		} else {
-			out.Budgets.MaxParkedTotal = new
+			out.Budgets.MaxParkedTotal = raised
 		}
 	default:
 		return GoalSnapshot{}, fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", string(ext.Budget))
