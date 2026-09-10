@@ -148,3 +148,4 @@ test("settings validates known optional fields while preserving omissions and fu
     await assert.rejects(runDiscovery(fixture(response).hub, { action: "settings" }));
   }
 });
+

@@ -123,3 +123,4 @@ export function summarizeDiscovery(result) {
   else if (result.action === "settings") count = value ? Object.keys(value).length : 0;
   return { outcome: result.outcome, action: result.action, ...(count === undefined ? {} : { count }) };
 }
+
