@@ -984,6 +984,14 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
+	if s.clientMutations != nil {
+		// ActiveTurnID is the actual logical owner at delivery time. For an
+		// inline steer it is the already-running turn; for a carrier it is the
+		// carrier's reserved mutation turn. Both identities must be durable so
+		// replay can distinguish the two boundaries. System steering uses the
+		// same active turn when it is drained by a named daemon turn.
+		t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
+	}
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
 			t,
@@ -1032,8 +1040,16 @@ func (s *Session) returnClaimedSteering(clientMutationID string) error {
 func (s *Session) appendSteeringTurn(text, kind string) {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
+	t.OwningTurnID = s.activeTurnOwner()
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
+}
+
+func (s *Session) activeTurnOwner() string {
+	if s.clientMutations == nil {
+		return ""
+	}
+	return s.clientMutations.snapshot().ActiveTurnID
 }
 
 // appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
@@ -1044,8 +1060,17 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 // for a turn that never made it to disk. The durable write happens before the
 // in-memory history append, preserving the crash-window ordering.
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
+	return s.appendSteeringTurnDurablyForOwner(text, kind, s.activeTurnOwner())
+}
+
+// appendSteeringTurnDurablyForOwner durably records a daemon steering turn
+// with the logical turn that owns it. Notification reminders use the caller's
+// supplied turn id because client steering arriving during that notification
+// turn is grouped by the same durable owner.
+func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID string) error {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
+	t.OwningTurnID = owningTurnID
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },
