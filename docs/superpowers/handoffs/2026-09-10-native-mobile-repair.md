@@ -1,5 +1,19 @@
 # Native iPhone v1 repair handoff and full remaining work
 
+## Active work update — 19:57 UTC
+
+Jesse extended the available work window after the initial repair backup. Source and drafts are published; implementation and validation continue.
+
+- #1100 is now `34ce2c31a8d0b96bd8a70e33aa1418781de7e7b6`, stacked on #1098. The required environment integration is applied. Full overlap/compaction normal **and race** regressions pass at this head. Full canonical gate and fresh CI/review continue. GitHub records #1110 as merged into #1100 after the fast-forward; it is not on main.
+- #1105 at `7a9288e40e1cee0bc3e5ed99d3b3407445c38871`: prior failing CI tests/race jobs now pass. Snapshot/review remained pending at the last query; full canonical local gate is running.
+- #1109 at published `d7595789f2386408d607af94e7e228034719a83e`: production close/drain-before-identity fix is preserved. Its new controlled regression is being corrected and causally verified before final push. The first draft test did not prove the scheduling boundary reliably; do not use that first test as causal proof.
+- #1096 at `14c36a330f7c4f81ce8b1da26a3911a6c94f5afc`: all CI checks green, actual RoboRev pending, full canonical local gate running with a private cache.
+- #1091/#1098: CI green, current-head RoboRev still pending; old visible findings are addressed. No new source defect was justified by the latest review.
+- #1125 contains this complete handoff and archived ledger. #1126 preserves the five exact superseded discovery prototype files from the default checkout; do not merge that archive over #1108.
+- Source-recovery stash objects are also preserved at `codex/mobile-repair-stash-current`, `codex/mobile-repair-stash-20260906`, `codex/mobile-repair-stash-20260905-signing` and `codex/mobile-repair-stash-20260905-rebase`. Their two-file differences were inspected and history scanned; originals remain untouched. Do not reapply their edits blindly.
+
+The earlier tables below retain repair-time causal history. This update supersedes changed head/base/readiness values until the next verified update.
+
 Snapshot: 10 September 2026. Jesse requested that all work be pushed and represented by PRs before this development laptop goes to Apple for repair. This is the authoritative continuation checklist for this mobile task. GitHub checks and Apple state change; re-query exact heads before acting.
 
 ## Scope and standing decisions
