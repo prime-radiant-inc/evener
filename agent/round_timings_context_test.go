@@ -1,12 +1,49 @@
 package agent
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+func TestRoundTimingsDoNotBlockResponsesContinuationDelta(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("question")),
+		responsesContinuationEligibleAssistantTurn("response-1"),
+		schema.NewTurn(schema.TurnRoundTimings, llm.System("timing")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next")),
+	}
+	candidate, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
+		t.Fatalf("continuation decision = %+v, want responses delta", decision)
+	}
+	if len(candidate.Delta) != 1 || candidate.Delta[0].Kind != schema.TurnUserInput {
+		t.Fatalf("continuation delta = %v, want only next user turn", turnKinds(candidate.Delta))
+	}
+}
+
+func TestRoundTimingsDoNotCountAsElicitationRecentTurn(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	s.contextMgr.CheckpointThreshold = 0
+	s.contextMgr.PreserveRecentTurns = 1
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("foldable")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
+		schema.NewTurn(schema.TurnRoundTimings, llm.System("timing")),
+	}
+	var got []schema.Turn
+	s.elicitNoteFn = func(_ context.Context, foldable []schema.Turn) (string, error) {
+		got = foldable
+		return "", nil
+	}
+	s.maybeElicitNoteBeforeCompaction(context.Background(), history, 0)
+	if len(got) != 1 || got[0].Message.Text() != "foldable" {
+		t.Fatalf("elicitation prefix = %v, want only foldable turn", turnKinds(got))
+	}
+}
 
 func TestRoundTimingsRepairKeepsCompletedToolPair(t *testing.T) {
 	history := []schema.Turn{

@@ -295,7 +295,7 @@ func TestAttentionTransparentTurns(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
 		schema.NewTurn(schema.TurnAssistant, llm.User("hi")),
 	}
-	got := attentionTransparentTurns(history)
+	got := contextTurns(history)
 	if !reflect.DeepEqual(got, history) {
 		t.Fatal("history without resolution turns should be returned as-is")
 	}
@@ -306,7 +306,7 @@ func TestAttentionTransparentTurns(t *testing.T) {
 		resTurn,
 		schema.NewTurn(schema.TurnAssistant, llm.User("hi")),
 	}
-	got = attentionTransparentTurns(historyWithRes)
+	got = contextTurns(historyWithRes)
 	if len(got) != 2 {
 		t.Fatalf("got %d turns, want 2 (resolution filtered)", len(got))
 	}
@@ -314,7 +314,7 @@ func TestAttentionTransparentTurns(t *testing.T) {
 		t.Fatalf("filtered turns = %+v", got)
 	}
 	// Empty history.
-	if got := attentionTransparentTurns(nil); len(got) != 0 {
+	if got := contextTurns(nil); len(got) != 0 {
 		t.Fatalf("empty history = %d, want 0", len(got))
 	}
 }
@@ -325,12 +325,12 @@ func TestAttentionTransparentRecentCutoff(t *testing.T) {
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
 	}
-	cutoff, ok := attentionTransparentRecentCutoff(history, 0)
+	cutoff, ok := recentContextCutoff(history, 0)
 	if !ok || cutoff != 1 {
 		t.Fatalf("cutoff=%d ok=%v, want 1 true for preserveRecent<=0", cutoff, ok)
 	}
 	// Empty history with preserveRecent > 0.
-	cutoff, ok = attentionTransparentRecentCutoff(nil, 5)
+	cutoff, ok = recentContextCutoff(nil, 5)
 	if ok || cutoff != 0 {
 		t.Fatalf("cutoff=%d ok=%v, want 0 false for empty history", cutoff, ok)
 	}
@@ -346,7 +346,7 @@ func TestAttentionTransparentRecentCutoff(t *testing.T) {
 	// is the 1st visible turn. The function returns the index of the first
 	// visible turn (2), so the cutoff is at 2 (everything before it is
 	// transparent to resolution filtering).
-	cutoff, ok = attentionTransparentRecentCutoff(history, 1)
+	cutoff, ok = recentContextCutoff(history, 1)
 	if !ok {
 		t.Fatalf("expected ok=true, got cutoff=%d", cutoff)
 	}
@@ -355,7 +355,7 @@ func TestAttentionTransparentRecentCutoff(t *testing.T) {
 	}
 	// preserveRecent=2: need both visible turns. The 2nd visible turn is
 	// at index 0. Walking from i-1=-1 finds nothing, so returns (0, false).
-	cutoff, ok = attentionTransparentRecentCutoff(history, 2)
+	cutoff, ok = recentContextCutoff(history, 2)
 	if ok || cutoff != 0 {
 		t.Fatalf("cutoff=%d ok=%v, want 0 false for preserveRecent=2 (nothing before index 0)", cutoff, ok)
 	}
