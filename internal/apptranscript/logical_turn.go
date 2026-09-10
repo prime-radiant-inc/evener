@@ -46,7 +46,7 @@ func opensLogicalTurn(kind schema.TurnKind, goalContinuation bool) bool {
 // turn (the entry the group's opener started).
 func continuesLogicalTurn(kind schema.TurnKind) bool {
 	switch kind {
-	case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnFailure, schema.TurnSteering:
+	case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnFailure, schema.TurnSteering, schema.TurnRoundTimings:
 		return true
 	default:
 		return false

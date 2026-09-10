@@ -24,6 +24,28 @@ var errBareTextWithoutResultTool = errors.New("model returned bare text without 
 var errEmptyResponseExhausted = errors.New("model returned empty response")
 var errStreamUnavailable = errors.New("stream unavailable")
 
+// persistAndEmitRoundTimings commits the presentational timing record before
+// publishing its live event. A transcript failure keeps the existing live
+// observability event and warning, but cannot create a phantom durable item.
+func (s *Session) persistAndEmitRoundTimings(timings events.RoundTimings) {
+	payload := &schema.RoundTimings{
+		Round: timings.Round, SystemPrompt: timings.SystemPrompt, ContextMgmt: timings.ContextMgmt,
+		HistoryExpand: timings.HistoryExpand, ToolDefs: timings.ToolDefs, LLMCall: timings.LLMCall,
+		ToolExec: timings.ToolExec, Persistence: timings.Persistence, AfterAction: timings.AfterAction,
+		LoopOverhead: timings.LoopOverhead, TotalRound: timings.TotalRound,
+	}
+	turn := schema.NewTurn(schema.TurnRoundTimings, llm.System(payload.Announcement()))
+	turn.RoundTimings = payload
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	s.emit(events.EventRoundTimings, timings)
+}
+
 type sessionLifecycleFaultsKey struct{}
 
 func sessionLifecycleFault(ctx context.Context, point string) error {
@@ -1728,7 +1750,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count pause_turn as a tool round.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.persistAndEmitRoundTimings(timings)
 			continue
 		}
 
@@ -1777,7 +1799,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count empty/bare-text retries as tool rounds.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.persistAndEmitRoundTimings(timings)
 			continue
 		}
 
@@ -1841,7 +1863,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Emit round timings before checking result delivery.
 		timings.TotalRound = time.Since(roundStart)
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
-		s.emit(events.EventRoundTimings, timings)
+		s.persistAndEmitRoundTimings(timings)
 
 		// communicate sets the flag, or this round posted question(s) (spec
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
