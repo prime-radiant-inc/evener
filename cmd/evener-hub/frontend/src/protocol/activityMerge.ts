@@ -27,6 +27,7 @@ function cloneDelegate(delegate: ActivityDelegate): ActivityDelegate {
     warnings: delegate.warnings ? [...delegate.warnings] : undefined,
     diagnostics: delegate.diagnostics ? [...delegate.diagnostics] : undefined,
     usage: delegate.usage ? { ...delegate.usage } : undefined,
+    turns: delegate.turns?.map((turn) => ({ ...turn })),
     worktree: delegate.worktree ? { ...delegate.worktree } : undefined,
     branch: { ...delegate.branch },
     child: delegate.child ? cloneSession(delegate.child) : undefined,
@@ -114,7 +115,7 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
     const delegate = entry.delegate;
     if (delegate.type === "delegate")
       add(delegate.terminal === true, delegate.outcome === "failed" || delegate.outcome === "exhausted");
-    else counts.complete = false;
+    else for (const turn of delegate.turns ?? []) add(turn.terminal, turn.outcome === "failure");
     if (!completeBranch(delegate.branch)) counts.complete = false;
     if (delegate.child) {
       counts.active += delegate.child.counts.active;
@@ -170,7 +171,7 @@ function mergeSession(
   });
 }
 
-export function graftContinuationTree(current: ActivityTree, patch: ActivityTree, targetID: string): ActivityTree {
+export function graftContinuationTree(current: ActivityTree, targetID: string, patch: ActivityTree): ActivityTree {
   const contains = (session: ActivitySessionNode): boolean =>
     activityNodeID(session) === targetID ||
     session.entries.some(

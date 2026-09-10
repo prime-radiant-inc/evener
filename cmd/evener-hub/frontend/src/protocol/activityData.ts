@@ -104,6 +104,7 @@ export interface ActivityDelegate {
   parentWatchGranted?: boolean;
   worktree?: ActivityWorktree;
   usage?: ActivityUsage;
+  turns?: ActivityJob[];
   child?: ActivitySessionNode;
   branch: ActivityBranchState;
 }
@@ -441,6 +442,13 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
   }
   for (const field of ["runningForMs", "quietForMs", "durationMs"]) {
     if (!copyOptionalInteger(raw, target, field, true)) return { value: null, incomplete: true };
+  }
+  if (Array.isArray(raw.turns)) {
+    const turns = raw.turns.map(parseJob);
+    if (turns.some((turn) => turn === null)) return { value: null, incomplete: true };
+    delegate.turns = turns as ActivityJob[];
+  } else if (typeof raw.turns !== "undefined" && raw.turns !== null) {
+    return { value: null, incomplete: true };
   }
   if (Object.hasOwn(raw, "message")) delegate.message = raw.message;
   if (Object.hasOwn(raw, "structuredResult")) delegate.structuredResult = raw.structuredResult;

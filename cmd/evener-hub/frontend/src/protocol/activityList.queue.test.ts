@@ -93,10 +93,13 @@ function boundaryClient(autoResponses: Array<ActivityTree | undefined> = []) {
           },
         },
       }),
+    resolve(index: number, data: ActivityTree) {
+      const request = requests[index];
+      if (!request) throw new Error(`No activity request ${index} has started`);
+      request.response.resolve({ data });
+    },
     resolveFirst(data: ActivityTree) {
-      const first = requests[0];
-      if (!first) throw new Error("No activity request has started");
-      first.response.resolve({ data });
+      this.resolve(0, data);
     },
     waitForRequest(index: number) {
       const existing = requests[index];
@@ -129,6 +132,41 @@ test("refresh notification runs before a queued pagination request and retains t
   const entry = list.getSnapshot().tree?.root.entries[0];
   if (entry?.kind !== "delegate") throw new Error("missing delegate");
   expect(entry.delegate.projectionRevision).toBe(2);
+});
+
+test("retries a page after notification invalidates its in-flight continuation", async () => {
+  const current = activityTree([delegateEntry("delegate", "old-page")]);
+  const fresh = activityTree([delegateEntry("delegate", "new-page", 2)], 2);
+  const page = activityTree([delegateEntry("delegate", undefined, 2)], 2);
+  const boundary = boundaryClient([undefined, undefined, fresh, page]);
+  const list = new ActivityList(boundary.client, "local:session", "session", current);
+  const settled = new Promise<void>((resolve) => {
+    const unsubscribe = list.subscribe(() => {
+      if (!list.getSnapshot().loading) {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+  list.start();
+  await boundary.waitForRequest(0);
+  boundary.resolve(0, current);
+  await settled;
+  await Promise.resolve();
+
+  const more = list.loadMore("delegate:delegate", "old-page");
+  await boundary.waitForRequest(1);
+  boundary.notify();
+  boundary.resolve(1, page);
+  await more;
+
+  expect(boundary.requests.map(({ params }) => params)).toEqual([
+    { ref: "local:session" },
+    { ref: "local:session", continuation: "old-page" },
+    { ref: "local:session" },
+    { ref: "local:session", continuation: "new-page" },
+  ]);
+  expect(list.getSnapshot().tree?.revision).toBe(2);
 });
 
 test("queues separate valid pagination requests instead of overwriting the first branch", async () => {
