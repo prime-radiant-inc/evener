@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"sync"
@@ -168,6 +169,9 @@ drainedBeforeFailure:
 	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns {
 		t.Fatalf("environment history turns = %d, want unchanged at %d after transcript failure", got, initialEnvironmentTurns)
 	}
+	if got := len(environmentTurnsInBytes(t, fs, "/session.jsonl")); got != 0 {
+		t.Fatalf("failed environment append left %d durable environment turns, want 0", got)
+	}
 	for {
 		select {
 		case event := <-s.Events():
@@ -213,9 +217,70 @@ drainedAfterRetry:
 	if environmentEvents[0].Data.(events.EnvironmentData).TurnID != retried.StableTurnID {
 		t.Fatalf("retry event stable ID = %q, durable turn ID = %q", environmentEvents[0].Data.(events.EnvironmentData).TurnID, retried.StableTurnID)
 	}
+	durable := environmentTurnsInBytes(t, fs, "/session.jsonl")
+	if len(durable) != 1 {
+		t.Fatalf("retry durable environment turns = %d, want exactly 1", len(durable))
+	}
+	if durable[0].StableTurnID != environmentEvents[0].Data.(events.EnvironmentData).TurnID {
+		t.Fatalf("retry durable stable ID = %q, event stable ID = %q", durable[0].StableTurnID, environmentEvents[0].Data.(events.EnvironmentData).TurnID)
+	}
 	s.maybeAppendEnvironmentContext()
 	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
 		t.Fatalf("unchanged retry environment history turns = %d, want suppressed after success", got)
+	}
+}
+
+func environmentTurnsInBytes(t *testing.T, fs afero.Fs, path string) []schema.Turn {
+	t.Helper()
+	contents, err := afero.ReadFile(fs, path)
+	if err != nil {
+		t.Fatalf("read transcript bytes: %v", err)
+	}
+	var turns []schema.Turn
+	for _, line := range bytes.Split(contents, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || bytes.Contains(line, []byte(`"kind":"header"`)) {
+			continue
+		}
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			t.Fatalf("decode transcript entry: %v", err)
+		}
+		if entry.Turn.Kind == schema.TurnEnvironment {
+			turns = append(turns, entry.Turn)
+		}
+	}
+	return turns
+}
+
+func TestEnvironmentContextWriteFailureAbortsUserAcceptance(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t)
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create failing transcript: %v", err)
+	}
+	fs.fail = true
+	t.Cleanup(func() { _ = writer.Close() })
+	s.mu.Lock()
+	s.transcript = writer
+	s.transcriptReady = true
+	before := len(s.history)
+	s.mu.Unlock()
+
+	if err := s.acceptUserInput(context.Background(), "must not reach model", nil, nil, false); err == nil {
+		t.Fatal("acceptUserInput unexpectedly succeeded after environment transcript failure")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) != before {
+		t.Fatalf("history length after environment write failure = %d, want %d", len(s.history), before)
+	}
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnUserInput {
+			t.Fatal("user input was appended despite environment durability failure")
+		}
 	}
 }
 
