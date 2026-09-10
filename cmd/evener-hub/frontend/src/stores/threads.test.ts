@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
@@ -19,6 +19,7 @@ import type {
   MethodName,
   MethodTypes,
   ModelListResponse,
+  NotesHumanSetResponse,
   QueueState,
   Thread,
   ThreadCapabilities,
@@ -30,6 +31,7 @@ import type {
   TurnStartResponse,
 } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "./connection";
+import { syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
@@ -4534,7 +4536,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
 
-    let resolveSetNote: (response: { note: string }) => void = () => {
+    let resolveSetNote: (response: NotesHumanSetResponse) => void = () => {
       throw new Error("notes/human/set handler was not reached");
     };
     const setNoteReachedHandler = nextHandledRequest(
@@ -4546,7 +4548,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
         }),
     );
     const pending = threadsStore.getState().setHumanNote("ref_a", "local note");
-    await setNoteReachedHandler;
+    const params = await setNoteReachedHandler;
 
     const refreshReads: Array<(response: ThreadReadResponse) => void> = [];
     let resolveRefreshReadsReached: () => void = () => {
@@ -4583,11 +4585,120 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("authoritative note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("authoritative note");
 
-    resolveSetNote({ note: "local note" });
+    resolveSetNote({
+      note: "local note",
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        threadId: "thr_ref_a",
+        disposition: "applied",
+        projectionState: "notProjected",
+      },
+    });
     await pending;
+    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
 
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("authoritative note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("authoritative note");
+  });
+
+  test("a rejoin note identity acknowledges canonical text without inventing a chat item", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("notes/human/set", () => {
+      throw new RequestTimeoutError("lost note response");
+    });
+    const record = await threadsStore.getState().setHumanNote("ref_a", "raw draft");
+    syncHumanNote("ref_a", "A");
+    const { result } = renderHook(() => useHumanNoteDraft("ref_a"));
+    await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
+    const canonical = " \n\tcanonical\u00a0e\u0301🙂  ";
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ...readResponse("ref_a").thread.evener,
+          humanNote: canonical,
+          pendingMutations: [
+            {
+              clientMutationId: record.clientMutationId,
+              method: "notes/human/set",
+              executionState: "applied",
+              projectionState: "pending",
+            },
+          ],
+        },
+        turns: [],
+      }),
+    );
+    act(() => {
+      fake.emitStateChange("reconnecting");
+      fake.emitReady();
+    });
+    await waitFor(() => expect(result.current).toMatchObject({ text: canonical, dirty: false, saved: true }));
+    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+    expect((await readMutationPersistence("ref_a")).optimistic).toEqual([]);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
+  });
+
+  test("a lost note response reconnects with the same independently persisted identity and raw payload", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    const reached = nextHandledRequest(fake, "notes/human/set", () => {
+      throw new RequestTimeoutError("lost note response");
+    });
+    const raw = " \tline one\nline two\u00a0e\u0301🙂  ";
+    const record = await threadsStore.getState().setHumanNote("ref_a", raw);
+    const first = await reached;
+    const independent = new MutationOutboxIndexedDB();
+    expect((await independent.getOutbox(record.clientMutationId))?.payload).toEqual(first);
+    expect(first.note).toBe(raw);
+    const retried = nextHandledRequest(fake, "notes/human/set", (params) => ({
+      note: raw,
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        threadId: "thr_ref_a",
+        disposition: "replayed",
+        projectionState: "notProjected",
+      },
+    }));
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    expect(await retried).toEqual(first);
+    await waitFor(async () => expect(await independent.getOutbox(record.clientMutationId)).toBeUndefined());
+    expect(await independent.listOptimistic()).toEqual([]);
+    independent.close();
+  });
+
+  test.each(["ended", "capability"])("blocked notes do not retry after %s loss", async (loss) => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    const storage = new MutationOutboxIndexedDB();
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", note: "blocked sentinel", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("missing hydrated model");
+    threadsStore.setState({
+      threads: new Map([
+        [
+          "ref_a",
+          loss === "ended"
+            ? { ...model, status: { type: "ended" } }
+            : { ...model, capabilities: { ...model.capabilities, sharedNotes: false } },
+        ],
+      ]),
+      mutationAuthorityRefs: new Set(["ref_a"]),
+    });
+    expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "notes/human/set")).toEqual([]);
+    storage.close();
   });
 
   test("a urls/updated push arriving during a setHumanNote await does not drop the note commit", async () => {
@@ -4596,7 +4707,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
 
-    let resolveSetNote: (response: { note: string }) => void = () => {
+    let resolveSetNote: (response: NotesHumanSetResponse) => void = () => {
       throw new Error("notes/human/set handler was not reached");
     };
     const setNoteReachedHandler = nextHandledRequest(
@@ -4608,7 +4719,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
         }),
     );
     const pending = threadsStore.getState().setHumanNote("ref_a", "local note");
-    await setNoteReachedHandler;
+    const params = await setNoteReachedHandler;
 
     // An unrelated urls push carries no note state: it must retire only the
     // urls fallback, leaving the in-flight note commit intact.
@@ -4618,8 +4729,17 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
     expect(threadsStore.getState().threads.get("ref_a")?.sessionUrls).toEqual([{ id: "u1", url: "https://x.test/y" }]);
 
-    resolveSetNote({ note: "local note" });
+    resolveSetNote({
+      note: "local note",
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        threadId: "thr_ref_a",
+        disposition: "applied",
+        projectionState: "notProjected",
+      },
+    });
     await pending;
+    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
 
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("local note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("local note");
