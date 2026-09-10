@@ -145,16 +145,6 @@ func keysForTurns(turns []appwire.Turn) []string {
 	return keys
 }
 
-// TestFileProjectionReproducesLiveLogicalTurnKeys is the differential oracle
-// for F3: the file projection of a persisted logical turn must yield the same
-// turn id, entry ordinal, and item ordinals the live snapshot would have
-// allocated for the same items.
-//
-// Live allocation (appTurnSnapshot semantics, reproduced from the projector's
-// notification stream): each logical turn consumes one entry ordinal; items
-// are numbered 0..n-1 in arrival order. With no prelude, turn 1 opens at entry
-// ordinal 0 (user item 0, assistant item 1); turn 2 opens at entry ordinal 1
-// (user item 0, merged tool item 1, final assistant item 2).
 func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		name := "interrupted"
