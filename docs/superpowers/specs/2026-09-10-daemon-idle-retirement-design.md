@@ -1,7 +1,7 @@
 # Daemon idle retirement and resident-process controls
 
 Date: 2026-09-10
-Status: policy approved; written design awaiting review
+Status: policy and written design approved by Jesse on 2026-09-10
 Branch: `wip/daemon-idle-retirement`
 Baseline: `2664cc881d128d8b0c4a0af96683126e70d13cd7`
 
