@@ -183,6 +183,31 @@ drained:
 	if meta.EnvContext != nil && meta.EnvContext.HasSent {
 		t.Fatal("transcript failure advanced the persisted environment tracker")
 	}
+
+	fs.fail = false
+	s.maybeAppendEnvironmentContext()
+	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
+		t.Fatalf("retry environment history turns = %d, want one emitted turn after failure", got)
+	}
+	var environmentEvents int
+	for {
+		select {
+		case event := <-s.Events():
+			if event.Kind == events.EventEnvironment {
+				environmentEvents++
+			}
+		default:
+			goto drainedAfterRetry
+		}
+	}
+drainedAfterRetry:
+	if environmentEvents != 1 {
+		t.Fatalf("retry published %d environment events, want 1", environmentEvents)
+	}
+	s.maybeAppendEnvironmentContext()
+	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
+		t.Fatalf("unchanged retry environment history turns = %d, want suppressed after success", got)
+	}
 }
 
 func TestSecondUserTurnEmitsNoEnvironmentContextWhenUnchanged(t *testing.T) {

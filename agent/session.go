@@ -1601,6 +1601,7 @@ func (s *Session) maybeAppendEnvironmentContext() {
 		s.mu.Unlock()
 		return
 	}
+	before := tracker.State()
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
 	if block != "" {
@@ -1620,6 +1621,15 @@ func (s *Session) maybeAppendEnvironmentContext() {
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
+		// RenderDiff advances the tracker before the transcript write so it can
+		// render the diff. Restore that state when durability fails, allowing a
+		// retry to emit the environment block. Only restore the same tracker:
+		// compaction may have replaced it while the write was in flight.
+		s.mu.Lock()
+		if s.envTracker == tracker {
+			s.envTracker = envctx.NewTracker(before)
+		}
+		s.mu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		return
 	}
