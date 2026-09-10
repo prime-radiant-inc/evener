@@ -1566,6 +1566,17 @@ export interface Source {
   online: boolean;
 }
 
+export interface SpawnSlashCatalogParams {
+  cwd: string;
+  harness?: string;
+  launchOverrides?: LaunchConfigLayer;
+}
+
+export interface SpawnSlashCatalogResponse {
+  commands: CommandDescriptor[];
+  skills?: EvenerSkillInfo[];
+}
+
 export interface TaskAggregate {
   total: number;
   done: number;
@@ -2249,6 +2260,7 @@ export const METHOD_NAMES = [
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
   "evener/command/list",
+  "evener/spawn/slashCatalog",
   "evener/settings/overview",
   "evener/settings/transcriptDisplay/get",
   "evener/settings/transcriptDisplay/patch",
@@ -2437,6 +2449,7 @@ export interface MethodTypes {
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
+  "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
   "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
   "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };
