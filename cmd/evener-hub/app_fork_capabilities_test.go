@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -161,11 +162,21 @@ func TestHubRPCPersistedSubagentCannotReadvertiseOrFork(t *testing.T) {
 	if read.Thread.Evener.Capabilities.ForkFromTurn {
 		t.Fatalf("persisted subagent read advertised fork: %+v", read.Thread.Evener.Capabilities)
 	}
-	if _, err := client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "fork"}); err == nil {
+	before := len(past.Search("", 100, 0))
+	err = nil
+	_, err = client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "fork"})
+	if err == nil {
 		t.Fatal("persisted subagent fork succeeded")
+	}
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("persisted subagent fork error=%v, want structured unavailable", err)
 	}
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
+	}
+	if after := len(past.Search("", 100, 0)); after != before {
+		t.Fatalf("rejected subagent fork changed persisted index count from %d to %d", before, after)
 	}
 	if _, ok := past.Find(sessionID); !ok {
 		t.Fatal("parent subagent disappeared after rejected fork")

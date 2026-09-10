@@ -426,6 +426,10 @@ func hubOwnsThreadFork(thread appwire.Thread) bool {
 // authority grant for persisted local forks, and a session needing recovery
 // cannot accept a fork until that fence clears.
 func applyHubForkCapability(thread appwire.Thread) appwire.Thread {
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != "local" {
+		return thread
+	}
 	thread.Evener.Capabilities.ForkFromTurn = hubOwnsThreadFork(thread) &&
 		!thread.Evener.ResumeRequired && thread.Status.Type != appwire.ThreadStatusRestartRequired
 	return thread
