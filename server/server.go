@@ -799,12 +799,21 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 // ActiveTurnID change atomically. Durable client-mutation turns instead use
 // SetProcessingTurn because their stable identity is already authoritative.
 func (s *Server) SetProcessing(processing bool) {
+	if !processing {
+		// State cleanup and deferred terminal publication share the projection
+		// gate with the stable carrier. Otherwise a carrier can commit between
+		// setProcessingLocked(false) and flushDeferredTerminalNotifications,
+		// leaving the old terminal status to publish after the new carrier.
+		s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+			s.mu.Lock()
+			s.setProcessingLocked(false)
+			return s.flushDeferredTerminalNotificationsLocked()
+		})
+		return
+	}
 	s.mu.Lock()
 	s.setProcessingLocked(processing)
 	s.mu.Unlock()
-	if !processing {
-		s.flushDeferredTerminalNotifications()
-	}
 }
 
 // SetProcessingTurn atomically publishes a durable turn's stable identity as
