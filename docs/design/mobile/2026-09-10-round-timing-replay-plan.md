@@ -1,6 +1,6 @@
 # Durable round timing replay proposal
 
-Status: awaiting Jesse's decision on the transcript schema extension. Other checkpoint PRs can continue independently.
+Status: proceeding as a separate correctness PR under Jesse's instruction to push the checkpoint through and skip separate approval when current-head CI and RoboRev pass. Other checkpoint PRs continue independently.
 
 ## Observed defect
 
