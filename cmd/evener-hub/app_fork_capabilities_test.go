@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -71,6 +72,52 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 		case <-deadline:
 			t.Fatal("hub did not relay the status notification")
 		}
+	}
+}
+
+func TestHubForkAdmissionLoadsOwnershipWhenPastIndexIsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		past   *hubcore.PastIndex
+		child  bool
+		wantOK bool
+	}{
+		{name: "past nil root", wantOK: true},
+		{name: "past miss root", past: hubcore.NewPastIndex(""), wantOK: true},
+		{name: "past nil subagent", child: true},
+		{name: "past miss subagent", past: hubcore.NewPastIndex(""), child: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			parentID := buildRPCParentSession(t, stateDir)
+			targetID := parentID
+			if tc.child {
+				var err error
+				targetID, err = agent.ForkSession(stateDir, parentID, 1, "child", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				meta, err := schema.LoadSessionMeta(stateDir, targetID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				meta.IsSubagent = true
+				if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := hubcore.WebConfig{StateDir: stateDir, Past: tc.past}
+			_, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + targetID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("root fork rejected: %v", err)
+				}
+			} else if err == nil {
+				t.Fatal("subagent fork succeeded without indexed ownership")
+			}
+		})
 	}
 }
 
