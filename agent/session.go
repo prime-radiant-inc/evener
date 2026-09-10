@@ -1586,9 +1586,9 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
 // own goroutine concurrently with this method running on the turn-processing
 // goroutine — see the field's doc comment.
-func (s *Session) maybeAppendEnvironmentContext() {
+func (s *Session) maybeAppendEnvironmentContext() error {
 	if s.envCollector == nil {
-		return
+		return nil
 	}
 	snap := s.envCollector.Collect(envctx.Inputs{
 		Cwd:     s.currentEnv().WorkingDirectory(),
@@ -1599,7 +1599,7 @@ func (s *Session) maybeAppendEnvironmentContext() {
 	tracker := s.envTracker
 	if tracker == nil {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	before := tracker.State()
 	block := tracker.RenderDiff(snap)
@@ -1609,7 +1609,7 @@ func (s *Session) maybeAppendEnvironmentContext() {
 	}
 	s.mu.Unlock()
 	if block == "" {
-		return
+		return nil
 	}
 
 	// Persist the identity with the entry. Model history can be compacted, so
@@ -1631,11 +1631,12 @@ func (s *Session) maybeAppendEnvironmentContext() {
 		}
 		s.mu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return
+		return err
 	}
 	s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	// Persist tracker state so resume stays silent when nothing changed.
-	s.setEnvContextState(st)
+	s.setEnvContextStateForTracker(tracker, st)
+	return nil
 }
 
 // setEnvContextState updates the mu-guarded mirror of envTracker.State() that
@@ -1644,6 +1645,17 @@ func (s *Session) maybeAppendEnvironmentContext() {
 // re-acquires mu via Meta(), so it must not be called while mu is held).
 func (s *Session) setEnvContextState(st envctx.State) {
 	s.mu.Lock()
+	s.envContextState = &st
+	s.mu.Unlock()
+	s.maybeAutoSave()
+}
+
+func (s *Session) setEnvContextStateForTracker(tracker *envctx.Tracker, st envctx.State) {
+	s.mu.Lock()
+	if s.envTracker != tracker {
+		s.mu.Unlock()
+		return
+	}
 	s.envContextState = &st
 	s.mu.Unlock()
 	s.maybeAutoSave()
