@@ -277,7 +277,7 @@ test("running stable delegate ignores stale failure outcome", () => {
   expect(activityDelegateState(entry.delegate)).toMatchObject({ active: true, failed: true, status: "error" });
 });
 
-test("empty turn-container rows use their own active and failure state", () => {
+test("empty turn-container rows follow child activity rather than container metadata", () => {
   const active = delegate("dlg_empty_active", { type: "agent" });
   active.delegate.terminal = false;
   active.delegate.status = "running";
@@ -287,10 +287,10 @@ test("empty turn-container rows use their own active and failure state", () => {
   failed.delegate.status = "completed";
   failed.delegate.outcome = "failure";
   const rows = buildActivityRows(tree([active, failed]), new Set());
-  expect(rows.map((row) => row.id)).toEqual(["delegate:dlg_empty_active", "session:sess_root:inactive-fold"]);
-  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 1, failedCount: 1 });
-  expect(activityDelegateState(active.delegate)).toMatchObject({ active: true, failed: false, status: "running" });
-  expect(activityDelegateState(failed.delegate)).toMatchObject({ active: false, failed: true, status: "failed" });
+  expect(rows.map((row) => row.id)).toEqual(["session:sess_root:inactive-fold"]);
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 2, failedCount: 0 });
+  expect(activityDelegateState(active.delegate)).toMatchObject({ active: false, failed: false, status: "unknown" });
+  expect(activityDelegateState(failed.delegate)).toMatchObject({ active: false, failed: false, status: "unknown" });
 });
 
 test("child activity takes status precedence over prior own failures and child failures surface", () => {

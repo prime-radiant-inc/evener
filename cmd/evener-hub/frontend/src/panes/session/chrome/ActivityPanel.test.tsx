@@ -374,7 +374,7 @@ describe("ActivityPanel", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog.className).not.toBe("");
     await screen.findByRole("tree");
-    expect(screen.getByRole("button", { name: /Activity ·/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
   test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
@@ -654,7 +654,7 @@ describe("ActivityPanel", () => {
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
-    expect(screen.getByRole("button", { name: /Activity ·/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
     const panelEntry = activityPanelStore.getState().entries.get("ref_root");
     if (panelEntry?.load.kind !== "ready") throw new Error("continuation did not leave a ready activity tree");
     expect(activitySummaryStore.getState().entries.get("ref_root")?.counts).toEqual(panelEntry.load.tree.root.counts);
