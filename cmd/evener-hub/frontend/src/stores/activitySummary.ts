@@ -40,6 +40,7 @@ export interface ActivitySummaryStoreState {
   mountBody(ref: string): void;
   unmountBody(ref: string): void;
   beginRootFetch(ref: string, bump: number | null, force?: boolean): number | null;
+  beginContinuationFetch(ref: string): number;
   refreshRoot(
     ref: string,
     bump: number | null,
@@ -132,6 +133,23 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         requestID,
         pendingBump: undefined,
       });
+      return { entries };
+    });
+    return requestID;
+  },
+
+  beginContinuationFetch(ref) {
+    let requestID = 0;
+    set((state) => {
+      const entry = state.entries.get(ref);
+      if (!entry) return state;
+      if (!entry.loading) {
+        requestID = entry.requestID;
+        return state;
+      }
+      requestID = ++nextRequestID;
+      const entries = new Map(state.entries);
+      entries.set(ref, { ...entry, requestID });
       return { entries };
     });
     return requestID;

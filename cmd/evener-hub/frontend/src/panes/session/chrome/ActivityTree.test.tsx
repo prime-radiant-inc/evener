@@ -420,6 +420,36 @@ describe("ActivityTree", () => {
     expect(endedGlyph.className).not.toContain("kindAlive");
   });
 
+  test("a completed status with a failure outcome uses the failed glyph", () => {
+    const tree = {
+      ...TREE,
+      root: {
+        ...TREE.root,
+        entries: [
+          {
+            kind: "shell" as const,
+            job: shellJob({
+              jobId: "job_outcome_failed",
+              description: "failed outcome",
+              status: "completed",
+              outcome: "failure",
+              terminal: true,
+              startedAt: "2026-08-05T14:00:00Z",
+              endedAt: "2026-08-05T14:02:00Z",
+            }),
+          },
+        ],
+      },
+    } as ActivityTreeData;
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+
+    const failedRow = screen.getByRole("treeitem", { name: "failed outcome" });
+    const failedGlyph = within(failedRow).getByText("$");
+    expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
+    expect(failedGlyph.className).toContain("kindDanger");
+  });
+
   test("opening the fold reveals rows with their detail strips collapsed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { ActivityTree } from "../protocol/activityData";
 import { ClientNotReadyError } from "../protocol/errors";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore } from "./activityPanel";
@@ -27,6 +28,62 @@ describe("activitySummaryStore", () => {
       loading: true,
       counts: { active: 1, failed: 0, completed: 0, complete: false },
     });
+  });
+
+  test("a root completion already in flight cannot overwrite continuation counts", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    let resolveRoot!: (value: unknown) => void;
+    const root = new Promise<unknown>((resolve) => {
+      resolveRoot = resolve;
+    });
+    const initialRoot: ActivityTree = {
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    };
+    const initialSummaryRequest = activitySummaryStore.getState().beginRootFetch("ref_a", 0);
+    activitySummaryStore.getState().publishRootFetch("ref_a", initialSummaryRequest as number, initialRoot.root.counts);
+    const initialPanelRequest = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", initialPanelRequest, { kind: "ready", tree: initialRoot });
+    activitySummaryStore.getState().refreshRoot("ref_a", 1, async () => root, undefined, true);
+    await Promise.resolve();
+
+    activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+    const continuationSummaryRequest = activitySummaryStore.getState().entries.get("ref_a")?.requestID;
+    activitySummaryStore.getState().publishContinuationCounts("ref_a", continuationSummaryRequest as number, {
+      active: 9,
+      failed: 0,
+      completed: 0,
+      complete: true,
+    });
+
+    resolveRoot({
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts?.active).toBe(9);
   });
 
   test("uses the established-attempt gate and complete-count badge data", () => {

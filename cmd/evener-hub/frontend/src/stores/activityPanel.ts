@@ -122,6 +122,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
   entries: new Map(),
 
   beginFetch(ref, continuation) {
+    if (continuation) activitySummaryStore.getState().beginContinuationFetch(ref);
     let requestID = 0;
     set((state) => {
       const current = entryFor(state.entries, ref);

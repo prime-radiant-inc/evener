@@ -19,6 +19,7 @@ import {
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
+  isActivityFailure,
 } from "../../../protocol/activityData";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -407,7 +408,11 @@ const DenseRowView = memo(function DenseRowView({
   const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
   const target = transcriptTarget(row);
   const statusState = jobStatusDotState(statusText, true);
-  const kindState = row.live && statusState !== "failed" && statusState !== "needs-you" ? "working" : statusState;
+  const failed =
+    row.kind === "job"
+      ? isActivityFailure(row.job.outcome, row.job.status)
+      : activityDelegateState(row.delegate).failed;
+  const kindState = failed ? "failed" : row.live && statusState !== "needs-you" ? "working" : statusState;
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>
