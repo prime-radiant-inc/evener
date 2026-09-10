@@ -627,6 +627,7 @@ describe("defaultExpandedIDs", () => {
     Object.assign(rootDelegate, {
       type: "agent",
       terminal: true,
+      child: undefined,
       turns: [
         {
           jobId: "turn-live",
@@ -653,7 +654,7 @@ describe("defaultExpandedIDs", () => {
   it("does not expand an empty closed turn container", () => {
     const wire = cloneWire(VALID_TREE_WIRE);
     const rootDelegate = getRootDelegateWire(wire);
-    Object.assign(rootDelegate, { type: "agent", terminal: true, turns: [], child: undefined });
+    Object.assign(rootDelegate, { type: "agent", terminal: false, turns: [], child: undefined });
     const tree = parseActivityTree(wire) as ActivityTree;
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
