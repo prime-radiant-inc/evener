@@ -558,6 +558,56 @@ func TestRestoredSessionWithMatchingEnvContextStaysSilent(t *testing.T) {
 	}
 }
 
+// TestRestoredSessionReconcilesDurableEnvironmentAfterStaleMeta exercises the
+// crash window after the ENVIRONMENT transcript append but before meta.json's
+// EnvContext checkpoint. Restore must seed the tracker from the durable entry
+// so the next unchanged turn does not append a duplicate block.
+func TestRestoredSessionReconcilesDurableEnvironmentAfterStaleMeta(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
+	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if countEnvironmentTurns(sess) != 1 {
+		t.Fatalf("setup: want one durable environment turn, got %d", countEnvironmentTurns(sess))
+	}
+	meta := loadMetaForTest(t, sess)
+	meta.EnvContext = &envctx.State{}
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
+		t.Fatalf("save stale meta: %v", err)
+	}
+	sess.Close()
+
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+	if _, err := restored.ProcessInput(context.Background(), "again", nil); err != nil {
+		t.Fatalf("ProcessInput after restore: %v", err)
+	}
+	if count := countEnvironmentTurns(restored); count != 1 {
+		t.Fatalf("stale EnvContext duplicated durable environment: got %d turns, want original 1", count)
+	}
+}
+
 // TestRestoredSessionWithNilEnvContextReemitsFullBlock: a session closed
 // before ever processing a turn persists a nil EnvContext (predating the
 // feature is the same shape: no prior report to be silent about). The
