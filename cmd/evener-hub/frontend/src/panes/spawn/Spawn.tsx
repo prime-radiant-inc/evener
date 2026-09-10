@@ -448,11 +448,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // lose to it at submit (matchBuiltinInvocation runs first), so offering it
   // is a lie. Plugin-qualified "/plugin:name" invocations never collide and
   // pass through untouched.
-  // Pre-session builtins reserve their invocations: a catalog command or
-  // skill addressing the same "/name" would display as the builtin but always
-  // lose to it at submit (matchBuiltinInvocation runs first), so offering it
-  // is a lie. Plugin-qualified "/plugin:name" invocations never collide and
-  // pass through untouched.
   const builtinInvocations = new Set(PRE_SESSION_BUILTIN_IDS.map((id) => `/${id}`));
   const slashMenuCatalog = mergeSlashCommands(
     spawnBuiltinCommands(),
@@ -712,7 +707,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   useEffect(() => {
     const urlPrefill = readUrlPrefill(window.location.search);
     const defaults = resolveInitialDefaults({ serverPrefillDir: urlPrefill.dir });
-    if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
+    if (urlPrefill.prompt) {
+      updatePrompt(urlPrefill.prompt);
+      // Programmatic writes bypass the keystroke path's token recompute, so
+      // parse here with the caret at end-of-text (where focus lands below):
+      // a prefilled "/..." token opens its menu immediately instead of
+      // waiting for the next keystroke.
+      setSlashToken(parseSlashToken(urlPrefill.prompt, urlPrefill.prompt.length));
+    }
     if (defaults.harness) setHarness(defaults.harness);
     initialModelRef.current = defaults.model ?? "";
     if (defaults.model) setModel(defaults.model);
@@ -781,7 +783,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     function onPopState(): void {
       const urlPrefill = readUrlPrefill(window.location.search);
       if (urlPrefill.dir) setCwd(urlPrefill.dir);
-      if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
+      if (urlPrefill.prompt) {
+        updatePrompt(urlPrefill.prompt);
+        setSlashToken(parseSlashToken(urlPrefill.prompt, urlPrefill.prompt.length));
+      }
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -1197,11 +1202,18 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             ? undefined
             : scopedModelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel);
         const scopedKnownEffortLevels = catalogEffortLevels(scopedEffortEntry);
+        // Proven staleness fail-closes to no levels — and the chip value must
+        // not re-authorize itself through `current`: effortOptionLevels
+        // appends a missing current, so resolving against the chip would
+        // validate a value the new scope never offered. Passing "" keeps the
+        // stale chip out of the candidate set (bare effort fails closed on
+        // the empty query regardless).
         const scopedEffortLevels = scopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
+        const scopedEffortCurrent = scopeMismatch ? "" : reasoningEffort;
         const items =
           builtinMatch.command.id === "model"
             ? resolveSpawnModelItems(scopedModelCatalog)
-            : resolveSpawnEffortItems(scopedEffortLevels, reasoningEffort);
+            : resolveSpawnEffortItems(scopedEffortLevels, scopedEffortCurrent);
         // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
         // resolveSpawnEffortItems (the "(default)" entry) must not count as
         // known here, so an empty effort value toasts

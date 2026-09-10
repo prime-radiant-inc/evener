@@ -2954,6 +2954,25 @@ test("catalog entries colliding with pre-session builtins are not offered twice"
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/deploy")]);
 });
 
+test("a prefilled slash token opens its menu without waiting for a keystroke", async () => {
+  window.history.pushState({}, "", "/new?prompt=%2Frev");
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("/rev"),
+  );
+  // The catalog lands debounced; the menu for the prefilled token must open
+  // on its own once rows arrive — no keystroke needed.
+  await waitFor(() => expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull());
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
 test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
@@ -3264,6 +3283,10 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
   await settled();
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  // Set the chip to the same value: without the fix, the stale chip
+  // re-authorizes the typed value through `current` even with no levels.
+  await user.selectOptions(effortControl(), "high");
 
   // Switch directories: the merged effort ladder still holds the old scope
   // until the new scoped load lands. "high" validates against the stale
