@@ -169,7 +169,6 @@ func TestHubRPCPersistedSubagentCannotReadvertiseOrFork(t *testing.T) {
 		t.Fatalf("persisted subagent read advertised fork: %+v", read.Thread.Evener.Capabilities)
 	}
 	before := len(past.Search("", 100, 0))
-	err = nil
 	_, err = client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "fork"})
 	if err == nil {
 		t.Fatal("persisted subagent fork succeeded")
