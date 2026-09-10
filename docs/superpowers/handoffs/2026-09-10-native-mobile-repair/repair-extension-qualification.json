@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-09-10T21:01:55.385779+00:00",
+  "capturedAt": "2026-09-10T21:41:56.832178+00:00",
   "receipts": [
     {
       "scope": "empty-navigation premerge",
@@ -29,8 +29,9 @@
     {
       "scope": "native activity integration canonical",
       "head": "165d9d3d8dda083c4cf839ffba29a61da0f12262",
-      "status": "Still running; not a pass",
-      "log": "/tmp/evener-native-1096-activity-final-merge-gate.log"
+      "log": "/tmp/evener-native-1096-activity-final-merge-gate.log",
+      "exit": 0,
+      "evidence": "Observed original running gate process finish with exit 0 at 21:18 UTC; native/shared tests, native TypeScript and installed SDK qualification completed. Later base integrations remain distinct heads."
     },
     {
       "scope": "portable activity frontend",
@@ -65,9 +66,10 @@
     {
       "scope": "shutdown canonical",
       "head": "6fbe60b7972318fa553d155469a4dc40cc2446d5",
-      "status": "FAILED root module; remaining modules were still running",
+      "status": "FAILED with exit 2",
       "error": "TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains: clear during teardown: rendezvous update: registration has been removed",
-      "resolution": "Dedicated bridge fixture isolates rendezvous update in8e291eb15; normal/race bridge regressions pass."
+      "resolution": "Dedicated bridge fixture isolates rendezvous update in8e291eb15; normal/race bridge regressions pass.",
+      "exit": 2
     },
     {
       "scope": "shutdown final command packages",
@@ -75,6 +77,37 @@
       "exit": 0,
       "log": "/tmp/evener-1109-final-all-cmd-tests.log",
       "evidence": "Full cmd/evener 34.851s and all internal subpackages pass. Removal retry regression RED with old Remove (artifact remained), GREEN current entire rvreg race suite 1.383s. Full canonical and new CI/RoboRev remain required."
+    },
+    {
+      "scope": "portable activity exact-head review",
+      "head": "f55b1b3e1e418c71e60ec759a66805fbd780424a",
+      "evidence": "All 14 CI checks passed; RoboRev panel 7755 completed with both reviewers passing and No issues found at21:33UTC. GitHub strict required-status protection then required latest main. Refreshed candidate320b90c1 includes422d9ea8 and needs its own fresh checks."
+    },
+    {
+      "scope": "fork final normal and lint",
+      "head": "f0a0c97bfeff169c79ebf7a15e6068d4eb5f3152",
+      "exit": 0,
+      "evidence": "Full hub normal158.701s, canonical make lint-golangci107s, focused hub race3.831s. Both target-unconfirmed and post-subscription recovery regressions failed with respective old production predicates and passed restored. Full hub race285.672s passed atd9125f2f2 with identical production behavior; final head adds causal tests.",
+      "logs": [
+        "/tmp/evener-1105-f0a0c97-hub-normal.log",
+        "/tmp/evener-1105-f0a0c97-lint-golangci.log",
+        "/tmp/evener-1105-current-recovery-red.log",
+        "/tmp/evener-1105-d9125f2f2-hub-race.log"
+      ]
+    },
+    {
+      "scope": "shutdown event, expiry and hook qualification",
+      "head": "22f3602f8f1c4fc8171c67b0d5f938c16221cb87",
+      "evidence": "Final affected agent race2.460s and serve race3.606s passed. Earlier full cmd/evener normal47.349s and serve race26.426s passed before final causal/hook additions. Strengthened shared-expiry test keeps bridge wedged through serve return with one timer tick; focused bridge race5.807s passed. Go overlay of old serve timed out in the second drain wait, confirming the regression. External Notification hook cancellation/expired-close skip passes normal and race.",
+      "limitation": "Full agent normal process was interrupted after8:24 without a reliable final exit receipt; not a pass. Final full canonical gate and current-head CI/actual RoboRev remain required.",
+      "log": "/tmp/evener-1109-shared-expiry-red.log"
+    },
+    {
+      "scope": "native activity replacement fix",
+      "head": "0a1330f084a34e1681867d36897028a768ff4d1c",
+      "evidence": "7 activity/retention tests and native TypeScript pass. Real ActivityList constructed with a replacement thread and identity-filtered retained tree does not throw.",
+      "limitation": "Full make test-native fails9 keybindingPatterns assertions (flags containv),712pass. Also reproduced via mise node22.13.1, not established as aNode26-only problem. Investigate cause; current-artifact full gate remains failing.",
+      "log": "/tmp/evener-native-0a1330-node22-test-native.log"
     }
   ]
 }
