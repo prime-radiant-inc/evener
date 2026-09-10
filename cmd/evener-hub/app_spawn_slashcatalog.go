@@ -109,6 +109,18 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 		skill.ScanSkillsDir(userSkillsDir, all)
 	}
 	maps.Copy(all, skill.DiscoverSkills(env, resolved.Effective.SkillsDirs...))
+	if env == nil {
+		// DiscoverSkills returns nil without scanning anything when there is
+		// no execution environment, but configured extra skill directories
+		// are cwd-independent: a session loads them whatever the cwd, so an
+		// empty-cwd (user-level) catalog scans them directly.
+		for _, dir := range resolved.Effective.SkillsDirs {
+			if strings.TrimSpace(dir) == "" {
+				continue
+			}
+			skill.ScanSkillsDir(dir, all)
+		}
+	}
 	for _, inst := range loaded {
 		maps.Copy(all, inst.Skills)
 	}

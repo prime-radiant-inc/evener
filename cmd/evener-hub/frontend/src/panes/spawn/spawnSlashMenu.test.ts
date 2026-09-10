@@ -54,18 +54,26 @@ describe("resolveSpawnModelItems", () => {
 });
 
 describe("resolveSpawnEffortItems", () => {
-  test("follows effortOptionLevels", () => {
+  test("follows effortOptionLevels plus an unconditional none entry", () => {
     const levels = ["low", "medium", "high"];
     const current = "medium";
-    expect(resolveSpawnEffortItems(levels, current)).toEqual(
-      effortOptionLevels(levels, current).map((l) => ({ id: l, label: effortLabel(l, levels) })),
-    );
+    expect(resolveSpawnEffortItems(levels, current)).toEqual([
+      ...effortOptionLevels(levels, current).map((l) => ({ id: l, label: effortLabel(l, levels) })),
+      { id: "none", label: effortLabel("none", levels) },
+    ]);
   });
 
   test("includes default and none labels", () => {
     const levels = ["low", "high"];
     const items = resolveSpawnEffortItems(levels, "");
     expect(items[0]).toEqual({ id: "", label: "(default)" });
+    expect(items).toContainEqual({ id: "none", label: effortLabel("none", levels) });
+  });
+
+  test("does not duplicate none when the ladder lists it", () => {
+    const levels = ["low", "none", "high"];
+    const items = resolveSpawnEffortItems(levels, "");
+    expect(items.filter((item) => item.id === "none")).toHaveLength(1);
   });
 });
 

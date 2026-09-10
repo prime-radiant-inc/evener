@@ -42,7 +42,15 @@ export function resolveSpawnModelItems(catalog: ModelCatalog | null): CommandArg
 }
 
 export function resolveSpawnEffortItems(levels: string[], current: string): CommandArgsEnumItem[] {
-  return effortOptionLevels(levels, current).map((l) => ({ id: l, label: effortLabel(l, levels) }));
+  // Mirrors the Spawn effort selector's own option set (Spawn.tsx's
+  // effortOptions): the ladder levels plus an unconditional explicit "none"
+  // entry. A fresh form whose ladder excludes "none" still offers it, and the
+  // backend accepts it — so slash pre-start validation must too, or
+  // "/reasoning-effort none" fail-closes a value the selector happily sends.
+  return [
+    ...effortOptionLevels(levels, current).map((l) => ({ id: l, label: effortLabel(l, levels) })),
+    ...(!levels.includes("none") ? [{ id: "none", label: effortLabel("none", levels) }] : []),
+  ];
 }
 
 export async function runSpawnBuiltinAfterStart(
@@ -105,54 +113,19 @@ export async function runSpawnBuiltinAfterStart(
 
     const trimmed = argsText.trim();
 
-    if (id === "model") {
-      if (trimmed === "") {
-        return { ok: true };
-      }
-      // Resolve against the command's own source. In the pre-session caller
-      // (Task 6) unknown values are validated before start via
-      // resolveSpawnModelItems(modelCatalog); this post-start path validates
-      // again against the live source. When the source is unavailable (null
-      // catalog, tests) the unknown still fail-closes.
-      let items: CommandArgsEnumItem[] = [];
-      try {
-        items = await command.args.source(wrappedCtx);
-      } catch {
-        items = [];
-      }
-      // If the source returned nothing (e.g. in tests where listModels is not
-      // stubbed), fall back to an empty pre-session catalog for the fail-closed
-      // blocked message rather than throwing.
-      if (items.length === 0) {
-        items = resolveSpawnModelItems(null);
-      }
+    // Shared enum-arg runner: resolve the trimmed value against items, toast
+    // the blocked message on no match, run the matched item. Only the
+    // empty-value policy differs per command (model fail-opens to default,
+    // reasoning-effort fail-closes), so callers pass it in.
+    async function runEnumItem(items: CommandArgsEnumItem[], emptyMessage: string | null): Promise<BuiltinRunOutcome> {
       const needle = trimmed.toLowerCase();
       const item = items.find((it) => it.id.toLowerCase() === needle || it.label.toLowerCase() === needle);
       if (!item) {
-        const message = `/${id}: unknown value "${trimmed}"`;
-        if (!toasted) toasts.push("error", message);
-        return { ok: false, message };
-      }
-      const result = await command.args.run(wrappedCtx, item);
-      if (isBlocked(result)) {
-        const msg = (result as { message: string }).message;
-        if (!toasted) toasts.push("error", msg);
-        return { ok: false, message: msg };
-      }
-      return { ok: true };
-    }
-
-    if (id === "reasoning-effort") {
-      let items: CommandArgsEnumItem[] = [];
-      try {
-        items = await command.args.source(wrappedCtx);
-      } catch {
-        items = [];
-      }
-      const needle = trimmed.toLowerCase();
-      const item = items.find((it) => it.id.toLowerCase() === needle || it.label.toLowerCase() === needle);
-      if (!item) {
-        const message = trimmed ? `/${id}: unknown value "${trimmed}"` : `/${id} needs a value`;
+        const message = trimmed ? `/${id}: unknown value "${trimmed}"` : (emptyMessage ?? `/${id} needs a value`);
+        if (id === "model") {
+          if (!toasted) toasts.push("error", message);
+          return { ok: false, message };
+        }
         const b = blocked(message);
         if (!toasted) toasts.push("error", b.message);
         return { ok: false, message: b.message };
@@ -166,22 +139,40 @@ export async function runSpawnBuiltinAfterStart(
       return { ok: true };
     }
 
-    const items = await command.args.source(wrappedCtx);
-    const needle = trimmed.toLowerCase();
-    const item = items.find((it) => it.id.toLowerCase() === needle || it.label.toLowerCase() === needle);
-    if (!item) {
-      const message = trimmed ? `/${id}: unknown value "${trimmed}"` : `/${id} needs a value`;
-      const b = blocked(message);
-      if (!toasted) toasts.push("error", b.message);
-      return { ok: false, message: b.message };
+    async function enumItems(): Promise<CommandArgsEnumItem[]> {
+      try {
+        return await command.args.source(wrappedCtx);
+      } catch {
+        return [];
+      }
     }
-    const result = await command.args.run(wrappedCtx, item);
-    if (isBlocked(result)) {
-      const msg = (result as { message: string }).message;
-      if (!toasted) toasts.push("error", msg);
-      return { ok: false, message: msg };
+
+    if (id === "model") {
+      if (trimmed === "") {
+        return { ok: true };
+      }
+      // Resolve against the command's own source. In the pre-session caller
+      // (Task 6) unknown values are validated before start via
+      // resolveSpawnModelItems(modelCatalog); this post-start path validates
+      // again against the live source. When the source is unavailable (null
+      // catalog, tests) the unknown still fail-closes.
+      const items = await enumItems();
+      // If the source returned nothing (e.g. in tests where listModels is not
+      // stubbed), fall back to an empty pre-session catalog for the fail-closed
+      // blocked message rather than throwing.
+      return runEnumItem(items.length === 0 ? resolveSpawnModelItems(null) : items, null);
     }
-    return { ok: true };
+
+    if (id === "reasoning-effort") {
+      return runEnumItem(await enumItems(), `/${id} needs a value`);
+    }
+
+    // Unreachable: spawnBuiltinCommands() only ever yields the goal (free-arg,
+    // returned above), model, and reasoning-effort entries, so every id is
+    // handled. A defensive unknown-id refusal rather than a silent success.
+    const message = `/${id}: unknown value "${trimmed}"`;
+    if (!toasted) toasts.push("error", message);
+    return { ok: false, message };
   } catch (err) {
     const message = friendlyErrorMessage(err);
     if (!toasted) toasts.push("error", message);

@@ -237,3 +237,25 @@ func TestHubSpawnSlashCatalog_NonfatalResolverErrorKeepsEffectivePluginDirs(t *t
 		t.Errorf("greet Source = %q, want %q (effective plugin dirs retained)", greet.Source, "plugin")
 	}
 }
+
+func TestHubSpawnSlashCatalog_EmptyCWDScansConfiguredSkillsDirs(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	extraSkills := t.TempDir()
+	writeSlashCatalogSkill(t, extraSkills, "extras", "extras", "Extra skills")
+
+	// An empty cwd returns the user-level inventory, but configured extra
+	// skill directories are cwd-independent: a session loads them whatever
+	// the cwd, so the catalog must include them too. (DiscoverSkills with a
+	// nil env returns nil without scanning extraDirs.)
+	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+		CWD:             "",
+		LaunchOverrides: &appwire.LaunchConfigLayer{SkillsDirs: []string{extraSkills}},
+	})
+	if err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v", err)
+	}
+	if _, ok := slashCatalogSkillNames(resp)["extras"]; !ok {
+		t.Errorf("configured skill %q missing from empty-cwd catalog: %v", "extras", slashCatalogSkillNames(resp))
+	}
+}

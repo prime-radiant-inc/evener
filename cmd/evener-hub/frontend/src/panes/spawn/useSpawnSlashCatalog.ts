@@ -29,9 +29,15 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
   const latestKey = useRef("");
   const lastResponse = useRef<{ cwd: string; logicalKey: string; response: SpawnSlashCatalogResponse } | null>(null);
   const launchOverridesRef = useRef(launchOverrides);
-  launchOverridesRef.current = launchOverrides;
   const harnessRef = useRef(harness);
-  harnessRef.current = harness;
+  // Latest-value sync for the debounced callback below: assigned in an effect,
+  // not the render body, so a concurrent render never tears the values. The
+  // effect runs before the settle timer it feeds can fire, so the callback
+  // always reads the current render's values.
+  useEffect(() => {
+    launchOverridesRef.current = launchOverrides;
+    harnessRef.current = harness;
+  }, [launchOverrides, harness]);
   const serializedOverrides = JSON.stringify(launchOverrides);
 
   const retry = useCallback(() => setRetryRevision((revision) => revision + 1), []);
