@@ -24,6 +24,7 @@ import type {
   PluginSelectionError,
 } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
+import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { effortLabel } from "../../shell/reasoningEffort";
 import { navigate, paneToURL } from "../../shell/routing";
@@ -1027,6 +1028,29 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     event.target.value = ""; // re-picking the identical file must re-fire change
   }
 
+  // A valid /model invocation supplies the missing model itself, so it
+  // bootstraps past the required-model guard: the value rides thread/start
+  // (doSpawn's launch-scalar path below), and neither the button nor
+  // handleSpawn may refuse a submit that CAN succeed. Unknown values still
+  // fail in doSpawn's own pre-start validation with the blocked toast. The
+  // catalog half is load-bearing: an unloaded catalog resolves zero items,
+  // so a known value typed before it lands does NOT bootstrap (and doSpawn
+  // fail-closes it the same way) - the user picks a model once the list
+  // they validated against exists.
+  const slashModelBootstrap =
+    modelRequired && pluginSelectionSupported && attachments.items.length === 0
+      ? (() => {
+          const match = matchBuiltinInvocation(prompt, spawnBuiltinCommands());
+          if (match?.command.id !== "model" || match.argsText.trim() === "") return null;
+          const needle = match.argsText.trim().toLowerCase();
+          return resolveSpawnModelItems(modelCatalog).some(
+            (item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle,
+          )
+            ? match.argsText.trim()
+            : null;
+        })()
+      : null;
+
   async function doSpawn(): Promise<void> {
     if (pluginSelectionBlocked) {
       busyRef.current = false;
@@ -1034,28 +1058,41 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       setBusyStartedAt(null);
       return;
     }
-    // Task 6: submit interception for the pre-session builtins (spawnSlashMenu's
+    // Submit interception for the pre-session builtins (spawnSlashMenu's
     // allowlist: goal, model, reasoning-effort). Composer's own guard, ported:
     // a prompt carrying attachments is never read as a command, and on a
     // non-evener harness there is no menu and no interception - the prompt
     // always spawns verbatim (same pluginSelectionSupported gate as slashOpen).
     // A match still starts the session with the literal prompt text (the
-    // daemon expands plugin commands/skills in the first input itself); the
-    // builtin is then applied against the new ref via
-    // runSpawnBuiltinAfterStart, and only then does navigation happen.
+    // daemon expands plugin commands/skills in the first input itself).
+    //
+    // /goal applies post-start via runSpawnBuiltinAfterStart (goal/set has no
+    // processing gate - it queues behind the running turn). /model and
+    // /reasoning-effort ride thread/start as launch scalars instead: the
+    // daemon refuses thread/model/set while the first input's turn is active
+    // (Conflict "session is processing"), and the effort source reads the new
+    // thread from threadsStore, which is empty until the session pane
+    // hydrates - so neither follow-up mutation can work. Their values are
+    // pre-start validated here (there is no cheaper moment to refuse), then
+    // folded into the start call under the chips, which keeps floor §1.11
+    // precedence (explicit slash value wins over ambient form state).
     const builtinMatch =
       pluginSelectionSupported && attachments.items.length === 0
         ? matchBuiltinInvocation(prompt, spawnBuiltinCommands())
         : null;
+    // Launch-scalar overrides carried by a matched /model or /reasoning-effort
+    // invocation: resolved during pre-start validation below and folded into
+    // the thread/start scalars under the chips.
+    let slashScalars: { modelProvider?: string; model?: string; reasoningEffort?: string } | null = null;
     if (builtinMatch && (builtinMatch.command.id === "model" || builtinMatch.command.id === "reasoning-effort")) {
       // Pre-start validation for enum-arg builtins: there is no cheaper
       // moment to refuse than before the session exists. Unknown value ->
       // toast the blocked message and abort WITHOUT thread/start - AND reset
       // the busy guard handleSpawn set above, or Start strands disabled.
-      // Empty /model means "(default)": fail-open, no follow-up at all.
+      // Empty /model means "(default)": fail-open, no override at all.
       const value = builtinMatch.argsText.trim();
       if (builtinMatch.command.id === "model" && value === "") {
-        // Fall through to the ordinary start below with no model follow-up.
+        // Fall through to the ordinary start below with no model override.
       } else {
         const items =
           builtinMatch.command.id === "model"
@@ -1082,13 +1119,30 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           setBusyStartedAt(null);
           return;
         }
+        const matched = items.find((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
+        if (builtinMatch.command.id === "model" && matched) {
+          const { provider, model: modelId } = splitModelId(matched.id);
+          slashScalars = { modelProvider: provider, model: modelId };
+        } else if (builtinMatch.command.id === "reasoning-effort" && matched) {
+          slashScalars = { reasoningEffort: matched.id };
+        }
       }
     }
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
+    // An explicit /model or /reasoning-effort invocation wins over both: the
+    // user typed the value as the submit itself, so it is the most specific
+    // intent in the room.
     const overrides = combinedOverrides;
-    const scalars = resolveScalars({ model, reasoningEffort }, overrides);
+    const scalars = resolveScalars(
+      {
+        model: slashScalars?.model ?? model,
+        modelProvider: slashScalars?.modelProvider,
+        reasoningEffort: slashScalars?.reasoningEffort ?? reasoningEffort,
+      },
+      overrides,
+    );
     // Snapshot before the await (mirrors Composer.tsx's submitAction) so an
     // attachment staged WHILE this request is in flight isn't in the set
     // clearSubmitted removes below - it survives untouched, same contract
@@ -1105,7 +1159,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
     });
-    if (builtinMatch) {
+    if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application failure toasts but does NOT block navigation:
       // the session started fine, only the follow-up setting failed.
       await runSpawnBuiltinAfterStart(builtinMatch.command.id, builtinMatch.argsText, ref, toasts);
@@ -1147,7 +1201,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // ⌘/Ctrl+Enter chord (handlePromptKeyDown) reaches this function directly
     // - a submit that CANNOT succeed must never fire regardless of path in.
     // The field's own inline note already says why, so no toast here.
-    if (modelRequired || providerRequired) return;
+    if ((modelRequired && slashModelBootstrap === null) || providerRequired) return;
     if (pluginSelectionBlocked) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
@@ -1440,7 +1494,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                     aria-label="Start"
                     icon={busy ? undefined : <SendIcon />}
                     onClick={() => void handleSpawn()}
-                    disabled={busy || modelRequired || providerRequired || pluginSelectionBlocked}
+                    disabled={
+                      busy ||
+                      (modelRequired && slashModelBootstrap === null) ||
+                      providerRequired ||
+                      pluginSelectionBlocked
+                    }
                   >
                     {busy ? (
                       <StartingLoader startedAt={busyStartedAt ?? Date.now()} />

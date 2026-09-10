@@ -5,7 +5,6 @@ import {
   type CommandArgsEnumItem,
   type PaletteRunContext,
   type ScopedCommand,
-  splitModelId,
 } from "../../shell/palette/commands";
 import { effortLabel, effortOptionLevels } from "../../shell/reasoningEffort";
 import type { ToastKind } from "../../widgets";
@@ -134,9 +133,6 @@ export async function runSpawnBuiltinAfterStart(
         if (!toasted) toasts.push("error", message);
         return { ok: false, message };
       }
-      // Use splitModelId to satisfy the import and mirror the registry's own
-      // split, even though command.args.run does the same internally.
-      void splitModelId(item.id);
       const result = await command.args.run(wrappedCtx, item);
       if (isBlocked(result)) {
         const msg = (result as { message: string }).message;

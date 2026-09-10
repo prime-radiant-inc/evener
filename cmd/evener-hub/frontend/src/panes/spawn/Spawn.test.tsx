@@ -5,7 +5,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
-import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
@@ -22,7 +21,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
@@ -31,41 +30,6 @@ import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
 
 let modelListOverride: ModelDescriptor[] | null = null;
-
-// Seeds the tracked ThreadModel for a fresh session ref so the post-start
-// reasoning-effort follow-up (palette source: focusedModel's own
-// reasoningEffortLevels/supportsReasoning) resolves against a reasoning model
-// instead of an empty store.
-function seedReasoningModel(ref: string): void {
-  const model: ThreadModel = {
-    ref,
-    threadId: "abc123",
-    name: "",
-    status: { type: "idle" },
-    modelProvider: "anthropic",
-    model: "claude-sonnet-4-5",
-    visionModel: "",
-    askPending: false,
-    pendingEscalations: [],
-    turns: [],
-    queue: null,
-    tasks: null,
-    jobsUpdatedAt: null,
-    jobsTreeRevision: null,
-    lastFrameAt: 0,
-    capabilities: NO_CAPABILITIES,
-    goal: null,
-    contextUsed: 0,
-    contextWindow: 0,
-    contextPressure: 0,
-    usage: null,
-    workMillis: 0,
-    reasoningEffortLevels: ["minimal", "low", "medium", "high"],
-    supportsReasoning: true,
-    cwd: "/tmp/project",
-  };
-  threadsStore.setState({ threads: new Map([[ref, model]]) });
-}
 
 class MemoryStorage {
   private store = new Map<string, string>();
@@ -2950,10 +2914,9 @@ test("a /goal prompt starts the session with the literal text and applies goal/s
   expect(goal?.params).toMatchObject({ ref: "local:abc123", objective: "build the widget" });
 });
 
-test("a /model prompt starts the session and applies thread/model/set on the new ref", async () => {
+test("a /model prompt starts the session with the model on thread/start and no follow-up set", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
-    f.on("thread/model/set", () => ({}));
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
       layers: {},
@@ -2983,9 +2946,50 @@ test("a /model prompt starts the session and applies thread/model/set on the new
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
-  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/model openai/gpt-5" }] });
-  const set = fake.calls.find((c) => c.method === "thread/model/set");
-  expect(set?.params).toMatchObject({ ref: "local:abc123", modelProvider: "openai", model: "gpt-5" });
+  expect(start?.params).toMatchObject({
+    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  // No follow-up mutation: thread/model/set refuses mid-turn with Conflict
+  // once the non-empty first input reserves the turn, so the value rides the
+  // start call itself.
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+  expect(getToasts()).toEqual([]);
+});
+
+test("a /model prompt bootstraps past the required-model guard with the value on thread/start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+    f.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  // The hub has no default model, so Start is gated — but the prompt itself
+  // supplies the missing model. The bootstrap validates against the pane
+  // catalog, so the test waits for the catalog-backed trigger text the same
+  // way the known-value test does.
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/spawn/slashCatalog")).toBe(true));
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  await user.click(button);
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
 });
 
 test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
@@ -3065,15 +3069,9 @@ test("a bare /model with no catalog spawns with no model follow-up and no error 
   expect(getToasts()).toEqual([]);
 });
 
-test("a /reasoning-effort prompt starts the session and applies thread/reasoning-effort/set on the new ref", async () => {
+test("a /reasoning-effort prompt starts the session with the effort on thread/start and no follow-up set", async () => {
   const user = userEvent.setup();
-  const fake = readyClient((f) => {
-    f.on("thread/start", () => {
-      seedReasoningModel("local:abc123");
-      return startResponse("local:abc123");
-    });
-    f.on("thread/reasoning-effort/set", () => ({}));
-  });
+  const fake = readyClient();
   connectionStore.getState().connect(fake);
   renderSpawn(fake);
   await settled();
@@ -3084,9 +3082,14 @@ test("a /reasoning-effort prompt starts the session and applies thread/reasoning
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
-  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/reasoning-effort high" }] });
-  const set = fake.calls.find((c) => c.method === "thread/reasoning-effort/set");
-  expect(set?.params).toMatchObject({ ref: "local:abc123", reasoningEffort: "high" });
+  expect(start?.params).toMatchObject({
+    input: [{ type: "text", text: "/reasoning-effort high" }],
+    reasoningEffort: "high",
+  });
+  // No follow-up mutation: the value rides the start call itself, so it
+  // applies even though the new thread is not yet in threadsStore.
+  expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
+  expect(getToasts()).toEqual([]);
 });
 
 test("an unknown /reasoning-effort value toasts, starts nothing, and leaves Start usable", async () => {

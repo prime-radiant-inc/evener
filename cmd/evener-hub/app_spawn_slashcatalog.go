@@ -57,19 +57,22 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 		}
 		resolved = fullResolved
 	}
+	// thread/start launches with spawnResolved.Effective.PluginDirs carried on
+	// the Resolved value (the resolver's own SelectedDirs never reach the
+	// child), so the fallthrough below keeps the same dirs: the catalog then
+	// shows what the resulting session loads instead of going empty.
 	pluginDirs := resolved.Effective.PluginDirs
 	if resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins); err != nil {
 		// Same admission rule thread/start uses (app_threadlifecycle.go): a
 		// resolver failure is fatal when a selection must be honored, and
 		// always when the failure IS the caller leaving (canceled/deadline on
 		// the error itself, not the ambient context). Everything else falls
-		// through with whatever the resolver could list.
+		// through with the effective plugin dirs above.
 		if resolved.Effective.EnabledPlugins != nil ||
 			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return appwire.SpawnSlashCatalogResponse{}, appwire.HubLaunchError(err.Error())
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "warning: resolving plugins for slash catalog: %v\n", err)
-		pluginDirs = nil
 	} else if err := resolution.ValidateSelection(); err != nil {
 		return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams(err.Error())
 	} else {

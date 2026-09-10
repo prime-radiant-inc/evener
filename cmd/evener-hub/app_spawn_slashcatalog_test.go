@@ -6,12 +6,14 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 func writeSlashCatalogPlugin(t *testing.T, dir, pluginName, commandName string) {
@@ -204,5 +206,34 @@ func TestHubSpawnSlashCatalog_EnabledPluginsSelectionHonored(t *testing.T) {
 		if cmd.Name == "beta-cmd" {
 			t.Errorf("deselected plugin command %q leaked into the catalog: %+v", cmd.Name, resp.Commands)
 		}
+	}
+}
+
+func TestHubSpawnSlashCatalog_NonfatalResolverErrorKeepsEffectivePluginDirs(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	pluginDir := t.TempDir()
+	writeSlashCatalogPlugin(t, pluginDir, "greeter", "greet")
+
+	// A nonfatal resolver error (no selection to honor, live context) must
+	// not empty the catalog: thread/start launches with the effective plugin
+	// dirs on Resolved, so the catalog keeps those same dirs and shows what
+	// the resulting session loads.
+	origResolve := hubResolvePlugins
+	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{}, errors.New("registry unreachable")
+	}
+	t.Cleanup(func() { hubResolvePlugins = origResolve })
+
+	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+		CWD:             t.TempDir(),
+		LaunchOverrides: &appwire.LaunchConfigLayer{PluginDirs: []string{pluginDir}},
+	})
+	if err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v, want fallthrough on a nonfatal resolver error", err)
+	}
+	greet := slashCatalogCommandByName(t, resp, "greet")
+	if greet.Source != "plugin" {
+		t.Errorf("greet Source = %q, want %q (effective plugin dirs retained)", greet.Source, "plugin")
 	}
 }
