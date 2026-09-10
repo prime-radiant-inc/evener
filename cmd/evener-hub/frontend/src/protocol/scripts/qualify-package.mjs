@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
@@ -98,6 +99,10 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
     "package/README.md",
     "package/examples/connection.mjs",
     "package/examples/inspect.mjs",
+    "package/examples/discovery.mjs",
+    "package/examples/discovery-cli.mjs",
+    "package/examples/discovery-logic.mjs",
+    "package/examples/private-output.mjs",
   ])
     assert(listing.includes(`${expected}\n`), `missing ${expected}`);
   for (const entry of listing.trim().split("\n")) {
@@ -123,12 +128,13 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       { params: { cwd: fixtureCwd }, result: { effective: {}, layers: {}, provenance: {}, diagnostics: [] } },
     ],
   ]);
+  let discoveryMode;
   const observedMethods = [];
   const controller = new AbortController();
   let serverError;
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   server.on("connection", (socket) => {
-    socket.on("message", (data) => {
+    socket.on("message", async (data) => {
       try {
         const request = JSON.parse(data.toString());
         if (request.method === "initialized" && request.id === undefined) return;
@@ -156,6 +162,19 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
               auth: false,
             },
           };
+        } else if (discoveryMode) {
+          assert.equal(request.method, discoveryMode.method);
+          assert.deepEqual(request.params, discoveryMode.params);
+          await discoveryMode.beforeResponse?.();
+          if (discoveryMode.error) {
+            socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: discoveryMode.error }));
+            return;
+          }
+          if (discoveryMode.close) {
+            socket.close();
+            return;
+          }
+          result = discoveryMode.response;
         } else {
           const response = responses.get(request.method);
           assert(response, `unexpected method ${request.method}`);
@@ -199,6 +218,17 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       resolvedLayers: [],
       repositoryTrust: "absent",
       diagnostics: 0,
+    });
+
+    await runInstalledDiscoveryContracts({
+      consumerDir,
+      rpcURL: `ws://127.0.0.1:${address.port}/rpc`,
+      fixtureCwd,
+      observedMethods,
+      signal: controller.signal,
+      setMode: (mode) => {
+        discoveryMode = mode;
+      },
     });
   } catch (error) {
     throw serverError ?? error;
