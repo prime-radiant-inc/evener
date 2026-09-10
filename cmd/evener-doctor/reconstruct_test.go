@@ -255,7 +255,7 @@ func TestReconstructMatchesToolResultInstantsAndPreservesRounds(t *testing.T) {
 		archivedMessage{ID: 7, Ordinal: 6, SourceType: "entry", Kind: "TOOL_RESULTS", Timestamp: "2026-09-09T01:06:00Z"},
 	)
 	source.Calls = append(source.Calls, archivedCall{MessageID: 6, ID: "call_2", Name: "read_file", Arguments: `{}`})
-	source.Results = append(source.Results, archivedResult{CallOrdinal: 5, ID: "call_2", Source: "tool_result", Content: "second sentinel", Timestamp: "2026-09-09T01:06:00.000+00:00"})
+	source.Results = append(source.Results, archivedResult{CallOrdinal: 5, ID: "call_2", Source: "tool_result", Status: "completed", Content: "second sentinel", Timestamp: "2026-09-09T01:06:00.000+00:00"})
 	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
 	if err != nil {
 		t.Fatal(err)
@@ -391,6 +391,73 @@ func TestReconstructUsesRecordedToolErrorStatus(t *testing.T) {
 			result := entries[3].Turn.Message.Content[0].ToolResult
 			if result == nil || result.IsError != (status == "error") || result.Content != content {
 				t.Fatalf("changed literal tool output or error status: %+v", result)
+			}
+		})
+	}
+}
+
+func TestReconstructRejectsUnknownResultStatusBeforeStaging(t *testing.T) {
+	for _, status := range []string{"", "unknown-status", "ERROR", "running", "idle", "failed", "cancelled", "stopped", "exhausted"} {
+		t.Run(status, func(t *testing.T) {
+			dbPath, meta, output := reconstructionFixture(t)
+			db, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(`UPDATE tool_result_events SET status=?`, status); err != nil {
+				t.Fatal(err)
+			}
+			_, err = reconstructSession(context.Background(), "02wLIRxqmq3AUo6vl2OW37", dbPath, meta, "", output)
+			if err == nil {
+				t.Fatal("accepted unknown result status")
+			}
+			if _, err := os.Stat(output); !os.IsNotExist(err) {
+				t.Fatalf("published output for unknown status: %v", err)
+			}
+		})
+	}
+}
+
+func TestReconstructPreservesSuccessfulDelegateLifecycleResults(t *testing.T) {
+	for _, tool := range []string{"delegate", "delegate_send", "job_status"} {
+		for _, status := range []string{"running", "idle", "failed", "cancelled", "stopped", "exhausted"} {
+			t.Run(tool+"/"+status, func(t *testing.T) {
+				source := reconstructionSourceFixture(t)
+				source.Calls[0].Name = tool
+				source.Results[0].Status = status
+				_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				history := agent.ResumeHistory(entries)
+				result := history[2].Message.Content[0].ToolResult
+				if result == nil || result.IsError || result.Content != source.Results[0].Content {
+					t.Fatalf("changed successful delegate lifecycle result: %+v", result)
+				}
+			})
+		}
+	}
+}
+
+func TestReconstructRejectsDuplicateHeaderFieldsBeforeStaging(t *testing.T) {
+	for _, kind := range []string{"system_prompt", "initial_task", "agent_tasks"} {
+		t.Run(kind, func(t *testing.T) {
+			dbPath, meta, output := reconstructionFixture(t)
+			db, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(`UPDATE messages SET source_type='header', source_subtype=?, content='[]' WHERE id IN (2,3)`, kind); err != nil {
+				t.Fatal(err)
+			}
+			_, err = reconstructSession(context.Background(), "02wLIRxqmq3AUo6vl2OW37", dbPath, meta, "", output)
+			if err == nil {
+				t.Fatal("accepted duplicate header field")
+			}
+			if _, err := os.Stat(output); !os.IsNotExist(err) {
+				t.Fatalf("published output for duplicate header: %v", err)
 			}
 		})
 	}

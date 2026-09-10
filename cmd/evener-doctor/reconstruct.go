@@ -370,6 +370,9 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		if !ok || c.ID != r.ID || r.Source != "tool_result" {
 			return fail(errors.New("invalid or unlinked archived tool result"))
 		}
+		if !validArchivedResultStatus(c.Name, r.Status) {
+			return fail(fmt.Errorf("unsupported archived tool result status %q for %s", r.Status, c.Name))
+		}
 		if resultCalls[key] {
 			return fail(fmt.Errorf("duplicate archived tool result at call ordinal %d index %d", r.CallOrdinal, r.CallIndex))
 		}
@@ -389,8 +392,13 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 	}
 	firstAssistant := true
 	toolRoundOrdinal := -1
+	headerFields := map[string]bool{}
 	for _, m := range source.Messages {
 		if m.SourceType == "header" {
+			if headerFields[m.Kind] {
+				return fail(fmt.Errorf("duplicate archived header field %q", m.Kind))
+			}
+			headerFields[m.Kind] = true
 			switch m.Kind {
 			case "system_prompt":
 				h.SystemPrompt = m.Content
@@ -532,4 +540,17 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 	note := fmt.Sprintf("[SESSION RECONSTRUCTION]\nThis session was reconstructed from the AgentsView archive through %s. Later conversation may be missing; metadata was last updated %s. %d tool-result bodies were not retained and carry explicit unavailable notices. The original live processes were interrupted; archived claims about running processes, jobs, delegates, or test status are historical evidence only. Recheck the working tree and current state before continuing. Media and provider replay signatures were not retained. Full recovery provenance is in the staged report.json.", source.EndedAt, meta.UpdatedAt.Format(time.RFC3339Nano), report.MissingToolOutputs)
 	entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User(note), Timestamp: time.Now().UTC()}})
 	return h, entries, nil
+}
+
+func validArchivedResultStatus(toolName, status string) bool {
+	switch status {
+	case "completed", "error":
+		return true
+	case "running", "idle", "failed", "cancelled", "stopped", "exhausted":
+		// AgentsView uses delegate lifecycle as the status of successful calls
+		// to these tools. A failed delegate is not a failed status query.
+		return toolName == "delegate" || toolName == "delegate_send" || toolName == "job_status"
+	default:
+		return false
+	}
 }
