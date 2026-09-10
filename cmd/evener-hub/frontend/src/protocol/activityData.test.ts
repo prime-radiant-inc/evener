@@ -955,8 +955,9 @@ describe("lastOutputAt and usage wire fields", () => {
 
   it("keeps usage absent when the wire omits it", () => {
     const tree = parseActivityTree(delegateUsageTree()) as ActivityTree;
-    expect(tree.root.entries[0]).toMatchObject({ kind: "delegate" });
-    expect(tree.root.entries[0].kind === "delegate" && tree.root.entries[0].delegate.usage).toBeUndefined();
+    const entry = tree.root.entries[0];
+    if (!entry || entry.kind !== "delegate") throw new Error("expected delegate entry");
+    expect(entry.delegate.usage).toBeUndefined();
   });
 
   it.each([
@@ -965,8 +966,9 @@ describe("lastOutputAt and usage wire fields", () => {
     ["output-only", { outputTokens: 4 }, { inputTokens: 0, outputTokens: 4 }],
   ])("handles %s sparse usage according to omitempty wire semantics", (_name, rawUsage, expectedUsage) => {
     const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
-    expect(tree.root.entries[0]).toMatchObject({ kind: "delegate" });
-    expect(tree.root.entries[0].kind === "delegate" && tree.root.entries[0].delegate.usage).toEqual(expectedUsage);
+    const entry = tree.root.entries[0];
+    if (!entry || entry.kind !== "delegate") throw new Error("expected delegate entry");
+    expect(entry.delegate.usage).toEqual(expectedUsage);
   });
 
   it("preserves explicit zero and valid usage counters", () => {
@@ -990,8 +992,9 @@ describe("lastOutputAt and usage wire fields", () => {
     ["total-only", { totalTokens: 47700 }, { inputTokens: 0, outputTokens: 0, totalTokens: 47700 }],
   ])("preserves %s sparse optional usage", (_name, rawUsage, expectedUsage) => {
     const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
-    expect(tree.root.entries[0]).toMatchObject({ kind: "delegate" });
-    expect(tree.root.entries[0].kind === "delegate" && tree.root.entries[0].delegate.usage).toEqual(expectedUsage);
+    const entry = tree.root.entries[0];
+    if (!entry || entry.kind !== "delegate") throw new Error("expected delegate entry");
+    expect(entry.delegate.usage).toEqual(expectedUsage);
   });
 
   it.each([
