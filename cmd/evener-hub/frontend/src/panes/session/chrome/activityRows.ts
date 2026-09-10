@@ -83,18 +83,10 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
   }
   const latest = turns.at(-1);
   if (turns.length === 0) {
-    const failed =
-      isActivityFailure(delegate.terminal === true ? delegate.outcome : undefined, delegate.status) || childFailed;
     return {
-      active: delegate.terminal !== true || childActive,
-      failed,
-      status: childActive
-        ? (delegate.child?.aggregate ?? "working")
-        : failed
-          ? delegate.status === "error" || delegate.status === "exhausted"
-            ? delegate.status
-            : "failed"
-          : (delegate.status ?? "unknown"),
+      active: childActive,
+      failed: childFailed,
+      status: delegate.child?.aggregate ?? "unknown",
     };
   }
   const failed = childFailed || turns.some((turn) => isActivityFailure(turn.outcome, turn.status));
