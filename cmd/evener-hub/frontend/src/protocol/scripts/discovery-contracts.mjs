@@ -107,14 +107,58 @@ export async function runInstalledDiscoveryContracts({
     assert.deepEqual(observedMethods, ["initialize", method]);
   }
 
+  for (const { action, method, params, response } of [
+    { action: "paths", method: "evener/paths/complete", params: { prefix: "" }, response: { data: [] } },
+    {
+      action: "validatePath",
+      method: "evener/path/validate",
+      params: { path: "", kind: "dir" },
+      response: { path: "", valid: false, error: "path is required" },
+    },
+  ]) {
+    setMode({ method, params, response });
+    observedMethods.length = 0;
+    const output = join(consumerDir, `discovery-empty-${action}.json`);
+    const paramsFile = join(consumerDir, `discovery-empty-${action}-params.json`);
+    await writeFile(paramsFile, JSON.stringify(params));
+    await run({
+      EVENER_DISCOVERY_ACTION: action,
+      EVENER_DISCOVERY_PARAMS_FILE: paramsFile,
+      EVENER_DISCOVERY_OUTPUT_FILE: output,
+    });
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), response);
+    assert.deepEqual(observedMethods, ["initialize", method]);
+  }
+
   const invalidParams = join(consumerDir, "discovery-invalid-params.json");
   await writeFile(invalidParams, JSON.stringify({ cwd: fixtureCwd, unknown: true }));
   observedMethods.length = 0;
   await fails({ EVENER_DISCOVERY_ACTION: "gitHead", EVENER_DISCOVERY_PARAMS_FILE: invalidParams });
   assert.deepEqual(observedMethods, [], "invalid input must fail before connecting");
 
-  for (const { name, action, method, response, close, error } of [
-    { name: "malformed-paths", action: "paths", method: "evener/paths/complete", response: { invalid: true } },
+  for (const [action, params] of [
+    ["paths", { limit: 2 }],
+    ["validatePath", { kind: "dir" }],
+  ]) {
+    const missing = join(consumerDir, `discovery-missing-${action}.json`);
+    await writeFile(missing, JSON.stringify(params));
+    observedMethods.length = 0;
+    await fails({ EVENER_DISCOVERY_ACTION: action, EVENER_DISCOVERY_PARAMS_FILE: missing });
+    assert.deepEqual(observedMethods, [], `${action} missing required path key must not connect`);
+  }
+
+  observedMethods.length = 0;
+  await fails({ EVENER_DISCOVERY_ACTION: "toString" });
+  assert.deepEqual(observedMethods, [], "inherited action names must not connect");
+
+  for (const { name, action, method, params, response, close, error } of [
+    {
+      name: "malformed-paths",
+      action: "paths",
+      method: "evener/paths/complete",
+      params: { prefix: fixtureCwd },
+      response: { invalid: true },
+    },
     {
       name: "malformed-settings",
       action: "settings",
@@ -129,10 +173,16 @@ export async function runInstalledDiscoveryContracts({
       error: { code: -32603, message: "private-server-error" },
     },
   ]) {
-    setMode({ method, params: {}, response, close, error });
+    setMode({ method, params: params ?? {}, response, close, error });
     observedMethods.length = 0;
     const output = join(consumerDir, `discovery-${name}.json`);
-    await fails({ EVENER_DISCOVERY_ACTION: action, EVENER_DISCOVERY_OUTPUT_FILE: output });
+    const paramsFile = join(consumerDir, `discovery-${name}-params.json`);
+    await writeFile(paramsFile, JSON.stringify(params ?? {}));
+    await fails({
+      EVENER_DISCOVERY_ACTION: action,
+      EVENER_DISCOVERY_PARAMS_FILE: paramsFile,
+      EVENER_DISCOVERY_OUTPUT_FILE: output,
+    });
     assert.deepEqual(observedMethods, ["initialize", method]);
     assert.equal((await stat(output)).size, 0);
   }

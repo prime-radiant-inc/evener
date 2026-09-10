@@ -21,8 +21,8 @@ function inputFor(action, params) {
     "Unknown discovery parameter.",
   );
   if (action === "gitHead") assert.ok(nonempty(params.cwd), "Required path parameter.");
-  if (action === "paths" || action === "validatePath")
-    assert.ok(optionalString(params[action === "paths" ? "prefix" : "path"]), "Invalid path parameter.");
+  if (action === "paths") assert.equal(typeof params.prefix, "string", "Required prefix parameter.");
+  if (action === "validatePath") assert.equal(typeof params.path, "string", "Required path parameter.");
   if (action === "projects" && params.limit !== undefined)
     assert.ok(Number.isSafeInteger(params.limit), "Invalid project limit.");
   if (action === "paths") {

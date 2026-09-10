@@ -30,9 +30,9 @@ an action with `EVENER_DISCOVERY_ACTION`:
 
 | Action | Read | JSON parameters |
 | --- | --- | --- |
-| `paths` | Complete a filesystem path | `prefix`, `limit`, `includeFiles` |
+| `paths` | Complete a filesystem path | `prefix` (required), `limit`, `includeFiles` |
 | `projects` | Recent project directories | `limit` |
-| `validatePath` | Validate a path | `path`, `kind` |
+| `validatePath` | Validate a path | `path` (required), `kind` |
 | `gitHead` | Current Git head | `cwd` (required) |
 | `search` | Find live and past sessions | `query` |
 | `harnesses` | Available harnesses | None |
