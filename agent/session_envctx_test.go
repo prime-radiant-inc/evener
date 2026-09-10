@@ -713,7 +713,8 @@ func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing
 }
 
 func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	now := envctxFixedTime
+	s := newTestSessionForEnvctx(t, withConfig(SessionConfig{testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return now }}}}))
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
@@ -723,17 +724,20 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 			oldID = turn.StableTurnID
 		}
 	}
-	changed := schema.NewTurn(schema.TurnEnvironment, llm.User("changed environment"))
-	changed.StableTurnID = "turn_environment_changed"
-	s.appendTurn(changed.Kind, changed.Message)
-	s.history[len(s.history)-1].StableTurnID = changed.StableTurnID
 	seedNumberedSessionHistory(t, s, 8)
+	now = now.Add(time.Hour)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
 	s.contextMgr.PreserveRecentTurns = 2
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if oldID == "" {
 		t.Fatal("missing original environment identity")
+	}
+	if countEnvironmentTurns(s) != 1 {
+		t.Fatalf("changed environment was not retained before compaction: %d", countEnvironmentTurns(s))
 	}
 	before := countEnvironmentTurns(s)
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
