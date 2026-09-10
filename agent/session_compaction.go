@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
@@ -191,6 +192,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if onPublishLocked != nil {
 		onPublishLocked(published)
 	}
+	commit.resetEnvContextTrackerLocked()
 	commit.claimNoteLocked()
 	commit.publishedRevision = s.historyRevision
 	// Publication-order marker for last-write-wins effect suppression, set
@@ -336,10 +338,11 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // the newest PUBLICATION skips its last-write-wins effects, whichever flush
 // runs first.
 type foldCommit struct {
-	claimNoteLocked         func()
-	commitTranscriptsLocked func()
-	flush                   func()
-	publishedRevision       int
+	claimNoteLocked              func()
+	commitTranscriptsLocked      func()
+	flush                        func()
+	resetEnvContextTrackerLocked func()
+	publishedRevision            int
 }
 
 // noteClaimRegistrarKey carries the fold staging's registrar for the
@@ -487,6 +490,17 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
 	commit := &foldCommit{}
+	commit.resetEnvContextTrackerLocked = func() {
+		if len(pendingCompactionTurns) == 0 {
+			return
+		}
+		if s.envTracker == nil {
+			return
+		}
+		s.envTracker = envctx.NewTracker(envctx.State{})
+		state := envctx.State{}
+		s.envContextState = &state
+	}
 	flush := func() {
 		// Deferred last-write-wins effects (compaction naming, task-list
 		// and artifact steering) run only for the NEWEST published fold:

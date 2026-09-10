@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -302,6 +303,65 @@ func TestEnvironmentContextWriteFailureAbortsUserAcceptance(t *testing.T) {
 		if turn.Kind == schema.TurnUserInput {
 			t.Fatal("user input was appended despite environment durability failure")
 		}
+	}
+}
+
+func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testing.T) {
+	for _, kind := range []string{"direct", "start", "queue"} {
+		t.Run(kind, func(t *testing.T) {
+			s := newTestSessionForEnvctx(t, withSteps(repeatFinalResponse(2, "ok")...))
+			fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+			writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+			if err != nil {
+				t.Fatalf("create transcript: %v", err)
+			}
+			t.Cleanup(func() { _ = writer.Close() })
+			s.mu.Lock()
+			s.transcript = writer
+			s.transcriptReady = true
+			s.mu.Unlock()
+			fs.fail = true
+
+			id := "retry-" + kind
+			var run func() error
+			switch kind {
+			case "direct":
+				run = func() error { _, err := s.ProcessInput(context.Background(), "retry direct", nil); return err }
+			case "start":
+				if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: id, Input: []appwire.InputItem{{Type: "text", Text: "retry start"}}}); err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				run = func() error { _, _, err := s.ProcessClientMutationStart(context.Background(), nil); return err }
+			case "queue":
+				if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: id, Input: []appwire.InputItem{{Type: "text", Text: "retry queue"}}}); err != nil {
+					t.Fatalf("AcceptClientMutationQueue: %v", err)
+				}
+				run = func() error { _, _, err := s.ProcessPendingUserInput(context.Background(), nil); return err }
+			}
+			if err := run(); err == nil {
+				t.Fatal("first attempt unexpectedly succeeded")
+			}
+			failed := s.clientMutations.snapshot()
+			if failed.AcceptedTurns != uint64(s.turns) {
+				t.Fatalf("accepted turns after failed %s = %d, want %d", kind, failed.AcceptedTurns, s.turns)
+			}
+			fs.fail = false
+			if err := run(); err != nil {
+				t.Fatalf("retry %s: %v", kind, err)
+			}
+			if got := countEnvironmentTurns(s); got != 1 {
+				t.Fatalf("retry %s environment turns = %d, want 1", kind, got)
+			}
+			inputCount := 0
+			for _, turn := range s.history {
+				if turn.Kind == schema.TurnUserInput {
+					inputCount++
+				}
+			}
+			if inputCount != 1 {
+				t.Fatalf("retry %s user input turns = %d, want 1", kind, inputCount)
+			}
+		})
 	}
 }
 
