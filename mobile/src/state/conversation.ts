@@ -1118,9 +1118,9 @@ export function createConversationStore() {
     for (const id of [...pageOwnedIds]) {
       if (!retainedIds.has(id)) pageOwnedIds.delete(id);
     }
-    const retainedWireIds = new Set(items.map((item) => item.id));
+    const retainedIdentities = new Set(items.map(timelineIdentity));
     for (const id of [...liveOwnedRevs.keys()]) {
-      if (!retainedWireIds.has(id)) liveOwnedRevs.delete(id);
+      if (!retainedIdentities.has(id)) liveOwnedRevs.delete(id);
     }
   }
 
@@ -1634,11 +1634,12 @@ export function createConversationStore() {
               const current = currentConvForMerge.items.find(
                 (i) => timelineIdentity(i) === timelineIdentity(item),
               );
-              const rev = current && liveOwnedRevs.get(current.id);
+              const rev = current && liveOwnedRevs.get(timelineIdentity(current));
               if (rev !== undefined && rev > entryLiveRev) {
                 if (current !== undefined) {
-                  supersededIds.add(item.id);
-                  supersededVersions.set(item.id, current);
+                  const identity = timelineIdentity(item);
+                  supersededIds.add(identity);
+                  supersededVersions.set(identity, current);
                 }
               }
             }
@@ -1648,7 +1649,7 @@ export function createConversationStore() {
             // A newer whole-item notification can remove its attachment row.
             // Use the retained source's revision so a stale snapshot cannot
             // resurrect it, without keeping tombstones for evicted rows.
-            const sourceId = attachmentSourceId(item);
+            const sourceId = attachmentSourceIdentity(item);
             if (sourceId !== null) {
               const sourceRev = liveOwnedRevs.get(sourceId);
               if (
@@ -1662,8 +1663,8 @@ export function createConversationStore() {
               }
             }
             return [
-              supersededIds.has(item.id)
-                ? (supersededVersions.get(item.id) as MobileTimelineItem)
+              supersededIds.has(timelineIdentity(item))
+                ? (supersededVersions.get(timelineIdentity(item)) as MobileTimelineItem)
                 : item,
             ];
           });
@@ -1687,7 +1688,7 @@ export function createConversationStore() {
                 (i) =>
                   !rereadKeys.has(timelineIdentity(i)) &&
                   !pageOwnedIds.has(timelineIdentity(i)) &&
-                  liveOwnedRevs.has(i.id),
+                  liveOwnedRevs.has(timelineIdentity(i)),
               );
               // Page history first (oldest), then reread items, then live tail.
               // Items owned by neither are dropped (omitted old history).
@@ -1707,7 +1708,7 @@ export function createConversationStore() {
               (i) =>
                 !rereadKeys.has(timelineIdentity(i)) &&
                 !pageOwnedIds.has(timelineIdentity(i)) &&
-                liveOwnedRevs.has(i.id),
+                liveOwnedRevs.has(timelineIdentity(i)),
             );
             if (liveTailItems.length > 0) {
               mergedItems = [...mergedItems, ...liveTailItems];
@@ -1716,13 +1717,13 @@ export function createConversationStore() {
           // Accept a snapshot's removal of a companion when it also contains
           // the source, unless a live event changed that group during the read.
           mergedItems = mergedItems.filter((item) => {
-            const sourceId = attachmentSourceId(item);
+            const sourceId = attachmentSourceIdentity(item);
             return (
               sourceId === null ||
-              !rereadIds.has(sourceId) ||
-              rereadIds.has(item.id) ||
+              !rereadKeys.has(sourceId) ||
+              rereadKeys.has(timelineIdentity(item)) ||
               (liveOwnedRevs.get(sourceId) ?? 0) > entryLiveRev ||
-              (liveOwnedRevs.get(item.id) ?? 0) > entryLiveRev
+              (liveOwnedRevs.get(timelineIdentity(item)) ?? 0) > entryLiveRev
             );
           });
           mergedItems = attachToSources(mergedItems);
@@ -1809,9 +1810,9 @@ export function createConversationStore() {
           // to survive a future page merge. Live-owned items NOT in the reread
           // stay in the map (still live-only / live tail).
           for (const item of conversation.items) {
-            const rev = liveOwnedRevs.get(item.id);
+            const rev = liveOwnedRevs.get(timelineIdentity(item));
             if (rev === undefined || rev <= entryLiveRev) {
-              liveOwnedRevs.delete(item.id);
+              liveOwnedRevs.delete(timelineIdentity(item));
             }
           }
           pruneEvictedIds(committedItems);
@@ -2605,7 +2606,7 @@ export function createConversationStore() {
               ];
               const attachmentId = `${params.item.id}:attachments`;
               const attachments = projectItemAttachments(params.item);
-              markLiveOwned(params.item.id);
+              markLiveOwned(timelineIdentity(projectedWithReasoning));
               if (attachments) {
                 replacement.push({
                   kind: "attachments",
@@ -2723,7 +2724,7 @@ export function createConversationStore() {
                 truncatedItemIds.add(params.itemId);
               }
               // Fix round 1: Mark as live-owned — accepted delta update.
-              markLiveOwned(params.itemId);
+              markLiveOwned(timelineIdentity(existing));
               set({
                 conversation: {
                   ...conv,
@@ -2754,7 +2755,7 @@ export function createConversationStore() {
               // to "" (short content), so the item must no longer be frozen.
               truncatedItemIds.delete(params.itemId);
               // Fix round 1: Mark as live-owned — accepted reset update.
-              markLiveOwned(params.itemId);
+              markLiveOwned(timelineIdentity(existing));
               set({
                 conversation: {
                   ...conv,
@@ -2802,7 +2803,7 @@ export function createConversationStore() {
               truncatedItemIds.add(params.itemId);
             }
             // Mark live revision only on accepted exact update.
-            markLiveOwned(params.itemId);
+            markLiveOwned(timelineIdentity(existing));
             set({
               conversation: {
                 ...conv,
@@ -2872,7 +2873,7 @@ export function createConversationStore() {
               truncatedItemIds.add(params.itemId);
             }
             // Mark live revision only on accepted exact update.
-            markLiveOwned(params.itemId);
+            markLiveOwned(timelineIdentity(existing));
             set({
               conversation: {
                 ...conv,

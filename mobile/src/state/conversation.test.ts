@@ -1508,6 +1508,50 @@ describe("ConversationStore", () => {
       );
     });
 
+    it("preserves a later member completion during a held rehydrate", async () => {
+      const service = new FakeConversationService();
+      const cluster = {
+        kind: "activity" as const,
+        id: "wire-first",
+        label: "shell",
+        family: "tool" as const,
+        state: "completed" as const,
+        detail: {},
+        members: [
+          { id: "wire-first", label: "shell", family: "tool" as const, state: "completed" as const, detail: {}, transcriptKey: "first" },
+          { id: "wire-later", label: "shell", family: "tool" as const, state: "running" as const, detail: {}, transcriptKey: "later" },
+        ],
+      };
+      const stale = makeConversation({
+        items: [
+          cluster,
+          { kind: "attachments", id: "wire-later:attachments", sourceTranscriptKey: "later", items: [{ id: "old", src: "old" }] },
+        ],
+      });
+      service.openConv = stale;
+      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
+      store.getState().applyNotification({ method: "evener/thread/resync", params: { threadId: "thread-1", ref: "ref-1" } } as AnyNotification);
+      await Promise.resolve();
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1", ref: "ref-1", turnId: "t1",
+          item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ id: "new", url: "new" }] },
+        },
+      } as AnyNotification);
+      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      await Promise.resolve();
+      await Promise.resolve();
+      const items = store.getState().conversation?.items ?? [];
+      const activity = items.find((item) => item.kind === "activity");
+      expect(activity?.kind === "activity" ? activity.members?.find((member) => member.transcriptKey === "later")?.detail.output : undefined).toBe("updated");
+      expect(items.find((item) => item.kind === "attachments" && item.sourceTranscriptKey === "later")?.items).toEqual([{ id: "new-wire-later:out:0", src: "new" }]);
+    });
+
     it("splits a failed member out of a hydrated cluster", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({
