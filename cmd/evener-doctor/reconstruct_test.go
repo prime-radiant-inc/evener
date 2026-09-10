@@ -213,6 +213,61 @@ func reconstructionSourceFixture(t *testing.T) reconstructionSource {
 	return source
 }
 
+func TestReconstructScopesTurnIdentityAndSteeringProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		kind         schema.TurnKind
+		ordinal      int
+		promptSource string
+		stableID     string
+		mutationID   string
+	}{
+		{schema.TurnUserInput, 1, "user", "turn-sentinel", "mutation-sentinel"},
+		{schema.TurnSteering, 2, "user", "turn-sentinel", "mutation-sentinel"},
+		{schema.TurnSteering, 2, "", "turn-sentinel", ""},
+		{schema.TurnFailure, 2, "user", "turn-sentinel", "mutation-sentinel"},
+		{schema.TurnAssistant, 3, "user", "", ""},
+		{schema.TurnTool, 4, "user", "", ""},
+		{schema.TurnToolResults, 4, "user", "", ""},
+		{schema.TurnEnvironment, 2, "user", "", ""},
+		{schema.TurnCheckpoint, 2, "user", "", ""},
+		{schema.TurnSummary, 2, "user", "", ""},
+		{schema.TurnSystem, 2, "user", "", ""},
+		{schema.TurnModelSwitch, 2, "user", "", ""},
+		{schema.TurnHookCompleted, 2, "user", "", ""},
+	} {
+		t.Run(string(tc.kind)+"/"+tc.promptSource, func(t *testing.T) {
+			source := reconstructionSourceFixture(t)
+			message := &source.Messages[tc.ordinal]
+			message.Kind = string(tc.kind)
+			message.StableID = "turn-sentinel"
+			message.PromptSource = tc.promptSource
+			_, entries, err := reconstructEntries(source, schema.SessionMeta{}, map[string]string{"turn-sentinel": "mutation-sentinel"}, &reconstructionReport{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(entries[tc.ordinal-1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry, err := transcript.DecodeEntry(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			turn := entry.Turn
+			if turn.Kind != tc.kind || turn.StableTurnID != tc.stableID || turn.ClientMutationID != tc.mutationID {
+				t.Errorf("turn identity = (%s, %q, %q), want (%s, %q, %q)", turn.Kind, turn.StableTurnID, turn.ClientMutationID, tc.kind, tc.stableID, tc.mutationID)
+			}
+			steeringSource := ""
+			if tc.kind == schema.TurnSteering {
+				steeringSource = tc.promptSource
+			}
+			if turn.SteeringSource != steeringSource {
+				t.Errorf("steering source = %q, want %q", turn.SteeringSource, steeringSource)
+			}
+		})
+	}
+}
+
 func TestReconstructionValidationEnforcesNativeRecordSize(t *testing.T) {
 	for _, kind := range []string{"header", "entry"} {
 		t.Run(kind, func(t *testing.T) {

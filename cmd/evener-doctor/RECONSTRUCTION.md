@@ -19,6 +19,9 @@ restored by matching its stable turn IDs. This preserves retry identity without
 mistaking an interrupt receipt for the original input. Recorded turn failures
 also retain their matching mutation identity so native restore recognizes them
 instead of appending the same failure again.
+Stable IDs are restored only on user inputs, steering, and failures; steering
+provenance is restored only on steering turns. The source snapshot keeps the
+original archived fields for every record.
 Supplied journals pass the same strict decoding and validation as native session
 restore; incomplete containers, malformed records, and mismatched record IDs
 are refused before staging any files.

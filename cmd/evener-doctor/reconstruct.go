@@ -420,7 +420,14 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		if err != nil {
 			return fail(err)
 		}
-		turn := schema.Turn{Kind: schema.TurnKind(m.Kind), Timestamp: stamp, StableTurnID: m.StableID, SteeringSource: m.PromptSource}
+		turn := schema.Turn{Kind: schema.TurnKind(m.Kind), Timestamp: stamp}
+		if turn.Kind == schema.TurnSteering {
+			turn.SteeringSource = m.PromptSource
+		}
+		switch turn.Kind {
+		case schema.TurnUserInput, schema.TurnSteering, schema.TurnFailure:
+			turn.StableTurnID = m.StableID
+		}
 		content := m.Content
 		switch turn.Kind {
 		case schema.TurnTool, schema.TurnToolResults, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnSteering:
