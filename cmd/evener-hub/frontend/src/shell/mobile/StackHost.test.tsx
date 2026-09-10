@@ -450,6 +450,96 @@ test.each([false, true])(
   },
 );
 
+test.each([
+  {
+    shape: "reciprocal",
+    context: [
+      { ref: "local:a", parentRef: "local:b" },
+      { ref: "local:b", parentRef: "local:a" },
+    ],
+  },
+  {
+    shape: "three-pane",
+    context: [
+      { ref: "local:a", parentRef: "local:c" },
+      { ref: "local:b", parentRef: "local:a" },
+      { ref: "local:c", parentRef: "local:b" },
+    ],
+  },
+])(
+  "retained-parent cycle safety: $shape cycle terminates at Welcome without revisiting a descendant",
+  async ({ context }) => {
+    const workspace = workspaceStore.getState();
+    const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+    for (const params of context) workspace.openPane("transcript", params, { slot: "secondary" });
+    const retained = workspaceStore.getState().panes;
+    // All context predates this mount: the real host starts with empty history.
+    render(<StackHost />);
+    const user = userEvent.setup();
+    const visited = new Set([workspaceStore.getState().focusedPaneId]);
+    for (let step = 0; step < context.length; step++) {
+      const back = screen.queryByRole("button", { name: "Back" });
+      if (!back) break;
+      await user.click(back);
+      const next = workspaceStore.getState().focusedPaneId;
+      expect(visited.has(next), "Back must not revisit an abandoned descendant through cyclic parent context").toBe(
+        false,
+      );
+      visited.add(next);
+    }
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    const state = workspaceStore.getState();
+    expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
+    expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(state.mainPane()?.id).toBe(owner);
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+test.each([false, true])(
+  "retained-parent cycle safety: longer=%s missing farther ancestor still permits exact immediate parents",
+  async (longer) => {
+    const workspace = workspaceStore.getState();
+    const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+    // Paired with the cyclic contexts above: only the final link differs.
+    const a = workspace.openPane("transcript", { ref: "local:a", parentRef: "local:missing" }, { slot: "secondary" });
+    const b = workspace.openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
+    if (longer) workspace.openPane("transcript", { ref: "local:c", parentRef: "local:b" }, { slot: "secondary" });
+    const retained = workspaceStore.getState().panes;
+    render(<StackHost />);
+    const user = userEvent.setup();
+    for (const target of longer ? [b, a] : [a]) {
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(target);
+      expect(workspaceStore.getState().panes).toEqual(retained);
+      expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+    }
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+test("retained-parent cycle safety: valid observed history wins even when retained context is cyclic", async () => {
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+  workspace.openPane("transcript", { ref: "local:a", parentRef: "local:b" }, { slot: "secondary" });
+  const b = workspace.openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
+  const previous = workspace.openPane("doc", { ref: "previous" }, { slot: "secondary" });
+  const retained = workspaceStore.getState().panes;
+  render(<StackHost />);
+  await screen.findByText(/doc pane: previous/);
+  act(() => workspace.focusPane(b));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(previous);
+  expect(workspaceStore.getState().panes).toEqual(retained);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
 // --- real browser back/forward composing with the in-app Back button -----
 //
 // A REAL back/forward gesture reaches this component the same way as any

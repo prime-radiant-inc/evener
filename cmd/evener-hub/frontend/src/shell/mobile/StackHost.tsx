@@ -311,12 +311,32 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
         // A host swap discards local history, not the retained parent pane.
         // Focus that exact pane: reopening a session could promote a nested
         // parent into main and discard the real owner and remaining context.
-        target = panes.find(
+        let ancestor = panes.find(
           (pane) =>
             pane.id !== focusedPaneId &&
             (pane.type === "session" || pane.type === "transcript") &&
             (pane.params as { ref?: unknown }).ref === params.parentRef,
-        )?.id;
+        );
+        target = ancestor?.id;
+        // Reject cycles, not incomplete context: an absent farther ancestor
+        // must not prevent returning to the retained immediate parent.
+        const visited = new Set([focusedPaneId]);
+        while (ancestor?.type === "transcript") {
+          if (visited.has(ancestor.id)) {
+            target = undefined;
+            break;
+          }
+          visited.add(ancestor.id);
+          const parentRef = (ancestor.params as { parentRef?: unknown }).parentRef;
+          ancestor =
+            typeof parentRef === "string" && parentRef !== ""
+              ? panes.find(
+                  (pane) =>
+                    (pane.type === "session" || pane.type === "transcript") &&
+                    (pane.params as { ref?: unknown }).ref === parentRef,
+                )
+              : undefined;
+        }
       }
     }
     wentBackRef.current = true;
