@@ -63,7 +63,7 @@ components:
 
 **Creative North Star: "The project first work surface"**
 
-This records the accepted native Sessions browser at source `f75411ead`. Projects provide orientation, sessions remain the work items, and conversation content stays the visual center. The browser uses native navigation, SF system typography, semantic light and dark surfaces, and touch sized controls. It extends the [mobile UX philosophy](../docs/design/mobile/philosophy.md) and [mobile style guide](../docs/design/mobile/style-guide.md), with acceptance evidence in the [project-browser review](../docs/design/mobile/2026-09-08-project-browser-review.md).
+This records the accepted native Sessions browser at source `f75411ead`. Projects provide orientation, sessions remain the work items, and conversation content stays the visual center. The browser uses native navigation, SF system typography, semantic light and dark surfaces, and touch sized controls. The underlying mobile UX philosophy, style guide and dated project-browser review remain in the preserved development branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 
 The main Sessions surface is one expandable scrolling hierarchy. A dedicated Project route is a separate detail surface and may use its own current, recent and archived tabs. These are distinct navigation contracts.
 

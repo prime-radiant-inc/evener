@@ -28,6 +28,23 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile-native/package-lock.json
+
+      - name: Install native dependencies
+        run: npm ci --prefix mobile-native
+
+      - name: Test native app and shared session core
+        run: make test-native
+
   api-package:
     runs-on: ubuntu-latest
     steps:
@@ -232,7 +249,7 @@ jobs:
   snapshot-artifacts:
     name: Build snapshot artifacts
     if: github.event_name == 'pull_request'
-    needs: [static, race-root, race-modules, tests, fuzz, web, api-package]
+    needs: [static, race-root, race-modules, tests, fuzz, web, native, api-package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

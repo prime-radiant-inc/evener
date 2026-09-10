@@ -12,7 +12,7 @@ The root `backgroundColor` and the `expo-splash-screen` config plugin both use
 the production mark background (`#0a0a0e`). The launch screen reuses the same
 canonical mark at 120 points with contain mode. Review the generated native launch screen after prebuild.
 The iPad simulator icon and launch screen are recorded in
-[branding evidence](../docs/design/mobile/ipad-branding-evidence.md).
+branding evidence on development branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 
 `expo-splash-screen` is pinned to the Expo SDK 57 compatible `57.0.8` release;
 no other dependencies were upgraded.

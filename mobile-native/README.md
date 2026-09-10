@@ -9,12 +9,9 @@ AppWire client and selected services/state modules. The native UI is in this
 directory; the old Tauri UI is not loaded or used as feature authority. Current
 web/server behavior defines scope.
 
-The [delivery plan](../docs/superpowers/plans/2026-09-08-iphone-usable-useful-good.md)
-defines sequencing, worker ownership and release acceptance. The
-[backlog](../docs/design/mobile/backlog.md) tracks remaining work. Implemented
-features below are not a claim of complete native or release qualification. See
-the [current status](../docs/design/mobile/status.md), [iOS v1 remaining work](../docs/design/mobile/ios-v1-remaining.md),
-and [acceptance ledger](../docs/design/mobile/acceptance.md).
+The [current status](../docs/design/mobile/status.md), [remaining work](../docs/design/mobile/ios-v1-remaining.md) and [acceptance index](../docs/design/mobile/acceptance.md) distinguish implementation from current-artifact qualification. The full development plan and dated evidence remain on branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
+
+Run `make test-native` from the repository root after installing native dependencies. It covers the app tests, shared-session tests and native TypeScript checks. The [build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS project generation and distribution prerequisites.
 
 ## Run on simulators
 
@@ -25,8 +22,8 @@ NODE_OPTIONS=--dns-result-order=ipv4first npm start -- --localhost --port 8087
 ```
 
 The initial slice used Expo Go; the current app requires standalone development
-or Release builds for its native dependencies and qualification. iOS simulator
-qualification is current. Android tooling and the Android commands below are
+or Release builds for its native dependencies and qualification. Current-source iOS simulator
+qualification is recorded separately in the acceptance index. Android tooling and the Android commands below are
 retained for deferred work; Android qualification does not block iOS v1. Android
 tooling must be on PATH, or set `ANDROID_HOME` to your SDK directory. On this Mac
 it is `/opt/homebrew/share/android-commandlinetools`. The DNS option keeps
@@ -70,7 +67,7 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
-The [8 September execution checkpoint](../docs/design/mobile/2026-09-08-iphone-execution-checkpoint.md) records the current `bfe632f44` iPhone simulator artifact, one valid native creation, all three vision choices, uncertainty recovery, 698 native tests plus TypeScript, shared checks and host-executed real-hub controller qualification. The integrated Usable journey and physical-device checks remain pending; the reader-specific evidence below retains its earlier artifact identity.
+The dated 8 September execution checkpoint remains in the development archive. Its simulator and controller results identify earlier artifacts; use the current acceptance index for the joined checkpoint journey.
 
 ## Current scope
 
@@ -89,9 +86,8 @@ The [8 September execution checkpoint](../docs/design/mobile/2026-09-08-iphone-e
   manual recovery, never automatically resent.
 - Conversation and creation drafts persist in SQLite, scoped by hub and session
   as applicable, including images and uncertain-delivery state. Saved navigation
-  and reader-position restoration are implemented; the iPhone largest-text cold
-  restore is qualified on source `7944778e0`, while broader reflow combinations
-  and iPad reader qualification remain open.
+  and reader-position restoration are implemented. Current-artifact restoration
+  remains an acceptance gate; dedicated accessibility and iPad work are paused.
 - Native screens cover questions/approvals, queue operations, goals/tasks/activity,
   provider instances and sign-in, plugins/marketplaces, hub information and launch
   configuration/trust. These advertised operations are wired in source and await
@@ -101,18 +97,15 @@ The [8 September execution checkpoint](../docs/design/mobile/2026-09-08-iphone-e
   and normal deployment verification remain open; tiny fixtures do not establish
   production responsiveness. Voice/barge-in is outside v1.
 
-Native screenshots and verification observations are recorded in the task's
-handoff report and the linked acceptance evidence. Current native source
-`7944778e0` includes the saved-reader cold-restore fix; the native gate reports
-685 tests across 74 files plus TypeScript. The iPhone exact saved m12 anchor at
-largest text was restored across installed launch plus two independent cold
-launches. The latest iPad checks used the same artifact and qualified clean/cold
-launch, the empty-hub form's keyboard dismissal and largest-text scrolling.
-Landscape, VoiceOver and iPad
-reader cold restoration remain unqualified. Physical-device behavior,
-distribution signing, performance and the final workflow matrix remain open.
-Earlier iPhone and Android simulator evidence is retained as historical context;
-Android qualification is deferred beyond iOS-only v1.
+The current candidate gate passes 718 native tests across 76 files and 673
+shared-session tests across seven files, plus strict TypeScript checks. These
+source checks do not establish a passing installed-app journey. See the current
+acceptance index for the required artifact, recovery and distribution checks.
+
+Earlier simulator screenshots and reader-restoration receipts, including source
+`7944778e0`, remain historical evidence in the preserved development branch.
+They do not qualify this checkpoint. iPad, dedicated accessibility and Android
+qualification are deferred beyond the current iPhone scope.
 
 ## Safe playground
 
@@ -131,7 +124,7 @@ client, services, stores, and notification handling.
 
 ## Standalone simulator builds
 
-After `npx expo prebuild`, install iOS pods with `pod install` in `ios/`.
+Follow the [locked dependency procedure](../docs/design/mobile/ios-build-distribution.md) to prebuild iOS and install pods.
 Also rerun `pod install` after `npm ci`: CocoaPods restores generated vendored
 sources inside native dependencies, including Expo SQLite's prefixed headers.
 Build the Evener workspace and scheme in Release for an iOS Simulator using

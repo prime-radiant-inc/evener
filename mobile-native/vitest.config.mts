@@ -5,6 +5,9 @@ export default defineConfig({
 	resolve: {
 		// Match Metro's app-owned resolution for the shared headless sources.
 		alias: {
+			zustand: fileURLToPath(
+				new URL("./node_modules/zustand", import.meta.url),
+			),
 			anser: fileURLToPath(
 				new URL("./node_modules/anser/lib/index.js", import.meta.url),
 			),
