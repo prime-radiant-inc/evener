@@ -72,7 +72,7 @@ describe("activitySummaryStore", () => {
     const settled = new Promise<void>((resolve) => {
       const unsubscribe = activitySummaryStore.subscribe((state) => {
         const entry = state.entries.get("ref_a");
-        if (entry && !entry.loading && entry.counts === continuationCounts) {
+        if (entry && !entry.loading) {
           unsubscribe();
           resolve();
         }
@@ -107,7 +107,7 @@ describe("activitySummaryStore", () => {
     await new Promise<void>((resolve) => {
       const unsubscribe = activitySummaryStore.subscribe((state) => {
         const entry = state.entries.get("ref_a");
-        if (entry && !entry.loading && entry.counts?.active === 7) {
+        if (entry && !entry.loading) {
           unsubscribe();
           resolve();
         }

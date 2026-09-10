@@ -43,7 +43,6 @@ export type ActivityFetchResult =
 export interface ActivityPanelStoreState {
   entries: Map<string, ActivityPanelEntry>;
   beginFetch(ref: string, continuation?: { nodeID: string }): number;
-  isCurrentFetch(ref: string, requestID: number): boolean;
   publishFetch(ref: string, requestID: number, result: ActivityFetchResult): void;
   setExpanded(ref: string, expandedIDs: string[]): void;
   setSelected(ref: string, selectedID?: string): void;
@@ -150,10 +149,6 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       return { entries };
     });
     return requestID;
-  },
-
-  isCurrentFetch(ref, requestID) {
-    return this.entries.get(ref)?.requestID === requestID;
   },
 
   publishFetch(ref, requestID, result) {

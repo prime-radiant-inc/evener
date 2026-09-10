@@ -181,13 +181,14 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       });
       if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
     };
+    const ownsPanel = () => activityPanelStore.getState().entries.get(ref)?.requestID === panelRequestID;
     const settleSupersededRoot = () => {
       get().failRootFetch(ref, requestID);
       issuePendingBump();
     };
     void fetch(ref)
       .then((data) => {
-        if (!activityPanelStore.getState().isCurrentFetch(ref, panelRequestID)) {
+        if (!ownsPanel()) {
           settleSupersededRoot();
           return;
         }
@@ -203,9 +204,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         issuePendingBump();
       })
       .catch((err) => {
-        const currentRequest =
-          get().entries.get(ref)?.requestID === requestID &&
-          activityPanelStore.getState().isCurrentFetch(ref, panelRequestID);
+        const currentRequest = get().entries.get(ref)?.requestID === requestID && ownsPanel();
         get().failRootFetch(ref, requestID);
         let result: ActivityFetchResult;
         if (isActionUnavailable(err)) result = { kind: "unsupported" };

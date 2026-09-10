@@ -444,7 +444,7 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
     const failedRow = screen.getByRole("treeitem", { name: "failed outcome" });
-    expect(failedRow.textContent).toContain("completed");
+    expect(within(failedRow).getByText("completed").className).toContain("denseFailed");
     const failedGlyph = within(failedRow).getByText("$");
     expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
     expect(failedGlyph.className).toContain("kindDanger");
