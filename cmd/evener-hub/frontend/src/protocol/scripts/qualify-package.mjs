@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,8 +112,7 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const installedRequire = createRequire(join(consumerDir, "package.json"));
-  const { APPWIRE_PROTOCOL_VERSION } = installedRequire("@evener/appwire-client");
+  const serverProtocolVersion = "evener-appwire-v5";
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],
@@ -138,9 +136,10 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
         let result;
         if (request.method === "initialize") {
           assert.equal(request.params.clientInfo.name, "appwire-reference");
+          assert.equal(request.params.protocolVersion, serverProtocolVersion);
           result = {
             serverInfo: { name: "package-qualification", version: "0.0.0" },
-            protocolVersion: APPWIRE_PROTOCOL_VERSION,
+            protocolVersion: serverProtocolVersion,
             sourceId: "qualification-source",
             features: {
               threadList: true,
@@ -191,7 +190,7 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
     );
     assert.deepEqual(observedMethods, ["initialize", ...responses.keys()]);
     assert.deepEqual(JSON.parse(stdout), {
-      protocolVersion: APPWIRE_PROTOCOL_VERSION,
+      protocolVersion: serverProtocolVersion,
       sourceId: "qualification-source",
       models: 0,
       sessionsOnFirstPage: 0,
