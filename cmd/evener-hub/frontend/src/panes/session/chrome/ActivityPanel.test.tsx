@@ -671,6 +671,63 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
   });
 
+  test("keeps a continuation merge when a late root refresh resolves after closing", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const staleRoot = deferred<{ data: unknown }>();
+    let rootCalls = 0;
+    fake.on("evener/jobs/list", ({ continuation }) => {
+      if (continuation) return { data: continuedPartialTree() };
+      rootCalls += 1;
+      if (rootCalls === 1) return { data: activityTree(1) };
+      return staleRoot.promise;
+    });
+
+    const panel = (bump: number) => (
+      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
+    );
+    const { rerender } = render(panel(1));
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+
+    rerender(panel(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
+
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+    await screen.findByRole("treeitem", { name: /continued shell/i });
+    expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    act(() => staleRoot.resolve({ data: activityTree(2) }));
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
+
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3);
+    expect(rootCalls).toBe(2);
+    const panelEntry = activityPanelStore.getState().entries.get("ref_root");
+    if (panelEntry?.load.kind !== "ready") throw new Error("continuation merge was not retained");
+    expect(panelEntry.load.tree.root.counts.active).toBe(4);
+    expect(panelEntry.load.tree.root.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "delegate",
+          delegate: expect.objectContaining({
+            child: expect.objectContaining({
+              entries: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: "shell",
+                  job: expect.objectContaining({ description: "continued shell" }),
+                }),
+              ]),
+            }),
+          }),
+        }),
+      ]),
+    );
+    expect(activitySummaryStore.getState().entries.get("ref_root")?.counts?.active).toBe(4);
+    expect(activitySummaryStore.getState().entries.get("ref_root")?.lastFetchedBump).toBe(2);
+  });
+
   test("continuation grafts only the targeted branch", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

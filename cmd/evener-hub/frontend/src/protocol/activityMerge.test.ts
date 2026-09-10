@@ -123,6 +123,21 @@ test("turn-container continuation refresh is not blocked by stable projection fe
   expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["new-turn"]);
 });
 
+test("turn-container refresh retains the latest activity timestamp", () => {
+  const currentEntry = delegate();
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.latestActivityAt = "2026-09-10T00:02:00Z";
+  currentEntry.delegate.turns = [shell("old-turn").job];
+  const patchEntry = delegate();
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.latestActivityAt = "2026-09-10T00:01:00Z";
+  patchEntry.delegate.turns = [shell("new-turn").job];
+  const result = graftContinuationTree(tree([currentEntry], "next"), "session:root", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.latestActivityAt).toBe("2026-09-10T00:02:00Z");
+});
+
 test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
   const entry = delegate();
   const raw = tree([entry]);
@@ -164,14 +179,57 @@ test("merged summaries count failures and keep coverage separate from running st
   expect(settled.root.aggregate).toBe("failed");
 });
 
-test("merged summaries classify failed statuses without requiring an outcome", () => {
-  const failed = shell("failed");
-  failed.job.status = "error";
-  failed.job.outcome = undefined;
-  const result = graftContinuationTree(tree([]), "session:root", tree([failed]));
-  expect(result.root.counts).toMatchObject({ active: 0, failed: 1, completed: 0 });
-  expect(result.root.aggregate).toBe("failed");
+test.each([
+  ["shell", "failure", 1],
+  ["shell", "failed", 0],
+  ["shell", "exhausted", 0],
+  ["stable delegate", "failure", 0],
+  ["stable delegate", "failed", 1],
+  ["stable delegate", "exhausted", 1],
+  ["turn container", "failure", 1],
+  ["turn container", "failed", 0],
+  ["turn container", "exhausted", 0],
+])("matches backend counts for %s outcome %s", (kind, outcome, failed) => {
+  const entry = kind === "shell" ? shell("failed") : delegate();
+  if (kind === "shell") {
+    if (entry.kind !== "shell") throw new Error("unexpected shell fixture");
+    entry.job.outcome = outcome;
+    entry.job.terminal = true;
+  } else if (kind === "stable delegate") {
+    if (entry.kind !== "delegate") throw new Error("unexpected delegate fixture");
+    entry.delegate.outcome = outcome;
+    entry.delegate.terminal = true;
+  } else {
+    if (entry.kind !== "delegate") throw new Error("unexpected turn fixture");
+    delete entry.delegate.type;
+    entry.delegate.turns = [{ ...shell("failed").job, outcome, terminal: true }];
+  }
+  if (entry.kind === "delegate") entry.delegate.branch = {};
+  const result = graftContinuationTree(tree([]), "session:root", tree([entry]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed, completed: 1 - failed });
+  expect(result.root.aggregate).toBe(failed ? "failed" : "ended");
 });
+
+test.each(["error", "failed", "exhausted"])(
+  'summary counts terminal status "%s" as completed without an outcome',
+  (status) => {
+    const job = shell(`job-${status}`);
+    job.job.status = status;
+    job.job.outcome = undefined;
+    const stable = delegate();
+    stable.delegate.branch = {};
+    stable.delegate.status = status;
+    stable.delegate.outcome = undefined;
+    stable.delegate.terminal = true;
+    const turns = delegate();
+    delete turns.delegate.type;
+    turns.delegate.branch = {};
+    turns.delegate.turns = [{ ...shell(`turn-${status}`).job, status, outcome: undefined }];
+    const result = graftContinuationTree(tree([]), "session:root", tree([job, stable, turns]));
+    expect(result.root.counts).toMatchObject({ active: 0, failed: 0, completed: 3 });
+    expect(result.root.aggregate).toBe("ended");
+  },
+);
 
 test("merged summaries count empty turn-container delegates as one entry", () => {
   const emptyTurns = delegate();

@@ -160,6 +160,8 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       let next = current;
 
       if (pending.kind === "continuation") {
+        if (result.kind !== "ready")
+          activitySummaryStore.getState().publishContinuationFailure(ref, pending.summaryRequestID);
         if (result.kind === "continuation-failed") {
           next = {
             ...current,
