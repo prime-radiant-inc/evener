@@ -189,8 +189,8 @@ func assertSteeringOwnerInTranscript(t *testing.T, path, startedID, steerStableI
 	for sc.Scan() {
 		entry, decodeErr := transcript.DecodeEntry(sc.Bytes())
 		if decodeErr == nil && entry.Turn.Kind == schema.TurnSteering && entry.Turn.ClientMutationID == "steer-stable" {
-			copy := entry.Turn
-			found = &copy
+			steering := entry.Turn
+			found = &steering
 		}
 	}
 	if err := sc.Err(); err != nil {
