@@ -65,6 +65,9 @@ distinguish it from literal conversation text. Archived reasoning
 remains readable text, without invented provider signatures.
 Assistant tool markers are removed only when the entire content is the
 canonical marker-only block for its recorded calls; mixed text is retained.
+JSON-only failures and completed hooks regain the readable diagnostic used by
+native transcript rendering. Cache-write accounting prefers a supplied duration
+breakdown, falling back to the aggregate count when no breakdown is present.
 
 Attention resolutions retain their readable evidence in `source-snapshot.json`
 and are omitted from the runtime transcript. The archive lacks their originating

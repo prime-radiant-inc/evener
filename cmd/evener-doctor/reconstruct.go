@@ -452,7 +452,8 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 					Output        int  `json:"output_tokens"`
 					Reasoning     *int `json:"reasoning_tokens"`
 					CacheRead     *int `json:"cache_read_input_tokens"`
-					CacheCreation struct {
+					CacheWrite    *int `json:"cache_creation_input_tokens"`
+					CacheCreation *struct {
 						FiveMinute *int `json:"ephemeral_5m_input_tokens"`
 						OneHour    *int `json:"ephemeral_1h_input_tokens"`
 					} `json:"cache_creation"`
@@ -460,7 +461,11 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 				if err := json.Unmarshal([]byte(m.TokenUsage), &usage); err != nil {
 					return fail(err)
 				}
-				turn.Usage = llm.Usage{InputTokens: usage.Input, OutputTokens: usage.Output, TotalTokens: usage.Input + usage.Output, ReasoningTokens: usage.Reasoning, CacheReadTokens: usage.CacheRead, CacheWriteTokens: usage.CacheCreation.FiveMinute, CacheWrite1hTokens: usage.CacheCreation.OneHour}
+				turn.Usage = llm.Usage{InputTokens: usage.Input, OutputTokens: usage.Output, TotalTokens: usage.Input + usage.Output, ReasoningTokens: usage.Reasoning, CacheReadTokens: usage.CacheRead, CacheWriteTokens: usage.CacheWrite}
+				if usage.CacheCreation != nil {
+					turn.Usage.CacheWriteTokens = usage.CacheCreation.FiveMinute
+					turn.Usage.CacheWrite1hTokens = usage.CacheCreation.OneHour
+				}
 				for _, cached := range []*int{turn.Usage.CacheReadTokens, turn.Usage.CacheWriteTokens, turn.Usage.CacheWrite1hTokens} {
 					if cached != nil {
 						turn.Usage.TotalTokens += *cached
@@ -524,6 +529,13 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 				}
 				if turn.Error != nil || turn.Hook != nil {
 					content = prefix
+					if strings.TrimSpace(content) == "" {
+						if turn.Error != nil {
+							content = turn.Error.Message
+						} else {
+							content = turn.Hook.Announcement()
+						}
+					}
 				}
 			}
 		default:

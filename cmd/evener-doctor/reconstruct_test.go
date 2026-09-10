@@ -16,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"primeradiant.com/evener/agent"
+	agentdoctor "primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -580,6 +581,50 @@ func TestReconstructPreservesFailureMutationIdentityOnRestore(t *testing.T) {
 	}
 }
 
+func TestReconstructKeepsFailureAndHookMessagesReadable(t *testing.T) {
+	hook := schema.HookInfo{Event: "hook-event-sentinel", Matcher: "matcher-sentinel", ExitCode: 17}
+	for _, tc := range []struct {
+		kind    string
+		detail  any
+		message string
+	}{
+		{"TURN_FAILURE", schema.TurnFailureInfo{Message: "failure-readable-sentinel"}, "failure-readable-sentinel"},
+		{"HOOK_COMPLETED", hook, hook.Announcement()},
+	} {
+		for _, prefix := range []string{"", "prefix-sentinel"} {
+			t.Run(tc.kind+"/"+prefix, func(t *testing.T) {
+				dbPath, meta, output := reconstructionFixture(t)
+				db, err := sql.Open("sqlite", dbPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				detail, err := json.Marshal(tc.detail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				content, want := string(detail), tc.message
+				if prefix != "" {
+					content, want = prefix+"\n"+content, prefix
+				}
+				if _, err := db.Exec(`UPDATE messages SET source_subtype=?,content=? WHERE id=3`, tc.kind, content); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := reconstructSession(context.Background(), "02wLIRxqmq3AUo6vl2OW37", dbPath, meta, "", output); err != nil {
+					t.Fatal(err)
+				}
+				view, err := agentdoctor.Transcript(output, "02wLIRxqmq3AUo6vl2OW37", agentdoctor.TranscriptOpts{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if view.Turns[1].Text != want {
+					t.Fatalf("rendered diagnostic text = %q, want %q", view.Turns[1].Text, want)
+				}
+			})
+		}
+	}
+}
+
 func TestReconstructPreservesMetadataProfileAndModel(t *testing.T) {
 	for _, meta := range []schema.SessionMeta{
 		{ProfileID: "profile-sentinel", Model: "configured-model"},
@@ -856,7 +901,7 @@ func TestReconstructRejectsInvalidMutationJournalBeforeStaging(t *testing.T) {
 func TestReconstructRetainsArchivedCacheUsage(t *testing.T) {
 	source := reconstructionSource{Messages: []archivedMessage{
 		{ID: 1, Ordinal: 0, SourceType: "header", Kind: "system_prompt", Content: "sentinel"},
-		{ID: 2, Ordinal: 1, SourceType: "entry", Kind: "ASSISTANT", Timestamp: "2026-09-09T01:00:00Z", Content: "sentinel", TokenUsage: `{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":30}}`},
+		{ID: 2, Ordinal: 1, SourceType: "entry", Kind: "ASSISTANT", Timestamp: "2026-09-09T01:00:00Z", Content: "sentinel", TokenUsage: `{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":10,"cache_creation_input_tokens":99,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":30}}`},
 	}}
 	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
 	if err != nil {
@@ -865,5 +910,47 @@ func TestReconstructRetainsArchivedCacheUsage(t *testing.T) {
 	u := entries[0].Turn.Usage
 	if u.TotalTokens != 81 || u.CacheWriteTokens == nil || *u.CacheWriteTokens != 20 || u.CacheWrite1hTokens == nil || *u.CacheWrite1hTokens != 30 {
 		t.Fatalf("cache usage lost: %+v", u)
+	}
+}
+
+func TestReconstructRetainsAggregateCacheUsageWithoutBreakdown(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		aggregate    int
+		hasBreakdown bool
+		breakdown    any
+		wantWrite    bool
+	}{
+		{"aggregate only", 20, false, nil, true},
+		{"explicit zero", 0, false, nil, true},
+		{"null breakdown", 20, true, nil, true},
+		{"empty breakdown", 20, true, map[string]any{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := reconstructionSourceFixture(t)
+			usage := map[string]any{"input_tokens": 17, "output_tokens": 4, "cache_creation_input_tokens": tc.aggregate}
+			if tc.hasBreakdown {
+				usage["cache_creation"] = tc.breakdown
+			}
+			data, err := json.Marshal(usage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source.Messages[3].TokenUsage = string(data)
+			_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, total := entries[2].Turn.Usage, 21
+			if tc.wantWrite {
+				total += tc.aggregate
+			}
+			if got.TotalTokens != total || (got.CacheWriteTokens != nil) != tc.wantWrite || got.CacheWrite1hTokens != nil {
+				t.Fatalf("cache accounting = %+v, want write presence %t and total %d", got, tc.wantWrite, total)
+			}
+			if tc.wantWrite && *got.CacheWriteTokens != tc.aggregate {
+				t.Fatalf("cache writes = %d, want %d", *got.CacheWriteTokens, tc.aggregate)
+			}
+		})
 	}
 }
