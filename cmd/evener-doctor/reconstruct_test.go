@@ -3,6 +3,7 @@ package doctor
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -92,6 +93,9 @@ func TestReconstructStagesNativeHistoryWithoutChangingSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if e.Seq != len(entries) {
+			t.Fatalf("entry sequence = %d, want %d", e.Seq, len(entries))
+		}
 		entries = append(entries, e)
 	}
 	if err := scanner.Err(); err != nil {
@@ -158,6 +162,18 @@ func TestReconstructRejectsIncompleteArchiveWithoutPublishing(t *testing.T) {
 		`UPDATE sessions SET message_count=6`,
 		`UPDATE sessions SET parent_session_id='parent'`,
 		`UPDATE tool_calls SET input_json='{'`,
+		`UPDATE tool_calls SET input_json='null'`,
+		`UPDATE tool_calls SET input_json='[]'`,
+		`UPDATE tool_calls SET input_json='42'`,
+		`UPDATE tool_calls SET input_json='"value"'`,
+		`INSERT INTO tool_calls SELECT * FROM tool_calls`,
+		`INSERT INTO messages SELECT 6,session_id,5,content,timestamp,source_type,source_subtype,prompt_source,source_uuid,model,provider_id,token_usage FROM messages WHERE id=5; UPDATE sessions SET message_count=6`,
+		`INSERT INTO messages SELECT 6,session_id,5,content,'2026-09-09T01:04:00+00:00',source_type,source_subtype,prompt_source,source_uuid,model,provider_id,token_usage FROM messages WHERE id=5; UPDATE sessions SET message_count=6`,
+		`UPDATE messages SET source_subtype='USER_INPUT' WHERE id=4`,
+		`UPDATE messages SET source_subtype='TOOL_RESULTS' WHERE id=3`,
+		`UPDATE messages SET id=1 WHERE id=2`,
+		`UPDATE tool_calls SET call_index=-1`,
+		`UPDATE messages SET timestamp='2026-09-09T01:02:00Z' WHERE id=3; UPDATE messages SET source_subtype='TOOL_RESULTS' WHERE id=3; UPDATE messages SET source_subtype='SUMMARY' WHERE id=5; UPDATE tool_result_events SET timestamp='2026-09-09T01:02:00Z'`,
 		`UPDATE tool_result_events SET timestamp='2026-09-09T02:00:00Z'`,
 	} {
 		t.Run(damage, func(t *testing.T) {
@@ -178,6 +194,87 @@ func TestReconstructRejectsIncompleteArchiveWithoutPublishing(t *testing.T) {
 				t.Fatalf("published incomplete output: %v", err)
 			}
 		})
+	}
+}
+
+func reconstructionSourceFixture(t *testing.T) reconstructionSource {
+	t.Helper()
+	dbPath, _, _ := reconstructionFixture(t)
+	source, err := readReconstructionSource(context.Background(), dbPath, "02wLIRxqmq3AUo6vl2OW37")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
+}
+
+func TestReconstructMatchesToolResultInstantsAndPreservesRounds(t *testing.T) {
+	source := reconstructionSourceFixture(t)
+	source.Results[0].Timestamp = "2026-09-08T18:04:00.000-07:00"
+	source.Messages = append(source.Messages,
+		archivedMessage{ID: 6, Ordinal: 5, SourceType: "entry", Kind: "ASSISTANT", Timestamp: "2026-09-09T01:05:00Z"},
+		archivedMessage{ID: 7, Ordinal: 6, SourceType: "entry", Kind: "TOOL_RESULTS", Timestamp: "2026-09-09T01:06:00Z"},
+	)
+	source.Calls = append(source.Calls, archivedCall{MessageID: 6, ID: "call_2", Name: "read_file", Arguments: `{}`})
+	source.Results = append(source.Results, archivedResult{CallOrdinal: 5, ID: "call_2", Source: "tool_result", Content: "second sentinel", Timestamp: "2026-09-09T01:06:00.000+00:00"})
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := agent.ResumeHistory(entries)
+	if len(history) != 6 {
+		t.Fatalf("got %d resumed turns, want summary, two tool rounds and notice", len(history))
+	}
+	for i, want := range []struct{ id, content string }{{"call_1", "result sentinel"}, {"call_2", "second sentinel"}} {
+		call := history[1+2*i].Message.Content[0].ToolCall
+		parts := history[2+2*i].Message.Content
+		if call == nil || call.ID != want.id || len(parts) != 1 || parts[0].ToolResult == nil {
+			t.Fatalf("invalid tool round %d", i)
+		}
+		result := parts[0].ToolResult
+		if result.ToolCallID != want.id || result.Content != want.content || result.IsError {
+			t.Fatalf("misplaced or synthesized tool result: %+v", result)
+		}
+	}
+}
+
+func TestReconstructNormalizesMissingArgumentsToObject(t *testing.T) {
+	source := reconstructionSourceFixture(t)
+	source.Calls[0].Arguments = ""
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args map[string]json.RawMessage
+	if err := json.Unmarshal(entries[2].Turn.Message.Content[0].ToolCall.Arguments, &args); err != nil || args == nil || len(args) != 0 {
+		t.Fatalf("missing arguments did not become an empty object: %v, %v", args, err)
+	}
+}
+
+func TestReconstructPreservesMetadataProfileAndModel(t *testing.T) {
+	for _, meta := range []schema.SessionMeta{
+		{ProfileID: "profile-sentinel", Model: "configured-model"},
+		{ProfileID: "profile-sentinel"},
+		{Model: "configured-model"},
+		{},
+	} {
+		source := reconstructionSourceFixture(t)
+		h, entries, err := reconstructEntries(source, meta, nil, &reconstructionReport{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantProfile, wantModel := meta.ProfileID, meta.Model
+		if wantProfile == "" {
+			wantProfile = "provider"
+		}
+		if wantModel == "" {
+			wantModel = "model"
+		}
+		if h.ProfileID != wantProfile || h.Model != wantModel {
+			t.Fatalf("header identity: %s/%s, want %s/%s", h.ProfileID, h.Model, wantProfile, wantModel)
+		}
+		if entries[2].Turn.ResponseProvider != "provider" || entries[2].Turn.ResponseModel != "model" {
+			t.Fatal("lost per-turn response identity")
+		}
 	}
 }
 
@@ -302,8 +399,8 @@ func TestReconstructIncludesDrainedSteeringMutationIdentity(t *testing.T) {
 
 func TestReconstructRetainsArchivedCacheUsage(t *testing.T) {
 	source := reconstructionSource{Messages: []archivedMessage{
-		{Ordinal: 0, SourceType: "header", Kind: "system_prompt", Content: "sentinel"},
-		{Ordinal: 1, SourceType: "entry", Kind: "ASSISTANT", Timestamp: "2026-09-09T01:00:00Z", Content: "sentinel", TokenUsage: `{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":30}}`},
+		{ID: 1, Ordinal: 0, SourceType: "header", Kind: "system_prompt", Content: "sentinel"},
+		{ID: 2, Ordinal: 1, SourceType: "entry", Kind: "ASSISTANT", Timestamp: "2026-09-09T01:00:00Z", Content: "sentinel", TokenUsage: `{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":30}}`},
 	}}
 	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
 	if err != nil {

@@ -311,19 +311,50 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 	fail := func(err error) (transcript.Header, []transcript.Entry, error) { return h, nil, err }
 	calls := map[int][]archivedCall{}
 	callLocations := map[[2]int]archivedCall{}
-	messageOrdinals := map[int]int{}
-	for _, m := range source.Messages {
-		messageOrdinals[m.ID] = m.Ordinal
+	messages := map[int]archivedMessage{}
+	toolOrdinals := map[time.Time]int{}
+	for i, m := range source.Messages {
+		if m.Ordinal != i {
+			return fail(errors.New("archive ordinals contain gaps or duplicates"))
+		}
+		if _, exists := messages[m.ID]; exists {
+			return fail(fmt.Errorf("duplicate archived message ID %d", m.ID))
+		}
+		messages[m.ID] = m
+		if m.SourceType == "entry" && (m.Kind == string(schema.TurnTool) || m.Kind == string(schema.TurnToolResults)) {
+			stamp, err := time.Parse(time.RFC3339Nano, m.Timestamp)
+			if err != nil {
+				return fail(err)
+			}
+			// The archive identifies result messages only by timestamp. Equal
+			// instants cannot be assigned to distinct messages without guessing.
+			stamp = stamp.UTC()
+			if _, exists := toolOrdinals[stamp]; exists {
+				return fail(fmt.Errorf("ambiguous archived tool-result timestamp %s", m.Timestamp))
+			}
+			toolOrdinals[stamp] = m.Ordinal
+		}
 	}
 	for _, c := range source.Calls {
-		ordinal, ok := messageOrdinals[c.MessageID]
-		if !ok || c.ID == "" || c.Name == "" || (c.Arguments != "" && !json.Valid([]byte(c.Arguments))) {
+		m, ok := messages[c.MessageID]
+		if !ok || m.SourceType != "entry" || m.Kind != string(schema.TurnAssistant) || c.Index < 0 || c.ID == "" || c.Name == "" {
 			return fail(errors.New("invalid or unlinked archived tool call"))
 		}
+		key := [2]int{m.Ordinal, c.Index}
+		if _, exists := callLocations[key]; exists {
+			return fail(fmt.Errorf("duplicate archived tool call at ordinal %d index %d", m.Ordinal, c.Index))
+		}
+		if c.Arguments == "" {
+			c.Arguments = "{}"
+		}
+		var arguments map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(c.Arguments), &arguments); err != nil || arguments == nil {
+			return fail(fmt.Errorf("archived tool call %s arguments must be a JSON object", c.ID))
+		}
 		calls[c.MessageID] = append(calls[c.MessageID], c)
-		callLocations[[2]int{ordinal, c.Index}] = c
+		callLocations[key] = c
 	}
-	results := map[string][]archivedResult{}
+	results := map[int][]archivedResult{}
 	resultCalls := map[[2]int]bool{}
 	for _, r := range source.Results {
 		key := [2]int{r.CallOrdinal, r.CallIndex}
@@ -331,17 +362,22 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		if !ok || c.ID != r.ID || r.Source != "tool_result" {
 			return fail(errors.New("invalid or unlinked archived tool result"))
 		}
-		results[r.Timestamp] = append(results[r.Timestamp], r)
+		stamp, err := time.Parse(time.RFC3339Nano, r.Timestamp)
+		if err != nil {
+			return fail(err)
+		}
+		ordinal, ok := toolOrdinals[stamp.UTC()]
+		if !ok || ordinal <= r.CallOrdinal {
+			return fail(errors.New("archive has tool result events without a matching message after their call"))
+		}
+		results[ordinal] = append(results[ordinal], r)
 		resultCalls[key] = true
 	}
 	if len(resultCalls) != len(callLocations) {
 		return fail(errors.New("archive has tool calls without recoverable result events"))
 	}
 	firstAssistant := true
-	for i, m := range source.Messages {
-		if m.Ordinal != i {
-			return fail(errors.New("archive ordinals contain gaps or duplicates"))
-		}
+	for _, m := range source.Messages {
 		if m.SourceType == "header" {
 			switch m.Kind {
 			case "system_prompt":
@@ -379,10 +415,10 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			turn.Message.Role = llm.RoleAssistant
 			turn.ResponseModel, turn.ResponseProvider = m.Model, m.Provider
 			if firstAssistant {
-				if m.Model != "" {
+				if h.Model == "" {
 					h.Model = m.Model
 				}
-				if m.Provider != "" {
+				if h.ProfileID == "" {
 					h.ProfileID = m.Provider
 				}
 				firstAssistant = false
@@ -416,7 +452,10 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			}
 		case schema.TurnTool, schema.TurnToolResults:
 			turn.Message.Role = llm.RoleTool
-			for _, r := range results[m.Timestamp] {
+			if len(results[m.Ordinal]) == 0 {
+				return fail(fmt.Errorf("archived tool-result message at ordinal %d has no recoverable results", m.Ordinal))
+			}
+			for _, r := range results[m.Ordinal] {
 				c := callLocations[[2]int{r.CallOrdinal, r.CallIndex}]
 				text := r.Content
 				if text == "" && r.ContentLength > 0 {
@@ -427,7 +466,6 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 				text = strings.TrimPrefix(text, "[tool error] ")
 				turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: r.ID, Name: c.Name, Content: text, IsError: isError}})
 			}
-			delete(results, m.Timestamp)
 		case schema.TurnAttentionResolution:
 			// The archive omits originating steering AttentionIDs. Replaying only
 			// the resolution half would claim a delivery that cannot be verified.
@@ -466,15 +504,12 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		for _, c := range calls[m.ID] {
 			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: c.ID, Name: c.Name, Arguments: json.RawMessage(c.Arguments)}})
 		}
-		entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries) + 1, Turn: turn})
-	}
-	if len(results) > 0 {
-		return fail(errors.New("archive has tool result events without matching transcript timestamps"))
+		entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: turn})
 	}
 	if len(entries) == 0 || h.SystemPrompt == "" {
 		return fail(errors.New("archive lacks conversation entries or initial system prompt"))
 	}
 	note := fmt.Sprintf("[SESSION RECONSTRUCTION]\nThis session was reconstructed from the AgentsView archive through %s. Later conversation may be missing; metadata was last updated %s. %d tool-result bodies were not retained and carry explicit unavailable notices. The original live processes were interrupted; archived claims about running processes, jobs, delegates, or test status are historical evidence only. Recheck the working tree and current state before continuing. Media and provider replay signatures were not retained. Full recovery provenance is in the staged report.json.", source.EndedAt, meta.UpdatedAt.Format(time.RFC3339Nano), report.MissingToolOutputs)
-	entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries) + 1, Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User(note), Timestamp: time.Now().UTC()}})
+	entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User(note), Timestamp: time.Now().UTC()}})
 	return h, entries, nil
 }
