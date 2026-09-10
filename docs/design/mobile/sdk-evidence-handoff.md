@@ -1,6 +1,6 @@
 # SDK evidence handoff
 
-The 2026-09-09 SDK evidence receipts were recovered from the preserved mobile concepts worktree and sanitized for publication in the current main based branch.
+The 2026-09-09 SDK evidence receipts were recovered from untracked evidence files in the default checkout; the preserved mobile concepts worktree supplied a read-only copy for recovery and sanitized for publication in the current main based branch.
 
 Included:
 
@@ -11,3 +11,5 @@ Included:
 - `sdk-upgrade-current-report.md`: concise historical qualification report.
 
 These are historical source evidence, not current SDK qualification. Private paths, session and process identifiers, auth-token locations, and runtime credentials were removed; hashes and behavioral outcomes were retained. The receipts remain bound to the source commits and artifact identities recorded inside each file.
+
+The rejected shutdown receipt now has its sanitized `supersededBy` final receipt included alongside it. The original source file hashes were not present in the default checkout at recovery time, so the receipts retain their embedded source and artifact hashes rather than inventing an original-file hash.

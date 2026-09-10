@@ -1,0 +1,86 @@
+{
+  "schema": "evener.sdk.shutdown-promote.outcome.v2",
+  "verifiedAt": "2026-09-09",
+  "status": "accepted-bounded-shutdown-and-promotion",
+  "backendCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+  "evenerSHA256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+  "evenerDevSHA256": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a",
+  "sdkTarballSHA256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+  "executedInputs": {
+    "driver": {
+      "path": "<private-temp-artifact>",
+      "sha256": "f2191bb61ba2881c26e1d8939d1f2b34e6c301aabb9ffb28235e5648587493be"
+    },
+    "fixture": {
+      "path": "<private-worktree>",
+      "sha256": "3892a75de187a15ab60da1c55a67eec36567f96544a3c38c2b9e963f46b3c6ee"
+    },
+    "provider": {
+      "path": "<private-worktree>",
+      "sha256": "5925012c62328dce94c680eec278b1f9c540de8736455b9b3e613b8a4716e99a"
+    }
+  },
+  "binding": {
+    "ref": "local:<session>"
+  },
+  "promote": {
+    "selectedEntryId": "queue_2",
+    "survivorEntryId": "queue_1",
+    "queueBefore": [
+      "queue_1",
+      "queue_2"
+    ],
+    "queueAfter": [
+      "queue_1"
+    ],
+    "providerSelectedExactCount": 1,
+    "providerSurvivorExactCount": 1,
+    "transcriptSelectedExactCount": 1,
+    "transcriptSurvivorExactCount": 1,
+    "noActiveTurnAfterEffects": true,
+    "wrongExpectedEntryIdRejected": true,
+    "wrongExpectedInstanceIdRejected": true,
+    "rejectionCode": -32013,
+    "rejectionDisposition": "notAccepted",
+    "rawEvidence": {
+      "path": "<private-temp-artifact>",
+      "sha256": "ddb06b0bda0d521db36b59d4a5c7b655e4120c7caea6ed7688802585da119ef8"
+    }
+  },
+  "shutdown": {
+    "daemonAliveImmediatelyBeforeRequest": true,
+    "matchingClosedObserved": true,
+    "daemonTerminalExitObserved": true,
+    "hubResponsiveAfterDaemonExit": true,
+    "rawEvidence": {
+      "path": "<private-temp-artifact>",
+      "sha256": "a8422ffe26cd51e1dce322bf34887dc706e30f4e20527608540643b3449e21ec"
+    },
+    "shutdownEvidence": {
+      "path": "<private-temp-artifact>",
+      "sha256": "4bbdf3fe0c494386f9d0063f8ae8959e7b54996e16f82fc2779af16231f403c6"
+    }
+  },
+  "cleanup": {
+    "path": "<private-temp-artifact>",
+    "sha256": "26803e168ff2b794218630da4de072594b92ed022f22d3c4d37daf7bb4a0b92b",
+    "hubExit": 0,
+    "providerExit": -15,
+    "remainingOwnedProcesses": []
+  },
+  "supersedes": [
+    {
+      "status": "failed-superseded",
+      "reason": "wrong-entry-id rejection ran after drain and reported queue index 0 out of range at depth 0; completion used setup-inclusive completed-turn count"
+    },
+    {
+      "status": "failed-superseded",
+      "reason": "historical receipt did not establish the required current contract evidence"
+    }
+  ],
+  "limitations": [
+    "Only the recorded queue promotion, exact wrong-entry/wrong-instance rejections, and live-before/closed/absent-after daemon shutdown path are accepted.",
+    "Capability/permission, concurrent queue mutation, replaced-instance races, disconnect/lost acknowledgement, replay, restart and other lifecycle families remain unqualified.",
+    "No native UI, physical-device or live-model qualification."
+  ]
+}
