@@ -322,9 +322,9 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 		strings.Join(outstanding, "; "))})
 }
 
-func (s *Session) close(ctx context.Context, cleanupEnv bool, forceTerminalArgs ...bool) {
+func (s *Session) close(ctx context.Context, cleanupEnv bool, forceTerminal bool) {
 	s.closeOnce.Do(func() {
-		emitTerminal := len(forceTerminalArgs) != 0 && forceTerminalArgs[0]
+		emitTerminal := forceTerminal
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
 		// close(budgetCtx, false) reuse it rather than minting their own.
