@@ -12,6 +12,27 @@ import (
 	"time"
 )
 
+// The invariant lockStore establishes needs the marketplaces file, so every
+// acquisition reads it — the mutations that go on to touch only the registry
+// included. One that cannot be parsed fails them, and the error names the
+// file, so the user is told which one to fix.
+func TestLockStore_ACorruptMarketplacesFileFailsARegistryOnlyMutation(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "acme", "widget")
+	if err := os.WriteFile(m.marketplacesFile(), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := m.SetEnabled(context.Background(), "widget", "acme", false)
+	if err == nil {
+		t.Fatal("SetEnabled succeeded on a store whose marketplaces file cannot be parsed")
+	}
+	if !strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("error = %v, want it to name %s", err, marketplacesFileName)
+	}
+}
+
 func TestAcquireLock_ExclusiveWithTimeout(t *testing.T) {
 	lp := filepath.Join(t.TempDir(), "l.lock")
 
@@ -117,9 +138,9 @@ func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 			_, err := m.Browse(ctx, "marketplace")
 			return err
 		}},
-		// The two sweeps enumerate the registry before they lock anything, so
-		// an empty registry — which is what an ambient working directory
-		// hands back — means they never reach the lock at all.
+		// The two sweeps take the store lock before they enumerate the
+		// registry, so the root check lands on them the way it lands on every
+		// other writer here.
 		{"UpdateAll", func(ctx context.Context, m *Manager) error {
 			_, err := m.UpdateAll(ctx)
 			return err

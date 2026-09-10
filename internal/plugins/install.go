@@ -359,7 +359,18 @@ func splitKey(key string) (plugin, marketplace string) {
 	return key, ""
 }
 
-func (m *Manager) List() ([]ListItem, error) {
+// List returns every installed plugin. It reads the registry without the
+// store lock, and splitKey parses each key at its last '@', so it runs behind
+// the migration barrier (loadMigratedMarketplaces) like the marketplace
+// listing does: in a store that still records "foo@bar", the key
+// widget@foo@bar reads as plugin "widget@foo" from marketplace "bar" until
+// the migration has renamed that marketplace. The marketplaces themselves are
+// none of this listing's business, so the barrier's lock is released again
+// before the registry is read.
+func (m *Manager) List(ctx context.Context) ([]ListItem, error) {
+	if _, err := m.loadMigratedMarketplaces(ctx, installAcquireLock); err != nil {
+		return nil, err
+	}
 	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
@@ -400,6 +411,9 @@ func (m *Manager) List() ([]ListItem, error) {
 // sources are inherently current and skipped). Failures are collected but do
 // not stop the others.
 func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
+	if err := m.migrateStore(ctx); err != nil {
+		return nil, err
+	}
 	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err

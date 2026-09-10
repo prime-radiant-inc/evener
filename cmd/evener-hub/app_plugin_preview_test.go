@@ -270,7 +270,7 @@ func TestPluginPreviewControllerMapsFullResolution(t *testing.T) {
 			t.Fatalf("Install %s: %v", name, err)
 		}
 	}
-	installed, err := ctl.ListPlugins()
+	installed, err := ctl.ListPlugins(context.Background())
 	if err != nil || len(installed.Plugins) != 2 {
 		t.Fatalf("ListPlugins = %+v, err=%v", installed.Plugins, err)
 	}

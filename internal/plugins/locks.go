@@ -62,8 +62,13 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 // entry's directories from its name and split a registry key at its last
 // '@' without asking which evener wrote the name. A migration that fails
 // releases the lock and fails the acquisition, so no operation runs on a
-// half-migrated store. The bundled lock and Doctor's read-only wait on this
-// lock are the two acquisitions that do not come through here.
+// half-migrated store. Establishing the invariant means reading the
+// marketplaces file on every acquisition, so a file that cannot be parsed
+// fails even the mutations that never read it themselves — the flag setters,
+// a plugin removal, the gc sweep — and the error names the file the user has
+// to fix, which evener-doctor reports too. The bundled lock and Doctor's
+// read-only wait on this lock are the two acquisitions that do not come
+// through here.
 func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
 	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
@@ -74,6 +79,22 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 		return nil, err
 	}
 	return release, nil
+}
+
+// migrateStore takes the store lock for nothing but the migration lockStore
+// runs on the way in, and releases it again. The sweeps (UpdateAll,
+// UpdateAutoUpgrade) call this before they enumerate the registry, because
+// the keys they enumerate have to postdate the migration: otherwise the first
+// per-plugin upgrade's own lock performs it and the rest of the sweep asks
+// for keys the rename has just replaced. The lock is released rather than
+// held across those upgrades, each of which takes it itself.
+func (m *Manager) migrateStore(ctx context.Context) error {
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
 }
 
 // acquireBundledLock takes the bundled cache's lock for one mutation of

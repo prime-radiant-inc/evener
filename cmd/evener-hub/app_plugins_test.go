@@ -104,7 +104,7 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 		t.Error("LastUpdated not set after Add")
 	}
 
-	listResp, err := ctl.ListMarketplaces()
+	listResp, err := ctl.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestPlugins_Marketplace_BrowseRefusalsAreWireErrors(t *testing.T) {
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("Browse = %v, want an InvalidParams wire error", err)
 		}
-		list, err := ctl.ListMarketplaces()
+		list, err := ctl.ListMarketplaces(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -273,7 +273,7 @@ func TestPlugins_ConcurrentAddMarketplace_NoLostUpdate(t *testing.T) {
 		}
 	}
 
-	resp, err := ctl.ListMarketplaces()
+	resp, err := ctl.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestPlugins_ConcurrentAddMarketplace_NoLostUpdate(t *testing.T) {
 
 func TestPlugins_ListPlugins_Empty(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	resp, err := ctl.ListPlugins()
+	resp, err := ctl.ListPlugins(context.Background())
 	if err != nil {
 		t.Fatalf("ListPlugins: %v", err)
 	}

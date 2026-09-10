@@ -17,12 +17,12 @@ import (
 
 type pluginManager interface {
 	SeedDefaultMarketplaces(context.Context) (bool, error)
-	ListMarketplaces() (plugins.Marketplaces, error)
+	ListMarketplaces(context.Context) (plugins.Marketplaces, error)
 	AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
 	RemoveMarketplace(context.Context, string) error
 	RefreshMarketplace(context.Context, string) error
 	Browse(context.Context, string) (plugins.Catalog, error)
-	List() ([]plugins.ListItem, error)
+	List(context.Context) ([]plugins.ListItem, error)
 	Install(context.Context, string, string) (plugins.InstallEntry, error)
 	Remove(context.Context, string, string) error
 	SetEnabled(context.Context, string, string, bool) error
@@ -100,7 +100,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		mk, err := m.ListMarketplaces()
+		mk, err := m.ListMarketplaces(context.Background())
 		if err != nil {
 			return err
 		}
@@ -390,7 +390,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			}
 			return err
 		}
-		items, err := m.List()
+		items, err := m.List(ctx)
 		if err != nil {
 			return err
 		}

@@ -169,7 +169,7 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	c := newHubPluginsController(filepath.Join(root, "plugins"))
 	src := fuzzMarketplace(t, root)
 	_ = marketplaceSourceToWire(marketplaceSourceFromWire(appwire.MarketplaceSourceInput{Kind: "directory", Path: src}))
-	_, _ = c.ListMarketplaces()
+	_, _ = c.ListMarketplaces(context.Background())
 	_, _ = c.AddMarketplace(ctx, appwire.MarketplaceAddParams{Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: src}})
 	_, _ = c.AddMarketplace(ctx, appwire.MarketplaceAddParams{Name: "bad", Source: appwire.MarketplaceSourceInput{Kind: "bad"}})
 	_, _ = c.Browse(ctx, appwire.MarketplaceBrowseParams{Name: "acme"})
@@ -177,7 +177,7 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = c.RefreshMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
 	_, _ = c.RefreshMarketplace(ctx, appwire.MarketplaceNameParams{Name: "missing"})
 	ref := appwire.PluginRefParams{Plugin: "widget", Marketplace: "acme"}
-	_, _ = c.ListPlugins()
+	_, _ = c.ListPlugins(context.Background())
 	_, _ = c.Install(ctx, ref)
 	_, _ = c.Install(ctx, appwire.PluginRefParams{Plugin: "missing", Marketplace: "acme"})
 	_, _ = c.Disable(context.Background(), ref)
@@ -191,9 +191,9 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 
 	corrupt := newHubPluginsController(filepath.Join(root, "corrupt"))
 	fuzzWriteFile(t, filepath.Join(root, "corrupt", "known_marketplaces.json"), "{")
-	_, _ = corrupt.ListMarketplaces()
+	_, _ = corrupt.ListMarketplaces(context.Background())
 	fuzzWriteFile(t, filepath.Join(root, "corrupt", "installed_plugins.json"), "{")
-	_, _ = corrupt.ListPlugins()
+	_, _ = corrupt.ListPlugins(context.Background())
 	badref := appwire.PluginRefParams{Plugin: "x", Marketplace: "y"}
 	_, _ = corrupt.Upgrade(ctx, badref)
 	_, _ = corrupt.Enable(context.Background(), badref)
@@ -229,14 +229,14 @@ func fuzzExerciseUpgrade() {
 
 func FuzzPluginsFSPass3(f *testing.F) {
 	oldList, oldRefresh, oldUpdate := pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade
-	pluginListMarketplaces = func(mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
+	pluginListMarketplaces = func(ctx context.Context, mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
 		switch filepath.Base(mgr.Root) {
 		case "forced-list":
 			return nil, errors.New("list")
 		case "forced-refresh":
 			return plugins.Marketplaces{"b": {}, "a": {}}, nil
 		default:
-			return oldList(mgr)
+			return oldList(ctx, mgr)
 		}
 	}
 	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {

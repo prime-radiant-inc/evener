@@ -21,7 +21,9 @@ var (
 	marketplaceGitSparseClone  = gitSparseClone
 	marketplaceGitPull         = gitPull
 	marketplaceRemoveAll       = os.RemoveAll
+	marketplaceRemove          = os.Remove
 	marketplaceRename          = os.Rename
+	marketplaceMkdirAll        = os.MkdirAll
 	marketplaceAcquireLock     = acquireLock
 	marketplaceStat            = os.Stat
 	marketplaceLstat           = os.Lstat
@@ -235,22 +237,11 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	return ref, nil
 }
 
-// ListMarketplaces reads the marketplaces file without the store lock, so a
-// listing never queues behind a fetch. A name the store refuses means no lock
-// holder has migrated this store yet (lockStore), so the listing takes the
-// lock — which migrates — and reads what that left; a second lister that
-// arrives meanwhile finds nothing left to do once it holds the lock.
-func (m *Manager) ListMarketplaces() (Marketplaces, error) {
-	mk, err := m.loadMarketplaces()
-	if err != nil || len(refusedMarketplaceNames(mk)) == 0 {
-		return mk, err
-	}
-	release, err := m.lockStore(context.Background(), marketplaceAcquireLock, 30*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	return m.loadMarketplaces()
+// ListMarketplaces returns every registered marketplace, read from behind the
+// migration barrier (loadMigratedMarketplaces) so that the names it hands back
+// are the ones the store accepts today.
+func (m *Manager) ListMarketplaces(ctx context.Context) (Marketplaces, error) {
+	return m.loadMigratedMarketplaces(ctx, marketplaceAcquireLock)
 }
 
 func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
@@ -509,11 +500,16 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 			}
 			undo = append(undo, func() error { return restoreRename("marketplace clone", newDir, oldDir) })
 		}
-		// The location moves only if there was one; an entry the store has
-		// not fetched stays unfetched, and the next fetch clears and
-		// refetches under the new name as it would have under the old.
+		// A recorded location says where the clone is, so it follows the
+		// clone that moved; with none to move the entry is unfetched, and the
+		// next fetch clears and clones under the new name as it would have
+		// under the old. An entry that recorded no location keeps none,
+		// whatever a failed fetch left at the canonical path.
 		if ref.InstallLocation != "" {
-			ref.InstallLocation = newDir
+			ref.InstallLocation = ""
+			if haveClone {
+				ref.InstallLocation = newDir
+			}
 		}
 	}
 	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)
@@ -530,6 +526,14 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 	return ref, rekeyRegistry(reg, name, newName, oldCache, newCache), undo, nil
 }
 
+// errStoreBetweenNames marks the one rename failure that leaves the store
+// between the old name and the new one rather than back at either: the
+// marketplaces file records the old name while the registry keys the
+// marketplace's plugins under the new one. Only saveRename can tell that
+// half-state from the two it rolls back to, so a caller whose rename wrote a
+// marker keeps it for that state (migrateMarketplaceName).
+var errStoreBetweenNames = errors.New("the store is left between the two names")
+
 // saveRename records a rename in both store files, the registry first: a
 // marketplaces file naming a marketplace whose plugins are still keyed under
 // the old name is the worse of the two half-states, and evener-doctor reports
@@ -538,7 +542,8 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 // written back, because the re-keyed entries name install paths under a cache
 // directory the caller is about to rename back. That restore is itself a
 // write that can fail, and only then is the store left inconsistent, so the
-// error says so.
+// error says so and carries errStoreBetweenNames, which is how a rename that
+// wrote a marker knows the marker is still needed.
 func (m *Manager) saveRename(mk Marketplaces, name, newName string, ref MarketplaceRef, reg, registryAsFound Registry) error {
 	if err := m.saveRegistry(reg); err != nil {
 		return err
@@ -547,7 +552,7 @@ func (m *Manager) saveRename(mk Marketplaces, name, newName string, ref Marketpl
 	mk[newName] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if restoreErr := m.saveRegistry(registryAsFound); restoreErr != nil {
-			return fmt.Errorf("marketplace %q: saving %s failed (%w); restoring %s failed (%w), so it still keys this marketplace's plugins under %q", name, marketplacesFileName, err, registryFileName, restoreErr, newName)
+			return fmt.Errorf("marketplace %q: saving %s failed (%w); restoring %s failed (%w), so %w: it still keys this marketplace's plugins under %q", name, marketplacesFileName, err, registryFileName, restoreErr, errStoreBetweenNames, newName)
 		}
 		return fmt.Errorf("marketplace %q not renamed: saving %s failed, so the store is back as it was: %w", name, marketplacesFileName, err)
 	}
@@ -628,8 +633,7 @@ func rekeyRegistry(reg Registry, oldName, newName, oldCache, newCache string) Re
 		moved := make([]InstallEntry, 0, len(entries))
 		for _, e := range entries {
 			if oldCache != "" {
-				rel, err := filepath.Rel(oldCache, e.InstallPath)
-				if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				if rel, under := pathUnder(oldCache, e.InstallPath); under {
 					e.InstallPath = filepath.Join(newCache, rel)
 				}
 			}
@@ -713,6 +717,18 @@ func resolveForContainment(path string) (string, error) {
 		return resolved, nil
 	}
 	return abs, nil
+}
+
+// pathUnder is where under dir a path sits, and whether it is under dir at
+// all. Both are taken as the store recorded them — an install path against
+// the cache directory it was joined from — so neither is resolved here, and a
+// path that is dir itself is under it.
+func pathUnder(dir, path string) (rel string, under bool) {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }
 
 // pathWithinDir reports whether candidate is dir itself or sits beneath it.

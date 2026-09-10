@@ -43,7 +43,7 @@ func TestAddListRemoveMarketplace(t *testing.T) {
 		t.Fatal("empty InstallLocation")
 	}
 
-	list, err := m.ListMarketplaces()
+	list, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestAddListRemoveMarketplace(t *testing.T) {
 	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("RemoveMarketplace: %v", err)
 	}
-	list, _ = m.ListMarketplaces()
+	list, _ = m.ListMarketplaces(context.Background())
 	if _, ok := list["acme"]; ok {
 		t.Fatal("marketplace still present after remove")
 	}
@@ -173,7 +173,7 @@ func TestRefreshMarketplace_ClonesUnfetchedSeed(t *testing.T) {
 	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("refresh unfetched seed: %v", err)
 	}
-	mk, _ := m.ListMarketplaces()
+	mk, _ := m.ListMarketplaces(context.Background())
 	if mk["acme"].InstallLocation == "" {
 		t.Fatal("refresh did not clone the unfetched seed")
 	}
@@ -259,7 +259,7 @@ func TestRefreshMarketplace_FailedRecloneLeavesCloneUntouched(t *testing.T) {
 	if _, err := os.Stat(m.marketplaceDir(".staging")); !os.IsNotExist(err) {
 		t.Fatalf("failed reclone left .staging behind: %v", err)
 	}
-	mk, _ := m.ListMarketplaces()
+	mk, _ := m.ListMarketplaces(context.Background())
 	if !mk["acme"].LastUpdated.Equal(before) {
 		t.Fatalf("LastUpdated advanced on failed refresh: %v", mk["acme"].LastUpdated)
 	}
@@ -314,7 +314,7 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 
 	// LastUpdated is a fetch-freshness stamp and a rename fetches nothing; the
 	// fixed clock makes any bump unmistakable.
-	before, err := m.ListMarketplaces()
+	before, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 	if _, err := os.Stat(m.marketplaceDir(name)); !os.IsNotExist(err) {
 		t.Fatal("old clone directory survived the rename")
 	}
-	list, err := m.ListMarketplaces()
+	list, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 	if _, err := os.Stat(entries[0].InstallPath); err != nil {
 		t.Fatalf("the re-keyed install path does not exist: %v", err)
 	}
-	items, err := m.List()
+	items, err := m.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestEditMarketplace_RenameMovesACloneTheEntryDoesNotRecord(t *testing.T) {
 	if ref.InstallLocation != "" {
 		t.Fatalf("InstallLocation = %q, want an unfetched entry to stay unfetched", ref.InstallLocation)
 	}
-	list, err := m.ListMarketplaces()
+	list, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,6 +419,52 @@ func TestEditMarketplace_RenameMovesACloneTheEntryDoesNotRecord(t *testing.T) {
 	}
 	if recorded.InstallLocation != "" {
 		t.Fatalf("recorded InstallLocation = %q, want an unfetched entry to stay unfetched", recorded.InstallLocation)
+	}
+}
+
+// A recorded install location is where the marketplace's clone is, and a
+// rename moves the clone it names. With no clone to move — the user deleted
+// it — the entry comes away unfetched, so the next fetch clones under the new
+// name, rather than recording a path nothing is at.
+func TestEditMarketplace_RenameUnfetchesAnEntryWhoseCloneIsGone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	ctx := context.Background()
+	clone := plantCatalog(t, m.marketplaceDir("acme"))
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"},
+		InstallLocation: clone,
+		LastUpdated:     time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(clone); err != nil {
+		t.Fatal(err)
+	}
+
+	ref, err := m.EditMarketplace(ctx, "acme", "acme2", nil)
+	if err != nil {
+		t.Fatalf("EditMarketplace: %v", err)
+	}
+	if ref.InstallLocation != "" {
+		t.Fatalf("InstallLocation = %q, want the entry left unfetched", ref.InstallLocation)
+	}
+
+	origClone := marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitClone = origClone })
+	marketplaceGitClone = func(_ context.Context, _, dest, _, _ string) error {
+		plantCatalog(t, dest)
+		return nil
+	}
+	if err := m.RefreshMarketplace(ctx, "acme2"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	mustExist(t, filepath.Join(m.marketplaceDir("acme2"), ".claude-plugin", "marketplace.json"))
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := m.marketplaceDir("acme2"); mk["acme2"].InstallLocation != want {
+		t.Fatalf("InstallLocation after the refresh = %q, want the clone at %q", mk["acme2"].InstallLocation, want)
 	}
 }
 
@@ -545,7 +591,7 @@ func TestEditMarketplace_RenameAndResourceTogether(t *testing.T) {
 	if ref.InstallLocation != m.marketplaceDir("beta") || ref.Source.URL != repoB {
 		t.Fatalf("ref = %+v", ref)
 	}
-	list, _ := m.ListMarketplaces()
+	list, _ := m.ListMarketplaces(context.Background())
 	if _, ok := list["beta"]; !ok || len(list) != 1 {
 		t.Fatalf("list = %v", list)
 	}
@@ -629,7 +675,7 @@ func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if _, err := m.EditMarketplace(ctx, name, "beta", bad); err == nil {
 		t.Fatal("expected the fetch to fail")
 	}
-	list, _ := m.ListMarketplaces()
+	list, _ := m.ListMarketplaces(context.Background())
 	if _, ok := list[name]; !ok || len(list) != 1 {
 		t.Fatalf("list changed after a failed fetch: %v", list)
 	}
@@ -684,7 +730,7 @@ func TestEditMarketplace_RestoresDirectoriesWhenARenameStepFails(t *testing.T) {
 	if _, err := os.Stat(m.marketplaceDir("beta")); !os.IsNotExist(err) {
 		t.Fatal("a beta clone remained")
 	}
-	list, _ := m.ListMarketplaces()
+	list, _ := m.ListMarketplaces(context.Background())
 	if _, ok := list[name]; !ok || len(list) != 1 {
 		t.Fatalf("list changed after a failed rename: %v", list)
 	}
@@ -774,7 +820,7 @@ func TestEditMarketplace_RegistrySaveFailureRestoresTheOldClone(t *testing.T) {
 			t.Fatalf("clone directory %s outlived the failed save: %v", m.marketplaceDir(leftover), err)
 		}
 	}
-	list, _ := m.ListMarketplaces()
+	list, _ := m.ListMarketplaces(context.Background())
 	ref, ok := list["acme"]
 	if !ok || len(list) != 1 || ref.Source.URL != repoA {
 		t.Fatalf("the failed edit changed the store: %v", list)
@@ -967,7 +1013,7 @@ func TestEditMarketplace_RefusesALeftoverPluginCache(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(m.cacheDir(), name)); err != nil {
 		t.Fatalf("the plugin cache moved anyway: %v", err)
 	}
-	list, _ := m.ListMarketplaces()
+	list, _ := m.ListMarketplaces(context.Background())
 	if _, ok := list[name]; !ok || len(list) != 1 {
 		t.Fatalf("list changed after a refused rename: %v", list)
 	}
@@ -1063,7 +1109,7 @@ func TestEditMarketplace_RenameRefusesADanglingLinkUnderTheNewName(t *testing.T)
 	if want := fmt.Sprintf("plugin cache %s already exists", leftover); !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want it to contain %q", err, want)
 	}
-	list, _ := m.ListMarketplaces()
+	list, _ := m.ListMarketplaces(context.Background())
 	if _, ok := list["acme"]; !ok || len(list) != 1 {
 		t.Fatalf("list changed after a refused rename: %v", list)
 	}
@@ -1313,7 +1359,7 @@ func TestEditMarketplace_RefusesADirectorySourceInsideItsOwnClone(t *testing.T) 
 		if after := readMarketplacesFile(); after != before {
 			t.Fatalf("%s changed after a refused edit:\n%s", marketplacesFileName, after)
 		}
-		items, err := m.List()
+		items, err := m.List(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1367,7 +1413,7 @@ func TestAddMarketplace_RefusesADirectorySourceInsideTheStore(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(source, ".claude-plugin", "marketplace.json")); err != nil {
 				t.Fatalf("the refused source did not survive: %v", err)
 			}
-			mk, err := m.ListMarketplaces()
+			mk, err := m.ListMarketplaces(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}

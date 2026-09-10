@@ -1023,8 +1023,8 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 // RPC handlers, routed to the plugins controller. Mutations broadcast
 // evener/marketplace/updated or evener/plugin/updated.
 func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
-		return pluginsController.ListMarketplaces()
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+		return pluginsController.ListMarketplaces(ctx)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.AddMarketplace(ctx, params)
@@ -1059,8 +1059,8 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 		return pluginsController.Browse(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
-		return pluginsController.ListPlugins()
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.ListPlugins(ctx)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 		return pluginsController.Preview(ctx, params)

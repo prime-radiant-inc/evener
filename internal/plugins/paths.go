@@ -40,6 +40,7 @@ func DefaultRoot() string {
 const (
 	registryFileName     = "installed_plugins.json"
 	marketplacesFileName = "known_marketplaces.json"
+	renameMarkerFileName = "marketplace-rename.json"
 	bundledDirName       = "bundled"
 	cacheDirName         = "cache"
 	marketplacesDirName  = "marketplaces"
