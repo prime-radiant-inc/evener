@@ -51,7 +51,7 @@ export async function runInstalledDiscoveryContracts({
     {
       action: "validatePath",
       method: "evener/path/validate",
-      params: { path: fixtureCwd, kind: "directory" },
+      params: { path: fixtureCwd, kind: "dir" },
       response: { path: fixtureCwd, valid: true },
     },
     { action: "gitHead", method: "evener/git/head", params: { cwd: fixtureCwd }, response: { head: "fixture-branch" } },

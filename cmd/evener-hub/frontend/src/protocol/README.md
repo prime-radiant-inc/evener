@@ -11,7 +11,7 @@ the tarball does not contain source files or dependencies. It also runs the
 installed inspection and discovery examples against a scripted local WebSocket
 server, verifying the handshake, read-only requests, structured readback, and
 private output file. The qualification command is run with the repository's
-pinned Node 22.13.1 runtime.
+configured Node 22 runtime.
 
 Applications own credentials, caches, transcript storage, subscriptions, and
 mutation reconciliation. Connection loss during a mutation leaves its outcome
