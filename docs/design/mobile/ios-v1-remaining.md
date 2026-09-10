@@ -8,10 +8,10 @@ iPad and dedicated accessibility work are paused by Jesse. Android and voice are
 
 ### Land the current source
 
-1. Resolve any new current-head findings in activity #1091, native #1096, environment #1098 and timing #1100. These heads currently have green CI and pending reviews; their implemented corrections are described in the [status page](status.md).
+1. Resolve any new current-head findings in activity #1091, native #1096, environment #1098 and timing #1100. All four remote heads have green CI. Activity, native and environment are awaiting current reviews; timing has a reproduced unresolved compaction identity finding. The [status page](status.md) distinguishes these states.
 2. Land activity before native so the native PR contains only its own remaining work. Land the backend recovery prerequisites with both metadata exclusions retained when their changes meet in `conversationSignals`.
 3. Require current-head CI and an actual clean current-head RoboRev verdict before each merge. Jesse has authorized skipping another human approval at that point.
-4. Compare the resulting source with qualified integration `8081b4e63`. If production behavior changes during review or conflict resolution, run the relevant regression and repeat the affected combined/product checks.
+4. Compare the resulting source with qualified integration `5137914cc`, which excludes the pending timing fix. If production behavior changes during review or conflict resolution, run the relevant regression and repeat the affected combined/product checks.
 5. Preserve the original two unfinished Apple project edits and their existing stash. They are separate from the Expo native landing and must not be discarded as cleanup.
 
 ### Produce the fresh internal TestFlight artifact
@@ -37,7 +37,7 @@ Exercise one real hub and project through the supported loop, preserving existin
 - Interrupt connectivity during a write and reconnect. Confirm the app distinguishes accepted, pending, rejected and uncertain outcomes without duplicate submissions.
 - Restart the hub and restore a stopped/queued session. Confirm saved identity, queue ownership, draft and reader continuity.
 
-The [final simulator receipt](assets/2026-09-10-paired-restart-8081.json) is the current baseline for those persistence checks: 32 saved canonical items, seven draft tables, eleven other reader positions, and no automatic send.
+The current simulator install receipt is the current baseline for those persistence checks: 32 saved canonical items, seven draft tables, eleven other reader positions, and no automatic send; the installed artifact is `0097e3841fe9296ebe32da4cb6780cd7d2a8923f`.
 
 **Exit condition:** the current TestFlight build is internally available, a physical iPhone can complete the daily loop, and any failure has an explicit recovery path that preserves the user's work.
 

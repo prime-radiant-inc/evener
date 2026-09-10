@@ -1,24 +1,25 @@
 # iPhone project status
 
-Status snapshot: 10 September 2026, 15:01 UTC. This is a checkpoint toward iPhone v1. It is not a claim that all supported workflows or a fresh TestFlight release are qualified.
+Status snapshot: 10 September 2026, 16:38 UTC. This is a checkpoint toward iPhone v1. It is not a claim that all supported workflows or a fresh TestFlight release are qualified.
 
 ## Where the project stands
 
-The landing batch has **22 merged PRs and five open PRs**. Main is `2664cc881d128d8b0c4a0af96683126e70d13cd7`. The independently installed TypeScript SDK is on main. The native application remains in #1096 until its current review finishes.
+The landing batch has **22 merged PRs and six open PRs**. Main is `2664cc881`. The independently installed TypeScript SDK is on main. The native application remains in #1096 until its current review finishes.
 
-The complete combined candidate `8081b4e635f54807b6ad186738e2870e8186275f` passes `make merge-approval-gate`: backend and web modules, lint, generated-output freshness, secret scan, 720 native tests, 686 shared tests, native TypeScript, and the independently installed SDK qualification. The clean backend pair built from that candidate also passes the actual owned-hub restart and app cold-launch comparison. See the [evidence map](2026-09-10-checkpoint.md) and [final restart receipt](assets/2026-09-10-paired-restart-8081.json).
+The complete combined candidate `5137914ccb66b04aa1b980757888f63141cf2f27` passes `make merge-approval-gate`: backend and web modules, lint, generated-output freshness, secret scan, native tests, shared tests, native TypeScript, and the independently installed SDK qualification. This gate does not include the pending #1100 timing fix. See the [evidence map](2026-09-10-checkpoint.md).
 
-The signed Release simulator app remains the artifact built from `87e2b876e`. Its native and shared runtime inputs are unchanged at native candidate `ec0b6d3af`. The TestFlight workflow will build its own signed device artifact from main after the remaining PRs land.
+The signed Release simulator app is the artifact built from `0097e3841fe9296ebe32da4cb6780cd7d2a8923f`. Its native and protocol inputs match native candidate `016b118f7` (full source identity retained in the local receipt); the backend used for the simulator journey remains `0d75cf8b5fabb9992f2938caf42f2e8129d9c8d1`. The TestFlight workflow will build its own signed device artifact from main after the remaining PRs land.
 
 ## Current review queue
 
 | PR | Current head | Verified checks and remaining step |
 | --- | --- | --- |
-| [#1091: portable activity](https://github.com/prime-radiant-inc/evener/pull/1091) | `279f32e7a` | CI green; current RoboRev review pending. Continuation settlement and structured failure rendering corrections are included. |
-| [#1096: native checkpoint](https://github.com/prime-radiant-inc/evener/pull/1096) | `ec0b6d3af` | CI green; current RoboRev review pending. Includes final activity fixes and current main. |
-| [#1098: environment recovery](https://github.com/prime-radiant-inc/evener/pull/1098) | `722493f2a` | CI green; current RoboRev review pending. Restore publication, reserved identity, hook durability, rollback errors and diagnostic classification are covered. |
-| [#1100: durable round timings](https://github.com/prime-radiant-inc/evener/pull/1100) | `9362ae189` | CI green; current RoboRev review pending. Timing metadata is excluded from search and prior-conversation counts. |
-| [#1039: TestFlight automation](https://github.com/prime-radiant-inc/evener/pull/1039) | `244b980af` | Clean RoboRev review at this head. Stacked on the native branch; no CI run at this head. Retarget to main, refresh, and obtain current CI/review before merge. |
+| [#1091: portable activity](https://github.com/prime-radiant-inc/evener/pull/1091) | `77fcabca9` | CI green; current RoboRev review pending. Continuation settlement and structured failure rendering corrections are included. |
+| [#1096: native checkpoint](https://github.com/prime-radiant-inc/evener/pull/1096) | `016b118f7` | CI green; current RoboRev review pending. Includes final activity fixes and current main. |
+| [#1098: environment recovery](https://github.com/prime-radiant-inc/evener/pull/1098) | `2cc8d50b4` | CI green; current RoboRev review pending. Restore publication, reserved identity, hook durability, rollback errors and diagnostic classification are covered. |
+| [#1100: durable round timings](https://github.com/prime-radiant-inc/evener/pull/1100) | `9362ae189` | CI green; current RoboRev review has an unresolved compaction/timing identity finding. A public session regression reproduces the live/cold position mismatch. The initial owner-field fix is insufficient and remains local; this PR is not ready to merge. |
+| [#1039: TestFlight automation](https://github.com/prime-radiant-inc/evener/pull/1039) | `7fe472fcf` | Clean RoboRev review at this head. Stacked on the native branch; no CI run at this head. Retarget to main, refresh, and obtain current CI/review before merge. |
+| [#1102: checkpoint documentation](https://github.com/prime-radiant-inc/evener/pull/1102) | `dd6d1d085` | Clean RoboRev review at this head. Stacked on the native branch; no CI run at this head. Retarget or merge its prerequisites, then obtain current CI/review before merge. |
 
 The merge rule is current-head CI **and an actual clean current-head RoboRev verdict**. A successful review status alone does not establish a clean verdict. Jesse authorized merging without another human approval when both conditions hold.
 
@@ -32,9 +33,9 @@ Jesse's reported quality problems remain the product acceptance priorities: sess
 
 ## Distribution
 
-Apple has valid internally available builds 1, 2 and 3. They are historical artifacts; there is no current-source build 4 yet. The next delivery step is a fresh main-based archive, upload, processing check and verified internal-group availability, followed by physical installation/update and smoke.
+The last authenticated Apple query at 15:02 UTC found valid internally available builds 1, 2 and 3. They are historical artifacts; no build 4 was present at that observation. Requery before selecting the next build number. The next delivery step is a fresh main-based archive, upload, processing check and verified internal-group availability, followed by physical installation/update and smoke.
 
-Drew's external tester record exists, but Apple reports `NOT_INVITED`. External access is not complete. Beta review contact and demo information remain unfilled; the browser session requires fresh sign-in. Internal delivery can proceed with the existing API credentials independently of that external-review follow-up.
+Drew's external tester record exists, but the last Apple query reported `NOT_INVITED`. External access is not complete. Beta review contact and demo information remain unfilled; the browser session requires fresh sign-in. Internal delivery can proceed with the existing API credentials independently of that external-review follow-up.
 
 ## Merged checkpoint work
 
