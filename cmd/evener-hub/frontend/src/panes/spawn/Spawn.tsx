@@ -377,6 +377,19 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // picker to open. null = not loaded or the load failed - the select stays on
   // the fallback ladder.
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  // The scope the pane catalog was fetched for ("harness + cwd", the
+  // model/list key loadCatalog uses). The catalog merges snapshots across
+  // scopes for picker display continuity, but /model pre-start validation
+  // must only read a snapshot fetched for the CURRENT scope: during the
+  // settle window after a cwd/harness change, modelCatalog still holds the
+  // previous scope, and a value valid only there must not validate.
+  const [modelCatalogScope, setModelCatalogScope] = useState("");
+  // The catalog pre-start /model validation may read: the pane catalog only
+  // when its stamp matches the current scope, null otherwise. Display
+  // surfaces (pickers, effort ladder) keep the merged catalog for
+  // continuity; validation fail-closes through the mismatch window instead
+  // of accepting a value the new scope never offered.
+  const scopedModelCatalog = modelCatalogScope === `${harness}\0${cwd}` ? modelCatalog : null;
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
   const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
@@ -758,10 +771,18 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // demand.
   useEffect(() => {
     let active = true;
+    // The scope this request fetches for, stamped on commit below. A scope
+    // change re-runs the effect and retires the previous run via active, so
+    // only the latest scope's response commits its stamp.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: harness/cwd are trigger-only deps - the effect body only snapshots them into requestScope, but must re-run (and re-stamp) whenever the scope they define changes, same idiom as the cursor-restore layout effect in the composer
+    const requestScope = `${harness}\0${cwd}`;
     const settle = setTimeout(() => {
       loadCatalog().then(
         (catalog) => {
-          if (active) setModelCatalog((previous) => mergeCatalogSnapshot(previous, catalog));
+          if (active) {
+            setModelCatalog((previous) => mergeCatalogSnapshot(previous, catalog));
+            setModelCatalogScope(requestScope);
+          }
         },
         () => {},
       );
@@ -1043,7 +1064,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           const match = matchBuiltinInvocation(prompt, spawnBuiltinCommands());
           if (match?.command.id !== "model" || match.argsText.trim() === "") return null;
           const needle = match.argsText.trim().toLowerCase();
-          return resolveSpawnModelItems(modelCatalog).some(
+          return resolveSpawnModelItems(scopedModelCatalog).some(
             (item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle,
           )
             ? match.argsText.trim()
@@ -1096,7 +1117,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       } else {
         const items =
           builtinMatch.command.id === "model"
-            ? resolveSpawnModelItems(modelCatalog)
+            ? resolveSpawnModelItems(scopedModelCatalog)
             : resolveSpawnEffortItems(effortLevels, reasoningEffort);
         const needle = value.toLowerCase();
         // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
@@ -1184,6 +1205,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     updatePrompt("");
     attachments.clearSubmitted(submittedMarkers);
     handlePluginSelectionChange({ mode: "default" });
+    // The menu is token-driven, not text-driven: clearing the prompt does not
+    // recompute the token, so without this the stale menu stays open over the
+    // empty prompt on the still-mounted pane (and Enter would commit the
+    // stale completion into the next session's first line).
+    setSlashToken(null);
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"

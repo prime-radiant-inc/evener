@@ -2808,6 +2808,29 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
   expect((promptField() as HTMLTextAreaElement).value).not.toBe("/review ");
 });
 
+test("a successful submit closes the slash menu with the cleared prompt", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  // Mod+Enter submits even with the menu open; the pane stays mounted behind
+  // the session pane, so the stale token must not survive the cleared prompt.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect((promptField() as HTMLTextAreaElement).value).toBe("");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
 test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
@@ -3035,6 +3058,54 @@ test("a /model prompt wins over a matching Advanced Options model override on th
     model: "gpt-5",
   });
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+});
+
+test("a /model value from the previous cwd does not validate after switching directories", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+    // Scope-dependent catalog: gpt-5 exists only under /tmp/project. The
+    // /tmp/other response is delayed past the submit below so the pane
+    // catalog is deterministically STALE (old scope) at submit time — the
+    // window the fix closes. Without the fix, validation reads the stale
+    // snapshot and the submit goes through; with it, the scope mismatch
+    // fail-closes before any load state matters.
+    f.on("model/list", async (params) => {
+      if ((params as { cwd?: string }).cwd === "/tmp/other") {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        return {
+          data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+        };
+      }
+      return {
+        data: [
+          { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+          { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+        ],
+      };
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  // Switch directories: the pane catalog still holds the old scope until the
+  // new scoped load lands. A model valid only for the old scope must not
+  // validate against the stale snapshot.
+  await setWorkingDir(user, "/tmp/other");
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "openai\/gpt-5"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
 });
 
 test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
