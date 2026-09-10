@@ -183,7 +183,20 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     };
     const ownsPanel = () => activityPanelStore.getState().entries.get(ref)?.requestID === panelRequestID;
     const settleSupersededRoot = () => {
-      get().failRootFetch(ref, requestID);
+      set((state) => {
+        const entry = state.entries.get(ref);
+        if (!entry || entry.requestID !== requestID) return state;
+        const entries = new Map(state.entries);
+        entries.set(ref, {
+          ...entry,
+          loading: false,
+          // The root response was superseded by a continuation and never
+          // became the panel's authoritative snapshot. Let a later refresh
+          // retry even if that continuation fails after this response settles.
+          lastFetchedBump: undefined,
+        });
+        return { entries };
+      });
       issuePendingBump();
     };
     void fetch(ref)
