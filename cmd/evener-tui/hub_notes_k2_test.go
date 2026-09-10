@@ -74,9 +74,10 @@ func TestRunHubNotesQuotedClearSetsLiteral(t *testing.T) {
 			t.Fatalf("%q result = %#v, want a non-clear set", quoted, msg)
 		}
 		want := "clear"
-		if quoted == `"CLEAR"` {
+		switch quoted {
+		case `"CLEAR"`:
 			want = "CLEAR"
-		} else if quoted == `'Clear'` {
+		case `'Clear'`:
 			want = "Clear"
 		}
 		if len(calls) != 1 || calls[0].Note != want {

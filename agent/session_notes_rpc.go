@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -850,56 +851,6 @@ func (s *Session) markNotesSteerAccepted(outerID, steerID string) error {
 	})
 }
 
-// storeHumanNoteSerialized stores the normalized note and captures its
-// snapshot. It exists for the agent-tool surface, whose persistence runs in
-// the tool handler: the update lock is held across the mutation AND the
-// snapshot capture, so concurrent saves snapshot in store order. The human
-// RPC path above serializes further — through persistence and emission —
-// and does not use this helper.
-func (s *Session) storeHumanNoteSerialized(note string) (stored string, changed bool, human, agentNote string) {
-	s.notesUpdateMu.Lock()
-	defer s.notesUpdateMu.Unlock()
-	stored, changed = s.setHumanNote(note)
-	s.mu.Lock()
-	human, agentNote = s.humanNote, s.agentNote
-	s.mu.Unlock()
-	return stored, changed, human, agentNote
-}
-
-// mutateHumanNoteSerialized stores the normalized note, persists it, and
-// emits the resulting snapshot as one serialized unit: unlike the
-// store-then-save-then-emit split above, the persistence and the emission
-// also run under notesUpdateMu, so concurrent mutations publish in store
-// order and a stale event never wins at the projector (G1). The emission
-// runs without Session.mu (emit re-acquires it), so the hold deadlocks
-// loudly instead of wedging the daemon if that invariant ever breaks.
-//
-// On a persistence failure the store rolls back to prev, so the failed
-// write never stands in memory without its announcement; the caller reports
-// the error and emits nothing.
-func (s *Session) mutateHumanNoteSerialized(note string) (stored string, changed bool, human, agentNote string, err error) {
-	s.notesUpdateMu.Lock()
-	defer s.notesUpdateMu.Unlock()
-	prev, _ := s.notesSnapshot()
-	stored, changed = s.setHumanNote(note)
-	// Hold the metadata-save lock across the save attempt and the rollback
-	// below: a concurrent maybeAutoSave interleaving between the two would
-	// persist the transient mutation to disk before the restore.
-	s.metaSaveMu.Lock()
-	if err = s.persistNotesMetaLocked(); err != nil {
-		s.setHumanNote(prev)
-		s.metaSaveMu.Unlock()
-		return stored, changed, "", "", err
-	}
-	s.metaSaveMu.Unlock()
-	if !changed {
-		return s.notesSnapshotPair(stored, false)
-	}
-	human, agentNote = s.notesSnapshot()
-	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
-	return stored, true, human, agentNote, nil
-}
-
 // notesSnapshotPair re-reads the snapshot for a return tuple.
 func (s *Session) notesSnapshotPair(stored string, changed bool) (string, bool, string, string, error) {
 	human, agentNote := s.notesSnapshot()
@@ -1400,7 +1351,7 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 func (s *Session) seedNotesProjectionLocked(history []schema.Turn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(history) - 1; i >= 0; i-- {
+	for i := range slices.Backward(history) {
 		if history[i].Kind != schema.TurnNotesContext {
 			continue
 		}

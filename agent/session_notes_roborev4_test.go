@@ -237,16 +237,13 @@ func TestFinalHistorySnapshotPairsBaselineWithHistory(t *testing.T) {
 	// and translate the baseline, then capture the pair the way the fixed
 	// final snapshot does (both under one lock).
 	s.mu.Lock()
-	historyTurns := append([]schema.Turn{}, s.history...)
-	s.mu.Unlock()
-	s.mu.Lock()
 	s.history = []schema.Turn{inFlight}
 	s.shrinkTurnHistoryBaseline(2, 1, 0)
 	s.mu.Unlock()
 	// Fixed behavior: the final copy re-pairs the boundary with the history
 	// it guards.
 	s.mu.Lock()
-	historyTurns = append([]schema.Turn{}, s.history...)
+	historyTurns := append([]schema.Turn{}, s.history...)
 	inFlightFrom := s.turnHistoryBaseline
 	s.mu.Unlock()
 	if inFlightFrom != 0 {

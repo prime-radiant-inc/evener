@@ -181,7 +181,7 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 			return "", fmt.Errorf("urls/add: unsupported URL scheme %q", scheme)
 		}
 		if strings.Contains(trimmed, "://") {
-			scheme := trimmed[:strings.Index(trimmed, "://")]
+			scheme, _, _ := strings.Cut(trimmed, "://")
 			return "", fmt.Errorf("urls/add: unsupported URL scheme %q", scheme)
 		}
 		return canonicalFilePath(trimmed, cwd, raw)
