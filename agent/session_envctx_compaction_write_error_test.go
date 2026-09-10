@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -18,7 +19,7 @@ type failAfterCreateFile struct {
 
 func (f *failAfterCreateFile) Write(data []byte) (int, error) {
 	if f.writes > 0 {
-		return 0, errors.New("injected transcript append failure")
+		return 0, errors.New("fixture-compaction-append-failure")
 	}
 	f.writes++
 	return f.File.Write(data)
@@ -63,7 +64,8 @@ func TestFallbackCompactionWriteFailureStillResetsEnvironmentTracker(t *testing.
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
 	for _, event := range *eventsSeen {
-		if event.Kind == events.EventWarning {
+		warning, ok := event.Data.(events.WarningData)
+		if event.Kind == events.EventWarning && ok && strings.Contains(warning.Message, "fixture-compaction-append-failure") {
 			return
 		}
 	}
