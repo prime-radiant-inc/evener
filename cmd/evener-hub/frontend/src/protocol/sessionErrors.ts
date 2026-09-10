@@ -7,7 +7,7 @@
 // never tracked at all (isThreadNotFound - terminal, no retry). Extracted
 // from TasksPanel.tsx so both panels can share the same two checks - one
 // definition, so they can never drift apart on what counts as recoverable.
-import { WireError } from "../../../protocol/errors";
+import { WireError } from "./errors";
 
 export function isActionUnavailable(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === "actionUnavailable";

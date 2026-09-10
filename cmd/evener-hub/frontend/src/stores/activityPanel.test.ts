@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { ActivityTree } from "../panes/session/chrome/activityData";
+import type { ActivityTree } from "../protocol/activityData";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
@@ -97,7 +97,7 @@ describe("activityPanelStore", () => {
     });
   });
 
-  test("grafts a continuation without replacing root counts", () => {
+  test("derives a continuation summary from the merged entries", () => {
     resetActivityPanelStoreForTests();
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
@@ -107,7 +107,7 @@ describe("activityPanelStore", () => {
     activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: patch });
     expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
       kind: "ready",
-      tree: { root: { counts: { active: 1, failed: 0, completed: 0, complete: true } } },
+      tree: { root: { aggregate: "idle", counts: { active: 0, failed: 0, completed: 0, complete: true } } },
     });
   });
 
