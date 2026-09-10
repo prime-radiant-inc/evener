@@ -10,9 +10,8 @@ import {
   copyToClipboard,
   rememberableId,
   sessionScopedHandoffMatch,
-  slashCommandInvocation,
-  visibleCatalogCommands,
 } from "./commands";
+import { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 
 // --- copyToClipboard ---
 
