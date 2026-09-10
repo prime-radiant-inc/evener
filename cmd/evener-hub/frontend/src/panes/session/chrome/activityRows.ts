@@ -75,16 +75,24 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
     };
   }
   const turns = delegate.turns ?? [];
+  let activeTurn: ActivityJob | undefined;
+  for (const turn of turns) {
+    if (!turn.terminal) activeTurn = turn;
+  }
   const latest = turns.at(-1);
   const failed = turns.some((turn) => turn.outcome === "failure" || isFailedStatus(turn.status));
   return {
-    active: turns.some((turn) => !turn.terminal),
+    active: activeTurn !== undefined || (delegate.child ? sessionIsActive(delegate.child) : false),
     failed,
-    status: latest
-      ? latest.outcome === "failure"
+    status: activeTurn
+      ? activeTurn.status
+      : failed
         ? "failed"
-        : latest.status
-      : (delegate.child?.aggregate ?? "unknown"),
+        : latest
+          ? latest.outcome === "failure"
+            ? "failed"
+            : latest.status
+          : (delegate.child?.aggregate ?? "unknown"),
   };
 }
 
