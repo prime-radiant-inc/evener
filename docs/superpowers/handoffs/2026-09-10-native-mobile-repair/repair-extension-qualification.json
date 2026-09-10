@@ -105,9 +105,10 @@
     {
       "scope": "native activity replacement fix",
       "head": "0a1330f084a34e1681867d36897028a768ff4d1c",
-      "evidence": "7 activity/retention tests and native TypeScript pass. Real ActivityList constructed with a replacement thread and identity-filtered retained tree does not throw.",
-      "limitation": "Full make test-native fails9 keybindingPatterns assertions (flags containv),712pass. Also reproduced via mise node22.13.1, not established as aNode26-only problem. Investigate cause; current-artifact full gate remains failing.",
-      "log": "/tmp/evener-native-0a1330-node22-test-native.log"
+      "evidence": "After npm run postinstall applied the repository tinykeys/regexpu/markdown dependency patches, make test-native passed721 native tests,688 shared tests and TypeScript at the exact pushed head. No keybinding assertions changed.",
+      "limitation": "Initial9 keybinding failures were an unpatched local node_modules installation. Both Node26 and22 reproduced it before postinstall; this was not a runtime-version defect. Current CI and actual RoboRev remain separate.",
+      "log": "/tmp/evener-native-0a1330-patched-test-native.log",
+      "exit": 0
     }
   ]
 }
