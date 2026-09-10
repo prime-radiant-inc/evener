@@ -14,3 +14,9 @@ The branch contains the existing example recipes under `cmd/evener-hub/frontend/
 4. Run the frontend Biome scope and package qualification from the pinned toolchain, then record exact package/source hashes and output ownership. These checks are pending for this preservation snapshot.
 
 No live provider, hub, invitation, Apple, TestFlight, or external mutation was executed while preserving this draft.
+
+## Authoritative SDK landing sequence
+
+The broader preserved recipe source came from `live-concepts-plan2-integrate` at `f6614d6cc137d3498460ad6b9a5d0071aea67742`. The recommended landing order from its ignored SDK ledger is: runtime client boundary; portable activity/job and question-answer helper extraction; package substrate and exports; read-only discovery/inspection; portable projections; read-only settings/catalog; bounded notifications; then separately reviewed recovery and deliberate mutation batches. Each batch needs its own installed-package contract qualification at a real external WebSocket boundary and must keep mutations explicitly opt-in.
+
+The first source branch contained six recipe files. This preservation adds only recipe filenames absent from that snapshot, leaving those six files untouched. The resulting recipe catalog is still a preservation candidate and has not been rebuilt, packed, installed, or qualified.
