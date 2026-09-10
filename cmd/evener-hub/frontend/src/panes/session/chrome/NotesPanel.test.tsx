@@ -255,15 +255,100 @@ test("a second blur while a save is in flight replays the latest draft instead o
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "first draft");
-  editor().blur();
+  await user.tab();
   await waitFor(() => expect(seen).toHaveLength(1));
   // ...while it is in flight, a second edit + blur parks (not drops) the
   // newer draft; releasing the gate lets the loop replay it.
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "second draft");
-  editor().blur();
+  await user.tab();
   release();
+  await waitFor(() => expect(seen).toHaveLength(2));
+  expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
+  expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
+});
+
+test("a B-save parking behind an in-flight A-save persists instead of overwriting A", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    if (first) {
+      first = false;
+      return gate.then(() => ({ note: (params as { note: string }).note }));
+    }
+    return { note: (params as { note: string }).note };
+  });
+
+  const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
+  const modelB = testModel({ ref: "local:bbbb", threadId: "bbbb", humanNote: "note B" });
+  threadsStore.setState({ threads: new Map([[modelA.ref, modelA]]) });
+  const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
+  // A's blur starts the gated save...
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "draft A2");
+  await user.tab();
+  await waitFor(() => expect(seen).toHaveLength(1));
+  // ...then the panel switches to B, whose blur parks behind A's loop. B
+  // must not overwrite A's parked draft, and the loop must drain both.
+  threadsStore.setState({
+    threads: new Map([
+      [modelA.ref, modelA],
+      [modelB.ref, modelB],
+    ]),
+  });
+  rerender(<NotesPanelBody sessionRef={modelB.ref} model={modelB} />);
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "draft B2");
+  await user.tab();
+  release();
+  await waitFor(() => expect(seen).toHaveLength(2));
+  expect(seen[0]).toMatchObject({ ref: modelA.ref, note: "draft A2" });
+  expect(seen[1]).toMatchObject({ ref: modelB.ref, note: "draft B2" });
+  expect(threadsStore.getState().threads.get(modelA.ref)?.humanNote).toBe("draft A2");
+  expect(threadsStore.getState().threads.get(modelB.ref)?.humanNote).toBe("draft B2");
+});
+
+test("a draft parked behind a failed save is kept and retried on the next blur", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  let calls = 0;
+  fake.on("notes/human/set", (params) => {
+    calls += 1;
+    seen.push(params);
+    if (calls === 1) throw new Error("first save boom");
+    return { note: (params as { note: string }).note };
+  });
+
+  const model = testModel({ humanNote: "old note" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "first draft");
+  await user.tab();
+  await screen.findAllByText(/first save boom/i);
+  // A newer draft typed after the failure must survive it: the next blur
+  // retries the queue and lands on the newest text.
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "second draft");
+  await user.tab();
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");

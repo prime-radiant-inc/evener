@@ -140,13 +140,12 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   // live-to-ended flush - funnels through it, so two of them racing can
   // never issue a second untracked mutation with a fresh client mutation ID.
   const saveLoop = useRef<Promise<void> | null>(null);
-  // dirtyRef is saveLoop's pending-draft inbox: one {ref, note} slot holding
-  // the LATEST request, consumed by the loop before it settles. A ref (not
-  // state) because the inbox only ever matters to the loop itself - no render
-  // reads it. Keyed by session: a session switch parks the outgoing session's
-  // draft under its own ref, so the loop persists it against the right
-  // thread even after the render-scope sessionRef moved on.
-  const dirtyRef = useRef<{ ref: string; note: string } | null>(null);
+  // dirtyRef is saveLoop's pending-draft queue: one entry per session holding
+  // that session's LATEST draft, drained FIFO. A ref (not state) because the
+  // queue only ever matters to the loop itself - no render reads it. Keyed
+  // by session so a B-save parking behind an in-flight A-save cannot
+  // overwrite A's draft: the loop persists every queued session in order.
+  const dirtyRef = useRef(new Map<string, string>());
   // snapRef records every rendered session's latest draft and liveness, keyed
   // by ref. The sessionRef-change cleanup below runs AFTER the incoming
   // session's render already overwrote the shared render-scope refs, so
@@ -198,14 +197,22 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
 
   // requestSave persists note for ref unless it already matches the latest
   // stored text, coalescing with an in-flight save: a second request while
-  // one is running parks its {ref, note} in dirtyRef, and the loop replays
-  // the newest parked draft before settling - focus-blur-focus-blur on a
-  // slow RPC converges on the latest text instead of losing the newer
-  // keystrokes. Sequential setHumanNote calls serialize per-thread in the
-  // store, so a parked B-save behind an in-flight A-save lands in order.
+  // one is running parks its draft in the per-session queue, and the loop
+  // drains every queued session before settling - focus-blur-focus-blur on
+  // a slow RPC converges on the latest text instead of losing the newer
+  // keystrokes, and a B-save behind an in-flight A-save persists in turn
+  // rather than overwriting A's draft. Sequential setHumanNote calls
+  // serialize per-thread in the store, so cross-session drains land in
+  // queue order.
   function requestSave(ref: string, note: string) {
-    if (note === storedNote(ref) && saveLoop.current === null) return;
-    dirtyRef.current = { ref, note };
+    // Matching the store means nothing to persist; drop any stale queued
+    // entry for the session (e.g. a kept failure the store has since
+    // converged with via push) so it can never block the Saved guard.
+    if (note === storedNote(ref)) {
+      dirtyRef.current.delete(ref);
+      return;
+    }
+    dirtyRef.current.set(ref, note);
     if (saveLoop.current !== null) return;
     if (uiRef.current === ref) {
       setSaving(true);
@@ -213,31 +220,44 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
       setError(null);
     }
     saveLoop.current = (async () => {
-      let last: { ref: string; note: string } | null = null;
+      // lastSavedRef names the session the loop last persisted: the Saved
+      // guard paints only when that session is still the one on screen, so
+      // a B-save drained inside an A-started loop still paints for B.
+      let lastSavedRef: string | null = null;
       for (;;) {
-        const next = dirtyRef.current;
-        dirtyRef.current = null;
-        if (next === null || next.note === storedNote(next.ref)) break;
-        last = next;
+        const next = dirtyRef.current.entries().next();
+        if (next.done) break;
+        const [nextRef, nextNote] = next.value;
+        dirtyRef.current.delete(nextRef);
+        if (nextNote === storedNote(nextRef)) continue;
+        lastSavedRef = null;
         try {
-          await threadsStore.getState().setHumanNote(next.ref, next.note);
+          await threadsStore.getState().setHumanNote(nextRef, nextNote);
         } catch (err) {
           const message = sessionActionError("Couldn't save note", err);
-          dirtyRef.current = null;
-          if (uiRef.current === next.ref) setError(message);
+          // Keep the failed entry queued: the textarea still shows unsaved
+          // content, and the next requestSave (e.g. the next blur) restarts
+          // the loop and retries it in queue order. Clearing the queue here
+          // would silently discard a newer draft parked behind the failure.
+          dirtyRef.current.set(nextRef, nextNote);
+          if (uiRef.current === nextRef) setError(message);
           toasts.push("error", message);
           break;
         }
+        lastSavedRef = nextRef;
       }
       saveLoop.current = null;
       // saving is global to the panel (one loop at a time), so it always
       // clears on settle; Saved is per-session, so it only paints when the
-      // settled session is still the one on screen.
+      // last-persisted session is still the one on screen.
       setSaving(false);
-      if (uiRef.current === ref) {
-        if (dirtyRef.current === null && last !== null && draftRef.current === storedNote(last.ref)) {
-          setSaved(true);
-        }
+      if (
+        lastSavedRef !== null &&
+        uiRef.current === lastSavedRef &&
+        dirtyRef.current.size === 0 &&
+        draftRef.current === storedNote(lastSavedRef)
+      ) {
+        setSaved(true);
       }
     })();
   }
@@ -265,6 +285,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   useEffect(() => {
     return () => {
       const snap = snapRef.current.get(sessionRef);
+      snapRef.current.delete(sessionRef);
       if (!snap?.live) return;
       requestSave(sessionRef, snap.draft);
     };
