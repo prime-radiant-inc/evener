@@ -83,8 +83,14 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				}
 				assertCandidateNames(t, got, []string{"same", "alpha", "zeta"})
 				assertStrings(t, got.SelectedDirs, []string{explicit, alpha, zeta})
-				if len(got.Diagnostics) != 1 || got.Diagnostics[0].Name != "same" || !strings.Contains(got.Diagnostics[0].Message, "duplicate") {
+				dup := got.Diagnostics[0]
+				if len(got.Diagnostics) != 1 || dup.Name != "same" || !strings.Contains(dup.Message, "duplicate") {
 					t.Fatalf("duplicate diagnostic = %+v", got.Diagnostics)
+				}
+				installed := filepath.Join(root, "same-installed")
+				explicitAt, installedAt := strings.Index(dup.Message, explicit), strings.Index(dup.Message, installed)
+				if explicitAt < 0 || installedAt < 0 || explicitAt > installedAt {
+					t.Fatalf("duplicate diagnostic = %+v, want every competing path with the winner first", dup)
 				}
 			},
 		},
@@ -131,8 +137,43 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				if got.Diagnostics[0].Path != invalid || !strings.Contains(got.Diagnostics[0].Message, "load") && !strings.Contains(got.Diagnostics[0].Message, "plugin") {
 					t.Fatalf("invalid diagnostic = %+v", got.Diagnostics[0])
 				}
-				if got.Diagnostics[1].Name != "dup" || got.Diagnostics[1].Path != second {
-					t.Fatalf("duplicate diagnostic = %+v", got.Diagnostics[1])
+				dup := got.Diagnostics[1]
+				if dup.Name != "dup" || dup.Path != second {
+					t.Fatalf("duplicate diagnostic = %+v", dup)
+				}
+				firstAt, secondAt := strings.Index(dup.Message, first), strings.Index(dup.Message, second)
+				if firstAt < 0 || secondAt < 0 || firstAt > secondAt {
+					t.Fatalf("duplicate diagnostic = %+v, want every competing path with the winner first", dup)
+				}
+			},
+		},
+		{
+			name: "third duplicate names every competing path",
+			check: func(t *testing.T, root string, m *Manager) {
+				first := filepath.Join(root, "d1")
+				second := filepath.Join(root, "d2")
+				third := filepath.Join(root, "d3")
+				writePlugin(t, first, "tri", nil)
+				writePlugin(t, second, "tri", nil)
+				writePlugin(t, third, "tri", nil)
+				got, err := m.ResolveForLaunch(context.Background(), []string{first, second, third}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Diagnostics) != 2 {
+					t.Fatalf("diagnostics = %+v", got.Diagnostics)
+				}
+				// The second copy's diagnostic names the winner and itself.
+				for _, path := range []string{first, second} {
+					if !strings.Contains(got.Diagnostics[0].Message, path) {
+						t.Fatalf("second copy's diagnostic = %q, missing competing path %s", got.Diagnostics[0].Message, path)
+					}
+				}
+				// The third copy's diagnostic names every competing path.
+				for _, path := range []string{first, second, third} {
+					if !strings.Contains(got.Diagnostics[1].Message, path) {
+						t.Fatalf("third copy's diagnostic = %q, missing competing path %s", got.Diagnostics[1].Message, path)
+					}
 				}
 			},
 		},
