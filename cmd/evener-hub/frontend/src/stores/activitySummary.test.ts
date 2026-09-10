@@ -170,6 +170,15 @@ describe("activitySummaryStore", () => {
     });
 
     let replacementStarted = false;
+    const replacementPublished = new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        const entry = state.entries.get("ref_a");
+        if (!entry?.loading && entry?.counts?.active === 3) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
     const replacement = activitySummaryStore.getState().refreshRoot("ref_a", 1, async () => {
       replacementStarted = true;
       return {
@@ -182,6 +191,11 @@ describe("activitySummaryStore", () => {
     });
     expect(replacement).not.toBeNull();
     expect(replacementStarted).toBe(true);
+    await replacementPublished;
+    expect(activityPanelStore.getState().entries.get("ref_a")?.continuationFailures).toMatchObject({
+      "session:sess_a": "continuation unavailable",
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts?.active).toBe(3);
   });
 
   test("uses the established-attempt gate and complete-count badge data", () => {
