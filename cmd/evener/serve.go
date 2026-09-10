@@ -719,6 +719,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// event channel closes.
 	var drainsMu sync.Mutex
 	var bridgeDrains []<-chan struct{}
+	bridgeDrainBySession := make(map[string]<-chan struct{})
 	// teardownStarted says the snapshot below has already been taken, so no
 	// later drain can ever appear in it. bridgeSession refuses to start one
 	// past this point; see the refusal there for why that is the right answer.
@@ -915,6 +916,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		deps.bridge(srv, s, eventObserver, func() { close(drained) })
 		bridgeDrains = append(bridgeDrains, drained)
+		bridgeDrainBySession[s.ID()] = drained
+	}
+	waitForSessionBridgeDrain := func(sessionID string) {
+		drainsMu.Lock()
+		drained := bridgeDrainBySession[sessionID]
+		drainsMu.Unlock()
+		if drained != nil {
+			<-drained
+		}
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
@@ -1079,6 +1089,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
+		closeSupersededSession(oldSess, shutdownClosedTheLiveSession()) // disposes oldEnv
+		waitForSessionBridgeDrain(oldSess.ID())
 		// One projection commit swaps the live session, the daemon's identity,
 		// and the turn snapshot. The stable workspace ref remains subscribed while
 		// a resync tells every client to hydrate the new instance.
@@ -1090,7 +1102,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// after it -- the new session's own events are still queued in its
 		// channel, and its bridge has not started.
 		srv.RefreshThreadEnvelope()
-		closeSupersededSession(oldSess, shutdownClosedTheLiveSession()) // disposes oldEnv
 		// Every session this daemon makes current gets closed by someone, and
 		// shutdown covers only the one that was live when its pass ran. A
 		// replacement installed after that pass has no other closer, so thread/clear
