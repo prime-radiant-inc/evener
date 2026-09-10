@@ -655,6 +655,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	rvRegistration := &rvreg.Registration{}
 
 	var currentMu sync.RWMutex
+	// identityTransitionMu serializes shutdown's ownership claim with a clear's
+	// final identity swap. It is held only across the terminal transition, never
+	// while acquiring the session lock and closing a session from another path.
+	var identityTransitionMu sync.Mutex
 	currentSess := sess
 	// currentEnv tracks the CURRENT session's execution environment (each session
 	// owns its own). thread/clear reads it to inherit the live sandbox and swaps it
@@ -683,6 +687,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// critical section cannot observe the pass as still pending, so it knows it
 	// owns its replacement's teardown.
 	closeLiveSession := func() {
+		identityTransitionMu.Lock()
+		defer identityTransitionMu.Unlock()
 		currentMu.Lock()
 		liveSessionClosed = true
 		live := currentSess
@@ -1089,8 +1095,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
-		closeSupersededSession(oldSess, shutdownClosedTheLiveSession()) // disposes oldEnv
-		waitForSessionBridgeDrain(oldSess.ID())
+		identityTransitionMu.Lock()
+		shutdownClaimed := shutdownClosedTheLiveSession()
+		if shutdownClaimed {
+			closeSupersededSession(oldSess, true) // disposes oldEnv
+			waitForSessionBridgeDrain(oldSess.ID())
+		}
 		// One projection commit swaps the live session, the daemon's identity,
 		// and the turn snapshot. The stable workspace ref remains subscribed while
 		// a resync tells every client to hydrate the new instance.
@@ -1102,6 +1112,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// after it -- the new session's own events are still queued in its
 		// channel, and its bridge has not started.
 		srv.RefreshThreadEnvelope()
+		if !shutdownClaimed {
+			closeSupersededSession(oldSess, false) // disposes oldEnv after the swap
+		}
+		identityTransitionMu.Unlock()
 		// Every session this daemon makes current gets closed by someone, and
 		// shutdown covers only the one that was live when its pass ran. A
 		// replacement installed after that pass has no other closer, so thread/clear
