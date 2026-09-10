@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -188,8 +189,12 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 func stampGroupedTurnFromEntries(turn *appwire.Turn, entries []schema.Turn) {
 	var startedAt *int64
 	var usage llm.Usage
+	interrupted := false
 	for _, entry := range entries {
 		StampTurnFailure(turn, entry)
+		if entry.SteeringKind == events.SteeringKindInterrupted {
+			interrupted = true
+		}
 		if startedAt == nil && !entry.Timestamp.IsZero() {
 			ms := entry.Timestamp.UnixMilli()
 			startedAt = &ms
@@ -197,6 +202,9 @@ func stampGroupedTurnFromEntries(turn *appwire.Turn, entries []schema.Turn) {
 		usage = usage.Add(entry.Usage)
 	}
 	turn.StartedAt = startedAt
+	if interrupted && turn.Status != appwire.TurnStatusFailed {
+		turn.Status = appwire.TurnStatusInterrupted
+	}
 	if u := appwire.EvenerUsageFromLLM(usage); u != nil {
 		turn.Usage = u
 	}

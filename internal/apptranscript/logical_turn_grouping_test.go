@@ -4,10 +4,12 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/llm"
 )
 
 // itemKey builds the canonical transcript key the way production does, so the
@@ -69,6 +71,28 @@ func TestItemReadersGroupContinuationEntries(t *testing.T) {
 		if got, want := turnIDs(read.turns), []string{"turn_1"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s item turn ids = %v, want one logical turn %v", read.name, got, want)
 		}
+	}
+}
+
+func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 1, Turn: schema.Turn{
+			Kind:         schema.TurnUserInput,
+			Message:      llm.User("before stop"),
+			StableTurnID: "turn_m2",
+		}},
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{
+			Kind:         schema.TurnSteering,
+			Message:      llm.User("interrupted"),
+			SteeringKind: events.SteeringKindInterrupted,
+		}},
+	}
+	turns := requireItemTurnsFromFile(t, writeEntries(t, entries...), testMaxLineBytes, sequentialTestProjector())
+	if len(turns) != 1 {
+		t.Fatalf("grouped turns = %d, want one interrupted logical turn", len(turns))
+	}
+	if turns[0].Status != appwire.TurnStatusInterrupted {
+		t.Fatalf("grouped turn status = %q, want interrupted", turns[0].Status)
 	}
 }
 
