@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -26,22 +27,32 @@ func TestRoundTimingsDoNotBlockResponsesContinuationDelta(t *testing.T) {
 }
 
 func TestRoundTimingsDoNotCountAsElicitationRecentTurn(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	const foldable = "opaque-fold-4b7d"
+	const recent = "opaque-recent-a1c8"
+	const note = "opaque-note-55bc"
+	calls := 0
+	s := newTestSessionForEnvctx(t, withSteps(func(req llm.Request) llm.Response {
+		calls++
+		var received strings.Builder
+		for _, message := range req.Messages {
+			received.WriteString(message.Text())
+		}
+		if !strings.Contains(received.String(), foldable) || strings.Contains(received.String(), recent) {
+			t.Error("elicitation request did not preserve the foldable versus recent input boundary")
+		}
+		return llm.Response{Message: llm.Assistant(note)}
+	}))
+	s.contextMgr.SetProfile(NewOpenAIProfile("gpt-test"))
 	s.contextMgr.CheckpointThreshold = 0
 	s.contextMgr.PreserveRecentTurns = 1
 	history := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User("foldable")),
-		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(foldable)),
+		schema.NewTurn(schema.TurnUserInput, llm.User(recent)),
 		schema.NewTurn(schema.TurnRoundTimings, llm.System("timing")),
 	}
-	var got []schema.Turn
-	s.elicitNoteFn = func(_ context.Context, foldable []schema.Turn) (string, error) {
-		got = foldable
-		return "", nil
-	}
 	s.maybeElicitNoteBeforeCompaction(context.Background(), history, 0)
-	if len(got) != 1 || got[0].Message.Text() != "foldable" {
-		t.Fatalf("elicitation prefix = %v, want only foldable turn", turnKinds(got))
+	if calls != 1 || s.PinnedNote() != note {
+		t.Fatalf("elicitation calls=%d, pinned note=%q", calls, s.PinnedNote())
 	}
 }
 
@@ -107,5 +118,21 @@ func TestRoundTimingsDoNotEnterEvaluationRequests(t *testing.T) {
 	marker := schema.NewTurn(schema.TurnRoundTimings, llm.System("diagnostic sentinel"))
 	if got, want := turnsToMessages([]schema.Turn{before, marker, after}), turnsToMessages([]schema.Turn{before, after}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("evaluation request contains timing metadata: %#v", got)
+	}
+}
+
+func TestRoundTimingsAloneDoNotTriggerNoteElicitation(t *testing.T) {
+	for _, preserveRecent := range []int{0, 1} {
+		s := newTestSessionForEnvctx(t, withSteps(func(llm.Request) llm.Response {
+			t.Error("timing metadata alone triggered a model call")
+			return llm.Response{Message: llm.Assistant("unexpected note")}
+		}))
+		s.contextMgr.SetProfile(NewOpenAIProfile("gpt-test"))
+		s.contextMgr.CheckpointThreshold = 0
+		s.contextMgr.PreserveRecentTurns = preserveRecent
+		s.maybeElicitNoteBeforeCompaction(context.Background(), []schema.Turn{schema.NewTurn(schema.TurnRoundTimings, llm.System("timing"))}, 0)
+		if s.PinnedNote() != "" {
+			t.Errorf("preserveRecent=%d: unexpected pinned note", preserveRecent)
+		}
 	}
 }
