@@ -434,9 +434,18 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	s.mu.Lock()
 	publishedRevision := s.newestPublishedFoldRevision
 	s.mu.Unlock()
-	writeErr := s.writeTranscript(t)
+	s.attentionMu.Lock()
+	writeErr := s.writeTranscriptLocked(t)
 	if isSessionNameCompactionTurn(t) && writeErr == nil {
-		s.resetEnvContextTrackerAfterCompaction()
+		s.mu.Lock()
+		changed := s.resetEnvContextTrackerLocked()
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
+		if changed {
+			s.maybeAutoSave()
+		}
+	} else {
+		s.attentionMu.Unlock()
 	}
 	s.handleCompactionTurnEffects(t, writeErr, false, publishedRevision)
 }
