@@ -270,9 +270,32 @@ func defaultLabelFor(req WaitKind) string {
 		return req.Label
 	}
 	if req.Target != "" {
-		return string(req.Kind) + ":" + req.Target
+		// Derived labels sanitize to the same caps an explicit label must
+		// pass (checkSizeCaps): the target is predicate identity (kept full
+		// for matching) while the derived chip label is presentation-only.
+		// A 2KB target or control characters must not flow into chips,
+		// triggers, or transcripts uncapped — the cap covers the whole
+		// composed kind:target label, not just the target half.
+		return sanitizeDerivedLabel(string(req.Kind) + ":" + req.Target)
 	}
 	return string(req.Kind)
+}
+
+// sanitizeDerivedLabel caps a derived chip label to the explicit label
+// contract (MaxLabelRunes printable runes): non-printables render as U+FFFD,
+// then the runes truncate. The predicate target itself is untouched
+// (identity); only the presentation label shrinks.
+func sanitizeDerivedLabel(label string) string {
+	sanitized := strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return '�'
+		}
+		return r
+	}, label)
+	if r := []rune(sanitized); len(r) > MaxLabelRunes {
+		sanitized = string(r[:MaxLabelRunes])
+	}
+	return sanitized
 }
 
 // Note: the http_match URL helpers (ValidHTTPURL, the CheckURL egress

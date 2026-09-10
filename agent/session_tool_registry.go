@@ -190,6 +190,7 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
 	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
+	completeIfSatisfied  func(time.Time) (goal.Snapshot, string, bool)
 	registerWait         func(goal.WaitKind, time.Time) (goal.Wait, bool)
 	cancelWait           func(string, time.Time) bool
 	registerExpect       func(goal.ExpectRequest, time.Time) (goal.Condition, bool)
@@ -212,6 +213,36 @@ func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time)
 	}
 	snap, _ := store.Snapshot()
 	return snap, true
+}
+
+// CompleteIfSatisfied verifies the goal's registered stop-claim conditions
+// check-on-claim and completes only when every condition is satisfied (spec
+// §6). Through the owning Session when available it runs verify+commit as one
+// ordered unit under goalUpdateMu (see completeGoalIfConditionsSatisfied);
+// direct test constructions fall back to the store-only verify-then-commit
+// they had before. It returns the terminal snapshot, the failing condition
+// desc ("" when satisfied or condition-free), and whether the goal
+// transitioned to complete.
+func (g goalGuard) CompleteIfSatisfied(now time.Time) (goal.Snapshot, string, bool) {
+	if g.completeIfSatisfied != nil {
+		return g.completeIfSatisfied(now)
+	}
+	store := g.Store()
+	full, ok := store.GoalSnapshot()
+	if !ok {
+		return goal.Snapshot{}, "", false
+	}
+	if len(full.Conditions) > 0 {
+		checks := store.EvaluateExpectations(full.Conditions)
+		if _, failing := goal.VerifyConditions(full.Conditions, checks); failing != "" {
+			return goal.Snapshot{}, failing, false
+		}
+	}
+	if !store.SetTerminal(goal.StatusComplete, "", now) {
+		return goal.Snapshot{}, "", false
+	}
+	snap, _ := store.Snapshot()
+	return snap, "", true
 }
 
 // RegisterWait validates and installs one wait lease through the owning
@@ -318,6 +349,7 @@ func newToolDeps(s *Session) *toolDeps {
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
 			setTerminal:          s.setGoalTerminal,
+			completeIfSatisfied:  s.completeGoalIfConditionsSatisfied,
 			registerWait:         s.registerGoalWait,
 			cancelWait:           func(waitID string, _ time.Time) bool { return s.CancelGoalWait(waitID) },
 			registerExpect:       s.registerGoalExpect,

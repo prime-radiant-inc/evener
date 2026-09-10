@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -19,8 +20,17 @@ func TestFixWave16_WorktreeDigestRootIndependent(t *testing.T) {
 	mkRoot := func(t *testing.T) string {
 		t.Helper()
 		root := t.TempDir()
-		if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("same contents"), 0o644); err != nil {
+		path := filepath.Join(root, "notes.md")
+		if err := os.WriteFile(path, []byte("same contents"), 0o644); err != nil {
 			t.Fatalf("write fixture file: %v", err)
+		}
+		// Normalize the mtime: two writes land microseconds apart, and the
+		// digest carries nanosecond mtimes (round-17 MEDIUM — sub-second
+		// writes must flip it). This test isolates the root-independence
+		// property (relative names), not mtime sensitivity.
+		fixed := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(path, fixed, fixed); err != nil {
+			t.Fatalf("chtimes fixture file: %v", err)
 		}
 		return root
 	}

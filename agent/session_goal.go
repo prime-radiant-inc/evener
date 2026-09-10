@@ -116,6 +116,12 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	s.goalTerminalPending = false
 	s.goalSupersededArmed = false
 	s.mu.Unlock()
+	// Bump before the emit: this commit is newer than any unlock-then-emit
+	// snapshot captured before it (registerGoalWait/registerGoalExpect/
+	// CancelGoalWait), suppressing their stale events. The emit itself stays
+	// under the held serializer (pinned by
+	// TestConcurrentGoalMutationsEmitInCommittedOrder).
+	s.bumpGoalEventGen()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
 
@@ -147,6 +153,9 @@ func (s *Session) ClearGoal() {
 	s.goalWakeDelivered = nil
 	s.goalSupersededArmed = false
 	s.mu.Unlock()
+	// Bump before the emit (see SetGoal): the emit stays under the held
+	// serializer per TestConcurrentGoalMutationsEmitInCommittedOrder.
+	s.bumpGoalEventGen()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
 }
@@ -211,6 +220,9 @@ func (s *Session) goalResumeWithRetarget(req goal.ResumeRequest, replacement str
 	s.goalWakeDelivered = nil
 	s.goalSupersededArmed = false
 	s.mu.Unlock()
+	// Bump before the emit (see SetGoal): the emit stays under the held
+	// serializer per TestConcurrentGoalMutationsEmitInCommittedOrder.
+	s.bumpGoalEventGen()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
 
@@ -1756,9 +1768,10 @@ func (s *Session) registerGoalWait(req goal.WaitKind, now time.Time) (goal.Wait,
 	}
 	snap, _ := s.getOrCreateGoalStore().Snapshot()
 	full, _ := s.getOrCreateGoalStore().GoalSnapshot()
+	gen := s.bumpGoalEventGen()
 	s.goalUpdateMu.Unlock()
-	s.emitGoalUpdated(snap)
-	s.emitGoalWaiting(full)
+	s.emitGoalUpdatedAtGen(snap, gen)
+	s.emitGoalWaitingAtGen(full, gen)
 	s.armGoalWaitTimer()
 	return w, true
 }
@@ -1776,8 +1789,9 @@ func (s *Session) registerGoalExpect(req goal.ExpectRequest, now time.Time) (goa
 		return goal.Condition{}, false
 	}
 	snap, _ := s.getOrCreateGoalStore().Snapshot()
+	gen := s.bumpGoalEventGen()
 	s.goalUpdateMu.Unlock()
-	s.emitGoalUpdated(snap)
+	s.emitGoalUpdatedAtGen(snap, gen)
 	return cond, true
 }
 
@@ -1800,11 +1814,12 @@ func (s *Session) CancelGoalWait(waitID string) bool {
 		return false
 	}
 	snap, _ := s.getOrCreateGoalStore().Snapshot()
+	gen := s.bumpGoalEventGen()
 	s.goalUpdateMu.Unlock()
 	// Emission parity with registerGoalWait/setGoalTerminal: cancelling the
 	// last live lease flips waiting->active, which observers must see. No
 	// emit on a miss (nothing changed).
-	s.emitGoalUpdated(snap)
+	s.emitGoalUpdatedAtGen(snap, gen)
 	s.armGoalWaitTimer()
 	return true
 }
@@ -2215,6 +2230,39 @@ func (s *Session) emitGoalUpdated(snap goal.Snapshot) {
 	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: &state})
 }
 
+// bumpGoalEventGen records one goal mutation's publication generation. Call
+// with goalUpdateMu held, alongside the mutation's snapshot read. The
+// returned generation travels with the snapshot to an unlock-then-emit site,
+// where the gated emit drops the event when a newer mutation has since
+// published; held-lock emit sites (SetGoal/ClearGoal/resume/setGoalTerminal)
+// bump for the same suppression effect and emit normally.
+func (s *Session) bumpGoalEventGen() uint64 {
+	return s.goalEventGen.Add(1)
+}
+
+// emitGoalUpdatedAtGen publishes one committed non-clear goal transition
+// unless a newer goal mutation has since published (gen < live generation).
+// The check runs just before the emit with no locks held; a race that slips
+// past it is benign — emitGoalUpdated re-reads the live full shape, so the
+// payload still carries current state. Call after goalUpdateMu is released.
+func (s *Session) emitGoalUpdatedAtGen(snap goal.Snapshot, gen uint64) {
+	if s.goalEventGen.Load() != gen {
+		return
+	}
+	s.emitGoalUpdated(snap)
+}
+
+// emitGoalWaitingAtGen publishes one EventGoalWaiting announcement for a
+// freshly parked goal unless a newer goal mutation has since published. Same
+// best-effort ordering as emitGoalUpdatedAtGen; an empty live-wait set still
+// emits nothing. Call after goalUpdateMu is released.
+func (s *Session) emitGoalWaitingAtGen(full goal.GoalSnapshot, gen uint64) {
+	if s.goalEventGen.Load() != gen {
+		return
+	}
+	s.emitGoalWaiting(full)
+}
+
 // emitCurrentGoalState snapshots and publishes the current store state. A
 // missing snapshot deliberately carries a nil Goal so JSON encodes goal:null.
 // This helper must never be called while Session.mu is held because emit reads
@@ -2239,6 +2287,56 @@ func (s *Session) setGoalTerminal(status goal.Status, reason string) (goal.Snaps
 		return goal.Snapshot{}, false
 	}
 	snap, _ := store.Snapshot()
+	// The emit runs under the held serializer (deferred Unlock), so it is
+	// inherently the newest at emit time — but the bump still matters: it
+	// marks this commit newer than any unlock-then-emit snapshot captured
+	// before it, suppressing their stale events.
+	s.bumpGoalEventGen()
 	s.emitGoalUpdated(snap)
 	return snap, true
+}
+
+// completeGoalIfConditionsSatisfied verifies the goal's registered stop-claim
+// conditions check-on-claim and completes only when every condition is
+// satisfied (spec §6), as one ordered unit under goalUpdateMu. It returns the
+// terminal snapshot, the failing condition desc ("" when satisfied or
+// condition-free), and whether the goal transitioned to complete.
+//
+// Locking: EvaluateExpectations is safe under goalUpdateMu — it copies the
+// substrate pointer under a short store hold and performs every substrate
+// lookup outside the store lock (see Store.EvaluateExpectations), so holding
+// the registration serializer across verify+commit matches the
+// registerGoalExpect precedent (registerGoalExpect holds goalUpdateMu across
+// RegisterExpect, whose own pre-pass uses the same outside-the-store-lock
+// substrate discipline). The substrate reads themselves (jobManager,
+// controller, s.mu-backed ask/env reads via StatFile/LookupApproval) are
+// point-in-time like every other goalUpdateMu-held registration path — never
+// held across a timer/gate claim — so no new lock order is introduced.
+// Holding the serializer closes the registration race: a concurrent
+// RegisterExpect or retargeting Set cannot interleave between the verify and
+// the commit, so a complete can never land on stale conditions.
+func (s *Session) completeGoalIfConditionsSatisfied(now time.Time) (goal.Snapshot, string, bool) {
+	s.goalUpdateMu.Lock()
+	defer s.goalUpdateMu.Unlock()
+	store := s.getOrCreateGoalStore()
+	full, ok := store.GoalSnapshot()
+	if !ok {
+		return goal.Snapshot{}, "", false
+	}
+	if len(full.Conditions) > 0 {
+		checks := store.EvaluateExpectations(full.Conditions)
+		if _, failing := goal.VerifyConditions(full.Conditions, checks); failing != "" {
+			return goal.Snapshot{}, failing, false
+		}
+	}
+	if !store.SetTerminal(goal.StatusComplete, "", now) {
+		return goal.Snapshot{}, "", false
+	}
+	snap, _ := store.Snapshot()
+	// Like setGoalTerminal: the emit runs under the held serializer, so it is
+	// inherently newest — the bump marks the commit for older
+	// unlock-then-emit snapshots still in flight.
+	s.bumpGoalEventGen()
+	s.emitGoalUpdated(snap)
+	return snap, "", true
 }

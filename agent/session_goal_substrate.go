@@ -2,6 +2,7 @@ package agent
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -243,25 +244,9 @@ func (g *goalSessionSubstrate) LookupChild(id string) bool {
 // numeric/DNS host parsing) was removed with the subtype (issue #1061).
 // The fetch-based watch type reintroduces it alongside the fetch leg.
 
-// itoa renders an int64 without importing strconv at this site.
+// itoa renders an int64 for the StatFile size baseline. It delegates to
+// strconv.FormatInt: the previous hand-rolled negation overflowed MinInt64
+// (-MinInt64 is unrepresentable, so n stayed negative and rendered "-").
 func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [32]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
+	return strconv.FormatInt(n, 10)
 }

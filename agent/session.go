@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
@@ -210,6 +211,15 @@ type Session struct {
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.
 	goalUpdateMu sync.Mutex
+	// goalEventGen is the monotonic goal-event generation: bumped under
+	// goalUpdateMu on every goal mutation that publishes a GOAL_UPDATED event,
+	// captured alongside the mutation's snapshot, and checked just before the
+	// emit. A newer generation means a newer mutation already published, so a
+	// stale emit suppresses itself instead of regressing consumers (spec §7
+	// commit order). Best-effort: a race that slips past the check still
+	// carries the emission-time re-read (emitGoalUpdated) or the current
+	// full-shape read (emitCurrentGoalState), never fabricated state.
+	goalEventGen atomic.Uint64
 
 	// --- native worktree occupancy (spec §7) ---
 	//

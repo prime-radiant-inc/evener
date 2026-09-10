@@ -343,7 +343,11 @@ func worktreeListingDigest(root string) string {
 		var mtime string
 		if fi, err := e.Info(); err == nil {
 			size = fi.Size()
-			mtime = fi.ModTime().UTC().Format("2006-01-02T15:04:05")
+			// Nanosecond precision, matching the StatFile baseline
+			// (session_goal_substrate.go): second precision collapses two
+			// writes in the same second to one digest line, misclassifying
+			// an advancing turn as stalled.
+			mtime = fi.ModTime().UTC().Format(time.RFC3339Nano)
 		}
 		fmt.Fprintf(&b, "file %s %d %s\n", name, size, mtime)
 	}

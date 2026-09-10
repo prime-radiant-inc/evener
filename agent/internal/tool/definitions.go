@@ -1132,9 +1132,13 @@ func DefGoalExpect() llm.ToolDefinition {
 				"target":        map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, or approval content key (until_approval: the two-half \"header\\x00question\" key; a bare single half matches only a header-empty-or-question-empty ask)."},
 				"event_subtype": map[string]any{"type": "string", "description": "until_event flavor (v1: file_modified only; http_match and external_label reject).", "enum": []string{"file_modified"}},
 				"matcher":       map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
-				"label":         map[string]any{"type": "string", "description": "Unused alias for desc (accepted, ignored)."},
-				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400,
-					"description": "Lease time-to-live in seconds (default 600, max 86400)."},
+				// NOTE: goal_expect takes no timeout_seconds or label.
+				// Conditions are check-on-claim (no lease TTL exists to set),
+				// and desc already names the condition — the removed fields
+				// promised behavior the verifier never reads, so the schema
+				// (additionalProperties:false) rejects them instead of
+				// silently ignoring them. goal_wait's timeout/label are live
+				// and untouched.
 			},
 			"required": []string{"desc"},
 		},

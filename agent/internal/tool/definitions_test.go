@@ -1139,9 +1139,20 @@ func TestDefGoalExpectShape(t *testing.T) {
 	}
 	required(t, def, "goal_expect", []string{"desc"})
 	props := def.Parameters["properties"].(map[string]any)
-	for _, prop := range []string{"desc", "kind", "target", "event_subtype", "matcher", "timeout_seconds"} {
+	for _, prop := range []string{"desc", "kind", "target", "event_subtype", "matcher"} {
 		if _, ok := props[prop]; !ok {
 			t.Fatalf("goal_expect missing property %q", prop)
+		}
+	}
+	// Dead-param removal (round-17 MEDIUM): timeout_seconds promised a TTL
+	// the check-on-claim verifier never reads, and label was read then
+	// discarded — both silently promised behavior that does not exist. The
+	// schema (additionalProperties:false) must not advertise them, so
+	// registry callers are rejected instead of silently ignored. goal_wait's
+	// timeout_seconds/label are live and pinned by TestDefGoalWaitShape.
+	for _, prop := range []string{"timeout_seconds", "label"} {
+		if _, ok := props[prop]; ok {
+			t.Fatalf("goal_expect must not advertise dead property %q", prop)
 		}
 	}
 	kind, ok := props["kind"].(map[string]any)

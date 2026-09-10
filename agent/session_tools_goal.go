@@ -42,12 +42,17 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 			// path. "blocked" never verifies (a stuck claim needs no
 			// proof).
 			if st == goal.StatusComplete {
-				if conds, ok := deps.goalGuard.Conditions(); ok && len(conds) > 0 {
-					checks := deps.goalGuard.EvaluateExpectations(conds)
-					if _, failing := goal.VerifyConditions(conds, checks); failing != "" {
-						return nil, fmt.Errorf("update_goal: condition %q is not satisfied; the goal stays active — satisfy it or keep working", failing)
-					}
+				snap, failing, changed := deps.goalGuard.CompleteIfSatisfied(deps.now())
+				if failing != "" {
+					return nil, fmt.Errorf("update_goal: condition %q is not satisfied; the goal stays active — satisfy it or keep working", failing)
 				}
+				if !changed {
+					return tool.StateResult{Output: "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered."}, nil
+				}
+				return tool.StateResult{
+					Output: "Goal marked " + statusStr + ".",
+					State:  goalStateView(snap),
+				}, nil
 			}
 
 			snap, changed := deps.goalGuard.SetTerminal(st, "", deps.now())
@@ -401,8 +406,9 @@ func goalStateView(snap goal.Snapshot) map[string]any {
 // validateGoalExpectArgs rejects a goal_expect shape before the generic JSON
 // schema validator renders its diagnostic, so direct handler callers get the
 // same contract. desc is required; kind defaults to a file check when empty
-// (the minimal v1 condition-query shape); the timeout range mirrors
-// goal_wait.
+// (the minimal v1 condition-query shape). Conditions are check-on-claim, so
+// there is no lease TTL to validate: timeout_seconds is not an expect field
+// (the schema rejects it; goal_wait's timeout is live and untouched).
 func validateGoalExpectArgs(args map[string]any) error {
 	desc, err := goalWaitStringArg(args, "desc")
 	if err != nil {
@@ -419,6 +425,15 @@ func validateGoalExpectArgs(args map[string]any) error {
 		switch goal.Kind(kind) {
 		case goal.WaitUntilJob, goal.WaitUntilDelegate, goal.WaitUntilApproval, goal.WaitUntilEvent, goal.WaitUntilChild:
 		default:
+			// until_time is a wait, not a claim condition: route it to the
+			// store's verifiable-state reason (mirroring
+			// expectKindRejected's WaitUntilTime message) instead of the
+			// generic unknown-kind. Every other unknown kind keeps the
+			// terse generic message byte-identical — naming the known
+			// non-registrable kinds would invite models to try them.
+			if goal.Kind(kind) == goal.WaitUntilTime {
+				return fmt.Errorf("invalid_request: condition kind %q is not verifiable (must query durable state, not time)", kind)
+			}
 			return fmt.Errorf("invalid_request: unknown condition kind %q (must be until_job | until_delegate | until_event)", kind)
 		}
 		// v1 restriction (fix-1/4 I1): registrable goal_expect kinds are
@@ -461,9 +476,6 @@ func validateGoalExpectArgs(args map[string]any) error {
 	if strings.TrimSpace(target) == "" {
 		return fmt.Errorf("invalid_request: target is required for condition kind %q", effKind)
 	}
-	if _, err := goalWaitTimeoutArg(args); err != nil {
-		return err
-	}
 	matcher, err := goalWaitStringArg(args, "matcher")
 	if err != nil {
 		return err
@@ -494,7 +506,11 @@ func validateGoalExpectArgs(args map[string]any) error {
 
 // decodeGoalExpectArgs converts a goal_expect call into an ExpectRequest.
 // Empty kind defaults to a file_modified check on target (the minimal v1
-// condition-query shape: desc + file path).
+// condition-query shape: desc + file path). The stored predicate carries no
+// Timeout (conditions never park, so no TTL exists) and no label (desc
+// already names the condition): timeout_seconds/label args are not read —
+// registry callers are rejected by the schema, direct callers silently
+// ignore them.
 func decodeGoalExpectArgs(args map[string]any) (goal.ExpectRequest, error) {
 	if err := validateGoalExpectArgs(args); err != nil {
 		return goal.ExpectRequest{}, err
@@ -504,9 +520,6 @@ func decodeGoalExpectArgs(args map[string]any) (goal.ExpectRequest, error) {
 	target, _ := goalWaitStringArg(args, "target")
 	subtype, _ := goalWaitStringArg(args, "event_subtype")
 	matcher, _ := goalWaitStringArg(args, "matcher")
-	label, _ := goalWaitStringArg(args, "label")
-	timeout, _ := goalWaitTimeoutArg(args)
-	_ = label
 	if kind == "" {
 		kind = string(goal.WaitUntilEvent)
 	}
@@ -518,7 +531,6 @@ func decodeGoalExpectArgs(args map[string]any) (goal.ExpectRequest, error) {
 		Predicate: goal.WaitKind{
 			Kind:         goal.Kind(kind),
 			Target:       target,
-			Timeout:      timeout,
 			Matcher:      matcher,
 			EventSubtype: goal.EventSubtype(subtype),
 		},
