@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -103,6 +104,35 @@ func TestFirstUserTurnIsPrecededByEnvironmentContext(t *testing.T) {
 	}
 	if !strings.Contains(turns[envIdx].Message.Text(), "<environment_context>") {
 		t.Fatalf("environment turn content: %q", turns[envIdx].Message.Text())
+	}
+}
+
+func TestEnvironmentContextCrossesLiveEventBoundaryBeforeUserInput(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t)
+	sendOneUserInput(t, s, "hello")
+	var kinds []events.EventKind
+	for {
+		select {
+		case event := <-s.Events():
+			kinds = append(kinds, event.Kind)
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	environment, user := -1, -1
+	for i, kind := range kinds {
+		if kind == events.EventEnvironment && environment == -1 {
+			environment = i
+		}
+		if kind == events.EventUserInput && user == -1 {
+			user = i
+		}
+	}
+	if environment == -1 || user == -1 || environment >= user {
+		t.Fatalf("live events must expose environment before user input: environment=%d user=%d kinds=%v", environment, user, kinds)
 	}
 }
 
