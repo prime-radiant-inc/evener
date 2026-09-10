@@ -97,17 +97,27 @@ test("delegate continuation expands child data at an unchanged projection revisi
   expect(entry.delegate.status).toBe("completed");
 });
 
-test("legacy delegates aggregate their turn work without becoming unavailable", () => {
-  const current = tree([delegate()], "next");
-  const legacy = delegate(undefined, 2);
-  delete legacy.delegate.type;
-  legacy.delegate.branch = {};
-  legacy.delegate.turns = [shell("turn").job];
-  const parsed = parseActivityTree(tree([legacy]));
-  if (!parsed) throw new Error("legacy activity tree did not parse");
+test("turn-based delegates aggregate their work without becoming unavailable", () => {
+  const current = tree([shell("earlier")], "next");
+  const withTurns = delegate(undefined, 2);
+  delete withTurns.delegate.type;
+  withTurns.delegate.branch = {};
+  withTurns.delegate.turns = [shell("turn").job];
+  const parsed = parseActivityTree(tree([withTurns]));
+  if (!parsed) throw new Error("turn-based activity tree did not parse");
   const result = graftContinuationTree(current, "session:root", parsed);
-  expect(result.root.counts).toEqual({ active: 0, failed: 0, completed: 1, complete: true });
+  expect(result.root.counts).toEqual({ active: 0, failed: 0, completed: 2, complete: true });
   expect(result.root.aggregate).toBe("ended");
+});
+
+test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
+  const entry = delegate();
+  const raw = tree([entry]);
+  const parsed = parseActivityTree({
+    ...raw,
+    root: { ...raw.root, entries: [{ ...entry, delegate: { ...entry.delegate, turns } }] },
+  });
+  expect(parsed?.root.entries[0]?.kind).toBe("delegate");
 });
 
 test("continuation data does not regress a newer delegate projection", () => {
