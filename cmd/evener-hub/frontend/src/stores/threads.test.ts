@@ -3365,17 +3365,43 @@ describe("notification routing differential (randomized: index vs scan reference
 
     let clock = 10_000;
     const history: AnyNotification[] = [];
+    // Input-only ledger, independent of both reducers and routing helpers.
+    // Each pane/watch starts empty; starts and completions introduce turn ids,
+    // while item notifications never create turns. These turn generators carry
+    // refs, which take precedence over their deliberately contradictory ids.
+    const diagnosticLedger = [...refs, "ref_a"].map((ref) => ({ ref, turns: new Set<string>() }));
     for (let i = 0; i < 200; i += 1) {
       const n = pick(generators)();
       history.push(n);
       clock += 7;
+      const expectedDiagnostics: string[][] = [];
+      if (n.method === "turn/started" || n.method === "turn/completed") {
+        for (const entry of diagnosticLedger) {
+          if (entry.ref !== n.params.ref) continue;
+          if (n.method === "turn/started" && entry.turns.has(n.params.turn.id)) {
+            expectedDiagnostics.push([
+              `applyNotification: turn/started turnId ${n.params.turn.id} already exists in model.turns — replacing it in place instead of appending a duplicate row (turn-id-uniqueness invariant violated)`,
+            ]);
+          }
+          entry.turns.add(n.params.turn.id);
+        }
+      }
       const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(clock);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
         fake.emitNotification(n);
+        expect(errorSpy.mock.calls, `store diagnostics at notification ${i}`).toEqual(expectedDiagnostics);
       } finally {
         dateNowSpy.mockRestore();
+        errorSpy.mockRestore();
       }
-      scanFold(reference, n, clock, new Set());
+      const referenceErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        scanFold(reference, n, clock, new Set());
+        expect(referenceErrorSpy.mock.calls, `scan diagnostics at notification ${i}`).toEqual(expectedDiagnostics);
+      } finally {
+        referenceErrorSpy.mockRestore();
+      }
       // The index must stay in lockstep with the maps after every fold, not
       // just at the end: a skipped re-index must fail at the frame that
       // skipped it, not only if a later random frame observes the staleness.
