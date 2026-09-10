@@ -31,6 +31,10 @@ export interface ActivitySummaryEntry {
   mountedBodies: number;
   loading: boolean;
   lastFetchedBump?: number | null;
+  // Keep the request's ordering value when a continuation invalidates freshness.
+  requestedBump?: number | null;
+  // A published root or continuation satisfies this request generation.
+  hasPublishedResult?: boolean;
   requestID: number;
   pendingBump?: PendingRootFetch;
 }
@@ -49,6 +53,7 @@ export interface ActivitySummaryStoreState {
   ): number | null;
   publishRootFetch(ref: string, requestID: number, counts: ActivityCounts): void;
   publishContinuationCounts(ref: string, requestID: number, counts: ActivityCounts): void;
+  publishContinuationFailure(ref: string, requestID: number): void;
   failRootFetch(ref: string, requestID: number): void;
   resetForTests(): void;
 }
@@ -129,6 +134,8 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         established: true,
         loading: true,
         lastFetchedBump: bump,
+        requestedBump: bump,
+        hasPublishedResult: false,
         requestID,
         pendingBump: undefined,
       });
@@ -145,16 +152,17 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       // against the IN-FLIGHT bump and anything already queued (bumps are
       // reducer-side Date.now() stamps, so larger is newer; a null bump
       // carries no ordering claim and yields to a number); force survives
-      // whichever record wins. A non-forced call that is not provably newer
-      // than the fetch already running queues nothing - reissuing an older
-      // bump would regress lastFetchedBump and could replace a good result.
+      // whichever record wins. A failed continuation also permits a retry of
+      // the same bump. Older non-forced calls queue nothing: reissuing one
+      // would regress lastFetchedBump and could replace a good result.
       set((state) => {
         const entry = state.entries.get(ref);
         if (!entry?.loading) return state;
         const newerThanInFlight =
           bump !== null &&
-          (entry.lastFetchedBump === null || entry.lastFetchedBump === undefined || bump > entry.lastFetchedBump);
-        if (!force && !newerThanInFlight) return state;
+          (entry.requestedBump === null || entry.requestedBump === undefined || bump > entry.requestedBump);
+        const retryInvalidated = entry.lastFetchedBump === undefined && bump === entry.requestedBump;
+        if (!force && !newerThanInFlight && !retryInvalidated) return state;
         const incoming: PendingRootFetch = { bump, force, fetch, onFailure };
         const previous = entry.pendingBump;
         const incomingWins = !previous || previous.bump === null || (bump !== null && bump >= previous.bump);
@@ -183,6 +191,8 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     };
     const ownsPanel = () => activityPanelStore.getState().entries.get(ref)?.requestID === panelRequestID;
     const settleSupersededRoot = () => {
+      // The continuation owns freshness: failure permits another root,
+      // while success must retain loaded pages when the panel closes.
       get().failRootFetch(ref, requestID);
       issuePendingBump();
     };
@@ -225,7 +235,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       const entry = state.entries.get(ref);
       if (!entry || entry.requestID !== requestID) return state;
       const entries = new Map(state.entries);
-      entries.set(ref, { ...entry, counts, loading: false });
+      entries.set(ref, { ...entry, counts, loading: false, hasPublishedResult: true });
       return { entries };
     });
   },
@@ -235,7 +245,17 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       const entry = state.entries.get(ref);
       if (!entry || entry.requestID !== requestID) return state;
       const entries = new Map(state.entries);
-      entries.set(ref, { ...entry, counts });
+      entries.set(ref, { ...entry, counts, lastFetchedBump: entry.requestedBump, hasPublishedResult: true });
+      return { entries };
+    });
+  },
+
+  publishContinuationFailure(ref, requestID) {
+    set((state) => {
+      const entry = state.entries.get(ref);
+      if (!entry || entry.requestID !== requestID || entry.hasPublishedResult) return state;
+      const entries = new Map(state.entries);
+      entries.set(ref, { ...entry, lastFetchedBump: undefined });
       return { entries };
     });
   },
