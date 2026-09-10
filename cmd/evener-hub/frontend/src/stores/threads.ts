@@ -1119,13 +1119,6 @@ export function appendFrameTime(times: number[], now: number): number[] {
   return next.length > FRAME_TIMES_MAX_ENTRIES ? next.slice(next.length - FRAME_TIMES_MAX_ENTRIES) : next;
 }
 
-// buildInput assembles the wire turn/start|steer|queue|drainAsSteer input
-// array: an optional leading text item (queueText allows empty/whitespace-
-// only text when attachments are present - parity finding §B, "image-only
-// queue entries are valid" - so this only omits the text item, never
-// rejects the call), then one image item per attachment. The text arrives
-// verbatim: any new SUBMIT path through here owes it the same
-// translateAttachmentMarkers pass composerMutationIntent applies.
 function attachmentBlob(attachment: InputAttachment): Blob {
   const bytes = Uint8Array.from(atob(attachment.data), (character) => character.charCodeAt(0));
   return new Blob([bytes], { type: attachment.mediaType });

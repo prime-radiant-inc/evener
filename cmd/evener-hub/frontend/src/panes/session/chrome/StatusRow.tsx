@@ -60,7 +60,7 @@ const CLASS = {
 // listbox to save a border.
 //
 // The effective ladder is the model's own named levels, or - when it reasons
-// but names none - the DEFAULT_EFFORT_LEVELS fallback: the wire really can emit
+// but names none - the sessionEffortLevels fallback: the wire really can emit
 // supportsReasoning:true with an empty ladder (the daemon's Profile sets
 // p.reasoning and p.effortLevels from independent conditions,
 // agent/provider/profile.go:454 vs :442; the reducer coerces the absent ladder
