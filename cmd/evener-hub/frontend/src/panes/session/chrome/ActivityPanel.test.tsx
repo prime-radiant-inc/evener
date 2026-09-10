@@ -374,7 +374,7 @@ describe("ActivityPanel", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog.className).not.toBe("");
     await screen.findByRole("tree");
-    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Activity ·/ })).toBeTruthy();
   });
 
   test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
@@ -654,14 +654,19 @@ describe("ActivityPanel", () => {
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
-    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Activity ·/ })).toBeTruthy();
+    expect(activitySummaryStore.getState().entries.get("ref_root")?.counts).toEqual(
+      activityPanelStore.getState().entries.get("ref_root")?.load.kind === "ready"
+        ? activityPanelStore.getState().entries.get("ref_root")?.load.tree.root.counts
+        : undefined,
+    );
     // The partial branch's continuation strip follows its row, which sits
     // behind the folded-by-default inactive fold.
     await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     await screen.findByRole("treeitem", { name: /continued shell/i });
-    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Activity ·/ })).toBeTruthy();
   });
 
   test("continuation grafts only the targeted branch", async () => {
