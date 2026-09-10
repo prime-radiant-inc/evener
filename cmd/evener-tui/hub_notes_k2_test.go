@@ -46,6 +46,51 @@ func TestRunHubNotesEmptyArgsShowsUsage(t *testing.T) {
 	}
 }
 
+// TestRunHubNotesQuotedClearSetsLiteral verifies the bare-`clear`
+// reservation keeps an escape path: `/notes "clear"` (or single-quoted)
+// sets the literal word instead of wiping the note. Only the exact quoted
+// word unquotes — quoting is an opt-in escape, not a string syntax.
+func TestRunHubNotesQuotedClearSetsLiteral(t *testing.T) {
+	var calls []appwire.NotesHumanSetParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodNotesHumanSet, func(_ context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+			calls = append(calls, params)
+			return appwire.NotesHumanSetResponse{Note: params.Note}, nil
+		})
+	})
+	defer cleanup()
+	m := newSessionHubModel(client)
+	m.detail.Live = true
+	m.detail.HumanNote = "existing note"
+
+	for _, quoted := range []string{`"clear"`, `'clear'`, `  "clear"  `} {
+		calls = nil
+		cmd := m.runHubNotes(quoted)
+		if cmd == nil {
+			t.Fatalf("%q should produce a cmd", quoted)
+		}
+		msg, ok := cmd().(hubNotesMsg)
+		if !ok || msg.err != nil || msg.cleared {
+			t.Fatalf("%q result = %#v, want a non-clear set", quoted, msg)
+		}
+		if len(calls) != 1 || calls[0].Note != "clear" {
+			t.Fatalf("%q calls = %#v, want one literal-word mutation", quoted, calls)
+		}
+	}
+	// Quoting anything else is verbatim: no string syntax is implemented.
+	calls = nil
+	cmd := m.runHubNotes(`"hello world"`)
+	if cmd == nil {
+		t.Fatal(`quoted phrase should produce a cmd`)
+	}
+	if msg, ok := cmd().(hubNotesMsg); !ok || msg.err != nil {
+		t.Fatalf("quoted phrase result = %#v, want success", msg)
+	}
+	if len(calls) != 1 || calls[0].Note != `"hello world"` {
+		t.Fatalf("quoted phrase calls = %#v, want the quotes verbatim", calls)
+	}
+}
+
 // TestRunHubNotesClearClears verifies the K2 companion: `/notes clear` still
 // clears via an empty-note mutation.
 func TestRunHubNotesClearClears(t *testing.T) {

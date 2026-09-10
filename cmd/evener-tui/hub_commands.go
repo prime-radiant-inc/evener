@@ -1159,10 +1159,12 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 	}
 }
 
-// runHubNotes dispatches the /notes command: `clear` clears the human note
-// and anything else sets it as the note text. Empty args show usage instead
-// of clearing: a palette-invoked /notes with no text must never wipe the
-// note (nor wake the agent with a steer for a clear nobody asked for).
+// runHubNotes dispatches the /notes command: a bare `clear` clears the human
+// note and anything else sets it as the note text — including the literal
+// word "clear", which needs an explicit escape (`/notes "clear"`) since the
+// bare word is reserved. Empty args show usage instead of clearing: a
+// palette-invoked /notes with no text must never wipe the note (nor wake the
+// agent with a steer for a clear nobody asked for).
 func (m *hubModel) runHubNotes(args string) tea.Cmd {
 	if !m.detail.Live {
 		m.addSessionSystem("Note editing is not available for this session.")
@@ -1179,10 +1181,26 @@ func (m *hubModel) runHubNotes(args string) tea.Cmd {
 		return nil
 	}
 	note := arg
-	if strings.EqualFold(arg, "clear") {
+	if arg == "clear" {
 		note = ""
+	} else if unquoted, ok := hubNotesUnquote(arg); ok {
+		note = unquoted
 	}
 	return sendHubNotes(m.client, ref, note, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
+}
+
+// hubNotesUnquote strips one pair of matching single or double quotes, so the
+// bare-`clear` reservation keeps an escape path for the literal word. Anything
+// else passes through untouched: quoting is an opt-in escape, not a string
+// syntax — `/notes "hello world"` sets the quotes verbatim.
+func hubNotesUnquote(arg string) (string, bool) {
+	if len(arg) >= 7 && strings.HasPrefix(arg, `"clear"`) && strings.TrimSpace(arg[7:]) == "" {
+		return "clear", true
+	}
+	if len(arg) >= 7 && strings.HasPrefix(arg, `'clear'`) && strings.TrimSpace(arg[7:]) == "" {
+		return "clear", true
+	}
+	return "", false
 }
 
 // hubNotesIdleWakeWarning names the turn/steer cost of saving on an idle

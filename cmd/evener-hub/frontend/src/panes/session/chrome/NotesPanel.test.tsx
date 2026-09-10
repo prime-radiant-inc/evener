@@ -136,6 +136,20 @@ test("live session with notes shows editor, agent note and remove", () => {
   expect(screen.getByTestId("shared-notes-url-remove-u1")).toBeTruthy();
 });
 
+test("web links show the destination URL beside an agent-controlled label", () => {
+  openPanel(
+    testModel({
+      sessionUrls: [{ id: "u1", url: "https://evil.test/phish", label: "Trusted docs" }],
+    }),
+  );
+  const row = screen.getByTestId("shared-notes-url-u1");
+  // The label links onward, but the destination URL stays visible beside it:
+  // a trusted-looking label must never display alone over a phishing URL.
+  expect(row.querySelector("a")?.getAttribute("href")).toBe("https://evil.test/phish");
+  expect(row.textContent).toMatch(/Trusted docs/);
+  expect(row.textContent).toMatch(/https:\/\/evil\.test\/phish/);
+});
+
 test("live-empty session shows an empty editor with placeholder", () => {
   openPanel(testModel());
   expect(editor().value).toBe("");
@@ -318,7 +332,7 @@ test("a B-save parking behind an in-flight A-save persists instead of overwritin
   expect(threadsStore.getState().threads.get(modelB.ref)?.humanNote).toBe("draft B2");
 });
 
-test("a draft parked behind a failed save is kept and retried on the next blur", async () => {
+test("a failed save retries on the next blur with the latest draft", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   const seen: unknown[] = [];
@@ -343,8 +357,9 @@ test("a draft parked behind a failed save is kept and retried on the next blur",
   await user.type(editor(), "first draft");
   await user.tab();
   await screen.findAllByText(/first save boom/i);
-  // A newer draft typed after the failure must survive it: the next blur
-  // retries the queue and lands on the newest text.
+  // A newer draft typed after the failure retries on the next explicit save
+  // (the failure itself never requeues into the same drain): the next blur
+  // lands the newest text.
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "second draft");
@@ -352,6 +367,36 @@ test("a draft parked behind a failed save is kept and retried on the next blur",
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
+});
+
+test("a persistently failing save does not hot-loop the same drain", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("notes/human/set", () => {
+    calls += 1;
+    throw new Error("always boom");
+  });
+
+  const model = testModel({ humanNote: "old note" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "doomed draft");
+  await user.tab();
+  await screen.findAllByText(/always boom/i);
+  // The failed drain settles after exactly one attempt: no requeue means no
+  // request/toast/saving storm, and the loop is free for the next explicit
+  // save. The draft stays put for the user to retry.
+  await waitFor(() => expect(screen.queryByTestId("shared-notes-saving")).toBeNull());
+  expect(calls).toBe(1);
+  expect(editor().value).toBe("doomed draft");
 });
 
 // --- failure keeps the draft ---------------------------------------------------

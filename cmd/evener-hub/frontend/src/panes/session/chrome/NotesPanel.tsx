@@ -224,9 +224,10 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
       // later B-failure must not erase an earlier A-success), and each
       // failure is recorded beside its own ref (a newer A-save succeeding in
       // the same drain must not leave the older A-failure queued to overwrite
-      // it on retry). A failure requeues only when its queue entry has not
-      // been superseded: requestSave always parks the latest draft, so a
-      // requeue is valid only while the queue still holds no newer text.
+      // it on retry). A failure does NOT requeue into this drain: retrying it
+      // here would hot-loop a persistently failing RPC (request, toast, and
+      // saving state forever). The draft stays in the textarea, so the next
+      // explicit save (e.g. the next blur) retries with the latest text.
       const savedRefs = new Set<string>();
       const failedMessages = new Map<string, string>();
       for (;;) {
@@ -239,13 +240,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
           await threadsStore.getState().setHumanNote(nextRef, nextNote);
         } catch (err) {
           const message = sessionActionError("Couldn't save note", err);
-          // The textarea still shows unsaved content, so the failure stays
-          // queued for the next requestSave (e.g. the next blur) to retry —
-          // but only when no newer draft for the session arrived meanwhile:
-          // requestSave parks the latest text in the queue, so a present
-          // entry supersedes this failure and the retry must use it.
           failedMessages.set(nextRef, message);
-          if (!dirtyRef.current.has(nextRef)) dirtyRef.current.set(nextRef, nextNote);
           if (uiRef.current === nextRef) setError(message);
           toasts.push("error", message);
           continue;
@@ -372,9 +367,16 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
               {model.sessionUrls.map((url) => (
                 <li key={url.id} className={CLASS.linkRow} data-testid={`shared-notes-url-${url.id}`}>
                   {isWebHref(url.url) ? (
-                    <a href={url.url} target="_blank" rel="noopener noreferrer">
-                      {url.label || url.url}
-                    </a>
+                    // The destination stays visible beside an agent-controlled
+                    // label: a trusted-looking label over a phishing URL must
+                    // never display the label alone. Matches the file-link and
+                    // TUI `label (URL) [id]` shape.
+                    <span>
+                      <a href={url.url} target="_blank" rel="noopener noreferrer">
+                        {url.label || url.url}
+                      </a>{" "}
+                      {url.label !== "" && <span className={CLASS.linkUrl}>{url.url}</span>}
+                    </span>
                   ) : (
                     <span>
                       {url.label || url.url} <span className={CLASS.linkUrl}>{url.url}</span>

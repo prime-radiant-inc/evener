@@ -370,6 +370,19 @@ func (s *Session) deliverAdoptedNotesSteer(lease *clientMutationLease, outerID s
 	if adopted.stored == "" {
 		text = "human updated their whiteboard: (whiteboard cleared)"
 	}
+	// A journal-fault adoption claimed a metadata-committed intent with no
+	// journal marker: consume it BEFORE accepting the steer, so a cleanup
+	// failure can never restore an intent for a steer that already landed
+	// (which a later same-value save would re-adopt and inject twice). A
+	// journal-marker adoption has no intent under its own ID and this is a
+	// no-op. On a consume failure nothing has been accepted yet, so the
+	// intent stands and recovery adopts it exactly as before.
+	if adopted.outerID != strings.TrimSpace(outerID) {
+		if err := s.consumePendingNotesHumanDurable(adopted.outerID); err != nil {
+			lease.Release()
+			return adopted.stored, err
+		}
+	}
 	innerID := strings.TrimSpace(outerID) + "/note-steer"
 	steerID, err := s.acceptNotesSteer(s.lookupSteerID(outerID, innerID, lease), text)
 	if err != nil {
@@ -383,20 +396,6 @@ func (s *Session) deliverAdoptedNotesSteer(lease *clientMutationLease, outerID s
 	s.setSteeringKindOnRecord(steerID, events.SteeringKindHumanNote)
 	s.annotateSteeringKind(steerID, events.SteeringKindHumanNote)
 	s.clearNotesDeliveryPending(adopted.outerID, adopted.stored)
-	// A journal-fault adoption claimed a metadata-committed intent with no
-	// journal marker: spend it now that this attempt's steer accepted, so a
-	// later retry cannot deliver the same value twice. A journal-marker
-	// adoption has no intent under its own ID and this is a no-op. The spend
-	// is durable — the next metadata save persists its absence — because a
-	// crash before that save would otherwise leave the consumed intent
-	// alongside this attempt's in-flight record, and a later same-value
-	// mutation after restart would adopt it and steer twice.
-	if adopted.outerID != strings.TrimSpace(outerID) {
-		if err := s.consumePendingNotesHumanDurable(adopted.outerID); err != nil {
-			lease.Release()
-			return adopted.stored, err
-		}
-	}
 	return s.applyNotesHumanSetResult(lease, outerID, adopted.stored)
 }
 
