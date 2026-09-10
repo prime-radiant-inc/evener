@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/rendezvous"
@@ -119,6 +121,54 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 				t.Fatalf("forkFromTurn=%v, want %v (thread=%+v)", got.Evener.Capabilities.ForkFromTurn, tc.wantFork, got)
 			}
 		})
+	}
+}
+
+func TestHubRPCPersistedSubagentCannotReadvertiseOrFork(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-subagent-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.IsSubagent = true
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{IncludeSubagents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Data) != 1 || list.Data[0].Evener.Capabilities.ForkFromTurn {
+		t.Fatalf("persisted subagent list capability=%+v, want fork disabled", list.Data)
+	}
+	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.Capabilities.ForkFromTurn {
+		t.Fatalf("persisted subagent read advertised fork: %+v", read.Thread.Evener.Capabilities)
+	}
+	if _, err := client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "fork"}); err == nil {
+		t.Fatal("persisted subagent fork succeeded")
+	}
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := past.Find(sessionID); !ok {
+		t.Fatal("parent subagent disappeared after rejected fork")
 	}
 }
 
