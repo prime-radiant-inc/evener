@@ -87,12 +87,19 @@ func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 			SteeringKind: events.SteeringKindInterrupted,
 		}},
 	}
-	turns := requireItemTurnsFromFile(t, writeEntries(t, entries...), testMaxLineBytes, sequentialTestProjector())
-	if len(turns) != 1 {
-		t.Fatalf("grouped turns = %d, want one interrupted logical turn", len(turns))
-	}
-	if turns[0].Status != appwire.TurnStatusInterrupted {
-		t.Fatalf("grouped turn status = %q, want interrupted", turns[0].Status)
+	path := writeEntries(t, entries...)
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, boundedTestProjector)
+	for name, turns := range map[string][]appwire.Turn{
+		"full":    full,
+		"indexed": page.Turns,
+	} {
+		if len(turns) != 1 {
+			t.Fatalf("%s grouped turns = %d, want one interrupted logical turn", name, len(turns))
+		}
+		if turns[0].Status != appwire.TurnStatusInterrupted {
+			t.Fatalf("%s grouped turn status = %q, want interrupted", name, turns[0].Status)
+		}
 	}
 }
 
