@@ -134,8 +134,9 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 	var steps []Step
 	stepID := 1
 	var totalPrompt, totalCompletion, totalCached int
+	consumedToolResults := make(map[int]bool)
 
-	for i := 0; i < len(entries); i++ {
+	for i := range entries {
 		entry := entries[i]
 		turn := entry.Turn
 
@@ -161,7 +162,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 				resultIndex++
 			}
 			if resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnToolResults {
-				i = resultIndex
+				consumedToolResults[resultIndex] = true
 				obs, errMap, durMap := convertToolResults(entries[resultIndex].Turn)
 				step.Observation = obs
 				if len(errMap) > 0 {
@@ -226,6 +227,9 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			stepID++
 
 		case schema.TurnToolResults:
+			if consumedToolResults[i] {
+				continue
+			}
 			// Orphaned TOOL_RESULTS (not preceded by ASSISTANT). ATIF forbids an
 			// observation on a non-agent step and requires every observation
 			// source_call_id to reference a tool_call in the same step. These
