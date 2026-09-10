@@ -315,14 +315,15 @@ type adoptedNotesDelivery struct {
 // the claim joins the same serialized unit as the mutation and its emission,
 // so two concurrent same-value saves cannot both adopt the same record.
 //
-// It returns ok=false when nothing is adoptable: this attempt is itself a
-// takeover retry (handled above), its own normalized value differs from every
-// pending record's recorded value, its outer ID already carries delivery, or
-// no other pending record exists.
+// It returns ok=false when nothing is adoptable: its own normalized value
+// differs from every pending record's recorded value, its outer ID already
+// carries delivery, or no other pending record exists. Retries (generation
+// above 1) adopt here too: completeNotesHumanSet handles a retry's OWN
+// markers first, so reaching this scan means this attempt carries no delivery
+// of its own — but another attempt's still-pending same-value delivery (a
+// refused steer, a journal fault) still needs a driver, and this retry is
+// the one that must resume it instead of converging on silent success.
 func (s *Session) adoptPendingNotesDelivery(outerID, note string, lease *clientMutationLease) (adopted adoptedNotesDelivery, ok bool) {
-	if lease != nil && lease.attemptGeneration > 1 {
-		return adoptedNotesDelivery{}, false
-	}
 	if s.clientMutations == nil {
 		return adoptedNotesDelivery{}, false
 	}
@@ -733,7 +734,10 @@ func (s *Session) consumePendingNotesHumanDurable(outerID string) error {
 	// refused — stranding the delivery the caller still owes.
 	s.metaSaveMu.Lock()
 	defer s.metaSaveMu.Unlock()
-	if err := s.autoSaveMetaLocked(); err != nil {
+	// persistNotesMetaLocked (not autoSaveMetaLocked directly) so the
+	// test-injected autosave fault fires here too: a spend the save refuses
+	// must restore the intent and surface, like every other mutation save.
+	if err := s.persistNotesMetaLocked(); err != nil {
 		s.mu.Lock()
 		if s.pendingNotesHuman == nil {
 			s.pendingNotesHuman = make(map[string]schema.PendingNotesHuman)

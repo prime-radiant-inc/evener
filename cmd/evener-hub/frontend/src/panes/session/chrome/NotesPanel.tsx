@@ -186,6 +186,20 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   draftRef.current = draft;
   const modelNoteRef = useRef(model.humanNote);
   modelNoteRef.current = model.humanNote;
+  // failedNoteRef remembers, per session, the exact normalized draft text
+  // whose save last failed. The passive flushes below (session-switch,
+  // live-to-ended) must not re-attempt that same text: the failure already
+  // surfaced inline + toast, and the loop deliberately does not requeue
+  // failures (retrying them would hot-loop a persistently failing RPC).
+  // Only an EXPLICIT save — a blur carrying text that differs from the
+  // failed text — retries, via the next-blur path. Keyed per session so a
+  // failure for A never suppresses a flush for B.
+  const failedNoteRef = useRef(new Map<string, string>());
+  // convergedSavesRef remembers sessions this panel actually persisted (or
+  // saw converge after a failure). An explicit blur that finds the draft
+  // already converged reports Saved for those sessions; a session the panel
+  // never saved stays silent on a no-op blur instead of claiming credit.
+  const convergedSavesRef = useRef(new Set<string>());
   // uiRef is the session the status line currently describes. The loop only
   // touches saving/saved/error while its session is still mounted: without
   // the guard a slow save for session A settling after the switch to B would
@@ -227,10 +241,9 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
     return state.threads.get(ref)?.humanNote ?? state.watchedThreads.get(ref)?.humanNote;
   }
 
-  // requestSave persists note for ref unless its NORMALIZED form already
-  // matches the latest stored text, coalescing with an in-flight save: a
+  // requestSave persists note for ref, coalescing with an in-flight save: a
   // second request while one is running parks its draft in the per-session
-  // queue, and the loop drains every queued session before settling -
+  // queue, and the loop drains every queued session before settling —
   // focus-blur-focus-blur on a slow RPC converges on the latest text instead
   // of losing the newer keystrokes, and a B-save behind an in-flight A-save
   // persists in turn rather than overwriting A's draft. Sequential
@@ -238,17 +251,40 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   // drains land in queue order. The wire payload is normalized (not the raw
   // textarea text), matching what the daemon stores; comparisons run on the
   // same normalized form so a settled draft reads back equal.
+  //
+  // The equal-branch queues while a loop is active instead of returning: the
+  // draft may equal the CURRENT store value while the store is still
+  // converging on an in-flight save (stored A, B in flight, user reverts to
+  // A), and dropping the A intent would leave B persisted instead. The
+  // drain-time equality check then skips entries the store already
+  // converged with — unless this session's loop already persisted text in
+  // this drain, in which case the entry is this drain's own revert and must
+  // still persist (see the drain body).
   function requestSave(ref: string, note: string) {
     const normalized = normalizeNote(note);
-    // Matching the store means nothing to persist — but only when no save
-    // loop is running. While a loop is active the draft is queued even when
-    // it equals the CURRENT store value: the store may still be converging
-    // on an in-flight save (stored A, B pending, user reverts to A), and
-    // dropping the A intent would leave B persisted instead.
     if (normalized === normalizeNote(storedNote(ref) ?? "")) {
-      if (saveLoop.current === null) dirtyRef.current.delete(ref);
+      if (saveLoop.current === null) {
+        // Nothing to persist and no loop to converge with: drop any stale
+        // queued entry (e.g. a kept failure the store has since converged
+        // with via push) so it can never block the Saved guard. When this
+        // panel already persisted (or converged) the session, the no-op
+        // still reports Saved — the draft matches the store because of
+        // this panel's own earlier success, not a coincidence.
+        dirtyRef.current.delete(ref);
+        if (uiRef.current === ref && convergedSavesRef.current.has(ref)) {
+          setSaving(false);
+          setSaved(true);
+          setError(null);
+        }
+        return;
+      }
+      dirtyRef.current.set(ref, normalized);
       return;
     }
+    // A new (non-equal) draft supersedes any recorded failure for the
+    // session: the next explicit save retries with the latest text, and the
+    // passive flushes below must not treat it as already-failed.
+    failedNoteRef.current.delete(ref);
     dirtyRef.current.set(ref, normalized);
     if (saveLoop.current !== null) return;
     if (uiRef.current === ref) {
@@ -271,26 +307,50 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
         const next = dirtyRef.current.entries().next();
         if (next.done) break;
         const [nextRef, nextNote] = next.value;
-        dirtyRef.current.delete(nextRef);
         // The equality check runs ONLY at drain time, on the queued entry —
         // never at queue time (requestSave parks even a currently-equal draft
         // while a loop is active, so a revert during an in-flight save is not
         // lost). Queued payloads are already normalized; the stored side
-        // normalizes here so both sides compare post-collapse.
-        if (nextNote === normalizeNote(storedNote(nextRef) ?? "")) continue;
+        // normalizes here so both sides compare post-collapse. An entry the
+        // store already converged with is skipped — UNLESS this drain already
+        // persisted text for the session: then the entry is the drain's own
+        // revert (queued equal mid-flight, still parked when the in-flight
+        // save landed), and skipping it would leave the newer text
+        // persisted instead of the revert. The entry is claimed (deleted)
+        // only when it reaches a terminal outcome — skip, success, or
+        // failure — so a flush re-queuing the same text mid-flight lands on
+        // the still-parked entry instead of starting a second drain; the
+        // loop iterates back to it below rather than stopping early.
+        if (nextNote === normalizeNote(storedNote(nextRef) ?? "") && !savedRefs.has(nextRef)) {
+          if (dirtyRef.current.get(nextRef) !== nextNote) continue;
+          dirtyRef.current.delete(nextRef);
+          continue;
+        }
         try {
           await threadsStore.getState().setHumanNote(nextRef, nextNote);
         } catch (err) {
+          if (dirtyRef.current.get(nextRef) === nextNote) dirtyRef.current.delete(nextRef);
           const message = sessionActionError("Couldn't save note", err);
           failedMessages.set(nextRef, message);
+          // The passive flushes (session-switch, live-to-ended) consult this
+          // before re-attempting: without it the unmount/session-switch
+          // cleanup would re-issue the just-failed draft as a fresh loop the
+          // moment this drain settles.
+          failedNoteRef.current.set(nextRef, nextNote);
           if (uiRef.current === nextRef) setError(message);
           toasts.push("error", message);
           continue;
         }
         // Success clears only this session's failure: a sibling's failure is
-        // that sibling's latest outcome and stays reported.
+        // that sibling's latest outcome and stays reported. The claim
+        // deletes only when the queue still holds this exact entry: a flush
+        // that parked newer text for the session mid-flight must survive —
+        // the loop iterates back to it below.
+        if (dirtyRef.current.get(nextRef) === nextNote) dirtyRef.current.delete(nextRef);
         failedMessages.delete(nextRef);
+        failedNoteRef.current.delete(nextRef);
         savedRefs.add(nextRef);
+        convergedSavesRef.current.add(nextRef);
       }
       saveLoop.current = null;
       // saving is global to the panel (one loop at a time), so it always
@@ -325,18 +385,24 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
 
   // Safety net for a blur that never fires: switching sessions, closing the
   // panel, or the session ending while focused (a textarea removed from the
-  // DOM is not guaranteed to emit blur). Blur-first ordering means this is a
-  // no-op in the common case (blur already persisted or found nothing to
-  // save). The outgoing session's values come from its snapshot (captured
-  // every render), NOT the shared render-scope refs the incoming session's
-  // commit already overwrote: old draft flushes against the old thread, and
-  // an old-draft/new-note string coincidence can never skip the save.
+  // DOM is not guaranteed to emit blur). The outgoing session's values come
+  // from its snapshot (captured every render), NOT the shared render-scope
+  // refs the incoming session's commit already overwrote: old draft flushes
+  // against the old thread, and an old-draft/new-note string coincidence can
+  // never skip the save. The drain peeks (rather than pre-deleting) queue
+  // entries, so a blur racing the switch cannot double-persist: whichever
+  // path runs first parks the draft, the other finds the same text already
+  // queued and coalesces. A flush carrying exactly the text whose save just
+  // failed is skipped: the failure already reported inline + toast, failures
+  // never requeue into the same drain, and only the next EXPLICIT save
+  // retries.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the flush must capture the outgoing session without re-arming per render
   useEffect(() => {
     return () => {
       const snap = snapRef.current.get(sessionRef);
       snapRef.current.delete(sessionRef);
       if (!snap?.live) return;
+      if (failedNoteRef.current.get(sessionRef) === normalizeNote(snap.draft)) return;
       requestSave(sessionRef, snap.draft);
     };
   }, [sessionRef]);
@@ -344,8 +410,10 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   // Live-to-ended flush: when the session's story ends while a draft is
   // dirty, the editor unmounts (read-only takes over) without blur firing.
   // Flush while the RPC path is still valid for the stored text on hand.
+  // Same failed-text skip as the session-switch flush above.
   useEffect(() => {
     if (!live && draftRef.current !== modelNoteRef.current) {
+      if (failedNoteRef.current.get(sessionRef) === normalizeNote(draftRef.current)) return;
       requestSave(sessionRef, draftRef.current);
     }
     // Deps are the transition inputs: a status-type or stored-note change

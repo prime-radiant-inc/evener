@@ -157,9 +157,11 @@ test("labelless web links render the URL once, not twice", () => {
     }),
   );
   const row = screen.getByTestId("shared-notes-url-u2");
-  // No label: the anchor carries the URL and no trailing span duplicates it.
+  // No label: the anchor carries the URL and no trailing URL span duplicates
+  // it (the row's Remove button is separate affordance, not URL text).
   expect(row.querySelector("a")?.getAttribute("href")).toBe("https://x.test/plain");
-  expect(row.textContent).toBe("https://x.test/plain");
+  expect(row.querySelector("a")?.textContent).toBe("https://x.test/plain");
+  expect(row.textContent).toBe("https://x.test/plain Remove");
 });
 
 test("file links keep visible text and offer open-beside in scope", () => {
@@ -536,15 +538,16 @@ test("a B-save queued behind a failing A-save still persists and reports", async
       <Toast />
     </>,
   );
-  // A's blur starts the loop and fails...
+  // A's blur starts the loop and fails (exactly once — failures never
+  // requeue into the same drain)...
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "draft A2");
   await user.tab();
   await screen.findAllByText(/A save boom/i);
-  // ...then the panel switches to B, whose blur parks behind A's failure.
-  // The loop must keep draining past it: B persists and reports Saved, while
-  // A stays queued with its error visible - nothing stranded silent.
+  // ...then the panel switches to B, whose blur starts a fresh loop. B
+  // persists and reports Saved; A's draft stays in A's textarea for an
+  // explicit retry — nothing stranded silent.
   rerender(
     <>
       <NotesPanelBody sessionRef={modelB.ref} model={modelB} />
@@ -556,6 +559,7 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   await user.type(editor(), "draft B2");
   await user.tab();
   await screen.findByTestId("shared-notes-saved");
+  // A attempted once (no hot-loop retry); B attempted once and landed.
   expect(seen.map((p) => (p as { ref: string }).ref)).toEqual(["local:aaaa", "local:bbbb"]);
   expect(threadsStore.getState().threads.get(modelB.ref)?.humanNote).toBe("draft B2");
 });
@@ -617,8 +621,7 @@ test("an earlier success still reports Saved when a sibling fails later in the d
   fake.on("notes/human/set", (params) => {
     seen.push(params);
     // Gate A's save so B's blur parks behind it in the same drain; A then
-    // succeeds while B fails. The per-iteration reset bug painted no Saved
-    // state even for A, the session that succeeded.
+    // succeeds while B fails. A's Saved must survive B's later failure.
     if (first && (params as { ref: string }).ref === "local:aaaa") {
       first = false;
       return gate.then(() => ({ note: (params as { note: string }).note }));
@@ -647,13 +650,17 @@ test("an earlier success still reports Saved when a sibling fails later in the d
   await user.type(editor(), "draft B2");
   await user.tab();
   release();
-  // B's failure surfaces while the panel shows B...
+  // B's failure surfaces while the panel shows B, and A still landed...
   await screen.findAllByText(/B save boom/i);
   expect(threadsStore.getState().threads.get(modelA.ref)?.humanNote).toBe("draft A2");
-  // ...then switching back to A (whose draft matches its stored note after
-  // the drained success) reports Saved for the session that succeeded.
+  // ...then switching back to A paints Saved: the outcome recorded for A is
+  // success, and B's failure belongs to B's session, not A's status line.
+  // (The remount clears A's error state; B's draft stays in B's textarea for
+  // an explicit retry.)
   rerender(<NotesPanelBody sessionRef={modelA.ref} model={{ ...modelA, humanNote: "draft A2" }} />);
-  await waitFor(() => expect(screen.queryByTestId("shared-notes-saved")).toBeTruthy());
+  await user.click(editor());
+  await user.tab();
+  await screen.findByTestId("shared-notes-saved");
 });
 
 test("a failed blur-save surfaces an error and keeps the draft", async () => {

@@ -174,10 +174,8 @@ func TestNotesPersistenceFailureBlocksSuccessJournal(t *testing.T) {
 	}
 	if _, ok := s.clientMutations.snapshot().Journal["outer-f4a"]; !ok {
 		t.Fatalf("outer record missing after failed save (reservation must survive for retry)")
-	} else {
-		if s.clientMutations.snapshot().Journal["outer-f4a"].OperationState == clientMutationOperationApplied {
-			t.Fatalf("failed save journaled applied success")
-		}
+	} else if s.clientMutations.snapshot().Journal["outer-f4a"].OperationState == clientMutationOperationApplied {
+		t.Fatalf("failed save journaled applied success")
 	}
 	entry, err := s.addSessionURL("https://x.test/y", "")
 	if err != nil {
