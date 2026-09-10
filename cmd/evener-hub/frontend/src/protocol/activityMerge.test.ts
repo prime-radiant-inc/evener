@@ -1,0 +1,243 @@
+import { expect, test } from "vitest";
+import {
+  type ActivityDelegateEntry,
+  type ActivityEntry,
+  type ActivitySessionNode,
+  type ActivityShellEntry,
+  type ActivityTree,
+  activityNodeID,
+  parseActivityTree,
+} from "./activityData";
+import { graftContinuationTree } from "./activityMerge";
+
+const shell = (jobId: string, outputBytes = 0): ActivityShellEntry => ({
+  kind: "shell",
+  job: {
+    jobId,
+    ownerSessionId: "root",
+    ownerRef: "local:root",
+    type: "shell",
+    status: "completed",
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description: jobId,
+    startedAt: "2026-09-07T00:00:00Z",
+    outputBytes,
+  },
+});
+const session = (sessionId: string, entries: ActivityEntry[], continuation?: string): ActivitySessionNode => ({
+  kind: "session",
+  sessionId,
+  ref: `local:${sessionId}`,
+  label: sessionId,
+  aggregate: continuation ? "unavailable" : "ended",
+  counts: { active: 0, failed: 0, completed: entries.length, complete: !continuation },
+  entries,
+  branch: continuation ? { truncated: true, continuation } : {},
+});
+const tree = (entries: ActivityEntry[], continuation?: string): ActivityTree => ({
+  revision: 4,
+  root: session("root", entries, continuation),
+});
+const delegate = (child?: ActivitySessionNode, revision = 2): ActivityDelegateEntry => ({
+  kind: "delegate",
+  delegate: {
+    delegateId: "delegate",
+    childSessionId: "child",
+    childRef: "local:child",
+    projectionRevision: revision,
+    type: "delegate",
+    terminal: revision === 2,
+    outcome: revision === 2 ? "completed" : undefined,
+    status: revision === 2 ? "completed" : "running",
+    child,
+    branch: child ? {} : { truncated: true, continuation: "child-page" },
+  },
+});
+const ids = (node: ActivitySessionNode) => node.entries.map(activityNodeID);
+
+test("root continuation retains its prefix and deduplicates overlapping entries", () => {
+  const current = tree([shell("a"), shell("b")], "next");
+  const patch = tree([shell("b", 20), shell("c")]);
+  const before = structuredClone(current);
+  const result = graftContinuationTree(current, "session:root", patch);
+  expect(ids(result.root)).toEqual(["job:a", "job:b", "job:c"]);
+  expect(result.root.entries[1]).toEqual(shell("b", 20));
+  expect(result.root.branch).toEqual({});
+  expect(result.root.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: true });
+  expect(result.root.aggregate).toBe("ended");
+  expect(current).toEqual(before);
+  result.root.entries.splice(0, 1);
+  expect(ids(current.root)).toEqual(["job:a", "job:b"]);
+});
+
+test("nested session continuation keeps earlier jobs and unrelated root siblings", () => {
+  const current = tree([shell("sibling"), delegate(session("child", [shell("a")], "next"))]);
+  const patch = tree([delegate(session("child", [shell("b")]))]);
+  const result = graftContinuationTree(current, "session:child", patch);
+  expect(ids(result.root)).toEqual(["job:sibling", "delegate:delegate"]);
+  const entry = result.root.entries[1];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(entry.delegate.child.branch).toEqual({});
+  expect(entry.delegate.child.counts).toEqual({ active: 0, failed: 0, completed: 2, complete: true });
+  expect(result.root.counts).toEqual({ active: 0, failed: 0, completed: 4, complete: true });
+});
+
+test("delegate continuation expands child data at an unchanged projection revision", () => {
+  const current = tree([delegate()]);
+  const patch = tree([delegate(session("child", [shell("a")]))]);
+  const result = graftContinuationTree(current, "delegate:delegate", patch);
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(ids(entry.delegate.child)).toEqual(["job:a"]);
+  expect(entry.delegate.branch).toEqual({});
+  expect(entry.delegate.projectionRevision).toBe(2);
+  expect(entry.delegate.status).toBe("completed");
+});
+
+test("turn-based delegates aggregate their work without becoming unavailable", () => {
+  const current = tree([shell("earlier")], "next");
+  const withTurns = delegate(undefined, 2);
+  delete withTurns.delegate.type;
+  withTurns.delegate.branch = {};
+  withTurns.delegate.turns = [shell("turn").job];
+  const parsed = parseActivityTree(tree([withTurns]));
+  if (!parsed) throw new Error("turn-based activity tree did not parse");
+  const result = graftContinuationTree(current, "session:root", parsed);
+  expect(result.root.counts).toEqual({ active: 0, failed: 0, completed: 2, complete: true });
+  expect(result.root.aggregate).toBe("ended");
+});
+
+test("turn-container continuation refresh is not blocked by stable projection fencing", () => {
+  const currentEntry = delegate();
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.turns = [shell("old-turn").job];
+  const patchEntry = delegate();
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.turns = [shell("new-turn").job];
+  const result = graftContinuationTree(tree([currentEntry], "next"), "session:root", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["new-turn"]);
+});
+
+test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
+  const entry = delegate();
+  const raw = tree([entry]);
+  const parsed = parseActivityTree({
+    ...raw,
+    root: { ...raw.root, entries: [{ ...entry, delegate: { ...entry.delegate, turns } }] },
+  });
+  expect(parsed?.root.entries[0]?.kind).toBe("delegate");
+});
+
+test("continuation data does not regress a newer delegate projection", () => {
+  const current = tree([delegate(session("child", [shell("a")], "next"), 2)]);
+  const patch = tree([delegate(session("child", [shell("b")]), 1)]);
+  const result = graftContinuationTree(current, "session:child", patch);
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(entry.delegate.projectionRevision).toBe(2);
+  expect(entry.delegate.status).toBe("completed");
+});
+
+test("merged summaries count failures and keep coverage separate from running state", () => {
+  const failed = shell("failed");
+  failed.job.status = "failed";
+  failed.job.outcome = "failure";
+  const running = shell("running");
+  running.job.status = "running";
+  running.job.terminal = false;
+  const exhausted = delegate(session("child", [failed]));
+  if (exhausted.delegate.child)
+    exhausted.delegate.child.counts = { active: 0, failed: 1, completed: 0, complete: true };
+  exhausted.delegate.outcome = "exhausted";
+  const current = tree([shell("completed")], "next");
+  const result = graftContinuationTree(current, "session:root", tree([running, exhausted]));
+  expect(result.root.counts).toEqual({ active: 1, failed: 2, completed: 1, complete: true });
+  expect(result.root.aggregate).toBe("working");
+  running.job.terminal = true;
+  const settled = graftContinuationTree(current, "session:root", tree([running, exhausted]));
+  expect(settled.root.aggregate).toBe("failed");
+});
+
+test("merged summaries classify failed statuses without requiring an outcome", () => {
+  const failed = shell("failed");
+  failed.job.status = "error";
+  failed.job.outcome = undefined;
+  const result = graftContinuationTree(tree([]), "session:root", tree([failed]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 1, completed: 0 });
+  expect(result.root.aggregate).toBe("failed");
+});
+
+test("merged summaries count empty turn-container delegates as one entry", () => {
+  const emptyTurns = delegate();
+  if (emptyTurns.delegate.type !== "delegate") throw new Error("unexpected delegate type");
+  delete emptyTurns.delegate.type;
+  emptyTurns.delegate.status = "completed";
+  emptyTurns.delegate.outcome = "completed";
+  emptyTurns.delegate.branch = {};
+  const result = graftContinuationTree(tree([]), "session:root", tree([emptyTurns]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 0, completed: 0 });
+  expect(result.root.aggregate).toBe("idle");
+});
+
+test("partial descendant coverage stays incomplete until its last page loads", () => {
+  const current = tree([shell("a")], "root-next");
+  const partial = graftContinuationTree(
+    current,
+    "session:root",
+    tree([delegate(session("child", [shell("b")], "child-next"))]),
+  );
+  expect(partial.root.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+  expect(partial.root.aggregate).toBe("unavailable");
+  const final = graftContinuationTree(partial, "session:child", tree([delegate(session("child", [shell("c")]))]));
+  expect(final.root.counts).toEqual({ active: 0, failed: 0, completed: 4, complete: true });
+  expect(final.root.aggregate).toBe("ended");
+});
+
+test("branch errors and empty trees retain their coverage meaning", () => {
+  const current = tree([], "next");
+  const patch = tree([]);
+  patch.root.branch = { error: "incomplete" };
+  expect(graftContinuationTree(current, "session:root", patch).root).toMatchObject({
+    aggregate: "unavailable",
+    counts: { active: 0, failed: 0, completed: 0, complete: false },
+  });
+  expect(graftContinuationTree(current, "session:root", tree([])).root).toMatchObject({
+    aggregate: "idle",
+    counts: { active: 0, failed: 0, completed: 0, complete: true },
+  });
+});
+
+test("loading a nested branch preserves an independently pending root continuation", () => {
+  const current = tree([delegate(session("child", [shell("a")], "child-next"))], "root-next");
+  const patch = tree([delegate(session("child", [shell("b")]))]);
+  const result = graftContinuationTree(current, "session:child", patch);
+  expect(result.root.branch).toEqual(current.root.branch);
+  expect(result.root.counts.complete).toBe(false);
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(entry.delegate.child.branch).toEqual({});
+  expect(entry.delegate.child.counts.complete).toBe(true);
+});
+
+test("a continuation for a removed branch cannot change the retained tree", () => {
+  const current = tree([shell("a")]);
+  expect(graftContinuationTree(current, "session:missing", tree([shell("foreign")]))).toBe(current);
+});
+
+test("a nested page cannot replace or add coverage on an unrelated branch", () => {
+  const current = tree([delegate(session("child", [shell("a")], "child-next"))], "root-next");
+  const patch = tree([delegate(session("child", [shell("b")]))]);
+  patch.root.branch = { error: "unrelated-page-error" };
+  const result = graftContinuationTree(current, "session:child", patch);
+  expect(result.root.branch).toEqual({ truncated: true, continuation: "root-next" });
+  const child = result.root.entries[0];
+  if (child?.kind !== "delegate" || !child.delegate.child) throw new Error("missing child");
+  expect(ids(child.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(child.delegate.child.branch).toEqual({});
+});

@@ -1,0 +1,7 @@
+// Metro resolves shared protocol, state and web helpers outside the native app.
+// Track them so Gradle cannot reuse a bundle made from older shared sources.
+tasks.matching { it.name.startsWith("createBundle") && it.name.endsWith("JsAndAssets") }.configureEach {
+    inputs.files(fileTree("../../../mobile/src"), fileTree("../../../cmd/evener-hub/frontend/src"))
+        .withPropertyName("evenerSharedSources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}

@@ -1,0 +1,317 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "New archive build number; recovery uses the original IPA"
+        required: false
+        type: string
+
+      recovery_run_id:
+        description: "Verify an uploaded build from this workflow run; leave blank to archive and upload"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  # actions/upload-artifact receives GitHub's official ACTIONS_RUNTIME_TOKEN at
+  # runtime; the recovery job separately needs actions: read to download it.
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22.13.1"
+  RUBY_VERSION: "3.3.6"
+  XCODE_VERSION: "26.6"
+  IOS_BUNDLE_IDENTIFIER: com.primeradiant.evener.native
+
+jobs:
+  validate-dispatch:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-main dispatch
+        run: |
+          set -euo pipefail
+          echo "TestFlight workflow dispatches are allowed only from main (got $GITHUB_REF)" >&2
+          exit 1
+
+  archive-and-upload:
+    if: inputs.recovery_run_id == '' && github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Select and verify Xcode
+        run: |
+          sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
+          xcodebuild -version
+          test "$(xcodebuild -version | awk '/^Xcode / { print $2 }')" = "$XCODE_VERSION"
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile-native/package-lock.json
+      - name: Set up Ruby and cached gems
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler: "2.7.2"
+          working-directory: mobile-native
+          bundler-cache: true
+      - name: Check distribution controls
+        working-directory: mobile-native
+        run: bundle exec ruby scripts/test-ios-distribution.rb
+      - name: Install JavaScript dependencies
+        run: |
+          npm ci --prefix mobile-native
+          npm ci --prefix cmd/evener-hub/frontend/src/protocol
+      - name: Run existing native and API gates
+        run: make test-native test-api-package
+      - name: Validate Apple build number
+        env:
+          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          [[ "$IOS_BUILD_NUMBER" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}(\.[0-9]{1,2})?)?$ ]] || {
+            echo "build_number must be Apple-compatible: 1-4 digit major, optional 1-2 digit minor and patch components" >&2
+            exit 1
+          }
+          echo "IOS_BUILD_NUMBER=$IOS_BUILD_NUMBER" >> "$GITHUB_ENV"
+      - name: Preflight distribution credentials
+        env:
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_DISTRIBUTION_PROVISIONING_PROFILE_BASE64 }}
+          IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
+          IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in IOS_CERTIFICATE_P12_BASE64 IOS_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 IOS_PROVISIONING_PROFILE_NAME IOS_INTERNAL_TESTFLIGHT_GROUP APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_CONTENT APPLE_TEAM_ID; do
+            test -n "${!name}" || { echo "Missing required distribution credential: $name" >&2; exit 1; }
+          done
+      - name: Generate iOS project and install pods
+        working-directory: mobile-native
+        run: |
+          npx expo prebuild --platform ios --no-install
+          cp Podfile.lock ios/Podfile.lock
+          bundle exec pod install --deployment --project-directory=ios
+          printf 'IOS_MARKETING_VERSION=%s\n' "$(node -p 'require("./app.json").expo.version')" >> "$GITHUB_ENV"
+      - name: Reject duplicate App Store Connect build
+        working-directory: mobile-native
+        env:
+          IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+            bundle exec fastlane ios preflight
+      - name: Import distribution signing assets
+        working-directory: mobile-native
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_DISTRIBUTION_PROVISIONING_PROFILE_BASE64 }}
+          IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          keychain="$RUNNER_TEMP/evener-signing.keychain-db"
+          cert="$RUNNER_TEMP/evener-distribution.p12"
+          profile="$RUNNER_TEMP/evener.mobileprovision"
+          security list-keychains -d user > "$RUNNER_TEMP/evener-keychains.txt"
+          security default-keychain -d user > "$RUNNER_TEMP/evener-default-keychain.txt"
+          echo "$IOS_CERTIFICATE_P12_BASE64" | base64 -D > "$cert"
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 -D > "$profile"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$cert" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -s "$keychain"
+          profile_plist="$RUNNER_TEMP/evener-profile.plist"
+          security cms -D -i "$profile" > "$profile_plist"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          # Xcode 16 and later store downloaded profiles here; Xcode still
+          # reads the legacy MobileDevice location for profiles downloaded by
+          # older releases (Apple Xcode 16 release notes, issue 54347894):
+          # https://developer.apple.com/documentation/xcode-release-notes/xcode-16-release-notes
+          profile_path="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$profile_uuid.mobileprovision"
+          if test -e "$profile_path"; then
+            cmp -s "$profile" "$profile_path" || { echo "A different profile already occupies this UUID" >&2; exit 1; }
+          else
+            echo "IOS_PROFILE_PATH=$profile_path" >> "$GITHUB_ENV"
+            mkdir -p "$(dirname "$profile_path")"
+            cp "$profile" "$profile_path"
+          fi
+          IOS_BUNDLE_IDENTIFIER="$IOS_BUNDLE_IDENTIFIER" bundle exec ruby scripts/configure-ios-distribution.rb ios/Evener.xcodeproj build/ExportOptions.plist
+      - name: Archive and export signed IPA
+        working-directory: mobile-native
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          build_number="$IOS_BUILD_NUMBER"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" ios/Evener/Info.plist
+          xcodebuild -workspace ios/Evener.xcworkspace -scheme Evener -configuration Release -sdk iphoneos -destination generic/platform=iOS archive -archivePath "$PWD/build/Evener.xcarchive" | tee build/xcodebuild-archive.log
+          xcodebuild -exportArchive -archivePath "$PWD/build/Evener.xcarchive" -exportOptionsPlist build/ExportOptions.plist -exportPath build/export | tee build/xcodebuild-export.log
+          shopt -s nullglob
+          exported_ipas=(build/export/*.ipa)
+          if (( ${#exported_ipas[@]} != 1 )); then
+            echo "Expected one exported IPA; found ${#exported_ipas[@]}" >&2
+            exit 1
+          fi
+          mv "${exported_ipas[0]}" build/Evener.ipa
+      - name: Record artifact identity
+        working-directory: mobile-native
+        run: |
+          git rev-parse HEAD > build/source-revision.txt
+          xcodebuild -version > build/toolchain.txt
+          shasum -a 256 build/Evener.ipa build/Evener.xcarchive/Info.plist > build/artifact-sha256.txt
+      - name: Upload to internal TestFlight and wait for processing
+        working-directory: mobile-native
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
+          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+          IOS_BUNDLE_IDENTIFIER: ${{ env.IOS_BUNDLE_IDENTIFIER }}
+          IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/testflight-receipt.json
+          IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
+        run: |
+          IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+            bundle exec fastlane ios testflight
+      - name: Upload archive and diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: evener-ios-testflight-${{ github.run_id }}
+          path: |
+            mobile-native/build/Evener.ipa
+            mobile-native/build/Evener.xcarchive
+            mobile-native/build/*.log
+            mobile-native/build/*.txt
+            mobile-native/build/testflight-receipt.json
+            mobile-native/build/ExportOptions.plist
+          if-no-files-found: warn
+      - name: Remove temporary signing assets
+        if: always()
+        env:
+          IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
+        run: |
+          set -euo pipefail
+          cleanup_status=0
+          keychain="$RUNNER_TEMP/evener-signing.keychain-db"
+          if test -e "$keychain"; then
+            security delete-keychain "$keychain" || cleanup_status=1
+          fi
+          if test -s "$RUNNER_TEMP/evener-keychains.txt"; then
+            keychains=()
+            while IFS= read -r keychain_path; do
+              keychains+=("$keychain_path")
+            done < <(ruby -e 'puts STDIN.read.scan(/"([^"]+)"/).flatten' < "$RUNNER_TEMP/evener-keychains.txt")
+            security list-keychains -d user -s "${keychains[@]}" || cleanup_status=1
+          fi
+          if test -s "$RUNNER_TEMP/evener-default-keychain.txt"; then
+            default_keychain="$(sed -n 's/^ *"\(.*\)"/\1/p' "$RUNNER_TEMP/evener-default-keychain.txt" | head -1)"
+            if test -n "$default_keychain"; then
+              security default-keychain -s "$default_keychain" || cleanup_status=1
+            else
+              cleanup_status=1
+            fi
+          fi
+          if test -n "${IOS_PROFILE_PATH:-}"; then
+            rm -f "$IOS_PROFILE_PATH" || cleanup_status=1
+          fi
+          rm -f "$RUNNER_TEMP/evener-distribution.p12" "$RUNNER_TEMP/evener.mobileprovision" "$RUNNER_TEMP/evener-profile.plist" || cleanup_status=1
+          rm -f "$RUNNER_TEMP/evener-keychains.txt" "$RUNNER_TEMP/evener-default-keychain.txt" || cleanup_status=1
+          exit "$cleanup_status"
+
+  verify-upload:
+    if: inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out verification lane
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Ruby and cached gems
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler: "2.7.2"
+          working-directory: mobile-native
+          bundler-cache: true
+      - name: Validate recovery run
+        env:
+          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Recovery run ID must be numeric" >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_RUN_ID" > "$RUNNER_TEMP/recovery-run.json"
+      - name: Download the original signed archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: evener-ios-testflight-${{ inputs.recovery_run_id }}
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ github.token }}
+          path: mobile-native/build
+      - name: Verify original artifact provenance
+        working-directory: mobile-native
+        run: |
+          set -euo pipefail
+          ruby -rjson -e '
+            run = JSON.parse(File.read(ENV.fetch("RUNNER_TEMP") + "/recovery-run.json"))
+            abort "Recovery requires this workflow dispatched from main" unless run["path"] == ".github/workflows/ios-testflight.yml" && run["event"] == "workflow_dispatch" && run["head_branch"] == "main"
+            abort "Artifact source does not match the original run" unless File.read("build/source-revision.txt").strip == run.fetch("head_sha")
+          '
+          shasum -a 256 -c build/artifact-sha256.txt
+          bundle exec ruby -rfastlane_core/ipa_file_analyser -e '
+            info = FastlaneCore::IpaFileAnalyser.fetch_info_plist_file("build/Evener.ipa")
+            version = info.fetch("CFBundleShortVersionString")
+            build = info.fetch("CFBundleVersion")
+            abort "Invalid artifact build number" unless build.match?(/\A[1-9][0-9]{0,3}(?:\.[0-9]{1,2}){0,2}\z/)
+            abort "IPA export encryption compliance is not false" unless info.fetch("ITSAppUsesNonExemptEncryption") == false
+            abort "Invalid artifact marketing version" unless version.match?(/\A[0-9]+(?:\.[0-9]+){0,2}\z/)
+            File.open(ENV.fetch("GITHUB_ENV"), "a") { |file| file.puts("IOS_MARKETING_VERSION=#{version}", "IOS_BUILD_NUMBER=#{build}") }
+          '
+      - name: Verify internal TestFlight availability without uploading
+        working-directory: mobile-native
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
+          IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/recovered-testflight-receipt.json
+          IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
+        run: bundle exec fastlane ios verify_testflight
+      - name: Save recovered TestFlight receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: evener-ios-testflight-verification-${{ github.run_id }}
+          path: |
+            mobile-native/build/recovered-testflight-receipt.json
+            mobile-native/build/source-revision.txt
+            mobile-native/build/artifact-sha256.txt
+          if-no-files-found: warn
