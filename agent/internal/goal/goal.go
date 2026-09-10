@@ -2066,11 +2066,32 @@ func (s *Store) TakeTerminalReport() (Snapshot, bool) {
 func (s *Store) RecordContinuation(outcome TurnOutcome, waitAdvanced bool, now time.Time) (Snapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.recordContinuationLocked(outcome, waitAdvanced, now, false)
+}
+
+// RecordWakeContinuation folds one driven wake turn into the ledger and
+// accrues it against the continuation budget (spec §5: wake turns count, no
+// free turns) — including while the goal stays waiting on sibling live waits.
+// It runs the identical accrue+fold+stall-bound body as RecordContinuation
+// (the waiting skip below is the only divergence); the consumed-fire backlog
+// is untouched (the wake tail drains it). Parked polling still uses
+// RecordContinuation and burns zero budget.
+func (s *Store) RecordWakeContinuation(outcome TurnOutcome, waitAdvanced bool, now time.Time) (Snapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recordContinuationLocked(outcome, waitAdvanced, now, true)
+}
+
+// recordContinuationLocked is the shared fold body behind RecordContinuation
+// and RecordWakeContinuation. Caller must hold s.mu. wake skips the
+// waiting early return: the wake-drive path ran a real model turn, while
+// parked polling runs none.
+func (s *Store) recordContinuationLocked(outcome TurnOutcome, waitAdvanced bool, now time.Time, wake bool) (Snapshot, bool) {
 	if s.goal == nil {
 		return Snapshot{}, false
 	}
 	g := s.goal
-	if g.Status == StatusWaiting && g.LedgerSummary.Stage != StageAutoPark {
+	if !wake && g.Status == StatusWaiting && g.LedgerSummary.Stage != StageAutoPark {
 		return s.snapLocked(), false
 	}
 	if g.Status != StatusActive && g.Status != StatusWaiting {

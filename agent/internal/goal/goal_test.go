@@ -300,6 +300,45 @@ func TestRecordContinuationSkipsFoldWhileWaiting(t *testing.T) {
 	}
 }
 
+// TestRecordWakeContinuationFoldsWhileWaiting pins the round-18 HIGH
+// (sibling-live wake undercharge, spec §5: wake turns count, no free turns):
+// when ClaimFire leaves a sibling live wait (goal stays waiting), the driven
+// wake turn still folds and accrues — only parked polling skips. The backlog
+// itself is untouched (the wake tail drains it).
+func TestRecordWakeContinuationFoldsWhileWaiting(t *testing.T) {
+	s := NewStore()
+	s.Set("obj", clock())
+	w1, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Target: "t1", Timeout: time.Minute}, clock())
+	if !ok {
+		t.Fatal("register wait 1 should succeed")
+	}
+	if _, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Target: "t2", Timeout: 2 * time.Minute}, clock()); !ok {
+		t.Fatal("register wait 2 should succeed")
+	}
+	if _, ok := s.ClaimFire(w1.Lease.WaitID, "timer fired", clock()); !ok {
+		t.Fatal("claim should consume the first lease")
+	}
+	gsnap, _ := s.GoalSnapshot()
+	if gsnap.Status != StatusWaiting || len(gsnap.Waits) != 1 || len(gsnap.PendingWake) != 1 {
+		t.Fatalf("precondition: sibling live keeps the goal waiting with the backlog standing: %+v", gsnap)
+	}
+	// The plain fold still skips: parked polling burns zero budget.
+	if snap, active := s.RecordContinuation(foldStallOutcome(), false, clock()); active || snap.Iterations != 0 {
+		t.Fatalf("RecordContinuation must still skip while waiting: %+v active=%v", snap, active)
+	}
+	snap, _ := s.RecordWakeContinuation(foldStallOutcome(), false, clock())
+	if snap.Iterations != 1 {
+		t.Fatalf("wake fold must accrue the driven turn: %+v", snap)
+	}
+	gsnap, _ = s.GoalSnapshot()
+	if gsnap.Budgets.UsedContinuations != 1 {
+		t.Fatalf("wake fold must burn one continuation: %+v", gsnap.Budgets)
+	}
+	if gsnap.Status != StatusWaiting || len(gsnap.Waits) != 1 || len(gsnap.PendingWake) != 1 {
+		t.Fatalf("wake fold must not consume the backlog or strand the sibling: %+v", gsnap)
+	}
+}
+
 func TestSetTerminalFromWaitingClearsWaits(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())

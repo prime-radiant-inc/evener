@@ -858,18 +858,46 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 				s.goalTerminalPending = true
 				s.mu.Unlock()
 			}
-			snap := s.commitGoalLedgerFold(store, full, foldOutcome, waitAdvanced, now)
+			// The wake fold attributes through RecordWakeContinuation: when
+			// ClaimFire leaves sibling live waits (goal stays waiting),
+			// the drive still ran a real turn and must accrue (spec §5).
+			snap := s.commitGoalWakeFold(store, full, foldOutcome, waitAdvanced, now)
 			s.emitGoalUpdated(snap)
+			wakeFull, _ := store.GoalSnapshot()
+			s.goalUpdateMu.Unlock()
+			if wakeFull.Budgets.MaxContinuations > 0 && wakeFull.Budgets.UsedContinuations >= wakeFull.Budgets.MaxContinuations {
+				// The committed wake fold just spent the last continuation:
+				// rule 2 would block on the FOLLOWING gate, but rendering
+				// the wake prompt first hands the model a free turn past
+				// the cap — the claimed wake never drives. Enforce on the
+				// committed snapshot instead — same terminal path as the
+				// plain-drive committed-exhaustion site (blockGoalFromGate
+				// with VerdictBudgetExhausted, which clears waits per the
+				// every-terminal rule while the delivered-set mark below
+				// never lands, so the stranded backlog drains on the
+				// block's terminal read). Scope is the continuation cap
+				// only: the fold accrues exactly one continuation and moves
+				// neither the parked anchor nor the clock, so parked and
+				// deadline read identically pre/post fold — a parked or
+				// deadline breach here predates the fold and stays latched
+				// for next-gate enforcement with its own verdict (the
+				// deadline final turn must still drive:
+				// TestFixWaveI2DeadlineFinalTurnThenBlock). Count semantics
+				// unchanged: the fold already accrued exactly once.
+				// goalUpdateMu is already released above; blockGoalFromGate
+				// takes no session locks itself (it takes goalUpdateMu
+				// internally via setGoalTerminal).
+				return s.blockGoalFromGate(goal.VerdictBudgetExhausted)
+			}
 			prompt := s.renderGoalWakePrompt(full)
 			var ids []string
 			for _, p := range full.PendingWake {
 				ids = append(ids, p.WaitID)
 			}
 			s.markGoalWakesDelivered(ids)
-			s.goalUpdateMu.Unlock()
-			// The notifying turn for a waited target IS the wake turn (spec
-			// §7: no double-turn accounting): announce the resume on the kick
-			// itself, after the store locks are released.
+			// The notifying turn for a waited target IS the wake turn
+			// (spec §7: no double-turn accounting): announce the resume on
+			// the kick itself, after the store locks are released.
 			s.emitGoalResumed(ids)
 			// Wake delivery is watchdog activity (spec §6 signal 2): the
 			// wake itself resets the stretch.
@@ -954,6 +982,27 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 				s.goalUpdateMu.Unlock()
 				return "", false
 			}
+		}
+		if boundsBreachedAt(full, store.ParkedTotalAt(now), now) {
+			// A spent continuation cap at the wake tail means the drive-time
+			// fold already consumed the last turn (spec §5), so this re-arm
+			// would hand the model a free turn past the cap — block instead
+			// of rendering another prompt. Scope is the continuation cap
+			// only: the general boundsBreachedAt read (parked, deadline)
+			// owns its own verdict path through the latch/decide below, and
+			// the deadline final turn must still drive
+			// (TestFixWaveI2DeadlineFinalTurnThenBlock). Same terminal path
+			// as the plain-drive site (blockGoalFromGate with
+			// VerdictBudgetExhausted). The gate holds goalUpdateMu here and
+			// it is non-reentrant, so release before the block:
+			// blockGoalFromGate takes no session locks itself (it takes
+			// goalUpdateMu internally via setGoalTerminal).
+			capSpent := full.Budgets.MaxContinuations > 0 && full.Budgets.UsedContinuations >= full.Budgets.MaxContinuations
+			s.goalUpdateMu.Unlock()
+			if capSpent {
+				return s.blockGoalFromGate(goal.VerdictBudgetExhausted)
+			}
+			return goal.Render(full.Objective), true
 		}
 		s.goalUpdateMu.Unlock()
 		return goal.Render(full.Objective), true
@@ -1049,6 +1098,19 @@ func (s *Session) finishStallBlock() (string, bool) {
 func (s *Session) commitGoalLedgerFold(store *goal.Store, full goal.GoalSnapshot, outcome goal.TurnOutcome, waitAdvanced bool, now time.Time) goal.Snapshot {
 	_ = full
 	snap, _ := store.RecordContinuation(outcome, waitAdvanced, now)
+	return snap
+}
+
+// commitGoalWakeFold persists the wake turn's own drive fold (spec §5: wake
+// turns count, no free turns): the identical ledger fold as
+// commitGoalLedgerFold, but attributed through RecordWakeContinuation so a
+// wake driving while sibling live waits keep the goal waiting still accrues —
+// the drive ran a real model turn. The wake tail still bypasses (it only
+// drains the delivered batch), so one wake turn folds exactly once. Call with
+// goalUpdateMu held; store methods self-lock.
+func (s *Session) commitGoalWakeFold(store *goal.Store, full goal.GoalSnapshot, outcome goal.TurnOutcome, waitAdvanced bool, now time.Time) goal.Snapshot {
+	_ = full
+	snap, _ := store.RecordWakeContinuation(outcome, waitAdvanced, now)
 	return snap
 }
 
