@@ -7,9 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -103,6 +107,81 @@ func TestFirstUserTurnIsPrecededByEnvironmentContext(t *testing.T) {
 	}
 	if !strings.Contains(turns[envIdx].Message.Text(), "<environment_context>") {
 		t.Fatalf("environment turn content: %q", turns[envIdx].Message.Text())
+	}
+}
+
+func TestEnvironmentContextCrossesLiveEventBoundaryBeforeUserInput(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t)
+	sendOneUserInput(t, s, "hello")
+	var kinds []events.EventKind
+	for {
+		select {
+		case event := <-s.Events():
+			kinds = append(kinds, event.Kind)
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	environment, user := -1, -1
+	for i, kind := range kinds {
+		if kind == events.EventEnvironment && environment == -1 {
+			environment = i
+		}
+		if kind == events.EventUserInput && user == -1 {
+			user = i
+		}
+	}
+	if environment == -1 || user == -1 || environment >= user {
+		t.Fatalf("live events must expose environment before user input: environment=%d user=%d kinds=%v", environment, user, kinds)
+	}
+}
+
+func TestEnvironmentContextTranscriptFailureDoesNotPublishOrAdvanceTracker(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t)
+	initialEnvironmentTurns := countEnvironmentTurns(s)
+	for {
+		select {
+		case <-s.Events():
+		default:
+			goto drainedBeforeFailure
+		}
+	}
+drainedBeforeFailure:
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create failing transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	fs.fail = true
+	s.mu.Lock()
+	s.transcript = writer
+	s.transcriptReady = true
+	s.mu.Unlock()
+
+	s.maybeAppendEnvironmentContext()
+
+	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns {
+		t.Fatalf("environment history turns = %d, want unchanged at %d after transcript failure", got, initialEnvironmentTurns)
+	}
+	for {
+		select {
+		case event := <-s.Events():
+			if event.Kind == events.EventEnvironment {
+				t.Fatal("transcript failure published an environment event")
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	meta := loadMetaForTest(t, s)
+	if meta.EnvContext != nil && meta.EnvContext.HasSent {
+		t.Fatal("transcript failure advanced the persisted environment tracker")
 	}
 }
 

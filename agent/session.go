@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -1609,7 +1611,19 @@ func (s *Session) maybeAppendEnvironmentContext() {
 		return
 	}
 
-	s.appendTurn(schema.TurnEnvironment, llm.User(block))
+	// Persist the identity with the entry. Model history can be compacted, so
+	// its length cannot name a durable transcript turn.
+	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
+	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return
+	}
+	s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	// Persist tracker state so resume stays silent when nothing changed.
 	s.setEnvContextState(st)
 }
