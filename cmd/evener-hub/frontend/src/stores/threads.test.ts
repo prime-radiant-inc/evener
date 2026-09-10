@@ -1,5 +1,6 @@
 import "fake-indexeddb/auto";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
@@ -31,7 +32,7 @@ import type {
   TurnStartResponse,
 } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "./connection";
-import { syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
+import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
@@ -4600,6 +4601,92 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("authoritative note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("authoritative note");
   });
+
+  test.each(["response", "push", "hydration", "newer draft"] as const)(
+    "retry after authoritative absence respects %s authority and the submitted draft generation",
+    async (boundary) => {
+      const indexedDB = new IDBFactory();
+      setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
+      const fake = connectFakeClient();
+      const snapshot = (humanNote: string) =>
+        readResponse("ref_a", {
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, humanNote, queue: { revision: 0 } },
+        });
+      fake.on("thread/read", () => snapshot("A"));
+      fake.on("notes/human/set", (params) => ({
+        note: params.note ?? "",
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          threadId: "thr_ref_a",
+          disposition: "applied",
+          projectionState: "notProjected",
+        },
+      }));
+      await threadsStore.getState().ensureThread("ref_a");
+      // Response-only control proves this same runtime can acknowledge an ordinary write.
+      await threadsStore.getState().setHumanNote("ref_a", "smoke");
+      await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+      expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("smoke");
+      syncHumanNote("ref_a", "smoke");
+      const { result } = renderHook(() => useHumanNoteDraft("ref_a"));
+      const firstRequest = nextHandledRequest(fake, "notes/human/set", () => {
+        throw new RequestTimeoutError("request lost before acceptance");
+      });
+      const record = await threadsStore.getState().setHumanNote("ref_a", "B");
+      await firstRequest;
+      await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
+      expect(result.current?.text).toBe("B");
+      const inspector = new MutationOutboxIndexedDB({ indexedDB });
+      expect((await inspector.getOutbox(record.clientMutationId))?.payload).toEqual(record.payload);
+      fake.on("thread/read", () => snapshot("smoke"));
+      const reply = deferred<NotesHumanSetResponse>();
+      const retried = nextHandledRequest(fake, "notes/human/set", () => reply.promise);
+      act(() => {
+        fake.emitStateChange("reconnecting");
+        fake.emitReady();
+      });
+      const params = await retried;
+      expect(params).toEqual(record.payload);
+      expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("smoke");
+      if (boundary === "push") {
+        act(() =>
+          fake.emitNotification({
+            method: "evener/notes/updated",
+            params: { ref: "ref_a", threadId: "thr_ref_a", humanNote: "new authority" },
+          }),
+        );
+      } else if (boundary === "hydration") {
+        fake.on("thread/read", () => snapshot("new authority"));
+        act(() =>
+          fake.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } }),
+        );
+        await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("new authority"));
+      } else if (boundary === "newer draft") {
+        act(() => editHumanNote("ref_a", "C"));
+      }
+      await act(async () =>
+        reply.resolve({
+          note: "B",
+          receipt: {
+            clientMutationId: params.clientMutationId,
+            threadId: "thr_ref_a",
+            disposition: "applied",
+            projectionState: "notProjected",
+          },
+        }),
+      );
+      await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+      const authoritative = boundary === "push" || boundary === "hydration" ? "new authority" : "B";
+      expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe(authoritative);
+      expect(result.current).toMatchObject(
+        boundary === "newer draft"
+          ? { text: "C", dirty: true, saved: false }
+          : { text: authoritative, dirty: false, saved: true },
+      );
+      expect(await inspector.listOptimistic()).toEqual([]);
+      inspector.close();
+    },
+  );
 
   test("a rejoin note identity acknowledges canonical text without inventing a chat item", async () => {
     const fake = connectFakeClient();
