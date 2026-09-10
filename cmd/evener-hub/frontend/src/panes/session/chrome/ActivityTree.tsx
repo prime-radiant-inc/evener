@@ -19,18 +19,13 @@ import {
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
+  isActivityFailure,
 } from "../../../protocol/activityData";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail } from "./ActivityRowDetail";
-import {
-  formatQuietAge,
-  formatUsagePair,
-  isFailedStatus,
-  jobStatusDotState,
-  quietAnchorMillis,
-} from "./activityFormat";
+import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import {
   type ActivityDelegateRow,
@@ -128,9 +123,13 @@ function parseMillis(value: string | undefined): number | undefined {
 
 // terminalSegment renders the duration (endedAt - startedAt, quiet-age
 // bucketed) when both endpoints parse, else the status text - colored danger
-// when the status itself is the failure, so a failed row with no endedAt
+// when the outcome is failure, so a failed row with no endedAt
 // never needs a second "failed" suffix.
-function terminalSegment(job: { startedAt: string; endedAt?: string } | undefined, statusText: string): MetaSegment {
+function terminalSegment(
+  job: { startedAt: string; endedAt?: string } | undefined,
+  statusText: string,
+  failed: boolean,
+): MetaSegment {
   if (job) {
     const start = parseMillis(job.startedAt);
     const end = parseMillis(job.endedAt);
@@ -138,7 +137,7 @@ function terminalSegment(job: { startedAt: string; endedAt?: string } | undefine
       return { key: "duration", text: formatQuietAge(end - start) };
     }
   }
-  return { key: "status", text: statusText, tone: isFailedStatus(statusText) ? "failed" : undefined };
+  return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
 }
 
 function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
@@ -150,7 +149,7 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
     ];
   }
   // No "failed" suffix: the colored kind glyph already carries the outcome.
-  return [terminalSegment(job, job.status)];
+  return [terminalSegment(job, job.status, isActivityFailure(job.outcome, job.status))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
@@ -179,7 +178,11 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
     segments.push({ key: "duration", text: formatQuietAge(delegate.durationMs) });
   } else {
     segments.push(
-      terminalSegment({ startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt }, statusText),
+      terminalSegment(
+        { startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt },
+        statusText,
+        activityDelegateState(delegate).failed,
+      ),
     );
   }
   return segments;
@@ -407,7 +410,11 @@ const DenseRowView = memo(function DenseRowView({
   const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
   const target = transcriptTarget(row);
   const statusState = jobStatusDotState(statusText, true);
-  const kindState = row.live && statusState !== "failed" && statusState !== "needs-you" ? "working" : statusState;
+  const failed =
+    row.kind === "job"
+      ? isActivityFailure(row.job.outcome, row.job.status)
+      : activityDelegateState(row.delegate).failed;
+  const kindState = failed ? "failed" : row.live && statusState !== "needs-you" ? "working" : statusState;
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>
