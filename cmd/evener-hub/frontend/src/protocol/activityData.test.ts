@@ -886,6 +886,31 @@ function treeFixture(entries: unknown[]) {
   };
 }
 
+function delegateUsageTree(usage?: unknown) {
+  return treeFixture([
+    {
+      kind: "delegate",
+      delegate: {
+        delegateId: "dlg_usage",
+        ownerSessionId: "sess_root",
+        rootSessionId: "sess_root",
+        childSessionId: "sess_child",
+        childRef: "ref_child",
+        transcriptRef: "ref_child",
+        type: "delegate",
+        lifecycle: "retained",
+        phase: "idle",
+        status: "completed",
+        projectionRevision: 1,
+        terminal: true,
+        resumable: false,
+        branch: {},
+        ...(typeof usage === "undefined" ? {} : { usage }),
+      },
+    },
+  ]);
+}
+
 describe("lastOutputAt and usage wire fields", () => {
   it("parses lastOutputAt on jobs", () => {
     const tree = parseActivityTree(
@@ -926,6 +951,48 @@ describe("lastOutputAt and usage wire fields", () => {
       kind: "delegate",
       delegate: { usage: { inputTokens: 41200, outputTokens: 6100 } },
     });
+  });
+
+  it("keeps usage absent when the wire omits it", () => {
+    const tree = parseActivityTree(delegateUsageTree()) as ActivityTree;
+    expect(tree.root.entries[0]).toMatchObject({ kind: "delegate" });
+    expect(tree.root.entries[0].kind === "delegate" && tree.root.entries[0].delegate.usage).toBeUndefined();
+  });
+
+  it.each([
+    ["empty", {}],
+    ["input-only", { inputTokens: 4 }],
+    ["output-only", { outputTokens: 4 }],
+  ])("rejects %s usage without both primary counters", (_name, usage) => {
+    const tree = parseActivityTree(delegateUsageTree(usage));
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBeDefined();
+  });
+
+  it("preserves explicit zero and valid usage counters", () => {
+    const zero = parseActivityTree(delegateUsageTree({ inputTokens: 0, outputTokens: 0 })) as ActivityTree;
+    expect(zero.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { usage: { inputTokens: 0, outputTokens: 0 } },
+    });
+
+    const valid = parseActivityTree(
+      delegateUsageTree({ inputTokens: 41200, outputTokens: 6100, cacheReadTokens: 1200, totalTokens: 47700 }),
+    ) as ActivityTree;
+    expect(valid.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { usage: { inputTokens: 41200, outputTokens: 6100, cacheReadTokens: 1200, totalTokens: 47700 } },
+    });
+  });
+
+  it.each([
+    ["negative", { inputTokens: -1, outputTokens: 1 }],
+    ["fractional", { inputTokens: 1.5, outputTokens: 1 }],
+    ["unsafe", { inputTokens: Number.MAX_SAFE_INTEGER + 1, outputTokens: 1 }],
+  ])("rejects %s primary usage counters", (_name, usage) => {
+    const tree = parseActivityTree(delegateUsageTree(usage));
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBeDefined();
   });
 
   it("omits optional activity fields when absent", () => {
