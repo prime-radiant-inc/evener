@@ -93,6 +93,52 @@ func TestSessionWithNoConsumerDropsRatherThanWedging(t *testing.T) {
 	}
 }
 
+func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 20 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	s := losslessTestSession("close-wedged")
+	s.subagents = newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
+	s.authoritativeConsumer = true
+	emitN(s, testEventBuffer)
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	emitterDone := make(chan struct{})
+	go func() {
+		defer close(emitterDone)
+		s.sendEvent(events.EventWarning, events.WarningData{Message: "blocked"}, nil)
+	}()
+	select {
+	case <-blocked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		s.close(context.Background(), closeOptions{forceTerminal: true})
+	}()
+
+	select {
+	case <-closeDone:
+	// TRIPWIRE: this ceiling only fires if shutdown remains wedged after the
+	// bounded close path; closeDone is the real completion signal.
+	case <-time.After(10 * time.Second):
+		t.Fatal("close remained blocked behind a saturated authoritative event channel")
+	}
+	select {
+	case <-emitterDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary authoritative emitter remained blocked after close deadline")
+	}
+}
+
 // TestAuthoritativeConsumerReceivesEveryEventPastTheBuffer is the other half:
 // once something is draining and would be permanently wrong if it missed an
 // event, nothing may be dropped -- including well past the buffer, and

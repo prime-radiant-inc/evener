@@ -345,6 +345,16 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 // the delivered envelope. It performs no side effects beyond the send; the
 // Notification hook decision belongs to the caller.
 func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
+	data, ev, _ := s.sendEventContext(context.Background(), kind, data, p)
+	return data, ev
+}
+
+// sendEventContext is the bounded variant used by shutdown's terminal
+// boundary. An authoritative consumer normally provides backpressure so the
+// event cannot be lost; when that consumer is wedged, the close deadline must
+// release eventsMu so teardown can close the stream and preserve the durable
+// closed state.
+func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent, bool) {
 	data = enrichDiagnosticData(kind, data)
 	ev := events.New(data)
 	ev.SessionID = s.id
@@ -354,11 +364,25 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 	// (Enqueue/DrainAsSteer, the ProcessInput loop), so the lock — not a recover()
 	// — is what guarantees we never send on a closed channel. Delivery of detached
 	// emitters' events before teardown is ensured separately by the WaitGroups.
+	s.closeCtxMu.Lock()
+	if s.closeSignal == nil {
+		s.closeSignal = make(chan struct{})
+	}
+	closeSignal := s.closeSignal
+	s.closeCtxMu.Unlock()
 	s.eventsMu.RLock()
 	open := !s.eventsClosed
+	delivered := false
 	if open {
+		s.closeCtxMu.RLock()
+		closeCtx := s.closeCtx
+		s.closeCtxMu.RUnlock()
+		if closeCtx != nil {
+			ctx = closeCtx
+		}
 		select {
 		case s.events <- ev:
+			delivered = true
 		default:
 			// The buffer is full, and what to do about it depends entirely on
 			// whether anything is reading.
@@ -385,7 +409,15 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 			// against silent projection corruption, and it is why the consumer's
 			// per-event work is bounded on purpose (server.BridgeEvent).
 			if s.authoritativeConsumer {
-				s.events <- ev
+				if observe := s.testOnlyBlockedSendEntered; observe != nil {
+					observe()
+				}
+				select {
+				case s.events <- ev:
+					delivered = true
+				case <-ctx.Done():
+				case <-closeSignal:
+				}
 			}
 		}
 	}
@@ -393,7 +425,7 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 	if open && s.descendantEvent != nil {
 		s.descendantEvent(ev)
 	}
-	return data, ev
+	return data, ev, open && delivered
 }
 
 // SetDescendantEventFunc installs the callback inherited by subsequently

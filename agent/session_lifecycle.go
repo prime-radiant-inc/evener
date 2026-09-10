@@ -89,7 +89,14 @@ func (s *Session) Close() {
 // A cancelled in-flight turn may already have published an interrupted idle
 // boundary; that boundary must not suppress the session's closed notification.
 func (s *Session) CloseForShutdown() {
-	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true})
+	s.CloseForShutdownContext(context.Background())
+}
+
+// CloseForShutdownContext closes the session using the caller's shutdown
+// deadline, allowing a daemon's bridge wait and session teardown to share one
+// bounded budget.
+func (s *Session) CloseForShutdownContext(ctx context.Context) {
+	s.close(ctx, closeOptions{cleanupEnv: true, forceTerminal: true})
 }
 
 type closeOptions struct {
@@ -335,6 +342,21 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		// close(budgetCtx, closeOptions{}) reuse it rather than minting their own.
 		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 		defer cancelBudget()
+		// Publish the shared deadline independently of eventsMu: an emitter may
+		// already hold eventsMu.RLock while waiting for the authoritative bridge.
+		// Its send must observe this context so the final close can acquire the
+		// write lock after the deadline instead of waiting behind that emitter.
+		s.closeCtxMu.Lock()
+		s.closeCtx = budgetCtx
+		if s.closeSignal == nil {
+			s.closeSignal = make(chan struct{})
+		}
+		closeSignal := s.closeSignal
+		s.closeCtxMu.Unlock()
+		go func() {
+			<-budgetCtx.Done()
+			close(closeSignal)
+		}()
 		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
 		// items 1-2): set-flag → cancel → join → drain. An in-turn dispose op
 		// admitted via beginDispose() holds disposeWG; close must not begin
@@ -546,11 +568,20 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 
 		// 5-6. Emit SESSION_END with final state.
 		if emitEnd {
-			s.emit(events.EventSessionEnd, events.SessionEndData{
+			// A live authoritative bridge gets the terminal boundary with the
+			// same lossless backpressure as every other event. A wedged bridge
+			// cannot be allowed to hold CloseForShutdown here: the shared close
+			// deadline releases sendEventContext, after which the durable closed
+			// state and stream close below still complete.
+			data := events.SessionEndData{
 				Reason: "session_closed",
 				State:  string(SessionClosed),
 				Turns:  turns,
-			})
+			}
+			_, ev, delivered := s.sendEventContext(budgetCtx, events.EventSessionEnd, data, s.activeCausalProvenance())
+			if delivered && s.jobManager != nil {
+				s.jobManager.onSessionEvent(ev)
+			}
 		}
 
 		if s.mcpMgr != nil {
