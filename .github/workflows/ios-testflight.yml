@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       build_number:
-        description: "New build number for this app version (for example 1.0.1)"
-        required: true
+        description: "New archive build number; recovery uses the original IPA"
+        required: false
         type: string
 
       recovery_run_id:
@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: read
+  # actions/upload-artifact receives GitHub's official ACTIONS_RUNTIME_TOKEN at
+  # runtime; the recovery job separately needs actions: read to download it.
 
 concurrency:
   group: ios-testflight
@@ -28,26 +30,36 @@ env:
   IOS_BUNDLE_IDENTIFIER: com.primeradiant.evener.native
 
 jobs:
+  validate-dispatch:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-main dispatch
+        run: |
+          set -euo pipefail
+          echo "TestFlight workflow dispatches are allowed only from main (got $GITHUB_REF)" >&2
+          exit 1
+
   archive-and-upload:
     if: inputs.recovery_run_id == '' && github.ref == 'refs/heads/main'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Select and verify Xcode
         run: |
           sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
           xcodebuild -version
           test "$(xcodebuild -version | awk '/^Xcode / { print $2 }')" = "$XCODE_VERSION"
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: mobile-native/package-lock.json
       - name: Set up Ruby and cached gems
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler: "2.7.2"
@@ -185,7 +197,7 @@ jobs:
             bundle exec fastlane ios testflight
       - name: Upload archive and diagnostics
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: evener-ios-testflight-${{ github.run_id }}
           path: |
@@ -237,9 +249,9 @@ jobs:
       actions: read
     steps:
       - name: Check out verification lane
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Ruby and cached gems
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler: "2.7.2"
@@ -254,7 +266,7 @@ jobs:
           [[ "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Recovery run ID must be numeric" >&2; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_RUN_ID" > "$RUNNER_TEMP/recovery-run.json"
       - name: Download the original signed archive
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: evener-ios-testflight-${{ inputs.recovery_run_id }}
           run-id: ${{ inputs.recovery_run_id }}
@@ -291,7 +303,7 @@ jobs:
         run: bundle exec fastlane ios verify_testflight
       - name: Save recovered TestFlight receipt
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: evener-ios-testflight-verification-${{ github.run_id }}
           path: |
