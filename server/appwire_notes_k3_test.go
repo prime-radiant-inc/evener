@@ -95,10 +95,10 @@ func TestAppWireNotesPersistenceFailureCarriesMutationMetadata(t *testing.T) {
 	attempts := 0
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
-	srv.SetNotesHumanSetFunc(func(outerID, note string) (string, error) {
+	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
 		attempts++
 		if attempts == 1 {
-			return "", errors.New("journal write failed")
+			return appwire.NotesHumanSetResponse{}, errors.New("journal write failed")
 		}
 		return sess.SetHumanNote(outerID, note)
 	})

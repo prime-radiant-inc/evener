@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
@@ -26,6 +28,23 @@ const (
 	sessionLabelMaxLen  = 280
 )
 
+// ReadCanonicalHumanNote reads committed human-note authority without writing
+// or recovering the journal. present distinguishes an explicit clear from a
+// snapshot that does not yet own the note. There is no metadata import fallback.
+func ReadCanonicalHumanNote(stateDir, sessionID string) (note string, present bool, err error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return "", false, err
+	}
+	snapshot, err := loadClientMutationSnapshotFS(afero.NewOsFs(), stateDir, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	if snapshot.HumanNote == nil {
+		return "", false, nil
+	}
+	return *snapshot.HumanNote, true, nil
+}
+
 // normalizeNote collapses every run of whitespace (including newlines) to one
 // space and clamps to sessionNoteMaxRunes Unicode characters.
 func normalizeNote(text string) string {
@@ -37,38 +56,16 @@ func normalizeNote(text string) string {
 	return collapsed
 }
 
-// setHumanNote normalizes and clamps note, stores it on change, and reports
-// the stored value with whether it changed (clamp-then-compare: re-saving an
-// identical over-length note is a no-op).
-func (s *Session) setHumanNote(note string) (stored string, changed bool) {
-	return s.storeNote(note, true)
-}
-
-// setAgentNote normalizes and clamps note, stores it on change, and reports
-// the stored value with whether it changed.
+// setAgentNote normalizes and clamps the agent whiteboard.
 func (s *Session) setAgentNote(note string) (stored string, changed bool) {
-	return s.storeNote(note, false)
-}
-
-// storeNote normalizes note and stores it on the human (human=true) or agent
-// whiteboard, reporting the stored value with whether it changed.
-func (s *Session) storeNote(note string, human bool) (stored string, changed bool) {
 	normalized := normalizeNote(note)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current := s.agentNote
-	if human {
-		current = s.humanNote
-	}
-	if current == normalized {
-		return current, false
-	}
-	if human {
-		s.humanNote = normalized
-		return s.humanNote, true
+	if s.agentNote == normalized {
+		return s.agentNote, false
 	}
 	s.agentNote = normalized
-	return s.agentNote, true
+	return normalized, true
 }
 
 // addSessionURL validates url plus label, canonicalizes the URL, and appends

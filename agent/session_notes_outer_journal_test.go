@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -14,14 +13,16 @@ import (
 func TestSetHumanNoteInterleavedRetryKeepsLatestNote(t *testing.T) {
 	s := newNotesToolSession(t)
 	defer s.Close()
-	first, err := s.SetHumanNote("outer-a", "note A")
+	firstResponse, err := s.SetHumanNote("outer-a", "note A")
+	first := firstResponse.Note
 	if err != nil {
 		t.Fatalf("save A: %v", err)
 	}
 	if first != "note A" {
 		t.Fatalf("save A stored = %q, want %q", first, "note A")
 	}
-	second, err := s.SetHumanNote("outer-b", "note B")
+	secondResponse, err := s.SetHumanNote("outer-b", "note B")
+	second := secondResponse.Note
 	if err != nil {
 		t.Fatalf("save B: %v", err)
 	}
@@ -32,15 +33,17 @@ func TestSetHumanNoteInterleavedRetryKeepsLatestNote(t *testing.T) {
 	nextNotesEvent(t, s, events.EventNotesUpdated)
 	nextNotesEvent(t, s, events.EventNotesUpdated)
 
-	replayed, err := s.SetHumanNote("outer-a", "note A")
+	replayedResponse, err := s.SetHumanNote("outer-a", "note A")
+
+	replayed := replayedResponse.Note
 	if err != nil {
 		t.Fatalf("retry A: %v", err)
 	}
 	if replayed != "note A" {
 		t.Fatalf("retry A replayed = %q, want recorded %q", replayed, "note A")
 	}
+	current, _ := s.notesSnapshot()
 	s.mu.Lock()
-	current := s.humanNote
 	n := len(s.steeringQueue)
 	s.mu.Unlock()
 	if current != "note B" {
@@ -66,11 +69,11 @@ func TestSetHumanNoteReusedIDWithDifferentInputConflicts(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if _, err := s.SetHumanNote("outer-1", "different"); !errors.Is(err, errClientMutationMismatch) {
+	if _, err := s.SetHumanNote("outer-1", "different"); !isHumanNoteMismatch(err) {
 		t.Fatalf("reused ID with different input err = %v, want mismatch", err)
 	}
+	current, _ := s.notesSnapshot()
 	s.mu.Lock()
-	current := s.humanNote
 	n := len(s.steeringQueue)
 	s.mu.Unlock()
 	if current != "first" {
@@ -124,7 +127,7 @@ func TestRemoveSessionURLReusedIDWithDifferentInputConflicts(t *testing.T) {
 		t.Fatalf("remove a = %v, %v; want true, nil", removed, err)
 	}
 	nextNotesEvent(t, s, events.EventUrlsUpdated)
-	if _, err := s.RemoveSessionURL("outer-rm-1", b.ID); !errors.Is(err, errClientMutationMismatch) {
+	if _, err := s.RemoveSessionURL("outer-rm-1", b.ID); !isHumanNoteConflict(err) {
 		t.Fatalf("reused ID with different entry err = %v, want mismatch", err)
 	}
 	got := s.sessionURLsForTest()

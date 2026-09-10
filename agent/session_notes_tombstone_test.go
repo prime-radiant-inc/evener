@@ -5,297 +5,90 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
-// TestSetHumanNoteSameIDRetryAfterAdoptionKeepsNewer covers the adopted-write
-// tombstone: the persist of A lands but the client never sees success (the
-// owner lease releases without journaling an applied result); a fresh-ID save
-// adopts A's still-pending delivery; a newer edit D lands; then the hub
-// retries A with the SAME ID. The retry must replay A's recorded result
-// without rewriting the store, so D stands.
-func TestSetHumanNoteSameIDRetryAfterAdoptionKeepsNewer(t *testing.T) {
-	t.Parallel()
-	s := newNotesToolSession(t)
-	defer s.Close()
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	// Persist of A lands at the store/journal level, but the owner goes away
-	// before the applied result journals (disconnect/fence/crash): the record
-	// stands InFlight with delivery pending for A.
-	request, err := newClientMutationRequest(clientMutationMethodNotesHumanSet, "outer-tomb-a", struct {
-		Note string
-	}{Note: "note A"})
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	lookup, err := s.clientMutations.reservePrepared(request, nil)
-	if err != nil {
-		t.Fatalf("reserve A: %v", err)
-	}
-	if lookup.Lease == nil {
-		t.Fatalf("no owner lease for the simulated first attempt")
-	}
-	s.notesUpdateMu.Lock()
-	stored, changed := s.setHumanNote("note A")
-	if err := s.persistNotesMetaWithIntent("outer-tomb-a", stored, changed); err != nil {
-		s.notesUpdateMu.Unlock()
-		t.Fatalf("persist A: %v", err)
-	}
-	if err := s.markNotesDeliveryPending("outer-tomb-a", stored); err != nil {
-		s.notesUpdateMu.Unlock()
-		t.Fatalf("mark delivery pending A: %v", err)
-	}
-	s.notesUpdateMu.Unlock()
-	lookup.Lease.Release()
-	// A fresh-ID save of the same text adopts A's pending delivery and spends
-	// its markers, leaving the tombstone; then a newer edit D lands.
-	if _, err := s.SetHumanNote("outer-tomb-b", "note A"); err != nil {
-		t.Fatalf("fresh-ID adoption save: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if _, err := s.SetHumanNote("outer-tomb-d", "note D"); err != nil {
-		t.Fatalf("save D: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	// The hub retries A with the same ID: it must replay A's recorded result
-	// without restoring A over D.
-	replayed, err := s.SetHumanNote("outer-tomb-a", "note A")
-	if err != nil {
-		t.Fatalf("retry A: %v", err)
-	}
-	if replayed != "note A" {
-		t.Fatalf("retry A replayed = %q, want recorded %q", replayed, "note A")
-	}
-	s.mu.Lock()
-	current := s.humanNote
-	s.mu.Unlock()
-	if current != "note D" {
-		t.Fatalf("stored note after retry A = %q, want D to stand", current)
-	}
-	if rec := s.clientMutations.snapshot().Journal["outer-tomb-a"]; rec.OperationState != clientMutationOperationApplied {
-		t.Fatalf("retry record state = %q, want applied", rec.OperationState)
-	}
-	// No event on the tombstone replay: the stream must stay quiet.
-	select {
-	case ev := <-s.Events():
-		t.Fatalf("retry A emitted %s, want silence", ev.Kind)
-	default:
+// Atomic recorded results replace the former adoption/supersede tombstones,
+// including the explicit-empty result. Exercise both equal resaves and rewrites.
+func TestHumanNoteRecordedResultSurvivesNewerWrites(t *testing.T) {
+	for _, original := range []string{"A", ""} {
+		for _, rewrite := range []bool{false, true} {
+			t.Run(original+map[bool]string{false: "/noop", true: "/rewrite"}[rewrite], func(t *testing.T) {
+				s := newDurableHumanNoteSession(t)
+				if _, err := s.SetHumanNote("seed", "seed"); err != nil {
+					t.Fatal(err)
+				}
+				s.clientMutations.faults.AfterEffectSnapshotRename = func() error { return errors.New("lost response") }
+				if _, err := s.SetHumanNote("original", original); err == nil {
+					t.Fatal("missing fault")
+				}
+				reloadHumanNoteStore(t, s)
+				if rewrite {
+					if _, err := s.SetHumanNote("intervening", "X"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := s.SetHumanNote("fresh", original); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.SetHumanNote("latest", "D"); err != nil {
+					t.Fatal(err)
+				}
+				reloadHumanNoteStore(t, s)
+				before := len(s.clientMutations.snapshot().SteeringOrder)
+				// Clear prior notifications before asserting replay emits nothing.
+				for len(s.Events()) > 0 {
+					<-s.Events()
+				}
+				replay, err := s.SetHumanNote("original", original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if replay.Note != original || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
+					t.Fatalf("replay = %+v", replay)
+				}
+				if note, _ := s.notesSnapshot(); note != "D" {
+					t.Fatalf("retry reverted note to %q", note)
+				}
+				if len(s.clientMutations.snapshot().SteeringOrder) != before {
+					t.Fatal("retry duplicated notification")
+				}
+				select {
+				case ev := <-s.Events():
+					if ev.Kind == events.EventNotesUpdated {
+						t.Fatal("replay emitted update")
+					}
+				default:
+				}
+			})
+		}
 	}
 }
 
-// TestSetHumanNoteSameIDRetryAfterAdoptedClearKeepsNewer covers the
-// empty-note tombstone: a CLEAR (empty stored value) whose delivery is
-// adopted by a fresh-ID save must still leave a recognizable tombstone. The
-// pre-fix helper rejected NotesStoredValue == "", so retrying the original
-// clear after a newer note landed fell through to a fresh write and
-// clobbered the newer note.
-func TestSetHumanNoteSameIDRetryAfterAdoptedClearKeepsNewer(t *testing.T) {
-	t.Parallel()
-	s := newNotesToolSession(t)
-	defer s.Close()
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
+func TestHumanNoteFailedRewritePreservesEarlierRecordedResult(t *testing.T) {
+	s := newDurableHumanNoteSession(t)
+	if _, err := s.SetHumanNote("first", "A"); err != nil {
+		t.Fatal(err)
 	}
-	// The store holds a note, so the clear below is a real write (a clear on
-	// an already-empty note is a no-op with no pending delivery to adopt).
-	s.notesUpdateMu.Lock()
-	s.setHumanNote("note seed")
-	s.notesUpdateMu.Unlock()
-	// Persist of the clear lands at the store/journal level, but the owner
-	// goes away before the applied result journals: the record stands
-	// InFlight with delivery pending for "".
-	request, err := newClientMutationRequest(clientMutationMethodNotesHumanSet, "outer-tomb-clear-a", struct {
-		Note string
-	}{Note: ""})
+	if _, err := s.SetHumanNote("latest", "X"); err != nil {
+		t.Fatal(err)
+	}
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error { return errors.New("failed rewrite") }
+	if _, err := s.SetHumanNote("rewrite", "A"); err == nil {
+		t.Fatal("missing fault")
+	}
+	reloadHumanNoteStore(t, s)
+	replay, err := s.SetHumanNote("first", "A")
 	if err != nil {
-		t.Fatalf("request: %v", err)
+		t.Fatal(err)
 	}
-	lookup, err := s.clientMutations.reservePrepared(request, nil)
-	if err != nil {
-		t.Fatalf("reserve clear: %v", err)
+	if replay.Note != "A" {
+		t.Fatalf("recorded response = %+v", replay)
 	}
-	if lookup.Lease == nil {
-		t.Fatalf("no owner lease for the simulated first attempt")
+	if note, _ := s.notesSnapshot(); note != "X" {
+		t.Fatalf("failed rewrite/retry changed note to %q", note)
 	}
-	s.notesUpdateMu.Lock()
-	stored, changed := s.setHumanNote("")
-	if err := s.persistNotesMetaWithIntent("outer-tomb-clear-a", stored, changed); err != nil {
-		s.notesUpdateMu.Unlock()
-		t.Fatalf("persist clear: %v", err)
-	}
-	if !changed {
-		s.notesUpdateMu.Unlock()
-		t.Fatalf("clear of seeded note changed = false, want a real write")
-	}
-	if err := s.markNotesDeliveryPending("outer-tomb-clear-a", stored); err != nil {
-		s.notesUpdateMu.Unlock()
-		t.Fatalf("mark delivery pending clear: %v", err)
-	}
-	s.notesUpdateMu.Unlock()
-	lookup.Lease.Release()
-	// A fresh-ID save of the same (empty) text adopts the clear's pending
-	// delivery and spends its markers, leaving the tombstone; then a newer
-	// edit D lands.
-	if _, err := s.SetHumanNote("outer-tomb-clear-b", ""); err != nil {
-		t.Fatalf("fresh-ID adoption save: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if _, err := s.SetHumanNote("outer-tomb-clear-d", "note D"); err != nil {
-		t.Fatalf("save D: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	// The hub retries the clear with the same ID: it must replay the
-	// recorded "" without restoring the empty note over D.
-	replayed, err := s.SetHumanNote("outer-tomb-clear-a", "")
-	if err != nil {
-		t.Fatalf("retry clear: %v", err)
-	}
-	if replayed != "" {
-		t.Fatalf("retry clear replayed = %q, want recorded empty", replayed)
-	}
-	s.mu.Lock()
-	current := s.humanNote
-	s.mu.Unlock()
-	if current != "note D" {
-		t.Fatalf("stored note after retry clear = %q, want D to stand", current)
-	}
-	if rec := s.clientMutations.snapshot().Journal["outer-tomb-clear-a"]; rec.OperationState != clientMutationOperationApplied {
-		t.Fatalf("retry record state = %q, want applied", rec.OperationState)
-	}
-	// No event on the tombstone replay: the stream must stay quiet.
-	select {
-	case ev := <-s.Events():
-		t.Fatalf("retry clear emitted %s, want silence", ev.Kind)
-	default:
-	}
-}
-
-// TestSetHumanNoteSameIDRetryAfterRewriteKeepsNewer covers the supersede
-// branch (live != note): A's delivery is still pending when a fresh-ID save
-// rewrites the same text A over an intervening newer save X
-// (last-writer-wins), spending A's markers. A later edit D lands, then the
-// hub retries A with the same ID. The retry must replay A's recorded result
-// without restoring A over D.
-func TestSetHumanNoteSameIDRetryAfterRewriteKeepsNewer(t *testing.T) {
-	t.Parallel()
-	s := newNotesToolSession(t)
-	defer s.Close()
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "fence-tomb-rw"}
-		return nil
-	}); err != nil {
-		t.Fatalf("seed fence: %v", err)
-	}
-	if _, err := s.SetHumanNote("outer-tomb-rw-a", "note A"); err == nil {
-		t.Fatalf("save A under fence err = nil, want steer refusal")
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = nil
-		return nil
-	}); err != nil {
-		t.Fatalf("clear fence: %v", err)
-	}
-	if _, err := s.SetHumanNote("outer-tomb-rw-x", "note X"); err != nil {
-		t.Fatalf("save X: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	// Fresh-ID rewrite of the older text: last-writer-wins lands A again and
-	// spends A's pending markers, leaving the tombstone.
-	if _, err := s.SetHumanNote("outer-tomb-rw-c", "note A"); err != nil {
-		t.Fatalf("rewrite A: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if _, err := s.SetHumanNote("outer-tomb-rw-d", "note D"); err != nil {
-		t.Fatalf("save D: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	replayed, err := s.SetHumanNote("outer-tomb-rw-a", "note A")
-	if err != nil {
-		t.Fatalf("retry A: %v", err)
-	}
-	if replayed != "note A" {
-		t.Fatalf("retry A replayed = %q, want recorded %q", replayed, "note A")
-	}
-	s.mu.Lock()
-	current := s.humanNote
-	s.mu.Unlock()
-	if current != "note D" {
-		t.Fatalf("stored note after retry A = %q, want D to stand", current)
-	}
-	if rec := s.clientMutations.snapshot().Journal["outer-tomb-rw-a"]; rec.OperationState != clientMutationOperationApplied {
-		t.Fatalf("retry record state = %q, want applied", rec.OperationState)
-	}
-	select {
-	case ev := <-s.Events():
-		t.Fatalf("retry A emitted %s, want silence", ev.Kind)
-	default:
-	}
-}
-
-// TestSetHumanNoteSameIDRetryAfterSupersedePersistFailureKeepsNewer covers
-// the persist-failure-after-marker-clear variant: the superseding fresh-ID
-// rewrite spends A's markers and then its own metadata persist fails (so it
-// rolls back to the intervening save X). A's retry must still recognize the
-// landed-then-spent write via the tombstone instead of looking like an
-// unfinished persist that rewrites the store over X.
-func TestSetHumanNoteSameIDRetryAfterSupersedePersistFailureKeepsNewer(t *testing.T) {
-	t.Parallel()
-	s := newNotesToolSession(t)
-	defer s.Close()
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "fence-tomb-pf"}
-		return nil
-	}); err != nil {
-		t.Fatalf("seed fence: %v", err)
-	}
-	if _, err := s.SetHumanNote("outer-tomb-pf-a", "note A"); err == nil {
-		t.Fatalf("save A under fence err = nil, want steer refusal")
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = nil
-		return nil
-	}); err != nil {
-		t.Fatalf("clear fence: %v", err)
-	}
-	if _, err := s.SetHumanNote("outer-tomb-pf-x", "note X"); err != nil {
-		t.Fatalf("save X: %v", err)
-	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	injected := errors.New("injected persist failure after marker clear")
-	s.cfg.testOnly.notesAutoSaveFault = func() error { return injected }
-	if _, err := s.SetHumanNote("outer-tomb-pf-c", "note A"); !errors.Is(err, injected) {
-		t.Fatalf("rewrite A err = %v, want injected failure", err)
-	}
-	s.cfg.testOnly.notesAutoSaveFault = nil
-	// The failed rewrite emits nothing and rolls back to X.
-	replayed, err := s.SetHumanNote("outer-tomb-pf-a", "note A")
-	if err != nil {
-		t.Fatalf("retry A: %v", err)
-	}
-	if replayed != "note A" {
-		t.Fatalf("retry A replayed = %q, want recorded %q", replayed, "note A")
-	}
-	s.mu.Lock()
-	current := s.humanNote
-	s.mu.Unlock()
-	if current != "note X" {
-		t.Fatalf("stored note after retry A = %q, want X to stand", current)
-	}
-	if rec := s.clientMutations.snapshot().Journal["outer-tomb-pf-a"]; rec.OperationState != clientMutationOperationApplied {
-		t.Fatalf("retry record state = %q, want applied", rec.OperationState)
-	}
-	select {
-	case ev := <-s.Events():
-		t.Fatalf("retry A emitted %s, want silence", ev.Kind)
-	default:
+	if len(s.clientMutations.snapshot().SteeringOrder) != 2 {
+		t.Fatal("failed rewrite or replay queued notification")
 	}
 }

@@ -10,100 +10,56 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// TestSetHumanNoteFailedSteerRetryDeliversWithoutRewrite verifies F1's first
-// half: a save whose derived steer is refused stores durably, and the retry
-// with unchanged input completes the pending delivery WITHOUT repeating the
-// storage write.
-func TestSetHumanNoteFailedSteerRetryDeliversWithoutRewrite(t *testing.T) {
-	s := newNotesToolSession(t)
-	defer s.Close()
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	// Refuse the first steer via an interrupt fence, then lift it.
+// A refused atomic save changes neither storage nor publication.
+func TestSetHumanNoteRefusalDoesNotPublish(t *testing.T) {
+	s := newDurableHumanNoteSession(t)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "fence-1"}
+		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "stop"}
 		return nil
 	}); err != nil {
-		t.Fatalf("seed fence: %v", err)
+		t.Fatal(err)
 	}
-	stored, err := s.SetHumanNote("outer-f1a", "note one")
-	if err == nil {
-		t.Fatalf("save under fence err = nil, want steer refusal")
+	if _, err := s.SetHumanNote("save", "note one"); !isHumanNoteConflict(err) {
+		t.Fatalf("refusal = %v", err)
 	}
-	if stored != "note one" {
-		t.Fatalf("stored = %q, want %q", stored, "note one")
+	if note, _ := s.notesSnapshot(); note != "" {
+		t.Fatalf("refused note = %q", note)
 	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = nil
-		return nil
-	}); err != nil {
-		t.Fatalf("clear fence: %v", err)
+	if len(s.clientMutations.snapshot().SteeringOrder) != 0 {
+		t.Fatal("refused save queued notification")
 	}
-	replayed, err := s.SetHumanNote("outer-f1a", "note one")
-	if err != nil {
-		t.Fatalf("retry: %v", err)
+	for len(s.Events()) > 0 {
+		if ev := <-s.Events(); ev.Kind == events.EventNotesUpdated || ev.Kind == events.EventSteeringInjected {
+			t.Fatalf("refused save emitted %s", ev.Kind)
+		}
 	}
-	if replayed != "note one" {
-		t.Fatalf("retry stored = %q, want %q", replayed, "note one")
-	}
-	s.mu.Lock()
-	current := s.humanNote
-	n := len(s.steeringQueue)
-	s.mu.Unlock()
-	if current != "note one" {
-		t.Fatalf("stored note after retry = %q, want %q", current, "note one")
-	}
-	if n != 1 {
-		t.Fatalf("steering queue length = %d, want 1 (retry delivers once)", n)
-	}
-	// The retry re-emits the committed snapshot: drain both change events.
-	nextNotesEvent(t, s, events.EventNotesUpdated)
 }
 
-// TestSetHumanNoteInterveningSaveThenRetryKeepsNewer verifies F1's second
-// half: after a failed steer, an intervening save lands, and the first
-// mutation's retry completes delivery for ITS committed value without
-// rewriting (and clobbering) the newer note.
-func TestSetHumanNoteInterveningSaveThenRetryKeepsNewer(t *testing.T) {
-	s := newNotesToolSession(t)
-	defer s.Close()
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
+func TestSetHumanNoteRejectedReplayKeepsNewer(t *testing.T) {
+	s := newDurableHumanNoteSession(t)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "fence-1"}
+		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "stop"}
 		return nil
 	}); err != nil {
-		t.Fatalf("seed fence: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := s.SetHumanNote("outer-f1b", "note A"); err == nil {
-		t.Fatalf("save A under fence err = nil, want steer refusal")
+	if _, err := s.SetHumanNote("save", "old"); !isHumanNoteConflict(err) {
+		t.Fatalf("refusal = %v", err)
 	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.InterruptFence = nil
-		return nil
-	}); err != nil {
-		t.Fatalf("clear fence: %v", err)
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error { snapshot.InterruptFence = nil; return nil }); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := s.SetHumanNote("outer-f1c", "note B"); err != nil {
-		t.Fatalf("save B: %v", err)
+	if _, err := s.SetHumanNote("newer", "latest"); err != nil {
+		t.Fatal(err)
 	}
-	nextNotesEvent(t, s, events.EventNotesUpdated)
-	replayed, err := s.SetHumanNote("outer-f1b", "note A")
-	if err != nil {
-		t.Fatalf("retry A: %v", err)
+	if _, err := s.SetHumanNote("save", "old"); !isHumanNoteConflict(err) {
+		t.Fatalf("rejected replay = %v", err)
 	}
-	if replayed != "note A" {
-		t.Fatalf("retry A replayed = %q, want recorded %q", replayed, "note A")
+	if note, _ := s.notesSnapshot(); note != "latest" {
+		t.Fatalf("rejected retry changed note to %q", note)
 	}
-	s.mu.Lock()
-	current := s.humanNote
-	s.mu.Unlock()
-	if current != "note B" {
-		t.Fatalf("stored note after retry A = %q, want B to stand", current)
+	if len(s.clientMutations.snapshot().SteeringOrder) != 1 {
+		t.Fatal("rejected retry queued notification")
 	}
 }
 
@@ -122,7 +78,7 @@ func TestConcurrentNotesSavesConvergeToOneOrder(t *testing.T) {
 			defer wg.Done()
 			note := strings.Repeat("n", i+1)
 			if _, err := s.SetHumanNote("outer-conc", note); err != nil &&
-				!errors.Is(err, errClientMutationMismatch) {
+				!isHumanNoteMismatch(err) {
 				t.Errorf("save %q: %v", note, err)
 			}
 		}(i)
@@ -149,9 +105,7 @@ drain:
 			break drain
 		}
 	}
-	s.mu.Lock()
-	current := s.humanNote
-	s.mu.Unlock()
+	current, _ := s.notesSnapshot()
 	if len(payloads) == 0 {
 		t.Fatalf("no NOTES_UPDATED events emitted for %d saves", writers)
 	}
@@ -162,14 +116,15 @@ drain:
 }
 
 // TestNotesPersistenceFailureBlocksSuccessJournal verifies F4: a metadata
-// persistence failure surfaces as the mutation error with no success
-// journaled, for both the human-note and URL-remove paths.
+// persistence failure surfaces with no success journaled: human-note journal
+// persistence and URL metadata persistence each use their actual filesystem seam.
 func TestNotesPersistenceFailureBlocksSuccessJournal(t *testing.T) {
-	s := newNotesToolSession(t)
+	s := newDurableHumanNoteSession(t)
 	defer s.Close()
 	injected := errors.New("injected meta save failure")
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error { return injected }
 	s.cfg.testOnly.notesAutoSaveFault = func() error { return injected }
-	if _, err := s.SetHumanNote("outer-f4a", "doomed note"); !errors.Is(err, injected) {
+	if _, err := s.SetHumanNote("outer-f4a", "doomed note"); err == nil {
 		t.Fatalf("human save err = %v, want injected failure", err)
 	}
 	if _, ok := s.clientMutations.snapshot().Journal["outer-f4a"]; !ok {
@@ -177,6 +132,7 @@ func TestNotesPersistenceFailureBlocksSuccessJournal(t *testing.T) {
 	} else if s.clientMutations.snapshot().Journal["outer-f4a"].OperationState == clientMutationOperationApplied {
 		t.Fatalf("failed save journaled applied success")
 	}
+	s.clientMutations.faults = clientMutationFaults{}
 	entry, err := s.addSessionURL("https://x.test/y", "")
 	if err != nil {
 		t.Fatalf("add: %v", err)

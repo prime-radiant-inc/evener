@@ -60,6 +60,9 @@ func TestServerAppWireNotesHumanSetInvokesCallback(t *testing.T) {
 	if out.Note != "human says hi" {
 		t.Fatalf("stored note=%q, want %q", out.Note, "human says hi")
 	}
+	if out.Receipt.ClientMutationID != "outer-1" || out.Receipt.Disposition != appwire.MutationDispositionApplied || out.Receipt.ProjectionState != appwire.MutationProjectionPending {
+		t.Fatalf("accepted receipt = %+v", out.Receipt)
+	}
 	queue := sess.SteeringQueueSnapshot()
 	if len(queue) != 1 {
 		t.Fatalf("steering queue length=%d, want 1", len(queue))
@@ -92,6 +95,10 @@ func TestServerAppWireNotesHumanSetRetryOfOneOuterIDSteersOnce(t *testing.T) {
 	retry := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodNotesHumanSet, params))
 	if retry.Kind() != appwire.MessageResponse {
 		t.Fatalf("retry resp=%v error=%+v", retry.Kind(), retry.Error)
+	}
+	out, ok := retry.Response.Result.(appwire.NotesHumanSetResponse)
+	if !ok || out.Receipt.ClientMutationID != "outer-9" || out.Receipt.Disposition != appwire.MutationDispositionReplayed || out.Receipt.ProjectionState != appwire.MutationProjectionPending {
+		t.Fatalf("replayed result = %+v", retry.Response.Result)
 	}
 	if got := sess.SteeringQueueSnapshot(); len(got) != 1 {
 		t.Fatalf("steering queue length=%d, want exactly 1 after outer retry", len(got))
@@ -194,6 +201,29 @@ func TestServerAppWireNotesEventsProjectToPushes(t *testing.T) {
 	awaitTask2Notification(t, first, appwire.NotifyEvenerUrlsUpdated)
 }
 
+func TestServerAppWireNotesLiveThreadMatchesCanonicalAcceptance(t *testing.T) {
+	sess := newNotesTestSession(t)
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", sess.ID())
+	client := newTask2SubscribedClient(t, srv, "notes-live", "local:"+sess.ID())
+	for _, tc := range []struct{ id, note string }{{"save", "sentinel"}, {"clear", ""}} {
+		response, err := sess.SetHumanNote(tc.id, tc.note)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for len(sess.Events()) > 0 {
+			event := <-sess.Events()
+			if event.Kind == events.EventNotesUpdated {
+				srv.RecordAppEvent(event)
+			}
+		}
+		awaitTask2Notification(t, client, appwire.NotifyEvenerNotesUpdated)
+		if note := srv.appThread().Evener.HumanNote; note != response.Note || note != tc.note {
+			t.Fatalf("live thread note = %q, acceptance = %+v", note, response)
+		}
+	}
+}
+
 // TestServerAppWireSharedNotesCapabilityFollowsWiring verifies the SharedNotes
 // capability bit: true only when both notes verbs are wired and the session is
 // open, following the Goal bit's contract.
@@ -203,7 +233,9 @@ func TestServerAppWireSharedNotesCapabilityFollowsWiring(t *testing.T) {
 	if caps := srv.appCapabilities("idle", false); caps.SharedNotes {
 		t.Fatalf("SharedNotes should be false with nothing wired")
 	}
-	srv.SetNotesHumanSetFunc(func(outerID, note string) (string, error) { return note, nil })
+	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
+		return appwire.NotesHumanSetResponse{Note: note}, nil
+	})
 	if caps := srv.appCapabilities("idle", false); caps.SharedNotes {
 		t.Fatalf("SharedNotes should be false with only notes/human/set wired")
 	}

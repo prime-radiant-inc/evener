@@ -447,6 +447,11 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	if err := ctx.Err(); err != nil {
 		return appwire.Thread{}, err
 	}
+	note, _, err := agent.ReadCanonicalHumanNote(entry.StateDir, entry.Meta.ID)
+	if err != nil {
+		return appwire.Thread{}, err
+	}
+	entry.Meta.HumanNote = note
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID

@@ -189,8 +189,8 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and evener resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
-	// HumanNote is the human's one-paragraph session whiteboard, persisted so it
-	// survives daemon restart and evener resume. Empty means unset.
+	// HumanNote is a projection of the canonical client-mutation snapshot.
+	// It is not imported as human-note authority when restoring a session.
 	HumanNote string `json:"human_note,omitempty"`
 	// AgentNote is the agent's one-paragraph session whiteboard, persisted like
 	// HumanNote. Empty means unset.
@@ -198,15 +198,6 @@ type SessionMeta struct {
 	// SessionURLs is the agent-curated session URL list, persisted so it
 	// survives daemon restart and evener resume. Empty/nil means no links.
 	SessionURLs []SessionURL `json:"session_urls,omitempty"`
-	// PendingNotesHuman carries the notes/human/set intent a metadata save
-	// committed but whose delivery (emission + derived steer) may not have
-	// journaled yet. The note bytes ride alongside the note in the same
-	// atomic meta.json write, so recovery needs no second write to be safe:
-	// a retry with the same mutation ID completes delivery for the recorded
-	// note without rewriting the store, and a retry with a different ID
-	// conflicts (via the mutation journal) without clobbering. Cleared when
-	// the mutation's applied result journals. Keyed by outer mutation ID.
-	PendingNotesHuman map[string]PendingNotesHuman `json:"pending_notes_human,omitempty"`
 	// EnvContext is the environment-context tracker state (last emitted
 	// snapshot), persisted so resume stays silent when nothing changed.
 	EnvContext *envctx.State `json:"env_context,omitempty"`
@@ -287,16 +278,6 @@ type SessionURL struct {
 	Label   string `json:"label,omitempty"`
 	AddedBy string `json:"added_by,omitempty"`
 	AddedAt int64  `json:"added_at,omitempty"`
-}
-
-// PendingNotesHuman is the notes/human/set intent one atomic meta.json write
-// committed alongside the note it mutated to. Note is the post-clamp stored
-// value the retry must deliver without rewriting the store; Changed reports
-// whether the write changed the note (a no-op save records delivery as
-// complete without emission or steer).
-type PendingNotesHuman struct {
-	Note    string `json:"note"`
-	Changed bool   `json:"changed,omitempty"`
 }
 
 // SessionDisplayName returns the best available human-readable title for a

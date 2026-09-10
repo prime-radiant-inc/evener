@@ -540,13 +540,6 @@ type testConfig struct {
 	// save; a non-nil return is surfaced as the mutation error and blocks
 	// the success journal. Tests use it to prove durability gating.
 	notesAutoSaveFault func() error
-	// notesJournalFault injects a deterministic failure BETWEEN the notes
-	// metadata save and the delivery-pending journal mark of
-	// completeNotesHumanSet. The metadata (note plus this attempt's pending
-	// intent) is already durable, so the retry must deliver the recorded
-	// note without rewriting the store. Nil preserves the production path.
-	// Tests use it to prove the atomic-write recovery boundary.
-	notesJournalFault func() error
 
 	// contentWindowClock, when non-nil, is the clock consumeModelStream reads
 	// to measure an attempt's content-event window (attemptObservation.

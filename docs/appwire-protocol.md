@@ -111,7 +111,7 @@ no router (reserved).
 | `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
-| `notes/human/set` | both | `NotesHumanSetParams` | `NotesHumanSetResponse` | Sets the human's session whiteboard note; the stored note is returned and a human-note steer interrupts the session. |
+| `notes/human/set` | both | `NotesHumanSetParams` | `NotesHumanSetResponse` | Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt. |
 | `urls/remove` | both | `UrlsRemoveParams` | `UrlsRemoveResponse` | Removes one session URL list entry by id. |
 | `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
@@ -1221,6 +1221,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `note` | `string` |  |  |
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `NotesUpdatedParams`

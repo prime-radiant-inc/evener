@@ -22,9 +22,9 @@ func TestServerAppWireNotesHumanSetRejectsStaleInstance(t *testing.T) {
 	}
 	srv.ReplaceAppIdentity(prepared, nil)
 	calls := 0
-	srv.SetNotesHumanSetFunc(func(outerID, note string) (string, error) {
+	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
 		calls++
-		return note, nil
+		return appwire.NotesHumanSetResponse{Note: note}, nil
 	})
 
 	_, err = srv.handleAppNotesHumanSet(context.Background(), appwire.NotesHumanSetParams{
@@ -108,9 +108,9 @@ func TestServerAppWireNotesMutationFencedWhileClearReplaces(t *testing.T) {
 		return nil
 	})
 	notesCalls, urlsCalls := 0, 0
-	srv.SetNotesHumanSetFunc(func(outerID, note string) (string, error) {
+	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
 		notesCalls++
-		return note, nil
+		return appwire.NotesHumanSetResponse{Note: note}, nil
 	})
 	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) {
 		urlsCalls++

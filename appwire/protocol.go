@@ -136,7 +136,7 @@ var Methods = []MethodSpec{
 	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
 	{MethodTurnCancelQueued, TurnCancelQueuedParams{}, TurnCancelQueuedResponse{}, ScopeBoth, "Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose)."},
 	{MethodGoalSet, GoalSetParams{}, GoalSetResponse{}, ScopeBoth, "Sets or clears the session's /goal objective."},
-	{MethodNotesHumanSet, NotesHumanSetParams{}, NotesHumanSetResponse{}, ScopeBoth, "Sets the human's session whiteboard note; the stored note is returned and a human-note steer interrupts the session."},
+	{MethodNotesHumanSet, NotesHumanSetParams{}, NotesHumanSetResponse{}, ScopeBoth, "Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt."},
 	{MethodUrlsRemove, UrlsRemoveParams{}, UrlsRemoveResponse{}, ScopeBoth, "Removes one session URL list entry by id."},
 	{MethodEvenerTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data."},

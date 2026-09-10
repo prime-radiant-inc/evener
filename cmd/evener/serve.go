@@ -66,7 +66,7 @@ type serveServer interface {
 	SetQueueFunc(func(string) error)
 	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
-	SetNotesHumanSetFunc(func(outerID, note string) (string, error))
+	SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error))
 	SetUrlsRemoveFunc(func(outerID, id string) (bool, error))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
@@ -941,7 +941,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return getSession().SetGoal(ctx, objective)
 	})
-	srv.SetNotesHumanSetFunc(func(outerID, note string) (string, error) {
+	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
 		return getSession().SetHumanNote(outerID, note)
 	})
 	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) {

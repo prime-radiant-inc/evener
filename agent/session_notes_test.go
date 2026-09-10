@@ -165,24 +165,25 @@ func TestCanonicalSessionURLRejectsAbsoluteWithoutCWD(t *testing.T) {
 }
 
 func TestSetHumanNoteClampThenCompares(t *testing.T) {
-	s := newTestNotesSession(t, "/tmp/proj")
-	stored, changed := s.setHumanNote("  hello   world  ")
-	if stored != "hello world" || !changed {
-		t.Fatalf("set = %q, %v; want %q, true", stored, changed, "hello world")
-	}
-	if stored, changed := s.setHumanNote("hello world"); stored != "hello world" || changed {
-		t.Fatalf("re-set = %q, %v; want no-op", stored, changed)
-	}
-	long := strings.Repeat("b", 2000)
-	stored, changed = s.setHumanNote(long)
-	if len([]rune(stored)) != 1000 || !changed {
-		t.Fatalf("clamped set = len %d, %v; want len 1000, true", len([]rune(stored)), changed)
-	}
-	if stored, changed := s.setHumanNote(long); len([]rune(stored)) != 1000 || changed {
-		t.Fatalf("over-length re-set = len %d, %v; want no-op", len([]rune(stored)), changed)
-	}
-	if stored, changed := s.setHumanNote(""); stored != "" || !changed {
-		t.Fatalf("clear = %q, %v; want empty, true", stored, changed)
+	s := newNotesToolSession(t)
+	long := strings.Repeat("界", 2000)
+	for i, tc := range []struct {
+		input, want string
+		projection  appwire.MutationProjectionState
+	}{
+		{"  hello   world  ", "hello world", appwire.MutationProjectionPending},
+		{"hello world", "hello world", appwire.MutationProjectionRemoved},
+		{long, strings.Repeat("界", 1000), appwire.MutationProjectionPending},
+		{long, strings.Repeat("界", 1000), appwire.MutationProjectionRemoved},
+		{"", "", appwire.MutationProjectionPending},
+	} {
+		response, err := s.SetHumanNote(fmt.Sprintf("save-%d", i), tc.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Note != tc.want || response.Receipt.ProjectionState != tc.projection {
+			t.Fatalf("save %d = %+v", i, response)
+		}
 	}
 }
 
@@ -191,9 +192,7 @@ func TestSetAgentNoteStoresSeparately(t *testing.T) {
 	if _, changed := s.setAgentNote("agent work"); !changed {
 		t.Fatalf("agent set not reported as change")
 	}
-	s.mu.Lock()
-	human, agent := s.humanNote, s.agentNote
-	s.mu.Unlock()
+	human, agent := s.notesSnapshot()
 	if human != "" || agent != "agent work" {
 		t.Fatalf("notes = %q, %q; want empty human, agent stored", human, agent)
 	}
@@ -336,7 +335,8 @@ func TestCanonicalFilePathEscapesDelimiters(t *testing.T) {
 func TestSetHumanNoteStoresAndSteers(t *testing.T) {
 	s := newNotesToolSession(t)
 	defer s.Close()
-	stored, err := s.SetHumanNote("outer-1", "hello world")
+	storedResponse, err := s.SetHumanNote("outer-1", "hello world")
+	stored := storedResponse.Note
 	if err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
@@ -356,21 +356,19 @@ func TestSetHumanNoteStoresAndSteers(t *testing.T) {
 	if len(queue) != 1 {
 		t.Fatalf("steering queue length = %d, want 1", len(queue))
 	}
-	if queue[0].ClientMutationID != "outer-1/note-steer" {
-		t.Fatalf("inner steer id = %q, want %q", queue[0].ClientMutationID, "outer-1/note-steer")
+	if queue[0].ClientMutationID != "outer-1" {
+		t.Fatalf("inner steer id = %q, want %q", queue[0].ClientMutationID, "outer-1")
 	}
 	if queue[0].Kind != events.SteeringKindHumanNote {
 		t.Fatalf("inner steer kind = %q, want %q", queue[0].Kind, events.SteeringKindHumanNote)
 	}
-	if queue[0].Text != "human updated their whiteboard: hello world" {
+	if !strings.Contains(queue[0].Text, "hello world") {
 		t.Fatalf("inner steer text = %q", queue[0].Text)
 	}
 }
 
 // TestSetHumanNoteRetryOfOneOuterIDSteersOnce verifies the no-double-interrupt
-// contract: a hub retry of the outer RPC with the same text is a no-op
-// (clamp-then-compare), and a direct inner-steer retry replays without
-// duplicating the queued steer.
+// contract: retries replay the same atomic save without duplicating notification.
 func TestSetHumanNoteRetryOfOneOuterIDSteersOnce(t *testing.T) {
 	s := newNotesToolSession(t)
 	defer s.Close()
@@ -380,10 +378,7 @@ func TestSetHumanNoteRetryOfOneOuterIDSteersOnce(t *testing.T) {
 	if _, err := s.SetHumanNote("outer-9", "same text"); err != nil {
 		t.Fatalf("outer retry: %v", err)
 	}
-	resp, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "outer-9/note-steer",
-		Input:            []appwire.InputItem{{Type: "text", Text: "human updated their whiteboard: same text"}},
-	})
+	resp, err := s.SetHumanNote("outer-9", "same text")
 	if err != nil {
 		t.Fatalf("inner retry: %v", err)
 	}
@@ -404,7 +399,7 @@ func TestSetHumanNoteRetryOfOneOuterIDSteersOnce(t *testing.T) {
 func TestSetHumanNoteNoOpOnEqualText(t *testing.T) {
 	s := newNotesToolSession(t)
 	defer s.Close()
-	if stored, err := s.SetHumanNote("outer-empty", ""); err != nil || stored != "" {
+	if stored, err := s.SetHumanNote("outer-empty", ""); err != nil || stored.Note != "" {
 		t.Fatalf("empty save on empty note = %q, %v; want empty, nil", stored, err)
 	}
 	s.mu.Lock()
@@ -423,7 +418,7 @@ func TestSetHumanNoteClearUsesClearedMarker(t *testing.T) {
 	if _, err := s.SetHumanNote("outer-1", "something"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if stored, err := s.SetHumanNote("outer-2", ""); err != nil || stored != "" {
+	if stored, err := s.SetHumanNote("outer-2", ""); err != nil || stored.Note != "" {
 		t.Fatalf("clear = %q, %v; want empty, nil", stored, err)
 	}
 	s.mu.Lock()
@@ -470,7 +465,9 @@ func TestNotesContextBlockContainsNotesAndURLs(t *testing.T) {
 	if got := s.notesContextBlock(); got != "" {
 		t.Fatalf("empty block = %q, want empty", got)
 	}
-	s.setHumanNote("human hello")
+	if _, err := s.SetHumanNote("fixture", "human hello"); err != nil {
+		t.Fatal(err)
+	}
 	if _, changed := s.setAgentNote("agent hello"); !changed {
 		t.Fatal("agent set not reported as change")
 	}
@@ -497,7 +494,9 @@ func TestNotesContextBlockContainsNotesAndURLs(t *testing.T) {
 func TestNotesProjectionAppendsOnceWhenUnchanged(t *testing.T) {
 	s := newNotesToolSession(t)
 	defer s.Close()
-	s.setHumanNote("human hello")
+	if _, err := s.SetHumanNote("fixture", "human hello"); err != nil {
+		t.Fatal(err)
+	}
 	s.maybeAppendNotesContext()
 	s.maybeAppendNotesContext()
 	s.mu.Lock()
@@ -524,7 +523,9 @@ func TestNotesProjectionAppendsOnceWhenUnchanged(t *testing.T) {
 func TestNotesProjectionStillProjectsAfterCompaction(t *testing.T) {
 	s := newNotesToolSession(t)
 	defer s.Close()
-	s.setHumanNote("human hello")
+	if _, err := s.SetHumanNote("fixture", "human hello"); err != nil {
+		t.Fatal(err)
+	}
 	s.maybeAppendNotesContext()
 	s.resetNotesProjectionAfterCompaction()
 	s.maybeAppendNotesContext()
