@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -244,9 +243,7 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 	if err := json.Unmarshal(notification.Params, &raw); err != nil {
 		return notification
 	}
-	var resumeRequired bool
-	_ = json.Unmarshal(raw["resumeRequired"], &resumeRequired)
-	fenced := resumeRequired || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired")
+	fenced := hubForkRecoveryFenced(appwire.Thread{Status: params.Status})
 	if allowFork && !fenced {
 		params.Capabilities["forkFromTurn"] = json.RawMessage("true")
 	} else {
@@ -617,12 +614,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
 					ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
-					// The relay target is a subscription-time snapshot. Recovery can
-					// begin after it is captured, so consult the shared lock registry
-					// for every frame before advertising the hub-owned action.
-					if hubForkRecoveryFencedNow(cfg, target.thread) {
-						ownsFork = false
-					}
 					notification = stampClosedThreadCapabilities(notification, ownsFork)
 					notification = stampForkCapability(notification, ownsFork)
 				}

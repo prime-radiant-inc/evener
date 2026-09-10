@@ -71,7 +71,7 @@ func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing
 	}
 }
 
-func TestRelayedCloseFrameDoesNotOfferForkForAReadOnlyDescendant(t *testing.T) {
+func TestRelayedCloseFrameOffersForkForAStoppedPersistedDescendant(t *testing.T) {
 	thread := appwire.Thread{
 		ID:        "subagent-closed",
 		SessionID: "subagent-closed",
@@ -110,8 +110,8 @@ func TestRelayedCloseFrameDoesNotOfferForkForAReadOnlyDescendant(t *testing.T) {
 	if err := json.Unmarshal(notification.Params, &params); err != nil {
 		t.Fatalf("unmarshal relayed descendant close frame: %v", err)
 	}
-	if params.Capabilities.ForkFromTurn {
-		t.Fatalf("read-only descendant close capabilities advertise fork: %+v", params.Capabilities)
+	if !params.Capabilities.ForkFromTurn {
+		t.Fatalf("stopped persisted descendant close capabilities omit fork: %+v", params.Capabilities)
 	}
 	if !params.Capabilities.Send || !params.Capabilities.Compact || params.DescendantNote != "preserve" {
 		t.Fatalf("descendant close capabilities or unknown field changed: capabilities=%+v note=%q", params.Capabilities, params.DescendantNote)

@@ -223,6 +223,11 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 			wantFork: false,
 		},
 		{
+			name:     "resume required active flag",
+			thread:   appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle, ActiveFlags: []string{"resumeRequired"}}, Evener: appwire.EvenerThread{Ref: "local:root", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}},
+			wantFork: false,
+		},
+		{
 			name:     "persisted subagent",
 			thread:   appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:child", Kind: "subagent", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}},
 			wantFork: true,
@@ -234,6 +239,16 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 				t.Fatalf("forkFromTurn=%v, want %v (thread=%+v)", got.Evener.Capabilities.ForkFromTurn, tc.wantFork, got)
 			}
 		})
+	}
+	locks := hubcore.NewResumeLocks()
+	finish := locks.BeginForceStop([]string{"root"})
+	if err := locks.PersistForceStop([]string{"root"}, "root"); err != nil {
+		t.Fatal(err)
+	}
+	finish(false)
+	thread := appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:root"}}
+	if got := applyHubForkCapability(hubcore.WebConfig{StateDir: t.TempDir(), ResumeLocks: locks}, thread); got.Evener.Capabilities.ForkFromTurn {
+		t.Fatal("current ResumeLocks recovery state re-advertised fork")
 	}
 	for _, want := range []bool{false, true} {
 		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: "remote:thread", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: want}}}
