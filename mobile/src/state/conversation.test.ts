@@ -16,6 +16,7 @@ import type {
 import type {
   MobileCapabilities,
   MobileConversation,
+  MobileTimelineItem,
 } from "../conversation/model";
 import { projectThread } from "../conversation/project";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
@@ -261,6 +262,42 @@ class FakeConversationService implements LiveConversationService {
 }
 
 // --- store tests -------------------------------------------------------------
+
+function heldCluster(): MobileTimelineItem {
+  return {
+    kind: "activity",
+    id: "wire-first",
+    transcriptKey: "first",
+    label: "shell",
+    family: "tool",
+    state: "running",
+    detail: {},
+    members: [
+      { id: "wire-first", transcriptKey: "first", label: "shell", family: "tool", state: "running", detail: {} },
+      { id: "wire-later", transcriptKey: "later", label: "shell", family: "tool", state: "running", detail: {} },
+    ],
+  };
+}
+
+async function beginHeldClusterRehydrate(
+  rereadItems: MobileTimelineItem[],
+) {
+  const service = new FakeConversationService();
+  const stale = makeConversation({ items: [heldCluster()] });
+  service.openConv = stale;
+  service.readProjectionResult = {
+    conversation: makeConversation({ items: rereadItems }),
+    activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities },
+    olderCursor: null,
+  };
+  const store = createConversationStore();
+  const sink = createFakeSink();
+  await store.getState().openProjected(service, sink, "ref-1");
+  let release!: (value: ConversationReadProjection) => void;
+  service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
+  const rehydratePromise = store.getState().rehydrate(service, sink);
+  return { service, store, sink, stale, release, rehydratePromise };
+}
 
 describe("ConversationStore", () => {
   describe("open", () => {
@@ -1506,6 +1543,47 @@ describe("ConversationStore", () => {
       expect(items).not.toContainEqual(
         expect.objectContaining({ id: "wire-later:attachments" }),
       );
+    });
+
+    it("retains an omitted live-owned cluster during a held rehydrate", async () => {
+      const { store, release, rehydratePromise } = await beginHeldClusterRehydrate([]);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated" } },
+      } as AnyNotification);
+      release({ conversation: makeConversation({ items: [] }), activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      await rehydratePromise;
+      expect(store.getState().conversation?.items.filter((item) => item.kind === "activity")).toHaveLength(1);
+    });
+
+    it("keeps both members when a later failure splits a held cluster", async () => {
+      const { store, stale, release, rehydratePromise } = await beginHeldClusterRehydrate([heldCluster()]);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "failed", output: "failed", error: "boom" } },
+      } as AnyNotification);
+      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      await rehydratePromise;
+      const members = store.getState().conversation?.items.flatMap((item) => item.kind === "activity" ? item.members ?? [item] : []).map((member) => member.transcriptKey ?? member.id) ?? [];
+      expect(members).toEqual(["first", "later"]);
+    });
+
+    it("does not resurrect a removed image when an attachment wire ID changes", async () => {
+      const cluster = heldCluster();
+      const stale = makeConversation({ items: [cluster, { kind: "attachments", id: "old-wire:attachments", sourceTranscriptKey: "later", items: [{ id: "old", src: "old" }] }] });
+      const service = new FakeConversationService();
+      service.openConv = stale;
+      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null };
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
+      const rehydratePromise = store.getState().rehydrate(service, sink);
+      store.getState().applyNotification({ method: "item/completed", params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "done" } } } as AnyNotification);
+      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      await rehydratePromise;
+      expect(store.getState().conversation?.items.some((item) => item.kind === "attachments")).toBe(false);
     });
 
     it("preserves a later member completion during a held rehydrate", async () => {

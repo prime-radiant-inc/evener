@@ -98,6 +98,45 @@ function isLiveOwned(
   return [...timelineIdentities(item)].some((identity) => revisions.has(identity));
 }
 
+function mergeLiveActivityMembers(
+  snapshot: MobileTimelineItem,
+  currentItems: MobileTimelineItem[],
+  revisions: Map<string, number>,
+): MobileTimelineItem | undefined {
+  if (snapshot.kind !== "activity" || !snapshot.members) return undefined;
+  const snapshotIdentities = timelineIdentities(snapshot);
+  const candidates = currentItems.filter(
+    (candidate) =>
+      candidate.kind === "activity" &&
+      [...timelineIdentities(candidate)].some((id) => snapshotIdentities.has(id)),
+  );
+  if (candidates.length === 0) return undefined;
+  const members = new Map<string, ActivityMember>();
+  const memberRevisions = new Map<string, number>();
+  for (const candidate of candidates) {
+    if (candidate.kind !== "activity") continue;
+    const candidateMembers = candidate.members ?? [candidate];
+    const revision = liveRevisionForItem(candidate, revisions);
+    for (const member of candidateMembers) {
+      const identity = member.transcriptKey ?? member.id;
+      if (revision >= (memberRevisions.get(identity) ?? -1)) {
+        members.set(identity, member);
+        memberRevisions.set(identity, revision);
+      }
+    }
+  }
+  const mergedMembers = snapshot.members.map(
+    (member) => members.get(member.transcriptKey ?? member.id) ?? member,
+  );
+  return {
+    ...snapshot,
+    state: mergedMembers.some((member) => member.state === "running")
+      ? "running"
+      : "completed",
+    members: mergedMembers,
+  };
+}
+
 function decorateLifecycleItem(
   item: MobileTimelineItem,
   source: ThreadItem,
@@ -1680,7 +1719,14 @@ export function createConversationStore() {
               if (rev !== undefined && rev > entryLiveRev && current !== undefined) {
                 const identity = timelineIdentity(item);
                 supersededIds.add(identity);
-                supersededVersions.set(identity, current);
+                supersededVersions.set(
+                  identity,
+                  mergeLiveActivityMembers(
+                    item,
+                    currentConvForMerge.items,
+                    liveOwnedRevs,
+                  ) ?? current,
+                );
               }
             }
           }
@@ -1721,7 +1767,7 @@ export function createConversationStore() {
               //    not liveOwned, not in reread) as omitted old history.
               const pageOnlyItems = currentConvForMerge.items.filter(
                 (i) =>
-                  !rereadKeys.has(timelineIdentity(i)) &&
+                  !rereadIdentities.has(timelineIdentity(i)) &&
                   pageOwnedIds.has(timelineIdentity(i)),
               );
               const liveTailItems = currentConvForMerge.items.filter(
@@ -1746,7 +1792,7 @@ export function createConversationStore() {
             // reread (live notifications that arrived during the await).
             const liveTailItems = currentConvForMerge.items.filter(
               (i) =>
-                !rereadKeys.has(timelineIdentity(i)) &&
+                !rereadIdentities.has(timelineIdentity(i)) &&
                 !pageOwnedIds.has(timelineIdentity(i)) &&
                 isLiveOwned(i, liveOwnedRevs),
             );
