@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // The session's event buffer. These tests exist to cross it, so they name it
@@ -136,6 +139,39 @@ func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
 	case <-emitterDone:
 	case <-time.After(10 * time.Second):
 		t.Fatal("ordinary authoritative emitter remained blocked after close deadline")
+	}
+}
+
+func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot())
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "sleep 30",
+		Timeout: 30,
+	})
+	s.hookRunner = runner
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	awaitWithin(t, time.Second, "canceled notification hook", func() {
+		s.runNotificationHook(ctx, "warning")
+	})
+
+	marker := t.TempDir() + "/hook-started"
+	runner = hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "touch " + marker,
+		Timeout: 30,
+	})
+	s.hookRunner = runner
+	s.closeCtx = ctx
+	s.fireNotificationHook("expired warning")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expired close started notification hook; stat error = %v", err)
 	}
 }
 

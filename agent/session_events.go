@@ -463,7 +463,17 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // TestNewSession_InvalidMatcherNotificationHookDoesNotRecurse) guard against a
 // future synchronous warning-emitter being introduced inside the dispatch path.
 func (s *Session) fireNotificationHook(message string) {
-	s.runNotificationHook(context.Background(), message)
+	ctx := context.Background()
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if closeCtx != nil {
+		if closeCtx.Err() != nil {
+			return
+		}
+		ctx = closeCtx
+	}
+	s.runNotificationHook(ctx, message)
 }
 
 func warningHookMessage(data events.EventData) string {
