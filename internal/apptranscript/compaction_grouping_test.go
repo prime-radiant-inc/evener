@@ -72,6 +72,10 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 			record(schema.TurnSummary, "summary", ""),
 			record(schema.TurnContextCompaction, "layer", "turn_active"),
 		}, []string{"turn_active", "summary", "turn_active"}},
+		{"late owner after next input is a paging fragment", []schema.Turn{
+			record(schema.TurnUserInput, "turn_next", ""),
+			record(schema.TurnContextCompaction, "layer", "turn_active"),
+		}, []string{"turn_active", "turn_next", "turn_active"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
