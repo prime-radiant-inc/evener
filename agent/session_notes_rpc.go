@@ -135,9 +135,19 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 		// the steer: the steer landed, only the marker-clear/spend may still
 		// be open. Each step re-checks its own marker, so an already-finished
 		// step is a silent no-op and the retry converges on the applied
-		// result without duplicating delivery.
+		// result without duplicating delivery. The clear runs against the
+		// ADOPTED stored value (journal/intent), not the caller's raw input:
+		// whitespace-variant or over-length input would otherwise miss the
+		// value check and strand the adopted marker pending for duplicate
+		// re-delivery.
 		if adoptedID, ok := s.adoptedIntentLink(outerID); ok {
-			if err := s.clearNotesDeliveryPending(adoptedID, note); err != nil {
+			stored, _, _ := s.pendingNotesHumanIntent(adoptedID)
+			if stored == "" {
+				if journaled, ok := s.notesDeliveryPending(adoptedID); ok {
+					stored = journaled
+				}
+			}
+			if err := s.clearNotesDeliveryPending(adoptedID, stored); err != nil {
 				lease.Release()
 				return "", NormalizeClientMutationError(outerID, err)
 			}
@@ -192,8 +202,16 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 			// tombstone) BEFORE this attempt's own persist, so a same-ID
 			// retry of the adopted ID recognizes the landed write — even
 			// when this attempt's persist below fails and the retry arrives
-			// while the adopted record would otherwise look unfinished.
-			s.clearNotesDeliveryPending(adopted.outerID, adopted.stored)
+			// while the adopted record would otherwise look unfinished. The
+			// clear error is NOT ignorable: on a journal failure the old
+			// record stays pending while the new note persists, and a later
+			// retry of the old ID would re-deliver the stale note. Release
+			// this reservation and surface the error so the hub retries this
+			// (new) mutation instead of stranding the inconsistency.
+			if err := s.clearNotesDeliveryPending(adopted.outerID, adopted.stored); err != nil {
+				lease.Release()
+				return "", NormalizeClientMutationError(outerID, err)
+			}
 			s.clearPendingNotesHuman(adopted.outerID)
 		} else {
 			human, agentNote := s.notesSnapshot()

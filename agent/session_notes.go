@@ -162,7 +162,16 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 		if parsed.Host != "" && parsed.Host != "localhost" {
 			return "", fmt.Errorf("urls/add: file URL host %q is not supported", parsed.Host)
 		}
-		return canonicalFilePath(parsed.Path, cwd, raw)
+		// Query and fragment are not path content: without this gate
+		// "file:///tmp/foo?bar" and "file:///tmp/foo#frag" would collapse to
+		// "file:///tmp/foo", silently dropping the caller's input.
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return "", fmt.Errorf("urls/add: file URL %q must not carry a query or fragment", raw)
+		}
+		// Resolve from the ESCAPED path form: parsed.Path is already decoded,
+		// so an encoded "%2F" would change path hierarchy before the scope
+		// check. EscapedPath preserves the caller's separators.
+		return canonicalFilePath(parsed.EscapedPath(), cwd, raw)
 	default:
 		// Any explicit scheme that is not http(s) or file is rejected here,
 		// BEFORE the bare-path fallback: inputs like "javascript:alert(1)",
@@ -260,10 +269,16 @@ func canonicalHTTPURL(raw string) (string, error) {
 // canonicalFilePath resolves a bare path or file-URL path against cwd and
 // returns its file:/// absolute form, rejecting out-of-scope paths via the
 // execenv.RootBoundary precedent (the same symlink-aware escape check the
-// shell tool applies to a model-chosen cwd).
+// shell tool applies to a model-chosen cwd). file-URL callers pass the
+// ESCAPED path form (see canonicalSessionURL): it is unescaped here, AFTER
+// the scope check, so an encoded "%2F" cannot smuggle a hierarchy change
+// past it and the stored form serializes back through net/url below.
 func canonicalFilePath(path, cwd, raw string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("urls/add: empty file path in %q", raw)
+	}
+	if unescaped, err := url.PathUnescape(path); err == nil {
+		path = unescaped
 	}
 	abs := path
 	if !filepath.IsAbs(abs) {
@@ -271,6 +286,11 @@ func canonicalFilePath(path, cwd, raw string) (string, error) {
 			return "", fmt.Errorf("urls/add: relative path %q has no session working directory", raw)
 		}
 		abs = filepath.Join(cwd, abs)
+	} else if cwd == "" {
+		// No scope to check against: an absolute path with no session
+		// working directory (nil env) would otherwise be accepted unchecked
+		// (the branches below both gate on cwd). Reject fail-closed.
+		return "", fmt.Errorf("urls/add: absolute path %q has no session working directory", raw)
 	}
 	abs = filepath.Clean(abs)
 	if rb, ok := notesRootBoundary(cwd); ok {

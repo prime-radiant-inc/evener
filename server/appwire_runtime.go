@@ -1830,7 +1830,10 @@ func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemov
 		return appwire.UrlsRemoveResponse{}, err
 	}
 	defer unlock()
-	if strings.TrimSpace(params.ID) == "" {
+	// Trim once into a local: padded IDs must match on removal exactly as
+	// they validate and report, not diverge across the three uses.
+	id := strings.TrimSpace(params.ID)
+	if id == "" {
 		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("id is required")
 	}
 	s.mu.RLock()
@@ -1839,12 +1842,12 @@ func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemov
 	if fn == nil {
 		return appwire.UrlsRemoveResponse{}, appwire.Unavailable("urls not available")
 	}
-	removed, err := fn(params.ClientMutationID, params.ID)
+	removed, err := fn(params.ClientMutationID, id)
 	if err != nil {
 		return appwire.UrlsRemoveResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 	}
 	if !removed {
-		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("no URL entry with id " + strings.TrimSpace(params.ID))
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("no URL entry with id " + id)
 	}
 	return appwire.UrlsRemoveResponse{}, nil
 }

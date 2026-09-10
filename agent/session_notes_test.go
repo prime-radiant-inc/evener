@@ -126,6 +126,44 @@ func TestCanonicalSessionURLRejectsEmptyHostname(t *testing.T) {
 	}
 }
 
+// TestCanonicalSessionURLRejectsFileQueryFragment covers file URLs carrying
+// a query or fragment: they are path metadata, not path content, and must
+// be rejected rather than silently collapsed onto the bare path.
+func TestCanonicalSessionURLRejectsFileQueryFragment(t *testing.T) {
+	for _, raw := range []string{"file:///tmp/proj/a.md?bar", "file:///tmp/proj/a.md#frag"} {
+		if got, err := canonicalSessionURL(raw, "/tmp/proj"); err == nil {
+			t.Fatalf("canonicalSessionURL(%q) = %q, want rejection", raw, got)
+		}
+	}
+}
+
+// TestCanonicalSessionURLFileEscapedSeparators covers encoded separators in
+// file URLs: an encoded "%2F" must not change path hierarchy before the
+// scope check — the escaped form scopes, then unescapes for storage.
+func TestCanonicalSessionURLFileEscapedSeparators(t *testing.T) {
+	got, err := canonicalSessionURL("file:///tmp/proj/docs%2Fa.md", "/tmp/proj")
+	if err != nil {
+		t.Fatalf("canonicalSessionURL escaped slash: %v", err)
+	}
+	if got != "file:///tmp/proj/docs/a.md" {
+		t.Fatalf("canonicalSessionURL escaped slash = %q, want decoded storage form", got)
+	}
+	if _, err := canonicalSessionURL("file:///tmp%2F..%2Fetc%2Fpasswd", "/tmp/proj"); err == nil {
+		t.Fatalf("canonicalSessionURL escaped traversal accepted, want rejection")
+	}
+}
+
+// TestCanonicalSessionURLRejectsAbsoluteWithoutCWD covers absolute file URLs
+// with no session working directory (nil env): with no scope to check
+// against, they must be rejected fail-closed, not accepted unchecked.
+func TestCanonicalSessionURLRejectsAbsoluteWithoutCWD(t *testing.T) {
+	for _, raw := range []string{"file:///etc/passwd", "file:///tmp/proj/a.md"} {
+		if got, err := canonicalSessionURL(raw, ""); err == nil {
+			t.Fatalf("canonicalSessionURL(%q) without cwd = %q, want rejection", raw, got)
+		}
+	}
+}
+
 func TestSetHumanNoteClampThenCompares(t *testing.T) {
 	s := newTestNotesSession(t, "/tmp/proj")
 	stored, changed := s.setHumanNote("  hello   world  ")
