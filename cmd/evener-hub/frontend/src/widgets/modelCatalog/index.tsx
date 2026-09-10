@@ -12,7 +12,6 @@
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type { ModelDescriptor } from "../../protocol/types.gen";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -22,8 +21,9 @@ import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
 import styles from "./modelCatalog.module.css";
 import { buildPickerRows, pickableRows } from "./pickerRows";
-import type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
-export type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
+import type { ModelCatalogEntry, ModelCatalog as ModelCatalogShape } from "./types";
+
+export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),
@@ -54,6 +54,10 @@ const CLASS = {
 };
 
 const SKELETON_LINES = 4;
+
+// Keep the historical type/value declaration merge: consumers import the
+// catalog shape and the picker component from this module under the same name.
+export interface ModelCatalog extends ModelCatalogShape {}
 
 // The widget requires a display label, while the generated AppWire descriptor
 // makes it optional because daemon/source callers may know only an identity.

@@ -16,7 +16,7 @@
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import { blocked, isBlocked } from "../../../shell/palette/blocked";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
-import { matchBuiltinInvocation, type BuiltinMatch } from "./builtinInvocation";
+import { type BuiltinMatch, findBuiltinArgument } from "./builtinInvocation";
 
 // resolveCommandResult runs the matched command exactly the way the palette
 // itself would: an argless command's plain run(), a free-arg command's
@@ -33,8 +33,7 @@ async function resolveCommandResult(
   if (!command.args) return command.run?.(ctx);
   if (command.args.kind === "free") return command.args.run(ctx, argsText);
   const items = await command.args.source(ctx);
-  const needle = argsText.trim().toLowerCase();
-  const item = items.find((it) => it.id.toLowerCase() === needle || it.label.toLowerCase() === needle);
+  const item = findBuiltinArgument(items, argsText);
   if (!item) {
     const label = argsText.trim();
     return blocked(label ? `/${command.id}: unknown value "${label}"` : `/${command.id} needs a value`);

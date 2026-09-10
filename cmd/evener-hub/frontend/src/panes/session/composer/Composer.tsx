@@ -32,7 +32,7 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
-import type { PaletteRunContext } from "../../../shell/palette/commands";
+import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { workspaceStore } from "../../../shell/workspace";
@@ -61,7 +61,7 @@ import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { runBuiltinCommand } from "./builtinCommand";
-import { matchBuiltinInvocation, type BuiltinMatch } from "./builtinInvocation";
+import { type BuiltinMatch, matchBuiltinInvocation } from "./builtinInvocation";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
@@ -1039,7 +1039,7 @@ export function Composer({ ref }: ComposerProps) {
   // submittedText is snapshotted the same way submitAction's own
   // clearIfUnchanged is, so a clear on success never clobbers an edit made
   // while the RPC was still in flight.
-  async function handleBuiltinSubmit(match: BuiltinMatch): Promise<void> {
+  async function handleBuiltinSubmit(match: BuiltinMatch<ScopedCommand>): Promise<void> {
     const submittedText = textRef.current;
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
