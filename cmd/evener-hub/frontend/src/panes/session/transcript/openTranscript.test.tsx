@@ -100,3 +100,54 @@ test("OpenTranscriptButton renders the glyph with no visible label, tooltip 'Ope
   expect(transcriptPanes("local:child")).toHaveLength(1);
   expect(transcriptPanes("local:child")[0]?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
 });
+
+test("exact Open origin: canonical reuse replaces session and transcript origins without changing panes", async () => {
+  const { transcriptOpenOrigin } = await import("../../../shell/workspace");
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" });
+  openTranscript("local:child", "local:owner");
+  const child = transcriptPanes("local:child")[0]!;
+  openTranscript("local:leaf", "local:child");
+  const leaf = transcriptPanes("local:leaf")[0]!;
+  expect(transcriptOpenOrigin(leaf)).toBe(child);
+  expect(transcriptOpenOrigin(child)).toBe(sessionPane("local:owner"));
+  const session = workspace.openPane("session", { ref: "local:child" });
+  const retained = workspaceStore.getState().panes;
+
+  openTranscript("local:leaf", "local:child");
+  expect(transcriptOpenOrigin(leaf)).toBe(sessionPane("local:child"));
+  expect(transcriptOpenOrigin(leaf)?.id).toBe(session);
+  expect(workspaceStore.getState().panes).toEqual(retained);
+  expect(transcriptPanes("local:leaf")[0]).toBe(leaf);
+
+  workspace.focusPane(child.id);
+  openTranscript("local:leaf", "local:child");
+  expect(transcriptOpenOrigin(leaf)).toBe(child);
+  expect(workspaceStore.getState().focusedPaneId).toBe(leaf.id);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+  expect(workspaceStore.getState().panes).toEqual(retained);
+});
+
+test.each([
+  { context: "unrelated session", type: "session" as const, params: { ref: "local:unrelated" } },
+  { context: "unrelated transcript", type: "transcript" as const, params: { ref: "local:unrelated" } },
+  { context: "same-ref document", type: "doc" as const, params: { ref: "local:owner" } },
+  { context: "no focused pane", type: null, params: {} },
+])("exact Open origin: $context cannot become the canonical child's return context", async ({ type, params }) => {
+  const { transcriptOpenOrigin } = await import("../../../shell/workspace");
+  if (type === "doc") await import("../../doc");
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" });
+  openTranscript("local:leaf", "local:owner");
+  const leaf = transcriptPanes("local:leaf")[0]!;
+  expect(transcriptOpenOrigin(leaf)?.id).toBe(owner);
+  if (type) workspace.openPane(type, params);
+  else workspaceStore.setState({ focusedPaneId: null });
+  const retained = workspaceStore.getState().panes;
+
+  openTranscript("local:leaf", "local:owner");
+
+  expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+  expect(transcriptPanes("local:leaf")[0]).toBe(leaf);
+  expect(workspaceStore.getState().panes).toEqual(retained);
+});

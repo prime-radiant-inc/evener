@@ -2574,6 +2574,198 @@ test.each(["local:owner", "local:child"])(
   },
 );
 
+// A ref is not a return-context identity: a retained read-only child and a
+// routed interactive child can coexist. Ref-only Back loses the SESSION origin
+// after a host swap; preferring SESSION globally breaks the inverse control.
+// These use the real Open control, AppShell routing, workspace, and both hosts.
+// Only RPC data and the absent jsdom viewport API are scripted; no native CSS
+// geometry, hit testing, or browser history traversal is claimed here.
+test.each([
+  { origin: "session", openHost: "desktop" },
+  { origin: "session", openHost: "phone" },
+  { origin: "transcript", openHost: "desktop" },
+] as const)("mixed-origin responsive Back: $origin origin opened on $openHost", async ({ origin, openHost }) => {
+  vi.stubGlobal("innerWidth", 1440);
+  const setMobile = installSwitchableViewport();
+  const resize = (mobile: boolean) => {
+    act(() => {
+      vi.stubGlobal("innerWidth", mobile ? 390 : 1440);
+      setMobile(mobile);
+    });
+  };
+  const client = navClient();
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource !== "location") return navigationRead(params);
+    const response = wireV2(
+      params,
+      {
+        ref: params.ref,
+        top_level_ref: "local:owner",
+        top_level: params.ref === "local:owner",
+        session: {
+          ...TREE_SESSION,
+          ref: params.ref,
+          session_id: params.ref,
+          title: params.ref,
+          kind: params.ref === "local:owner" ? "session" : "subagent",
+          children: [],
+        },
+      },
+      '"mixed-origin"',
+    );
+    // wireV2's location convenience branch defaults top_level to true even
+    // when its input says otherwise. Correct the external snapshot metadata,
+    // not the navigation store, so the real decoder places a nested session.
+    if (response.status === "ok" && response.representation === "snapshot") {
+      const snapshot = response.data as { metadata: { top_level: boolean } };
+      snapshot.metadata.top_level = params.ref === "local:owner";
+    }
+    return response;
+  });
+  client.on("thread/read", ({ ref }) => {
+    if (
+      typeof ref !== "string" ||
+      !["local:owner", "local:child", "local:grandchild", "local:great-grandchild"].includes(ref)
+    ) {
+      throw new Error(`Unexpected transcript ref: ${ref}`);
+    }
+    return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+  });
+  window.history.pushState({}, "", "/s/local%3Aowner");
+  const user = userEvent.setup();
+  render(
+    <>
+      <AppShell client={client} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+      <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" label="Open grandchild" />
+      <OpenTranscriptButton
+        transcriptRef="local:great-grandchild"
+        parentRef="local:grandchild"
+        label="Open great-grandchild"
+      />
+    </>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  const owner = paneFor("local:owner")!;
+  expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+  expect(getDockviewApi()).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "Open child" }));
+  const childTranscript = paneFor("local:child")!;
+  expect(childTranscript).toMatchObject({ type: "transcript", slot: "secondary" });
+  await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+  const grandchild = paneFor("local:grandchild")!;
+  expect(workspaceStore.getState().focusedPaneId).toBe(grandchild.id);
+
+  // Preserve the native finding's prerequisite: desktop chain, phone Back walk,
+  // desktop again, then explicit child SESSION route with the older T retained.
+  resize(true);
+  await screen.findByRole("button", { name: "Back" });
+  expect(getDockviewApi()).toBeNull();
+  for (const target of [childTranscript, owner]) {
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(workspaceStore.getState().focusedPaneId).toBe(target.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+  }
+  resize(false);
+  await waitFor(() => expect(getDockviewApi()).not.toBeNull());
+  act(() => {
+    window.history.pushState({}, "", "/s/local%3Achild");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() =>
+    expect(
+      workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId),
+    ).toMatchObject({ type: "session", slot: "secondary", params: { ref: "local:child" } }),
+  );
+  const childSession = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)!;
+  expect(childSession.id).not.toBe(childTranscript.id);
+  expect(workspaceStore.getState().panes).toEqual([owner, childTranscript, grandchild, childSession]);
+  await waitFor(() => expect(screen.getAllByRole("textbox", { name: "Message" })).toHaveLength(2));
+
+  if (origin === "transcript") {
+    // A real retained Dockview tab chooses the inverse origin. No focus/store
+    // injection: the later SESSION stays retained and must not win this Back.
+    const childTab = screen
+      .getAllByRole("tab")
+      .find((tab) => tab.textContent?.includes("local:child") && !tab.querySelector("[data-session-tab]"));
+    expect(childTab).toBeDefined();
+    await user.click(childTab!);
+    expect(workspaceStore.getState().focusedPaneId).toBe(childTranscript.id);
+  }
+  const originPane = origin === "session" ? childSession : childTranscript;
+  if (openHost === "phone") {
+    resize(true);
+    await screen.findByRole("button", { name: "Back" });
+    expect(getDockviewApi()).toBeNull();
+    expect(screen.getAllByRole("textbox", { name: "Message" })).toHaveLength(1);
+  }
+  expect(workspaceStore.getState().focusedPaneId).toBe(originPane.id);
+  await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(grandchild.id);
+  expect(paneFor("local:grandchild")).toEqual(grandchild);
+  await user.click(screen.getByRole("button", { name: "Open great-grandchild" }));
+  const descendant = paneFor("local:great-grandchild")!;
+  expect(descendant).toMatchObject({
+    type: "transcript",
+    slot: "secondary",
+    params: { ref: "local:great-grandchild", parentRef: "local:grandchild" },
+  });
+  const retained = [owner, childTranscript, grandchild, childSession, descendant];
+  expect(workspaceStore.getState().panes).toEqual(retained);
+  resize(true);
+  await screen.findByRole("button", { name: "Back" });
+  expect(getDockviewApi()).toBeNull();
+  expect(workspaceStore.getState().focusedPaneId).toBe(descendant.id);
+  expect(window.location.pathname).toBe("/s/local%3Achild");
+
+  const observeReturn = () => {
+    const state = workspaceStore.getState();
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    return {
+      id: focused?.id,
+      type: focused?.type,
+      ref: (focused?.params as { ref?: string })?.ref,
+      messages: screen.queryAllByRole("textbox", { name: "Message" }).length,
+      mainOwnerId: state.mainPane()?.id,
+    };
+  };
+  const returns = [];
+  const expectedReturns = [
+    { id: grandchild.id, type: "transcript", ref: "local:grandchild", messages: 0, mainOwnerId: owner.id },
+    {
+      id: originPane.id,
+      type: origin,
+      ref: "local:child",
+      messages: origin === "session" ? 1 : 0,
+      mainOwnerId: owner.id,
+    },
+  ];
+  if (origin === "transcript") {
+    expectedReturns.push({ id: owner.id, type: "session", ref: "local:owner", messages: 1, mainOwnerId: owner.id });
+  }
+  for (const _target of expectedReturns) {
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    returns.push(observeReturn());
+    expect(workspaceStore.getState().panes).toEqual(retained);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(screen.queryByText("No session open")).toBeNull();
+  }
+  // Collect the entire walk before asserting its origin, so the red evidence
+  // records the bypass too, rather than stopping at the missing composer.
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  const terminal = {
+    type: observeReturn().type,
+    welcome: screen.queryByText("No session open") !== null,
+    messages: observeReturn().messages,
+    mainOwnerId: workspaceStore.getState().mainPane()?.id,
+  };
+  console.info("mixed-origin Back evidence", JSON.stringify({ origin, openHost, retained, returns, terminal }));
+  expect(returns).toEqual(expectedReturns);
+  expect(terminal).toEqual({ type: "welcome", welcome: true, messages: 0, mainOwnerId: owner.id });
+});
+
 test("Open transcript retains focused child after settled parent route reconciliation", async () => {
   vi.stubGlobal("innerWidth", 390);
   installMobileViewport();

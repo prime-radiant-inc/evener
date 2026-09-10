@@ -43,7 +43,7 @@ import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL, urlToPane } from "../routing";
 import { isSinglePaneRoute } from "../singlePane";
-import { type OpenPaneRecord, useWorkspaceStore, workspaceStore } from "../workspace";
+import { type OpenPaneRecord, transcriptOpenOrigin, useWorkspaceStore, workspaceStore } from "../workspace";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
 import { TreeDrawer } from "./TreeDrawer";
@@ -311,12 +311,14 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
         // A host swap discards local history, not the retained parent pane.
         // Focus that exact pane: reopening a session could promote a nested
         // parent into main and discard the real owner and remaining context.
-        let ancestor = panes.find(
-          (pane) =>
-            pane.id !== focusedPaneId &&
-            (pane.type === "session" || pane.type === "transcript") &&
-            (pane.params as { ref?: unknown }).ref === params.parentRef,
-        );
+        let ancestor =
+          transcriptOpenOrigin(focusedPane) ??
+          panes.find(
+            (pane) =>
+              pane.id !== focusedPaneId &&
+              (pane.type === "session" || pane.type === "transcript") &&
+              (pane.params as { ref?: unknown }).ref === params.parentRef,
+          );
         target = ancestor?.id;
         // Reject cycles, not incomplete context: an absent farther ancestor
         // must not prevent returning to the retained immediate parent.
@@ -329,13 +331,14 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
           visited.add(ancestor.id);
           const parentRef = (ancestor.params as { parentRef?: unknown }).parentRef;
           ancestor =
-            typeof parentRef === "string" && parentRef !== ""
+            transcriptOpenOrigin(ancestor) ??
+            (typeof parentRef === "string" && parentRef !== ""
               ? panes.find(
                   (pane) =>
                     (pane.type === "session" || pane.type === "transcript") &&
                     (pane.params as { ref?: unknown }).ref === parentRef,
                 )
-              : undefined;
+              : undefined);
         }
       }
     }

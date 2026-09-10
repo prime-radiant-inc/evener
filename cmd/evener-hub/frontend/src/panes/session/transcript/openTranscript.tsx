@@ -1,7 +1,7 @@
 import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import * as paneActions from "../../../shell/paneActions";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
-import { workspaceStore } from "../../../shell/workspace";
+import { recordTranscriptOpenOrigin, workspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { navigationStore } from "../../../stores/navigation/store";
 import { OpenButton } from "../../../widgets";
@@ -55,6 +55,10 @@ function canonicalTranscriptPane(ref: string, params: { ref: string; parentRef?:
 // desktop beside-placement, mobile fallback, and pane deduplication stay one
 // behavior for every transcript link.
 export function openTranscript(ref: string, parentRef?: string): void {
+  // Capture before canonicalization or owner placement changes selection. The
+  // workspace validates this against parentRef and the surviving pane lifetime.
+  const workspace = workspaceStore.getState();
+  const origin = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
   const params = parentRef === undefined ? { ref } : { ref, parentRef };
   const exactPaneId = canonicalTranscriptPane(ref, params);
   if (parentRef !== undefined) {
@@ -81,6 +85,7 @@ export function openTranscript(ref: string, parentRef?: string): void {
   if (exactPaneId !== undefined) {
     const retained = workspaceStore.getState().panes.find((pane) => pane.id === exactPaneId);
     if (retained) {
+      recordTranscriptOpenOrigin(retained, origin);
       workspaceStore.getState().focusPane(retained.id);
       return;
     }
@@ -89,6 +94,10 @@ export function openTranscript(ref: string, parentRef?: string): void {
     type: "transcript",
     params,
   });
+  const opened = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "transcript" && sameParams(pane.params, params));
+  if (opened) recordTranscriptOpenOrigin(opened, origin);
 }
 
 export function OpenTranscriptButton({
