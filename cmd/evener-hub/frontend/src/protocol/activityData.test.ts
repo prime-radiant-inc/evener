@@ -624,37 +624,40 @@ describe("defaultExpandedIDs", () => {
   it("uses active turns for turn-container expansion even after the container closes", () => {
     const wire = cloneWire(VALID_TREE_WIRE);
     const rootDelegate = getRootDelegateWire(wire);
-    rootDelegate.type = "agent";
-    rootDelegate.terminal = true;
-    rootDelegate.turns = [
-      {
-        jobId: "turn-live",
-        ownerSessionId: "sess_root",
-        ownerRef: "ref_root",
-        type: "turn",
-        status: "running",
-        terminal: false,
-        background: false,
-        hasOutput: false,
-        description: "live turn",
-        startedAt: "2026-08-03T00:05:00Z",
-        outputBytes: 0,
-      },
-    ];
+    Object.assign(rootDelegate, {
+      type: "agent",
+      terminal: true,
+      turns: [
+        {
+          jobId: "turn-live",
+          ownerSessionId: "sess_root",
+          ownerRef: "ref_root",
+          type: "turn",
+          status: "running",
+          terminal: false,
+          background: false,
+          hasOutput: false,
+          description: "live turn",
+          startedAt: "2026-08-03T00:05:00Z",
+          outputBytes: 0,
+        },
+      ],
+    });
     const tree = parseActivityTree(wire) as ActivityTree;
-    expect(delegateHasActiveWork(tree.root.entries[1].delegate)).toBe(true);
+    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
+    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
+    expect(delegateHasActiveWork(entry.delegate)).toBe(true);
     expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
   });
 
   it("does not expand an empty closed turn container", () => {
     const wire = cloneWire(VALID_TREE_WIRE);
     const rootDelegate = getRootDelegateWire(wire);
-    rootDelegate.type = "agent";
-    rootDelegate.terminal = true;
-    rootDelegate.turns = [];
-    rootDelegate.child = undefined;
+    Object.assign(rootDelegate, { type: "agent", terminal: true, turns: [], child: undefined });
     const tree = parseActivityTree(wire) as ActivityTree;
-    expect(delegateHasActiveWork(tree.root.entries[1].delegate)).toBe(false);
+    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
+    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
+    expect(delegateHasActiveWork(entry.delegate)).toBe(false);
     expect(defaultExpandedIDs(tree)).not.toContain("delegate:dlg_1");
   });
 });
