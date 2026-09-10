@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { ActivityTree } from "../../../protocol/activityData";
-import { buildActivityRows, foldRowID } from "./activityRows";
+import type { ActivityJob, ActivitySessionNode, ActivityTree } from "../../../protocol/activityData";
+import { activityDelegateState, buildActivityRows, foldRowID } from "./activityRows";
 
 function shell(jobId: string, terminal: boolean, status = terminal ? "completed" : "running") {
   return {
@@ -21,7 +21,10 @@ function shell(jobId: string, terminal: boolean, status = terminal ? "completed"
   };
 }
 
-function delegate(delegateId: string, opts: { active?: boolean; failed?: boolean; child?: unknown } = {}) {
+function delegate(
+  delegateId: string,
+  opts: { active?: boolean; failed?: boolean; child?: ActivitySessionNode; type?: string; turns?: ActivityJob[] } = {},
+) {
   const status = opts.active ? "running" : "idle";
   const outcome = opts.failed ? "failed" : opts.active ? undefined : "completed";
   return {
@@ -33,7 +36,7 @@ function delegate(delegateId: string, opts: { active?: boolean; failed?: boolean
       childSessionId: `sess_${delegateId}`,
       childRef: `ref_${delegateId}`,
       transcriptRef: `ref_${delegateId}`,
-      type: "delegate",
+      type: opts.type ?? "delegate",
       lifecycle: opts.active ? "running" : "idle",
       phase: opts.active ? "running" : "idle",
       status,
@@ -46,7 +49,25 @@ function delegate(delegateId: string, opts: { active?: boolean; failed?: boolean
       latestActivityAt: "2026-08-05T15:01:00Z",
       branch: {},
       child: opts.child,
+      turns: opts.turns,
     },
+  };
+}
+
+function turn(jobId: string, terminal: boolean, status: string, outcome?: string): ActivityJob {
+  return {
+    jobId,
+    ownerSessionId: "sess_root",
+    ownerRef: "ref_root",
+    type: "turn",
+    status,
+    outcome,
+    terminal,
+    background: false,
+    hasOutput: true,
+    description: jobId,
+    startedAt: "2026-08-05T15:00:00Z",
+    outputBytes: 0,
   };
 }
 
@@ -155,6 +176,35 @@ test("fold row counts a terminal delegate outcome when lifecycle status is idle"
   expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
 });
 
+test("turn-based activity derives completion from turns even when delegate fields disagree", () => {
+  const rows = buildActivityRows(
+    tree([
+      delegate("dlg_completed", {
+        active: true,
+        type: "agent",
+        turns: [turn("turn_done", true, "completed")],
+      }),
+      delegate("dlg_active", {
+        type: "agent",
+        turns: [turn("turn_live", false, "running")],
+      }),
+    ]),
+    new Set(),
+  );
+  expect(rows.map((row) => row.id)).toEqual(["delegate:dlg_active", "session:sess_root:inactive-fold"]);
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 1 });
+});
+
+test("turn-based failure contributes to the inactive fold and row status", () => {
+  const entry = delegate("dlg_failed", {
+    type: "agent",
+    turns: [turn("turn_failed", true, "completed", "failure")],
+  });
+  const rows = buildActivityRows(tree([entry]), new Set());
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ failedCount: 1 });
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failed" });
+});
+
 test("set membership expands the fold and reveals terminal rows after the fold row", () => {
   const rows = buildActivityRows(
     tree([shell("a", false), shell("b", true)]),
@@ -168,7 +218,10 @@ test("set membership expands the fold and reveals terminal rows after the fold r
 
 test("delegate children nest one level deeper under the delegate row", () => {
   const child = session([shell("gc", false)], { active: 1, failed: 0, completed: 0, complete: false });
-  const rows = buildActivityRows(tree([delegate("dlg_1", { active: true, child })]), new Set());
+  const rows = buildActivityRows(
+    tree([delegate("dlg_1", { active: true, child: child as ActivitySessionNode })]),
+    new Set(),
+  );
   const drow = rows[0];
   const crow = rows[1];
   expect(drow?.kind).toBe("delegate");

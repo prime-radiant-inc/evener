@@ -56,6 +56,38 @@ export function foldRowID(sessionNodeID: string): string {
   return `${sessionNodeID}:inactive-fold`;
 }
 
+export interface ActivityDelegateState {
+  active: boolean;
+  failed: boolean;
+  status: string;
+}
+
+// Stable delegates describe one reusable resource; other delegate types are
+// turn containers. Keep this in one place so row visibility, fold failure
+// counts, and the status shown by the row all use the protocol's same truth.
+export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
+  if (delegate.type === "delegate") {
+    const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+    return {
+      active: delegate.terminal !== true || (delegate.child ? sessionIsActive(delegate.child) : false),
+      failed: isFailedStatus(status),
+      status,
+    };
+  }
+  const turns = delegate.turns ?? [];
+  const latest = turns.at(-1);
+  const failed = turns.some((turn) => turn.outcome === "failure" || isFailedStatus(turn.status));
+  return {
+    active: turns.some((turn) => !turn.terminal),
+    failed,
+    status: latest
+      ? latest.outcome === "failure"
+        ? "failed"
+        : latest.status
+      : (delegate.child?.aggregate ?? "unknown"),
+  };
+}
+
 function jobIsActive(job: ActivityJob): boolean {
   return !job.terminal;
 }
@@ -66,13 +98,14 @@ function sessionIsActive(session: ActivitySessionNode): boolean {
 
 function entryIsActive(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return jobIsActive(entry.job);
-  return !entry.delegate.terminal || (entry.delegate.child ? sessionIsActive(entry.delegate.child) : false);
+  return activityDelegateState(entry.delegate).active;
 }
 
 function entryIsFailed(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return isFailedStatus(entry.job.status);
   const delegate: ActivityDelegate = entry.delegate;
-  return isFailedStatus(stableDelegateDisplayStatus(delegate) ?? "") || (delegate.child?.counts.failed ?? 0) > 0;
+  const state = activityDelegateState(delegate);
+  return state.failed || (delegate.child?.counts.failed ?? 0) > 0;
 }
 
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {

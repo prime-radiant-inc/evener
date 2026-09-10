@@ -20,7 +20,6 @@ import {
   type ActivityTree as ActivityTreeData,
   activityNodeID,
 } from "../../../protocol/activityData";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
@@ -38,6 +37,7 @@ import {
   type ActivityFoldRow,
   type ActivityJobRow,
   type ActivityRow,
+  activityDelegateState,
   buildActivityRows,
 } from "./activityRows";
 
@@ -74,7 +74,7 @@ const CLASS = {
 };
 
 function delegateStatusText(delegate: ActivityDelegate): string {
-  return stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+  return activityDelegateState(delegate).status;
 }
 
 function delegateName(delegate: ActivityDelegate): string {
