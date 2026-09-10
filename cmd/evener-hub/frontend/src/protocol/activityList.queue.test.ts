@@ -138,29 +138,22 @@ test("retries a page after notification invalidates its in-flight continuation",
   const current = activityTree([delegateEntry("delegate", "old-page")]);
   const fresh = activityTree([delegateEntry("delegate", "new-page", 2)], 2);
   const page = activityTree([delegateEntry("delegate", undefined, 2)], 2);
-  const boundary = boundaryClient([undefined, undefined, fresh, page]);
+  const boundary = boundaryClient([undefined, current, undefined, fresh, page]);
   const list = new ActivityList(boundary.client, "local:session", "session", current);
-  const settled = new Promise<void>((resolve) => {
-    const unsubscribe = list.subscribe(() => {
-      if (!list.getSnapshot().loading) {
-        unsubscribe();
-        resolve();
-      }
-    });
-  });
   list.start();
+  const initial = list.refresh();
   await boundary.waitForRequest(0);
   boundary.resolve(0, current);
-  await settled;
-  await Promise.resolve();
+  await initial;
 
   const more = list.loadMore("delegate:delegate", "old-page");
-  await boundary.waitForRequest(1);
+  await boundary.waitForRequest(2);
   boundary.notify();
-  boundary.resolve(1, page);
+  boundary.resolve(2, page);
   await more;
 
   expect(boundary.requests.map(({ params }) => params)).toEqual([
+    { ref: "local:session" },
     { ref: "local:session" },
     { ref: "local:session", continuation: "old-page" },
     { ref: "local:session" },
