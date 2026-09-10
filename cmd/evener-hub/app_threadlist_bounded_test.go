@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,10 +24,25 @@ func (s *barrierThreadListSource) ListThreads(context.Context, appwire.ThreadLis
 	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
 }
 
-type cancelableThreadListSource struct{ *scriptedAppSource }
+type cancelableThreadListSource struct {
+	*scriptedAppSource
+	started chan<- struct{}
+	done    chan<- struct{}
+}
+
+type failingThreadListSource struct {
+	*scriptedAppSource
+	err error
+}
+
+func (s *failingThreadListSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	return appwire.ThreadListResponse{}, s.err
+}
 
 func (s *cancelableThreadListSource) ListThreads(ctx context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	s.started <- struct{}{}
 	<-ctx.Done()
+	s.done <- struct{}{}
 	return appwire.ThreadListResponse{}, ctx.Err()
 }
 
@@ -59,16 +75,59 @@ func TestHubThreadListQueriesSourcesInParallelAndPreservesOrder(t *testing.T) {
 
 func TestHubThreadListCancellationReleasesSourceWait(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{}, 1)
+	done := make(chan struct{}, 1)
 	sources := appsource.NewRegistry()
-	sources.Add(&cancelableThreadListSource{scriptedAppSource: &scriptedAppSource{id: "blocked"}})
+	sources.Add(&cancelableThreadListSource{scriptedAppSource: &scriptedAppSource{id: "blocked"}, started: entered, done: done})
 	result := make(chan error, 1)
 	go func() {
 		_, err := hubThreadListWithSourceTimeout(ctx, hubcore.WebConfig{}, sources, appwire.ThreadListParams{}, time.Hour)
 		result <- err
 	}()
+	<-entered
 	cancel()
 	if err := <-result; err != context.Canceled {
 		t.Fatalf("hubThreadList error=%v, want context cancellation", err)
+	}
+	<-done
+}
+
+func TestHubThreadListBoundsConcurrentSourcesAndKeepsOptionalErrors(t *testing.T) {
+	started := make(chan struct{}, 8)
+	release := make(chan struct{})
+	sources := appsource.NewRegistry()
+	for i := 0; i < 6; i++ {
+		sources.Add(&barrierThreadListSource{scriptedAppSource: &scriptedAppSource{id: fmt.Sprintf("source-%d", i), thread: appwire.Thread{ID: fmt.Sprintf("thread-%d", i)}}, started: started, release: release})
+	}
+	result := make(chan appwire.ThreadListResponse, 1)
+	go func() {
+		response, _ := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadListParams{}, time.Hour)
+		result <- response
+	}()
+	for range threadListSourceWorkers {
+		<-started
+	}
+	select {
+	case <-started:
+		t.Fatal("started more sources than worker cap")
+	default:
+	}
+	close(release)
+	response := <-result
+	if len(response.Data) != 6 {
+		t.Fatalf("threads=%d, want 6", len(response.Data))
+	}
+}
+
+func TestHubThreadListOptionalAndExplicitSourceErrors(t *testing.T) {
+	sources := appsource.NewRegistry()
+	sources.Add(&failingThreadListSource{scriptedAppSource: &scriptedAppSource{id: "optional"}, err: context.DeadlineExceeded})
+	if response, err := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadListParams{}, time.Second); err != nil || len(response.Data) != 0 {
+		t.Fatalf("optional error response=%+v err=%v", response, err)
+	}
+	params := appwire.ThreadListParams{SourceIDs: []string{"optional"}}
+	if _, err := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, params, time.Second); err == nil {
+		t.Fatal("explicit source error was swallowed")
 	}
 }
 
