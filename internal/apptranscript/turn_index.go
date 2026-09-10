@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 12
+	turnIndexVersion        = 13
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -167,10 +167,14 @@ type indexedTurn struct {
 	TurnKind schema.TurnKind `json:"turn_kind,omitempty"`
 	// GoalContinuation distinguishes a top-level goal opener from ordinary
 	// steering without retaining model or display text in the derived index.
-	GoalContinuation bool     `json:"goal_continuation,omitempty"`
-	TurnID           string   `json:"turn_id,omitempty"`
-	GroupItems       uint32   `json:"group_items,omitempty"`
-	GroupCalls       []string `json:"group_calls,omitempty"`
+	GoalContinuation bool `json:"goal_continuation,omitempty"`
+	// StartsGroup is derived once with the owning turn in scope. Readers and
+	// append recovery reuse the same boundary instead of inferring ownership
+	// from a continuation record's per-entry identity.
+	StartsGroup bool     `json:"starts_group,omitempty"`
+	TurnID      string   `json:"turn_id,omitempty"`
+	GroupItems  uint32   `json:"group_items,omitempty"`
+	GroupCalls  []string `json:"group_calls,omitempty"`
 }
 
 // groupRole classifies a record within its logical turn group.
@@ -258,7 +262,7 @@ func (d turnIndexDisk) logicalTurnCount() int {
 	groupItems := uint64(0)
 	for i := range n {
 		record := d.recordAt(i)
-		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind, record.GoalContinuation) {
+		if i > 0 && record.StartsGroup {
 			// The previous group just closed: count it when it projected
 			// items.
 			if groupItems > 0 {
@@ -304,7 +308,7 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	for i := range n {
 		record := d.recordAt(i)
 		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
-		join := role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
+		join := !record.StartsGroup && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
 		if join {
 			group := &groups[len(groups)-1]
 			group.end = i + 1
@@ -895,13 +899,24 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			// the way the range reader names it, so the index scan and the
 			// projection cannot disagree (kata: one name per entry).
 			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
+			owner := ""
+			if entry.Turn.Kind == schema.TurnSteering && !record.GoalContinuation {
+				owner = entry.Turn.OwningTurnID
+			}
+			if owner != "" {
+				record.TurnID = owner
+				if openTurnID == "" {
+					openTurnID, openCalls = openGroupState(*index)
+				}
+			}
 			prevKind := schema.TurnKind("")
 			if len(appended) > 0 {
 				prevKind = appended[len(appended)-1].TurnKind
 			} else if n := index.recordCount(); n > 0 {
 				prevKind = index.recordAt(n - 1).TurnKind
 			}
-			if recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation) {
+			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, owner, openTurnID)
+			if record.StartsGroup {
 				openTurnID = record.TurnID
 				openCalls = map[string]bool{}
 			} else if openCalls == nil || openTurnID == "" {
@@ -1162,7 +1177,7 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		// groups: find where this group's span ends, then decide whether to
 		// project it.
 		spanEnd := i + 1
-		for spanEnd < n && !recordStartsGroup(index.recordAt(spanEnd).TurnKind, index.recordAt(spanEnd-1).TurnKind, index.recordAt(spanEnd).GoalContinuation) {
+		for spanEnd < n && !index.recordAt(spanEnd).StartsGroup {
 			spanEnd++
 		}
 		groupItems := uint64(0)
@@ -1773,7 +1788,7 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 			calls[id] = true
 		}
 		turnID = record.TurnID
-		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind, record.GoalContinuation) {
+		if i == 0 || record.StartsGroup {
 			break
 		}
 	}

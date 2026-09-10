@@ -2149,7 +2149,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	var reminder string
 	if len(jobNotifs) > 0 {
 		reminder = s.formatJobNotificationReminder(jobNotifs)
-		if err := errors.Join(s.appendSteeringTurnDurably(reminder, events.SteeringKindNotification), sessionLifecycleFault(ctx, "append_notification")); err != nil {
+		if err := errors.Join(s.appendSteeringTurnDurablyForOwner(reminder, events.SteeringKindNotification, turnID), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			s.finishNotificationNoop()
 			return false
