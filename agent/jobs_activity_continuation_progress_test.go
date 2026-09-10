@@ -88,6 +88,19 @@ func TestLoadSessionJobActivityTree_SizeContinuationAccountsForResponseEnvelope(
 	assertUnrepresentableActivityEntryWalk(t, activityBoundaryDescription(t))
 }
 
+func TestLoadSessionJobActivityTree_EmptySessionLabelStaysBounded(t *testing.T) {
+	stateDir := t.TempDir()
+	const rootID = "rootoversizedlabel"
+	s1cov_writeJobLog(t, stateDir, rootID)
+	savePastActivityMeta(t, stateDir, rootID, strings.Repeat("x", activityMaxEncodedBytes+1024))
+
+	page, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("load empty session with oversized label: %v", err)
+	}
+	assertActivityPageBound(t, 1, page)
+}
+
 func activityBoundaryDescription(t *testing.T) string {
 	t.Helper()
 	stateDir := t.TempDir()
