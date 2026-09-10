@@ -4,10 +4,12 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/llm"
 )
 
 // itemKey builds the canonical transcript key the way production does, so the
@@ -69,6 +71,47 @@ func TestItemReadersGroupContinuationEntries(t *testing.T) {
 		if got, want := turnIDs(read.turns), []string{"turn_1"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s item turn ids = %v, want one logical turn %v", read.name, got, want)
 		}
+	}
+}
+
+func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		name := "interrupted"
+		want := appwire.TurnStatusInterrupted
+		if failed {
+			name, want = "failed after interruption", appwire.TurnStatusFailed
+		}
+		t.Run(name, func(t *testing.T) {
+			entries := []transcript.Entry{
+				{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("input"), StableTurnID: "turn_m2"}},
+				{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User("interrupted"), SteeringKind: events.SteeringKindInterrupted}},
+			}
+			if failed {
+				entries = append(entries, transcript.Entry{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnFailure, Error: &schema.TurnFailureInfo{Message: "provider failed"}}})
+			}
+			path := writeEntries(t, entries...)
+			names := map[string]string{}
+			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+				return ProjectTurn(turnID, turnIndex, turn, names, nil, nil)
+			})
+			page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+				return ProjectTurn(turnID, turnIndex, turn, toolNames, nil, nil)
+			})
+			for reader, turns := range map[string][]appwire.Turn{"full": full, "indexed": page.Turns} {
+				if len(turns) != 1 || turns[0].Status != want {
+					t.Fatalf("%s turns = %+v, want one %s turn", reader, turns, want)
+				}
+				found := false
+				for _, item := range turns[0].Items {
+					if item.SteeringKind == events.SteeringKindInterrupted {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("%s lost interrupted steering item", reader)
+				}
+			}
+		})
 	}
 }
 
