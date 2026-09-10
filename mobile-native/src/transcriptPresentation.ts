@@ -180,11 +180,13 @@ export function projectNativeTranscript(
 	const source = conversation?.items ?? [];
 	if (!config) {
 		const activityPresentation = new Map<string, ActivityPresentation>();
-		for (const item of source)
-			if (item.kind === "activity")
-				activityPresentation.set(item.id, { mode: "full" });
+		const items = source.flatMap((item) =>
+			item.kind === "activity" && item.members?.length ? item.members.map(memberItem) : [item],
+		);
+		for (const item of items)
+			if (item.kind === "activity") activityPresentation.set(item.id, { mode: "full" });
 		return {
-			items: [...source],
+			items,
 			activityPresentation,
 			expandByDefault: false,
 			usage: null,

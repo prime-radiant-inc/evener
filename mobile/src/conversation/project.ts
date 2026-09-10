@@ -601,7 +601,7 @@ export function projectThread(thread: Thread): MobileConversation {
     }
     // A turn error produces a failure item at the end of that turn's items.
     if (turn.error) {
-      ordered.push({ type: "final", item: failureItem(turn.error) });
+      ordered.push({ type: "final", item: failureItem(turn.error, turn.id) });
     }
   }
 
@@ -680,6 +680,7 @@ export function projectThread(thread: Thread): MobileConversation {
 
 function failureItem(
   error: NonNullable<Turn["error"]>,
+  turnID: string,
 ): Extract<MobileTimelineItem, { kind: "failure" }> {
   const title = error.title ?? error.message;
   const parts = [error.message];
@@ -687,7 +688,7 @@ function failureItem(
   if (error.additionalDetails) parts.push(error.additionalDetails);
   return {
     kind: "failure",
-    id: `failure:${title}`,
+    id: `failure:${turnID}:${title}`,
     title,
     detail: parts.join("\n"),
   };

@@ -136,7 +136,9 @@ export class HubProfiles {
 	}
 	async list(): Promise<HubProfile[]> {
 		const values = await Promise.all(
-			(await this.ids()).map((id) => this.read(id)),
+			(await this.ids()).map(async (id) => {
+				try { return await this.read(id); } catch { return null; }
+			}),
 		);
 		return values.flatMap((value) =>
 			value ? [{ id: value.id, name: value.name, origin: value.origin }] : [],

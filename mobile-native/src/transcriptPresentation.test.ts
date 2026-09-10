@@ -32,7 +32,7 @@ const member = (
 	position: { entry: 1, item },
 });
 
-it("keeps null config unfiltered and does not mutate the canonical items", () => {
+it("flattens clustered members when preferences are unavailable", () => {
 	const items: MobileTimelineItem[] = [
 		{
 			kind: "activity",
@@ -45,7 +45,10 @@ it("keeps null config unfiltered and does not mutate the canonical items", () =>
 		},
 	];
 	const result = projectNativeTranscript(conversation(items), null);
-	expect(result.items).toEqual(items);
+	expect(result.items).toEqual([
+		{ kind: "activity", ...member("a", "first", 0) },
+		{ kind: "activity", ...member("b", "second", 1) },
+	]);
 	expect(result.items).not.toBe(items);
 	expect(result.expandByDefault).toBe(false);
 	expect(result.usage).toBeNull();

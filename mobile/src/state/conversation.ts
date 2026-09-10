@@ -541,7 +541,7 @@ function projectSingleItem(
     // answer lifecycle — trigger an authoritative reread to settle the
     // pending question state according to canonical projection.
     if (askPending) return null;
-    return { kind: "user", id: item.id, text: item.text ?? "" };
+    return { kind: "user", id: item.id, text: item.text ?? "", ...(item.transcriptEntryIndex !== undefined ? { transcriptEntryIndex: item.transcriptEntryIndex } : {}) };
   }
   if (item.type === "agentMessage") {
     return {
@@ -568,6 +568,7 @@ function projectSingleItem(
       state: commandActivityState(item),
       detail: {
         arguments: item.argumentsJson,
+        description: item.description,
         output: item.output,
         error: item.error,
         exitCode: item.exitCode,
@@ -776,6 +777,7 @@ export function createConversationStore() {
   let suspendedService: LiveConversationService | null = null;
   let acceptedRehydrate: { generation: number; sink: LiveActivitySink } | null =
     null;
+  let liveNoticeSerial = 0;
   // I1: Binding epoch — incremented on every openProjected/open/close/reset so
   // a request queued for an older binding (serviceA+refA) can never run after
   // the store switched to a newer binding (serviceB+refB). Every request
@@ -2815,7 +2817,7 @@ export function createConversationStore() {
 
           case "warning": {
             const params = n.params as { message?: string; title?: string };
-            const id = `warning:${params.title ?? params.message ?? Date.now()}`;
+            const id = `warning:${params.title ?? params.message ?? "warning"}:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,

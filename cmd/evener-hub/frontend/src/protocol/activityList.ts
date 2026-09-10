@@ -126,8 +126,7 @@ export class ActivityList {
     this.publish({
       loading: true,
       error: null,
-      unsupported: false,
-      ended: false,
+      ...(branch ? {} : { unsupported: false, ended: false }),
     });
     do {
       this.dirty = false;
