@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
+	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1214,17 +1215,15 @@ func hubGoalProgressText(goal *appwire.GoalState) string {
 // hubGoalChipText aggregates the session-header goal chip (spec §6):
 // "waiting on <n> · <nearest label> · <deadline>" for a parked goal, the
 // plain "status iterations" otherwise. The chip never implies more than the
-// waiting_on[] list it summarizes.
+// waiting_on[] list it summarizes. The waiting branch delegates to
+// appprojector.GoalWaitingChipText (the single source for that format —
+// cf. its drift note); only the nil/non-waiting behavior stays hub-local.
 func hubGoalChipText(goal *appwire.GoalState) string {
 	if goal == nil {
 		return ""
 	}
 	if goal.Status == "waiting" {
-		n := len(goal.WaitingOn)
-		if goal.NearestLabel == "" {
-			return fmt.Sprintf("waiting on %d", n)
-		}
-		return fmt.Sprintf("waiting on %d · %s · %d", n, goal.NearestLabel, goal.NearestDeadlineUnixMilli)
+		return appprojector.GoalWaitingChipText(goal)
 	}
 	return fmt.Sprintf("%s %d", goal.Status, goal.Iterations)
 }

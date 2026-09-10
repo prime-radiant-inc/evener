@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -136,6 +137,34 @@ func TestHubGoalChipTextWaiting(t *testing.T) {
 	}
 	if got := hubGoalChipText(&appwire.GoalState{Status: "active", Iterations: 2}); got != "active 2" {
 		t.Fatalf("active chip=%q, want active 2", got)
+	}
+}
+
+// TestHubGoalChipTextWaitingParity pins the round-20 LOW: hubGoalChipText's
+// waiting branch delegates to appprojector.GoalWaitingChipText, so the two
+// agree on every waiting shape while the hub keeps its own nil/non-waiting
+// behavior.
+func TestHubGoalChipTextWaitingParity(t *testing.T) {
+	shapes := []*appwire.GoalState{
+		{
+			Status:                   "waiting",
+			WaitingOn:                []appwire.GoalWaitState{{WaitID: "wait_1", Label: "alpha"}, {WaitID: "wait_2", Label: "beta"}},
+			NearestLabel:             "alpha",
+			NearestDeadlineUnixMilli: 2000,
+		},
+		{Status: "waiting"},
+		{Status: "waiting", WaitingOn: []appwire.GoalWaitState{{WaitID: "wait_1"}}},
+	}
+	for _, g := range shapes {
+		if got, want := hubGoalChipText(g), appprojector.GoalWaitingChipText(g); got != want {
+			t.Fatalf("hub chip=%q, projector chip=%q, want parity for %+v", got, want, g)
+		}
+	}
+	if got := hubGoalChipText(nil); got != "" {
+		t.Fatalf("nil chip=%q, want empty (hub-local)", got)
+	}
+	if got := hubGoalChipText(&appwire.GoalState{Status: "active", Iterations: 2}); got != "active 2" {
+		t.Fatalf("active chip=%q, want hub-local status rendering", got)
 	}
 }
 

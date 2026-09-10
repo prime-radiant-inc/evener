@@ -346,3 +346,99 @@ func TestGoalRestore_KickWiringFlushesRestoredBacklog(t *testing.T) {
 		t.Fatalf("kicks on a backlog-free session = %d, want 0", quietKicks)
 	}
 }
+
+// TestGoalRestore_PastDeadlineClaimsSyntheticEntry pins the round-20 MEDIUM:
+// a restored waiting goal whose deadline already passed claims the synthetic
+// deadline-expiry entry during the attach-scan, so the next turn tail drives
+// the final evaluation turn instead of stranding the goal with an empty
+// backlog. The already-delivered marker suppresses the re-claim.
+func TestGoalRestore_PastDeadlineClaimsSyntheticEntry(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	now := clk.Now()
+	meta := schema.SessionMeta{
+		ID:        "restore-past-deadline",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{}).toSnapshot(),
+		Goal: &schema.GoalSnapshot{
+			Objective: "deadline passed while down",
+			Status:    string(goal.StatusWaiting),
+			CreatedAt: now.Add(-2 * time.Hour),
+			UpdatedAt: now.Add(-2 * time.Hour),
+			Waits: []schema.GoalWaitSnapshot{{
+				WaitID:         "wait_1",
+				Kind:           string(goal.WaitUntilTime),
+				Label:          "long-timer",
+				Deadline:       now.Add(2 * time.Hour),
+				RegisteredAt:   now.Add(-2 * time.Hour),
+				IdempotencyKey: "k",
+			}},
+			Budgets: &schema.GoalBudgetsSnapshot{
+				MaxContinuations:    goal.DefaultMaxContinuations,
+				Deadline:            now.Add(-time.Hour),
+				MaxParkedTotalNanos: int64(goal.DefaultMaxParkedTotal),
+			},
+		},
+	}
+	sess := restoreGoalTestSession(t, clk, meta)
+	defer sess.Close()
+
+	full, ok := sess.getOrCreateGoalStore().GoalSnapshot()
+	if !ok {
+		t.Fatal("restored goal must load")
+	}
+	if !full.DeadlineFinalDelivered {
+		t.Fatal("attach-scan must set the deadline one-shot marker on a past deadline")
+	}
+	if len(full.PendingWake) != 1 || full.PendingWake[0].WaitID != goal.DeadlineWakeID {
+		t.Fatalf("attach-scan must claim the synthetic deadline entry at restore, got %+v", full.PendingWake)
+	}
+}
+
+// TestGoalRestore_PastDeadlineDeliveredMarkerSuppressesClaim pins the
+// one-shot: a restored waiting goal whose deadline passed but whose marker
+// is already set claims nothing new at restore.
+func TestGoalRestore_PastDeadlineDeliveredMarkerSuppressesClaim(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	now := clk.Now()
+	meta := schema.SessionMeta{
+		ID:        "restore-past-deadline-delivered",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{}).toSnapshot(),
+		Goal: &schema.GoalSnapshot{
+			Objective:              "deadline already drove",
+			Status:                 string(goal.StatusWaiting),
+			CreatedAt:              now.Add(-2 * time.Hour),
+			UpdatedAt:              now.Add(-2 * time.Hour),
+			DeadlineFinalDelivered: true,
+			Waits: []schema.GoalWaitSnapshot{{
+				WaitID:         "wait_1",
+				Kind:           string(goal.WaitUntilTime),
+				Label:          "long-timer",
+				Deadline:       now.Add(2 * time.Hour),
+				RegisteredAt:   now.Add(-2 * time.Hour),
+				IdempotencyKey: "k",
+			}},
+			Budgets: &schema.GoalBudgetsSnapshot{
+				MaxContinuations:    goal.DefaultMaxContinuations,
+				Deadline:            now.Add(-time.Hour),
+				MaxParkedTotalNanos: int64(goal.DefaultMaxParkedTotal),
+			},
+		},
+	}
+	sess := restoreGoalTestSession(t, clk, meta)
+	defer sess.Close()
+
+	full, ok := sess.getOrCreateGoalStore().GoalSnapshot()
+	if !ok {
+		t.Fatal("restored goal must load")
+	}
+	for _, p := range full.PendingWake {
+		if p.WaitID == goal.DeadlineWakeID {
+			t.Fatalf("attach-scan must not re-claim the synthetic entry when the marker is set, got %+v", full.PendingWake)
+		}
+	}
+}

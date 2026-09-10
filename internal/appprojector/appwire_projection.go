@@ -1423,7 +1423,9 @@ func goalResumedText(data events.GoalResumedData) string {
 // carries; human-relative rendering belongs to the client. A nil or
 // non-waiting goal renders "" (no chip), and a waiting goal with no waits
 // named renders the bare count so the chip never implies more than the
-// waiting_on[] list it summarizes.
+// waiting_on[] list it summarizes. Single source for the waiting-branch
+// format: cmd/evener-tui hubGoalChipText delegates here (keeping its own
+// nil/non-waiting behavior), so edit this one place, not both.
 func GoalWaitingChipText(goal *appwire.GoalState) string {
 	if goal == nil || goal.Status != "waiting" {
 		return ""

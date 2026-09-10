@@ -1814,9 +1814,17 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 			out.Budgets.MaxContinuations = MaxContinuationsCap
 			break
 		}
-		out.Budgets.MaxContinuations += int(ext.Value)
+		// Saturate a large PERSISTED base first: the ext.Value guard above
+		// covers the addend, but a near-maxInt stored base plus a small
+		// Value would still wrap the add below.
 		if out.Budgets.MaxContinuations > MaxContinuationsCap {
 			out.Budgets.MaxContinuations = MaxContinuationsCap
+			break
+		}
+		if new := out.Budgets.MaxContinuations + int(ext.Value); new < out.Budgets.MaxContinuations || new > MaxContinuationsCap {
+			out.Budgets.MaxContinuations = MaxContinuationsCap
+		} else {
+			out.Budgets.MaxContinuations = new
 		}
 	case ExtendDeadline:
 		if ext.Value <= 0 {
@@ -1842,9 +1850,16 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
 			break
 		}
-		out.Budgets.MaxParkedTotal += time.Duration(ext.Value) * time.Second
+		// Saturate a large PERSISTED base first, as above: a near-maxDuration
+		// stored base plus a small Value would wrap the add negative.
 		if out.Budgets.MaxParkedTotal > MaxParkedTotalCap {
 			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
+			break
+		}
+		if new := out.Budgets.MaxParkedTotal + time.Duration(ext.Value)*time.Second; new < out.Budgets.MaxParkedTotal || new > MaxParkedTotalCap {
+			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
+		} else {
+			out.Budgets.MaxParkedTotal = new
 		}
 	default:
 		return GoalSnapshot{}, fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", string(ext.Budget))
@@ -2259,9 +2274,10 @@ func (s *Store) RestoreSnapshot(p PersistedGoal) {
 func maxNextWaitID(waits []Wait, pending []PendingWake, persisted uint64) uint64 {
 	next := persisted
 	consider := func(id string) {
-		var n uint64
-		if _, err := fmt.Sscanf(id, "wait_%d", &n); err == nil && n > next {
-			next = n
+		// parseWaitSeq rejects nonconforming ids ("wait_10evil" parses as
+		// -1 here, never seeding the counter from its 10 prefix).
+		if n := parseWaitSeq(id); n >= 0 && uint64(n) > next {
+			next = uint64(n)
 		}
 	}
 	for _, w := range waits {

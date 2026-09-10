@@ -81,10 +81,18 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 	// under the store lock. Evaluate the snapshot outside it, then replay
 	// the decision under it. TOCTOU: point-in-time, like RegisterWait --
 	// the verifier re-evaluates at claim time.
+	// An empty EventSubtype aliases file_modified at the gate: normalize once
+	// here so prescan/replay/eval see the normalized form and the stored
+	// predicate carries file_modified ("" and file_modified dedupe together
+	// below).
+	pred := req.Predicate
+	if pred.Kind == WaitUntilEvent && pred.EventSubtype == "" {
+		pred.EventSubtype = EventFileModified
+	}
 	s.mu.Lock()
 	preSub := s.substrate
 	s.mu.Unlock()
-	pre := prescanExpect(preSub, req.Predicate)
+	pre := prescanExpect(preSub, pred)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inRegisterCritical.Store(true)
@@ -101,9 +109,8 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 		s.lastRejectReason = "condition description is required"
 		return Condition{}, false
 	}
-	pred := req.Predicate
 	registrable := pred.Kind == WaitUntilJob || pred.Kind == WaitUntilDelegate ||
-		(pred.Kind == WaitUntilEvent && (pred.EventSubtype == EventFileModified || pred.EventSubtype == ""))
+		(pred.Kind == WaitUntilEvent && pred.EventSubtype == EventFileModified)
 	if !registrable {
 		reason, _ := expectKindRejected(pred)
 		s.lastRejectReason = reason

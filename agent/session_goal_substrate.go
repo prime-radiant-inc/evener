@@ -109,6 +109,14 @@ func (g *goalSessionSubstrate) StatFile(path string) (baseline string, ok bool) 
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = resolved
 	}
+	// TOCTOU note: EvalSymlinks-then-stat is a point-in-time baseline stamp,
+	// not an atomic capture — a concurrent swap between the resolve and the
+	// stat below can stamp the wrong target. This stays path-based by design:
+	// only the session's own model/tools write the sandbox (no hostile
+	// concurrent writer), and every tick/expiry/poll re-reads the baseline,
+	// so a swap self-corrects at the next evaluation via loss/expiry — the
+	// same TOCTOU contract as the registration pre-pass. File CONTENT reads
+	// go through the fd-anchored tool layer instead.
 	wd := filepath.Clean(env.WorkingDirectory())
 	if abs != wd && !strings.HasPrefix(abs, wd+string(filepath.Separator)) {
 		return "", false

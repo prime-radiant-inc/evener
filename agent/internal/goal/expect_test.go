@@ -266,3 +266,31 @@ func TestFixWave15_ExpectKindRejectedRegistrableKinds(t *testing.T) {
 		}
 	}
 }
+
+// TestFixWave20_RegisterExpectEmptySubtypeNormalizes pins the round-20 LOW:
+// an empty EventSubtype aliases file_modified at the gate, so registration
+// must normalize once and store file_modified — never reject as unknown.
+func TestFixWave20_RegisterExpectEmptySubtypeNormalizes(t *testing.T) {
+	now := time.Unix(1000, 0).UTC()
+	s := NewStore()
+	s.Set("obj", now)
+	s.SetSubstrate(&expectTestSubstrate{files: map[string]string{"/work/f": "base-v1"}})
+	c, ok := s.RegisterExpect(ExpectRequest{Desc: "f changed", Predicate: WaitKind{Kind: WaitUntilEvent, Target: "/work/f"}}, now)
+	if !ok {
+		t.Fatalf("empty subtype must register as file_modified: %q", s.LastRejectReason())
+	}
+	if c.Predicate.EventSubtype != EventFileModified {
+		t.Fatalf("stored subtype = %q, want file_modified", c.Predicate.EventSubtype)
+	}
+	if c.Baseline != "base-v1" {
+		t.Fatalf("baseline = %q, want the attach-scan snapshot base-v1", c.Baseline)
+	}
+	// "" and file_modified dedupe together on re-register.
+	if _, ok := s.RegisterExpect(ExpectRequest{Desc: "f changed", Predicate: WaitKind{Kind: WaitUntilEvent, EventSubtype: EventFileModified, Target: "/work/f"}}, now); !ok {
+		t.Fatalf("normalized re-register must dedupe: %q", s.LastRejectReason())
+	}
+	full, _ := s.GoalSnapshot()
+	if len(full.Conditions) != 1 {
+		t.Fatalf("conditions = %d, want 1 after dedupe", len(full.Conditions))
+	}
+}

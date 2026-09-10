@@ -77,6 +77,16 @@ func (s *Session) restoreGoalAttachScan() {
 	for _, cause := range losses {
 		store.RecordLoss(cause, now)
 	}
+	// Spec §1 rule 3 at restore: an already-expired goal deadline claims the
+	// synthetic final-turn entry here, mirroring the gate's synthetic-claim
+	// shape. Without it the follow-up armGoalWaitTimer sees a past deadline,
+	// disarms with no wake, and the goal sits waiting with an empty backlog.
+	// ClaimDeadlineExpiry is one-shot via the DeadlineFinalDelivered marker,
+	// so a double-restore cannot double-claim; no loss is recorded — the
+	// entry rides the existing backlog-kick path via settleGoalOnIdle.
+	if !full.Budgets.Deadline.IsZero() && !now.Before(full.Budgets.Deadline) && !full.DeadlineFinalDelivered {
+		store.ClaimDeadlineExpiry(now)
+	}
 	s.goalUpdateMu.Unlock()
 }
 

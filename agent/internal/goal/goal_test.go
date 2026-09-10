@@ -265,6 +265,24 @@ func TestApplyExtendClampsExtremeValues(t *testing.T) {
 	}
 }
 
+// TestApplyExtendSaturatesPersistedBase pins the round-20 MEDIUM: a large
+// PERSISTED base plus a small Value must saturate to the cap, never wrap
+// the add (the round-15 guards cover ext.Value only).
+func TestApplyExtendSaturatesPersistedBase(t *testing.T) {
+	now := clock()
+	full := GoalSnapshot{Budgets: DefaultBudgets(now)}
+	full.Budgets.MaxContinuations = int(^uint(0) >> 1)
+	out, err := ApplyExtend(full, ExtendRequest{Budget: ExtendContinuations, Value: 1}, now)
+	if err != nil || out.Budgets.MaxContinuations != MaxContinuationsCap {
+		t.Fatalf("continuations = (%+v, %v), want saturated to cap %d (not wrapped)", out.Budgets, err, MaxContinuationsCap)
+	}
+	full.Budgets.MaxParkedTotal = time.Duration(int64(^uint64(0) >> 1))
+	out, err = ApplyExtend(full, ExtendRequest{Budget: ExtendParkedTotal, Value: 1}, now)
+	if err != nil || out.Budgets.MaxParkedTotal != MaxParkedTotalCap {
+		t.Fatalf("parked-total = (%+v, %v), want saturated to cap %v (not wrapped)", out.Budgets, err, MaxParkedTotalCap)
+	}
+}
+
 func TestBudgetsAccrueInFold(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())
@@ -843,5 +861,19 @@ func TestLedgerLongRotationDisclosed(t *testing.T) {
 	}
 	if last := s.Entries[len(s.Entries)-1]; !last.Advancement {
 		t.Fatalf("novel-hash turn must be marked advancing: %+v", last)
+	}
+}
+
+// TestFixWave20_MaxNextWaitIDRejectsSuffixedIDs pins the round-20 LOW:
+// maxNextWaitID must reuse parseWaitSeq, so "wait_10evil" (which Sscanf
+// accepted as 10) never seeds the counter — ["wait_10evil", "wait_2"]
+// seeds 2, not 10.
+func TestFixWave20_MaxNextWaitIDRejectsSuffixedIDs(t *testing.T) {
+	waits := []Wait{
+		{Lease: Lease{WaitID: "wait_10evil"}},
+		{Lease: Lease{WaitID: "wait_2"}},
+	}
+	if got := maxNextWaitID(waits, nil, 0); got != 2 {
+		t.Fatalf("maxNextWaitID = %d, want 2 (wait_10evil must not seed 10)", got)
 	}
 }
