@@ -1587,6 +1587,12 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // own goroutine concurrently with this method running on the turn-processing
 // goroutine — see the field's doc comment.
 func (s *Session) maybeAppendEnvironmentContext() error {
+	return s.appendEnvironmentContext(true)
+}
+
+// appendEnvironmentContext can persist recovery context without publishing a
+// live event: restore seeds its projection from the completed transcript.
+func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if s.envCollector == nil {
 		return nil
 	}
@@ -1641,7 +1647,9 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	s.maybeAutoSave()
-	s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+	if publishEvent {
+		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+	}
 	return nil
 }
 

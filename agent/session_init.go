@@ -1158,7 +1158,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// path can append. Restored history and the durable identity index stay
 	// on the pre-recovery list on purpose: the recovered turns enter
 	// s.history directly (recordClientMutationFailure appends them itself).
-	if err := s.recoverClientMutationFailures(); err != nil {
+	if err := s.recoverClientMutationFailures(false); err != nil {
 		return nil, fmt.Errorf("recover client mutation failures: %w", err)
 	}
 	if err := s.recoverClientMutationInterrupt(); err != nil {

@@ -37,3 +37,17 @@ func TestEmptyEnvironmentDoesNotOpenTurnOrConsumeReservation(t *testing.T) {
 		t.Fatalf("empty environment changed runnable reservation to %q, want %q", got, reserved)
 	}
 }
+
+func TestEnvironmentWithoutIdentityDoesNotUseRunnableReservation(t *testing.T) {
+	projector := NewAppEventProjector("environment-reservation", "local:environment-reservation")
+	reserved := projector.ReserveTurnID()
+	environment := projector.Project(events.SessionEvent{Kind: events.EventEnvironment, Data: events.EnvironmentData{Text: "context"}})
+	environmentID := notificationThreadItem(t, environment, appwire.NotifyItemCompleted).TurnID
+	if environmentID == "" || environmentID == reserved {
+		t.Fatalf("environment identity = %q, must be distinct from runnable reservation %q", environmentID, reserved)
+	}
+	user := projector.Project(events.SessionEvent{Kind: events.EventUserInput, Data: events.UserInputData{Text: "input"}})
+	if got := notificationThreadItem(t, user, appwire.NotifyItemCompleted).TurnID; got != reserved {
+		t.Fatalf("user turn = %q, want advertised runnable identity %q", got, reserved)
+	}
+}
