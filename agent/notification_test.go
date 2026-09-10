@@ -163,34 +163,56 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 // retain both items in one logical turn.
 func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	const notificationTurnID = "turn_notification_owner"
-	appendPendingJobNotificationRecord(t, s.jobManager, s.ID())
-	s.enqueueJobNotification(jobNotification{JobID: "job_X"})
-
-	if err := s.ensureClientMutationStore(); err != nil {
+	var sess *Session
+	steerAccepted := make(chan struct{})
+	adapter := &fakeAdapter{name: "openai"}
+	adapter.steps = []func(req llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warmup") },
+		func(llm.Request) llm.Response {
+			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+				ClientMutationID:   "steer_notification_owner",
+				ExpectedInstanceID: sess.ID(),
+				Input:              []appwire.InputItem{{Type: "text", Text: "steer during notification"}},
+			}); err != nil {
+				panic(fmt.Sprintf("accept client steering: %v", err))
+			}
+			close(steerAccepted)
+			return communicateResponse(false, "notification handled")
+		},
+		func(llm.Request) llm.Response { return finalResponse("steering handled") },
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	dir := t.TempDir()
+	sess = newSession(t, withClient(client), withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: dir}))
+	if _, err := sess.ProcessInput(context.Background(), "warm up", nil); err != nil {
+		t.Fatalf("warmup ProcessInput: %v", err)
+	}
+	if err := sess.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.ActiveTurnID = notificationTurnID
-		return nil
-	}); err != nil {
-		t.Fatalf("claim notification turn: %v", err)
+	recorder := serveAndRecord(t, sess)
+	enqueueCompletedJobNotification(t, sess, "job_X")
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID:   "steer_notification_owner",
-		ExpectedInstanceID: s.ID(),
-		Input:              []appwire.InputItem{{Type: "text", Text: "steer during notification"}},
-	}); err != nil {
-		t.Fatalf("accept client steering: %v", err)
+	select {
+	case <-steerAccepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("notification provider call did not accept client steering")
 	}
-
-	if !s.acceptNotificationInput(context.Background(), notificationTurnID) {
-		t.Fatal("notification input should proceed")
+	_, starts := recorder.snapshot()
+	if len(starts) != 1 || starts[0].TurnID == "" {
+		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
-
+	owner := starts[0].TurnID
+	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
 	var reminderOwner, steeringOwner string
-	for _, turn := range s.history {
+	for _, entry := range data.Entries {
+		turn := entry.Turn
 		if turn.SteeringKind == events.SteeringKindNotification {
 			reminderOwner = turn.OwningTurnID
 		}
@@ -198,11 +220,8 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 			steeringOwner = turn.OwningTurnID
 		}
 	}
-	if reminderOwner != notificationTurnID {
-		t.Fatalf("notification reminder owner=%q, want %q", reminderOwner, notificationTurnID)
-	}
-	if steeringOwner != notificationTurnID {
-		t.Fatalf("pending client steering owner=%q, want %q", steeringOwner, notificationTurnID)
+	if reminderOwner == "" || steeringOwner == "" || reminderOwner != steeringOwner || reminderOwner != owner {
+		t.Fatalf("durable owners reminder=%q steering=%q EventTurnStarted=%q", reminderOwner, steeringOwner, owner)
 	}
 }
 
