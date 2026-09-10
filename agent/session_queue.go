@@ -984,6 +984,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
+	if msg.ClientMutationID != "" && s.clientMutations != nil {
+		// ActiveTurnID is the actual logical owner at delivery time. For an
+		// inline steer it is the already-running turn; for a carrier it is the
+		// carrier's reserved mutation turn. Both identities must be durable so
+		// replay can distinguish the two boundaries.
+		t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
+	}
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
 			t,
