@@ -1,0 +1,2679 @@
+{
+  "source": "b9312580a11a454e304d0f59ac045f4ca7e438dc",
+  "base": "ab02d1cbbfd9f33b4e318105574caaa47c398e9a",
+  "candidates": [
+    {
+      "id": "navigation",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-empty-navigation",
+      "branch": "codex/mobile-empty-navigation",
+      "base": "ab02d1cbbfd9f33b4e318105574caaa47c398e9a",
+      "status": "parked: main already fixes behavioral issue; no PR"
+    },
+    {
+      "id": "device-auth",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-device-auth",
+      "branch": "codex/mobile-device-auth-binding",
+      "base": "ab02d1cbbfd9f33b4e318105574caaa47c398e9a",
+      "pr": 1066,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1066",
+      "head": "df7c8ba67466b0fa5ef3f89d4b25eb5b761093ff",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "aa7206376f5774eb265df700f78f470a56d5a7ad"
+    },
+    {
+      "id": "logout",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-logout-result",
+      "branch": "codex/mobile-logout-result",
+      "base": "ab02d1cbbfd9f33b4e318105574caaa47c398e9a",
+      "pr": 1067,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1067",
+      "head": "5eaebfe6e9522a2d8cd9715ddc85c26df7aedd9c",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "5dfe2febdf0760c6a597f232d7f3e2488ae61d73"
+    },
+    {
+      "id": "empty-list",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-empty-session-list",
+      "branch": "codex/mobile-empty-session-list",
+      "base": "ab02d1cbbfd9f33b4e318105574caaa47c398e9a",
+      "pr": 1068,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1068",
+      "head": "1c18e6866c700f861d0285c8d08dce1aa0225f1a",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "0b119788186fc658f0cd733fb7de3ee7f43a5065"
+    },
+    {
+      "id": "update-entrypoint",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-update-entrypoint",
+      "branch": "codex/mobile-update-entrypoint",
+      "base": "ab02d1cbbfd9f33b4e318105574caaa47c398e9a",
+      "pr": 1069,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1069",
+      "head": "3705a90980087c703aa7c79245d5babe0c2ce877",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "7b24b1a750520893086b53793f8c585de6766c5e"
+    },
+    {
+      "id": "daemon-version",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-daemon-version",
+      "branch": "codex/mobile-daemon-version",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1071,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1071",
+      "head": "f539bde96a25ffb878806ff557d4de5f5cdfbaf1",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "02e14847050f5a1e7c382ea047823e652cd0a297"
+    },
+    {
+      "id": "empty-subagent-preview",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-empty-subagent-preview",
+      "branch": "codex/mobile-empty-subagent-preview",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1072,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1072",
+      "head": "0f722489970d681976196026629be4869738cc34",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "d65a52ac7c9c1126f7b8a901ff3983064b2d32e6"
+    },
+    {
+      "id": "reasoning-lifecycle",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-reasoning-lifecycle",
+      "branch": "codex/mobile-reasoning-lifecycle",
+      "base": "1a5a1e4a0f876107f108489363797559a71dfff3",
+      "pr": 1073,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1073",
+      "head": "c4b49c767ee7b019c13618ae27e404fb5e4c1433",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "b2447047aab0f844ec42d70853a1ed36ded25693"
+    },
+    {
+      "id": "steering-images",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-steering-images",
+      "branch": "codex/mobile-steering-images",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1074,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1074",
+      "head": "e6128ae080601836388791727f9503b62c99d275",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "a4d5d409bff1c773f669ef3405edfb9bc8b1f8c6"
+    },
+    {
+      "id": "goal-transcript",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-goal-transcript",
+      "branch": "codex/mobile-goal-transcript",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1075,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1075",
+      "head": "b23d2fa3a3afe5c453cba9260435375f69a84cac",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "9c56f5b19fb379752de01f942254ccc27afc6fd2"
+    },
+    {
+      "id": "initialize-boundary",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-initialize-boundary",
+      "branch": "codex/mobile-initialize-boundary",
+      "base": "e8059456206079ff99276bd5e14a77a6bdeba4f3",
+      "pr": 1076,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1076",
+      "head": "79ccc0471ac750aeaaf9ff50409ed825c6e28ac2",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "prerequisites": [
+        1071,
+        1081
+      ],
+      "mergeCommit": "1a5a1e4a0f876107f108489363797559a71dfff3"
+    },
+    {
+      "id": "question-answers",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-question-answers",
+      "branch": "codex/mobile-question-answers",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1077,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1077",
+      "head": "49a442845ddcb4c7bde8f02b4051ed5d5d32ee10",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "b84ed626edd3b6e01426c5004280b3155815b23e"
+    },
+    {
+      "id": "roster-metadata",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-roster-metadata",
+      "branch": "codex/mobile-roster-metadata",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1078,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1078",
+      "head": "b733c5edae418d0af557172a8b15cfcbf7955259",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "a574ff633d2a9401a53afc8c8047ec1cc627ef38"
+    },
+    {
+      "id": "provider-test-readiness",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-provider-setup-test",
+      "branch": "codex/provider-setup-test-readiness",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1079,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1079",
+      "head": "b18b73c5b78232559d2d1a39918b22701fdc3380",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "4098b9880d5b74ec44f557de1ec8045cb2770f7d"
+    },
+    {
+      "id": "daemon-eintr",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-daemon-ownership-eintr",
+      "branch": "codex/daemon-ownership-eintr",
+      "base": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "pr": 1081,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1081",
+      "head": "73fe59e559d9bf6adbf9291e324b25a5f9ff692a",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "ac876cd31f8cf5b1be58baa4e5cc343b5e491b8e"
+    },
+    {
+      "id": "admission-test-signal",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-admission-test-signal",
+      "branch": "codex/appwire-admission-test-signal",
+      "pr": 1082,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1082",
+      "head": "f95796714bb14488c713676387255c682e3bc224",
+      "baseRefName": "main",
+      "status": "Merged, verified on GitHub",
+      "mergeCommit": "e8059456206079ff99276bd5e14a77a6bdeba4f3"
+    },
+    {
+      "id": "browser-port-allocation",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-land-browser-guard-port",
+      "branch": "codex/browser-guard-port-allocation",
+      "pr": 1083,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1083",
+      "head": "b6e74f115f49e6d2ab632db0d7ef103d4df08f09",
+      "baseRefName": "main",
+      "status": "Merged, verified on GitHub",
+      "base": "1a5a1e4a0f876107f108489363797559a71dfff3",
+      "mergeCommit": "cf40983ca37e525c7a674e9c71051c19ba97bfb5",
+      "mergedAt": "2026-09-10T07:18:51Z"
+    },
+    {
+      "id": "mobile-portable-activity",
+      "pr": 1091,
+      "branch": "codex/mobile-portable-activity",
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1091",
+      "head": "ab5c7006a068e124e1ac346603748e86bdc8f085",
+      "status": "OPEN; current-head CI and actual clean RoboRev required before merge",
+      "baseRefName": "main"
+    },
+    {
+      "id": "mobile-sdk-package",
+      "pr": 1092,
+      "branch": "codex/mobile-sdk-package",
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1092",
+      "head": "564af8826adb836f8b1e6deb99696aaf3cd815f3",
+      "status": "Merged, verified on GitHub",
+      "mergeCommit": "f06e99bcf09c4ddc52f7773f053da9dc026de324",
+      "mergedAt": "2026-09-10T08:32:10Z",
+      "baseRefName": "main"
+    },
+    {
+      "id": "mobile-native-helpers",
+      "pr": 1094,
+      "branch": "codex/mobile-native-helpers",
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1094",
+      "head": "b754dd6bf379b0237251477096cef1eb1b0c09c2",
+      "status": "Merged, verified on GitHub",
+      "mergeCommit": "19218f67b9efec451185c6cc8a82a4dee4d5fbd6",
+      "mergedAt": "2026-09-10T08:24:15Z",
+      "baseRefName": "main"
+    },
+    {
+      "id": "keybinding-empty-key",
+      "pr": 1095,
+      "branch": "codex/keybinding-empty-key",
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1095",
+      "head": "33b6b7569e2ec7dd5fdb190139bb583e63e0ef3c",
+      "status": "Merged, verified on GitHub",
+      "mergeCommit": "6cc8e74589d23f3a430f6cc8615c92f080cb9a1a",
+      "mergedAt": "2026-09-10T07:46:52Z",
+      "baseRefName": "main"
+    },
+    {
+      "id": "mobile-native-checkpoint",
+      "pr": 1096,
+      "branch": "codex/mobile-native-checkpoint",
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1096",
+      "head": "5da0ef15fddff90d3e466f7fd26c2f67d9f016d8",
+      "status": "OPEN; current-head CI and actual clean RoboRev required before merge",
+      "baseRefName": "main"
+    },
+    {
+      "id": "register-ios-testflight",
+      "pr": 1039,
+      "branch": "codex/register-ios-testflight",
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1039",
+      "head": "244b980af358de6741b3360c0a27e7b0ae47dc7f",
+      "status": "OPEN; current-head CI and actual clean RoboRev required before merge",
+      "baseRefName": "codex/mobile-native-checkpoint"
+    },
+    {
+      "id": "interrupted-replay",
+      "pr": 1097,
+      "branch": "codex/mobile-interrupted-replay",
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1097",
+      "head": "49b3619d05413bf80dc8756e406b4d1b806a5c33",
+      "status": "Merged, verified on GitHub",
+      "baseRefName": "main",
+      "mergeCommit": "0ab47d5f6e7f8613b675af4a75b2304f0c6fb561"
+    },
+    {
+      "id": "mobile-transcript-identity",
+      "pr": 1098,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1098",
+      "head": "61c309ad20243d53886d4d2811246edb73e65ed0",
+      "baseRefName": "main",
+      "branch": "codex/mobile-transcript-identity",
+      "status": "OPEN; current-head CI and actual clean RoboRev required before merge"
+    },
+    {
+      "id": "mobile-steering-identity",
+      "pr": 1099,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1099",
+      "head": "3180202a1a6cfcd4f160b61b1d7e5ec7b41b67f0",
+      "baseRefName": "main",
+      "branch": "codex/mobile-steering-identity",
+      "status": "OPEN; current-head CI and actual clean RoboRev required before merge"
+    },
+    {
+      "id": "mobile-round-timing-replay",
+      "pr": 1100,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1100",
+      "head": "6b5094c992ff93d38694705024189f2a263ce414",
+      "baseRefName": "main",
+      "branch": "codex/mobile-round-timing-replay",
+      "status": "OPEN; current-head CI and actual clean RoboRev required before merge"
+    },
+    {
+      "id": "mobile-browser-guard-ready-error",
+      "pr": 1101,
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1101",
+      "head": "b1c3c1c4598a09d9d2c3510bead4bf4f5c4dc208",
+      "baseRefName": "main",
+      "branch": "codex/mobile-browser-guard-ready-error",
+      "status": "OPEN; current-head CI and actual clean RoboRev required before merge"
+    }
+  ],
+  "secondBatchBase": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+  "secondBatchSource": "394203d56deb3d369ec46aadbe31a83cb7916296",
+  "secondBatchPublished": 12,
+  "secondBatchMerged": 11,
+  "refreshedMain": "942b9dc727e37b358c95ee673f66258f330a9aff",
+  "lastVerifiedAt": "2026-09-10T19:39:23.540526+00:00",
+  "nativeCheckpointPR": 1096,
+  "recoveryFindings": [
+    "Environment entries omitted from live projection shift keys after hub restart: real Session differential fails on baseline, passes with local correction; broader gates running.",
+    "Interrupted turns become completed on cold read: PR1097 current RoboRev clean; failed lint-tool download is being retried.",
+    "Delayed steering carrier ownership omitted from transcript: unpushed correction must preserve mid-turn injection and delayed carrier ownership.",
+    "Native cluster lifecycle, attachment and saved-profile corrections require dedicated behavioral regressions before new PR1096 head is published.",
+    "PR1073 b02b9a75a has passing CI but fresh RoboRev found leaked generic projector reservation; correction in progress."
+  ],
+  "latest_snapshot": {
+    "queried_at": "2026-09-10T19:39:23.540526+00:00",
+    "main": "942b9dc727e37b358c95ee673f66258f330a9aff",
+    "prs": {
+      "1039": {
+        "head": "7fe472fcf52833f81983dd91991651c459fb4656",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1039",
+        "base": "codex/mobile-native-checkpoint",
+        "mergeCommit": {
+          "oid": "9b99e49eb420639e84c6d36f2a70300abc3357c2"
+        },
+        "checks": [
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`7fe472f`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 6m6s*\n"
+      },
+      "1066": {
+        "head": "df7c8ba67466b0fa5ef3f89d4b25eb5b761093ff",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1066",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "aa7206376f5774eb265df700f78f470a56d5a7ad"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`df7c8ba`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m50s*\n"
+      },
+      "1067": {
+        "head": "5eaebfe6e9522a2d8cd9715ddc85c26df7aedd9c",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1067",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "5dfe2febdf0760c6a597f232d7f3e2488ae61d73"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`5eaebfe`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 6m56s*\n"
+      },
+      "1068": {
+        "head": "1c18e6866c700f861d0285c8d08dce1aa0225f1a",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1068",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "0b119788186fc658f0cd733fb7de3ee7f43a5065"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`1c18e68`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 52s*\n"
+      },
+      "1069": {
+        "head": "3705a90980087c703aa7c79245d5babe0c2ce877",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1069",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "7b24b1a750520893086b53793f8c585de6766c5e"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`3705a90`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m39s*\n"
+      },
+      "1071": {
+        "head": "f539bde96a25ffb878806ff557d4de5f5cdfbaf1",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1071",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "02e14847050f5a1e7c382ea047823e652cd0a297"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`f539bde`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 2m41s*\n"
+      },
+      "1072": {
+        "head": "0f722489970d681976196026629be4869738cc34",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1072",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "d65a52ac7c9c1126f7b8a901ff3983064b2d32e6"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`0f72248`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m8s*\n"
+      },
+      "1073": {
+        "head": "c4b49c767ee7b019c13618ae27e404fb5e4c1433",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1073",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "b2447047aab0f844ec42d70853a1ed36ded25693"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`c4b49c7`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 28m13s*\n"
+      },
+      "1074": {
+        "head": "e6128ae080601836388791727f9503b62c99d275",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1074",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "a4d5d409bff1c773f669ef3405edfb9bc8b1f8c6"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`e6128ae`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 2m47s*\n"
+      },
+      "1075": {
+        "head": "b23d2fa3a3afe5c453cba9260435375f69a84cac",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1075",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "9c56f5b19fb379752de01f942254ccc27afc6fd2"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`b23d2fa`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 10m29s*\n"
+      },
+      "1076": {
+        "head": "79ccc0471ac750aeaaf9ff50409ed825c6e28ac2",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1076",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "1a5a1e4a0f876107f108489363797559a71dfff3"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`79ccc04`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 6m56s*\n"
+      },
+      "1077": {
+        "head": "49a442845ddcb4c7bde8f02b4051ed5d5d32ee10",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1077",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "b84ed626edd3b6e01426c5004280b3155815b23e"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`49a4428`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m10s*\n"
+      },
+      "1078": {
+        "head": "b733c5edae418d0af557172a8b15cfcbf7955259",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1078",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "a574ff633d2a9401a53afc8c8047ec1cc627ef38"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`b733c5e`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 2m53s*\n"
+      },
+      "1079": {
+        "head": "b18b73c5b78232559d2d1a39918b22701fdc3380",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1079",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "4098b9880d5b74ec44f557de1ec8045cb2770f7d"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`b18b73c`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m46s*\n"
+      },
+      "1081": {
+        "head": "73fe59e559d9bf6adbf9291e324b25a5f9ff692a",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1081",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "ac876cd31f8cf5b1be58baa4e5cc343b5e491b8e"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`73fe59e`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m10s*\n"
+      },
+      "1082": {
+        "head": "f95796714bb14488c713676387255c682e3bc224",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1082",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "e8059456206079ff99276bd5e14a77a6bdeba4f3"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`f957967`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 46s*\n"
+      },
+      "1083": {
+        "head": "b6e74f115f49e6d2ab632db0d7ef103d4df08f09",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1083",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "cf40983ca37e525c7a674e9c71051c19ba97bfb5"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`b6e74f1`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 5m48s*\n"
+      },
+      "1091": {
+        "head": "77fcabca9687b318ec244028d533212dd5b0543a",
+        "state": "OPEN",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1091",
+        "base": "main",
+        "mergeCommit": null,
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "PENDING"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`be05e25`)\n\n## Code Review Summary\n\nThe changes improve activity parsing, continuation merging, and status aggregation, but introduce a continuation-discard bug and frontend/backend count divergence alongside two small validation regressions.\n\n---\n\n### Critical\nNone.\n\n### High\nNone.\n\n### Medium\n\n- **Continuation success can be discarded by follow-up freshness refresh** \u2014 `activitySummary.ts:185-200`, `ActivityPanel.tsx:282-296`: When a root refresh is superseded by a continuation, `settleSupersededRoot` always clears `lastFetchedBump`, even if the continuation later succeeds. After the panel closes, the background refresh effect treats the cleared bump as stale and starts another full root fetch. `readyRoot` then replaces the grafted tree with the bounded root response, so entries loaded by \"Load more\" disappear and the activity count can regress. Fix: invalidate freshness only when the continuation actually fails, or restore/retain the original bump when the continuation publishes successfully. Add a regression covering a successful continuation followed by the late root response and panel close.\n\n- **Frontend/backend failure-count divergence** \u2014 `activityMerge.ts:104`, `agent/jobs_activity.go:1242`: Merged frontend summary counts `status=\"error\"/\"failed\"/\"exhausted\"` with no `outcome` as failed, while backend `aggregateActivity` only counts `Outcome==\"failure\"` as failed and ignores status. The same tree now yields different badge vs server counts since the badge is recomputed from the merged tree. Fix: align failure definitions \u2014 either make the backend use status plus `failure`/`failed`/`exhausted` outcomes including turns, or make frontend `summarizeSession` match the backend's outcome-only rule.\n\n### Low\n\n- **`latestActivityAt` not merged on turn-container path** \u2014 `activityMerge.ts:42`: The turn-container path returns `cloneDelegate(patch)` without merging `latestActivityAt`, so a continuation can regress quiet-age timestamps versus the previous max-timestamp merge used for stable delegates. Fix: preserve `maxActivity(current.latestActivityAt, patch.latestActivityAt)` even when skipping revision fencing for non-`delegate` types.\n\n- **`parseUsage` defaults missing tokens to zero** \u2014 `activityData.ts:229`: `parseUsage` defaults missing `inputTokens`/`outputTokens` to `0`, so `{}` parses as zero usage instead of incomplete. This shows a zero token cluster where missing usage should stay hidden/incomplete. Fix: require explicit non-negative integers when a usage object is present; only treat absent `usage` as undefined.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 31s | Total: 18m32s*\n"
+      },
+      "1092": {
+        "head": "564af8826adb836f8b1e6deb99696aaf3cd815f3",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1092",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "f06e99bcf09c4ddc52f7773f053da9dc026de324"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`564af88`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 5m39s*\n"
+      },
+      "1094": {
+        "head": "b754dd6bf379b0237251477096cef1eb1b0c09c2",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1094",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "19218f67b9efec451185c6cc8a82a4dee4d5fbd6"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`b754dd6`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 4m21s*\n"
+      },
+      "1095": {
+        "head": "33b6b7569e2ec7dd5fdb190139bb583e63e0ef3c",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1095",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "6cc8e74589d23f3a430f6cc8615c92f080cb9a1a"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`33b6b75`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 2m41s*\n"
+      },
+      "1096": {
+        "head": "14c36a330f7c4f81ce8b1da26a3911a6c94f5afc",
+        "state": "OPEN",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1096",
+        "base": "main",
+        "mergeCommit": null,
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "native",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "PENDING"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`1fc2d2c`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 45m40s*\n"
+      },
+      "1097": {
+        "head": "49b3619d05413bf80dc8756e406b4d1b806a5c33",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1097",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "0ab47d5f6e7f8613b675af4a75b2304f0c6fb561"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`49b3619`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 3m29s*\n"
+      },
+      "1098": {
+        "head": "2cc8d50b4978732d892ffaca28e70a37e5e8b2d6",
+        "state": "OPEN",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1098",
+        "base": "main",
+        "mergeCommit": null,
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "PENDING"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`5bf8d65`)\n\n## Code is functional but has two medium-severity stale-state issues around environment tracker resets\n\n---\n\n### Medium\n\n- **`agent/session_init.go:929`** \u2014 Restore only rebuilds the environment tracker when `len(transcriptEntries) > 0`. If the transcript is missing or header-only while `meta.EnvContext` still records a previously sent snapshot, `initEnvContext` leaves that stale state active. The first resumed input can therefore suppress the required full environment context even though no durable environment turn exists. **Fix:** Reset the tracker from an empty state for every restore, then replay the effective `resumeHistory` environment turns rather than using the raw transcript-entry count as the guard.\n\n- **`agent/session_namer.go:438-449`** \u2014 The fallback compaction path resets the environment tracker only when the compaction marker write succeeds. The context manager has already replaced the in-memory history before this callback, so a failed marker write can leave history without its old environment block while the tracker still believes it was sent; the next environment update then emits only a diff. **Fix:** Reset the tracker based on the successful history replacement/compaction boundary regardless of marker-write success, while retaining the write error for reporting.\n\n---\n\n### Summary\n\nThe change adds durable environment replay, event projection, turn identity preservation, and rollback handling. Both issues are in the same failure family: the environment tracker isn't reset at the right boundary, so a stale \"already sent\" belief suppresses the required full environment context on the next update.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 7s | Total: 23m23s*\n"
+      },
+      "1099": {
+        "head": "3180202a1a6cfcd4f160b61b1d7e5ec7b41b67f0",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1099",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "ba70c080f23d75b067ebb055a5a34b9938c8904c"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`3180202`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 15m3s*\n"
+      },
+      "1100": {
+        "head": "9cfee4a2a1c6cc142f445e40b3b65bbc3d819f17",
+        "state": "OPEN",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1100",
+        "base": "main",
+        "mergeCommit": null,
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "FAILURE"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "FAILURE"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SKIPPED"
+          },
+          {
+            "name": "roborev",
+            "state": "PENDING"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`9362ae1`)\n\n**Verdict:** Mostly clean; one medium-severity compaction/timing identity issue to address.\n\n---\n\n### Medium\n\n- **Compaction-interleaved round timings lose logical-turn identity** \u2014 `agent/session_lifecycle.go:31-41`, `agent/session_lifecycle.go:1856-1861`\n  When a round performs context compaction before its timing event, the live AppWire projector attaches `EventRoundTimings` to the still-active turn. During cold replay, the persisted checkpoint/summary entries close that logical turn, and the persisted timing record has no owner \u2014 so replay places the timing item in a new turn with different turn identity and transcript position. Reloading after compaction can move or duplicate timing items in the UI.\n  **Fix:** Persist the timing record's logical-turn owner and make replay grouping honor it, or make the live projector apply the same turn boundary around compaction that cold replay uses.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 10s | Total: 29m51s*\n"
+      },
+      "1101": {
+        "head": "b1c3c1c4598a09d9d2c3510bead4bf4f5c4dc208",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1101",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "2664cc881d128d8b0c4a0af96683126e70d13cd7"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`b1c3c1c`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m43s*\n"
+      },
+      "1102": {
+        "head": "dda6298691d2df0ea068f77eb935acb4ceb5dc19",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1102",
+        "base": "codex/mobile-native-checkpoint",
+        "mergeCommit": {
+          "oid": "1fc2d2c4ddd0a73ff7fd898236976db7ba507937"
+        },
+        "checks": [
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`dda6298`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 5m48s*\n"
+      },
+      "1104": {
+        "head": "7bf30e12dfe1c9d02fbf076df08f800197231df7",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1104",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "eae0750534f625a69acbe5e549b08b3329e6960a"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`7bf30e1`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m19s*\n"
+      },
+      "1105": {
+        "head": "40e67a0014456b7c98bd9f3b21a7d050ff1d89ca",
+        "state": "OPEN",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1105",
+        "base": "main",
+        "mergeCommit": null,
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "FAILURE"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "FAILURE"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SKIPPED"
+          },
+          {
+            "name": "roborev",
+            "state": "PENDING"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`f17d16e`)\n\n**Verdict: Mixed \u2014 Review 1 flags 3 Medium issues in fork-capability projection/enforcement; Review 2 found none. Findings below.**\n\n## Medium\n\n- **Inconsistent fork-capability projection across fallback paths** \u2014 `cmd/evener-hub/app_rpc.go:533-537`, `cmd/evener-hub/app_threadread.go:524`\n  The new overlay only runs after a successful live `thread/read`. Historical, unavailable, and `thread/list` paths still initialize capabilities with `pastThreadCapabilities()` regardless of `Kind`, so local `subagent` threads can still advertise `forkFromTurn: true`.\n  **Fix**: Centralize fork-capability projection and apply `hubOwnsThreadFork` to all persisted and fallback thread responses, including `pastEntryThreadForList`.\n\n- **Fork force-enabled when `ResumeRequired` is set** \u2014 `cmd/evener-hub/app_rpc.go:535-537`\n  Fork is force-enabled for every local non-subagent response even when `ResumeRequired` is set. `hubThreadFork` rejects such requests through `sessionActionRecoveryError`, so the UI advertises an action that predictably fails until explicit resume.\n  **Fix**: Gate the advertised capability using the same recovery, ownership, and state-directory checks enforced by `hubThreadFork`.\n\n- **`hubOwnsThreadFork` not consulted by local `thread/fork` handler** \u2014 `cmd/evener-hub/app_threadlifecycle.go:749-779`\n  `hubOwnsThreadFork` classifies subagents as read-only, but the local `thread/fork` handler never consults that predicate. A caller can still directly fork or create an aside from a `local:<subagent>` reference despite the capability being hidden.\n  **Fix**: Resolve the target thread before the local fork operation and reject subagent targets using the same ownership check.\n\n## Notes\n\n- Review 2 found no issues; its assessment that hub advertises fork on owned local threads while keeping descendants read-only is consistent with the *intent* of the change, but doesn't address the fallback-path and enforcement gaps above.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 11s | Total: 9m21s*\n"
+      },
+      "1106": {
+        "head": "370045f708b16211d2edad9818d0f23eba5c7faa",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1106",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "f6e219f9f1322142089d6a3462b08cecc1d985f0"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`370045f`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 2m18s*\n"
+      },
+      "1108": {
+        "head": "32ecd0b5760edf337308840e5efa0401ddb9cb7e",
+        "state": "MERGED",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1108",
+        "base": "main",
+        "mergeCommit": {
+          "oid": "942b9dc727e37b358c95ee673f66258f330a9aff"
+        },
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`32ecd0b`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 6m15s*\n"
+      },
+      "1109": {
+        "head": "08cbcdbc8b9d7596e962189b2ae3f819c0c366cc",
+        "state": "OPEN",
+        "url": "https://github.com/prime-radiant-inc/evener/pull/1109",
+        "base": "main",
+        "mergeCommit": null,
+        "checks": [
+          {
+            "name": "web",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "api-package",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static-build",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-golangci",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "lint-repository",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "fuzz-checks",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-root",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / agent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules / nonagent",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "tests",
+            "state": "FAILURE"
+          },
+          {
+            "name": "fuzz",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "static",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "race-modules",
+            "state": "SUCCESS"
+          },
+          {
+            "name": "Build snapshot artifacts",
+            "state": "SKIPPED"
+          },
+          {
+            "name": "roborev",
+            "state": "SUCCESS"
+          }
+        ],
+        "review": "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`08cbcdb`)\n\n## Review Summary\n\nOne medium-severity issue found; one reviewer found no issues.\n\n---\n\n**Medium**\n\n- `cmd/evener/serve.go:1085-1093` \u2014 `thread/clear` replaces the AppWire identity before waiting for the shutdown-owned `oldSess.CloseForShutdown()` (and its event drain) to finish. If the old `SESSION_END(closed)` is emitted or queued but bridged after `ReplaceAppIdentity`, `BridgeEvent` rejects it because the active session ID is now the replacement's ID. Since the stable workspace reference takes the resync path, and the replacement is closed before its bridge is registered, clients can receive a resync without the required `thread/closed` boundary.\n  - **Suggested fix**: Coordinate the shutdown-owned close and identity swap so the old terminal boundary is projected before replacement, or have the replacement commit publish exactly one old-reference `thread/closed` notification with de-duplication. Add a regression covering `clear` racing with the close/drain rather than waiting for the old drain first.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 8s | Total: 8m34s*\n"
+      }
+    }
+  },
+  "verifiedAt": "2026-09-10T19:39:23.540526+00:00",
+  "backendQualification": {
+    "priorCombinedPass": {
+      "head": "3dcde7559ff21ce273ba94d57d12e9528f8b9dac",
+      "gate": "make merge-approval-gate",
+      "log": "/tmp/evener-combined-3dcde-merge-gate.log"
+    },
+    "intermediateFailure": {
+      "head": "38142a4ced65f3e96d571fc77fa09ad2ee58f7e6",
+      "cause": "Environment setup counted as prior conversation in resume hook diagnostics; fixed and full agent suite passed in 722493f2a."
+    },
+    "current": {
+      "head": "8081b4e635f54807b6ad186738e2870e8186275f",
+      "gate": "make merge-approval-gate",
+      "result": "pass",
+      "log": "/tmp/evener-combined-metadata-final-merge-gate.log"
+    }
+  },
+  "statusDocsPR": {
+    "baseRefName": "codex/mobile-native-checkpoint",
+    "headRefOid": "dd6d1d085e3a873359bf45af0e5a72cefe46c4a6",
+    "number": 1102,
+    "state": "OPEN",
+    "url": "https://github.com/prime-radiant-inc/evener/pull/1102"
+  },
+  "currentCombinedQualification": {
+    "head": "0d75cf8b5fabb9992f2938caf42f2e8129d9c8d1",
+    "result": "pass",
+    "log": "/tmp/evener-combined-durable-restore-merge-gate.log",
+    "startedAt": "2026-09-10T15:30:34.847143+00:00",
+    "nativeHead": "c669d47d32886a7b2a4ac1806745d36daa77a9cf",
+    "environmentHead": "5bf8d65175596d1d8f210b1a7510fbd90221ce80",
+    "activityHead": "be05e25632b85b5bb5b38bfea773ce52c7a08054",
+    "timingHead": "9362ae189bab47f25f6cac9a7accef85396e69b2",
+    "completedAt": "2026-09-10T15:42:25.942911+00:00",
+    "logSha256": "4b21b4c84e0b0a4e4b7b8bd8bf9c1996e7dc1606235b63b54260e00eac5b832d"
+  },
+  "qualifiedSourcePublished": {
+    "head": "8081b4e635f54807b6ad186738e2870e8186275f",
+    "branch": "codex/mobile-checkpoint-qualified-8081",
+    "githubCommitVerified": true,
+    "containsPriorD983": true
+  },
+  "currentReviewBlockers": {
+    "verifiedAt": "2026-09-10T16:41:19.112167+00:00",
+    "1091": {
+      "head": "77fcabca9687b318ec244028d533212dd5b0543a",
+      "state": "CI green; fixes pushed; current actual review pending"
+    },
+    "1096": {
+      "head": "016b118f78767e6b325bfe782c974135835242db",
+      "state": "CI green; current actual review pending; activity prerequisite open"
+    },
+    "1098": {
+      "head": "2cc8d50b4978732d892ffaca28e70a37e5e8b2d6",
+      "state": "CI green; actual restore and compaction write-failure regressions pass; current actual review pending"
+    },
+    "1100": {
+      "remoteHead": "9362ae189bab47f25f6cac9a7accef85396e69b2",
+      "localHead": "5bc154b1d",
+      "state": "Current actual review has unresolved compaction timing identity finding. Owner-only07e106 fix insufficient. Real compact_context regression is committed locally and failing at live8:8 vs cold12:0. Do not merge or call fixed.",
+      "test": "server/appwire_round_timings_compaction_test.go",
+      "log": "/tmp/evener-timing-compaction-trace.log"
+    },
+    "1039": {
+      "head": "7fe472fcf52833f81983dd91991651c459fb4656",
+      "state": "Current actual review clean; stacked native, no current CI; main retarget and CI required"
+    },
+    "1102": {
+      "head": "dda629869",
+      "state": "Refreshed docs and receipt hashes pushed; review pending after new commit; stacked native, no CI"
+    }
+  },
+  "latestCombinedSourceQualification": {
+    "source": "5137914ccb66b04aa1b980757888f63141cf2f27",
+    "publishedBranch": "codex/mobile-checkpoint-qualified-513",
+    "gate": "make merge-approval-gate",
+    "exitCode": 0,
+    "log": "/tmp/evener-combined-final-wire-merge-gate.log",
+    "logSha256": "810e44832ae1b53d7931f7189f65e6a1bd235b022c5221e376ed2fd8622defc1",
+    "doesNotIncludePendingTimingFix": true,
+    "installedBackendRemains": "0d75cf8b5fabb9992f2938caf42f2e8129d9c8d1"
+  },
+  "latestNativeInstall": {
+    "source": "0097e3841fe9296ebe32da4cb6780cd7d2a8923f",
+    "equivalentNativeInputs": "016b118f78767e6b325bfe782c974135835242db",
+    "receipt": "/private/tmp/evener-native-checkpoint-journey-dtet8qbx/native-0097-install-retention-receipt.json",
+    "canonicalItems": 32,
+    "draftTables": 7,
+    "otherReaderPositions": 11,
+    "providerRequestsBefore": 41,
+    "providerRequestsAfter": 41
+  },
+  "remainingBatchPublished": [
+    {
+      "pr": 1104,
+      "scope": "historical static concept sketches; Tauri app excluded",
+      "head": "7bf30e12dfe1c9d02fbf076df08f800197231df7",
+      "merged": "eae0750534f625a69acbe5e549b08b3329e6960a"
+    },
+    {
+      "pr": 1105,
+      "scope": "hub-owned local fork capabilities with closed descendant exclusion",
+      "head": "f17d16e85143a9c648dc64bb1da40acc0f93bd6f",
+      "localGate": "make merge-approval-gate passed at f17d16e85143a9c648dc64bb1da40acc0f93bd6f",
+      "localHead": "fd6c3a6edc096ef75dafac096c9d035e6382ce02"
+    },
+    {
+      "pr": 1106,
+      "scope": "project-delete array response normalization",
+      "head": "370045f708b16211d2edad9818d0f23eba5c7faa",
+      "merged": "f6e219f9f1322142089d6a3462b08cecc1d985f0",
+      "localGate": "canonical merge-approval-gate passed before merge"
+    },
+    {
+      "pr": 1108,
+      "scope": "installed read-only SDK discovery recipes",
+      "head": "32ecd0b5760edf337308840e5efa0401ddb9cb7e",
+      "localGates": [
+        "package qualification",
+        "test-web",
+        "test-web-browser",
+        "secret-scan",
+        "independent review"
+      ]
+    },
+    {
+      "pr": 1109,
+      "scope": "serve shutdown terminal session boundary",
+      "head": "19bd688015342261ccf3a968a789537cc437a3de",
+      "localHead": "e721a2b97cddfc119cb49b1e3122bd46d1714f68"
+    }
+  ],
+  "tauriDisposition": {
+    "application": "excluded from landing per Jesse 2026-09-10",
+    "source": "preserved, including original unfinished Apple files and stash",
+    "designs": "static historical captures landed in1104",
+    "sharedModules": "framework independent mobile/src modules consumed by native app remain in scope"
+  },
+  "nativeStackMerge": {
+    "head": "1fc2d2c4ddd0a73ff7fd898236976db7ba507937",
+    "mergedIntoNativeBranch": [
+      1039,
+      1102
+    ],
+    "onMain": false,
+    "note": "External stacked merges; clean native worktree fast-forwarded safely. New head needs its own CI and RoboRev."
+  },
+  "parallelShepherding": {
+    "native": "Rawls: current1fc Robo clean; fixing canonical naming checker traversing ignored dependencies",
+    "fork": "Carson:1105 capability and public RPC regressions; root review requested remote positive control and storage preconditions",
+    "shutdown": "Mendel:1109 reverse-order shutdown/clear fix plus deterministic regression; canonical gate at parent19bd passed",
+    "timing": "root:1100 explicit live owners and context-recovery duplicate filtering; full and bounded replay regressions including late steering",
+    "otherPRs": "1091 and1098 exact-head reviews running;1108 pushed32ecd with qualification, web and browser gates passing",
+    "mergeOwner": "root;1104 and1106 landed; remaining exact-head CI plus actual clean Robo required"
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "generated": "2026-09-10",
+  "base": "main (local ref; verify current remote main before disposition)",
+  "entries": [
+    {
+      "head": "1f1bd61353acc7ff71551b0e6199df1d31eebf00",
+      "branch": "codex/register-ios-testflight-refresh",
+      "path": "/private/tmp/evener-ci-refresh.7fO1L9",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/register-ios-testflight-refresh",
+      "diff_vs_main": "1 file changed, 217 insertions(+)",
+      "dirty": [],
+      "disposition": "preserve; superseded/refresh candidate, re-query #1039 current source",
+      "semantic_label": "TestFlight refresh/CI artifact",
+      "superseded_by": [
+        "#1039"
+      ]
+    },
+    {
+      "head": "df8d0b5eb67b6c17330b4ac0a555e2024fc5c922",
+      "branch": null,
+      "path": "/private/tmp/evener-native-fix.2QGCE3",
+      "subject": "fix(mobile): repair native helper web wiring",
+      "diff_vs_main": "26 files changed, 929 insertions(+), 230 deletions(-)",
+      "dirty": [],
+      "disposition": "preserve as detached fixture until native checkpoint qualification reconciled",
+      "semantic_label": "native fix detached fixture",
+      "superseded_by": [
+        "#1096",
+        "#1102"
+      ]
+    },
+    {
+      "head": "a6d6eb0bf35f9c993df40c36e024bb141e22d44b",
+      "branch": "codex/mobile-native-contracts",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/mobile-land-native-contracts",
+      "subject": "fix(mobile): align native navigation fixtures and chord parsing",
+      "diff_vs_main": "310 files changed, 86822 insertions(+), 203 deletions(-)",
+      "dirty": [],
+      "disposition": "preserve; likely superseded by native checkpoint #1096/#1102 stacked merges",
+      "semantic_label": "native protocol contracts",
+      "superseded_by": [
+        "#1096",
+        "#1102"
+      ]
+    },
+    {
+      "head": "1122af154420d67482f9976f31397f631d980a06",
+      "branch": "codex/mobile-checkpoint-docs",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-checkpoint-docs",
+      "subject": "Publish current mobile checkpoint documentation",
+      "diff_vs_main": "134 files changed, 18799 insertions(+), 297 deletions(-)",
+      "dirty": [],
+      "disposition": "archive; superseded by current checkpoint docs batch, retain provenance",
+      "semantic_label": "mobile checkpoint documentation snapshot",
+      "superseded_by": [
+        "#1096"
+      ]
+    },
+    {
+      "head": "9f90f31b9faa2d3a7db85e9eabb4dc5b5cf1a580",
+      "branch": "codex/mobile-checkpoint-docs-archive",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-checkpoint-docs-archive",
+      "subject": "Archive historical mobile checkpoint evidence",
+      "diff_vs_main": "131 files changed, 18363 insertions(+), 297 deletions(-)",
+      "dirty": [],
+      "disposition": "archive; superseded by current checkpoint docs batch, retain provenance",
+      "semantic_label": "mobile checkpoint documentation snapshot",
+      "superseded_by": [
+        "#1096"
+      ]
+    },
+    {
+      "head": "df019be6373b8c28afe9dfc32c22e1fc1ed210e4",
+      "branch": "codex/mobile-checkpoint-docs-current",
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/mobile-checkpoint-docs-current",
+      "subject": "Publish current mobile checkpoint status",
+      "diff_vs_main": "135 files changed, 18806 insertions(+), 297 deletions(-)",
+      "dirty": [],
+      "disposition": "archive; superseded by current checkpoint docs batch, retain provenance",
+      "semantic_label": "mobile checkpoint documentation snapshot",
+      "superseded_by": [
+        "#1096"
+      ]
+    },
+    {
+      "head": "30627a914c45fae9b03b4124e2f7eb523fd80048",
+      "branch": "codex/fix-activity-continuation-progress",
+      "path": "/Users/jesse/git/prime-radiant/evener/.worktrees/fix-activity-continuation-progress",
+      "subject": "fix(hub): keep ancestor activity branch state",
+      "diff_vs_main": "11 files changed, 794 insertions(+), 59 deletions(-)",
+      "dirty": [
+        " M agent/jobs_activity_continuation_progress_test.go"
+      ],
+      "disposition": "preserved in new branch codex/mobile-repair-activity-regression at 6f103518f4d8; original dirty worktree untouched",
+      "semantic_label": "activity continuation progress regression",
+      "superseded_by": [
+        "#1091"
+      ]
+    }
+  ],
+  "preservation_branch": "codex/mobile-repair-activity-regression",
+  "preservation_commit": "6f103518f4d8d55b10323498fcfbf177570cb01f",
+  "notes": [
+    "No push performed.",
+    "Heads are classified from local refs; GitHub PR association and supersession require exact-head query.",
+    "Semantic supersession is provisional and based on branch names/task inventory; confirm against PR head/base before deleting any preservation ref."
+  ]
+}
