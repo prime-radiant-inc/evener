@@ -110,6 +110,19 @@ test("turn-based delegates aggregate their work without becoming unavailable", (
   expect(result.root.aggregate).toBe("ended");
 });
 
+test("turn-container continuation refresh is not blocked by stable projection fencing", () => {
+  const currentEntry = delegate();
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.turns = [shell("old-turn").job];
+  const patchEntry = delegate();
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.turns = [shell("new-turn").job];
+  const result = graftContinuationTree(tree([currentEntry], "next"), "session:root", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["new-turn"]);
+});
+
 test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
   const entry = delegate();
   const raw = tree([entry]);
