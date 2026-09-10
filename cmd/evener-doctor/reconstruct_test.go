@@ -167,6 +167,8 @@ func TestReconstructRejectsIncompleteArchiveWithoutPublishing(t *testing.T) {
 		`UPDATE tool_calls SET input_json='42'`,
 		`UPDATE tool_calls SET input_json='"value"'`,
 		`INSERT INTO tool_calls SELECT * FROM tool_calls`,
+		`INSERT INTO tool_result_events SELECT session_id,tool_call_message_ordinal,call_index,tool_use_id,source,status,content,content_length,timestamp,event_index+1 FROM tool_result_events`,
+		`INSERT INTO tool_result_events SELECT session_id,tool_call_message_ordinal,call_index,tool_use_id,source,status,content,content_length,'2026-09-09T01:05:00Z',event_index+1 FROM tool_result_events; INSERT INTO messages SELECT 6,session_id,5,content,'2026-09-09T01:05:00Z',source_type,source_subtype,prompt_source,source_uuid,model,provider_id,token_usage FROM messages WHERE id=5; UPDATE sessions SET message_count=6`,
 		`INSERT INTO messages SELECT 6,session_id,5,content,timestamp,source_type,source_subtype,prompt_source,source_uuid,model,provider_id,token_usage FROM messages WHERE id=5; UPDATE sessions SET message_count=6`,
 		`INSERT INTO messages SELECT 6,session_id,5,content,'2026-09-09T01:04:00+00:00',source_type,source_subtype,prompt_source,source_uuid,model,provider_id,token_usage FROM messages WHERE id=5; UPDATE sessions SET message_count=6`,
 		`UPDATE messages SET source_subtype='USER_INPUT' WHERE id=4`,

@@ -362,6 +362,9 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		if !ok || c.ID != r.ID || r.Source != "tool_result" {
 			return fail(errors.New("invalid or unlinked archived tool result"))
 		}
+		if resultCalls[key] {
+			return fail(fmt.Errorf("duplicate archived tool result at call ordinal %d index %d", r.CallOrdinal, r.CallIndex))
+		}
 		stamp, err := time.Parse(time.RFC3339Nano, r.Timestamp)
 		if err != nil {
 			return fail(err)
