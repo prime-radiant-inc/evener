@@ -327,6 +327,9 @@ type Server struct {
 	// and nothing else.
 	appTurns        *appTurnSnapshot
 	appActiveTurnID string
+	// appPendingStableTurnID publishes runnable identity while the ordered
+	// event consumer drains the previous turn. It is not an admission lock.
+	appPendingStableTurnID string
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -797,13 +800,16 @@ func (s *Server) SetProcessing(processing bool) {
 }
 
 // SetProcessingTurn atomically publishes a durable turn's stable identity as
-// the active AppWire turn and reserves it for the next real turn projection.
+// the active AppWire turn until its ordered stable carrier is projected.
 func (s *Server) SetProcessingTurn(turnID string) {
 	s.mu.Lock()
 	s.processing = true
 	s.ensureAppProjectorLocked("")
-	s.appProjector.ReserveStableTurnID(turnID)
+	// The projector reservation is consumed by the ordered event stream. The
+	// callback can run ahead of that consumer, so mutating the projector here
+	// would let queued events from the previous turn use the new identity.
 	s.appActiveTurnID = turnID
+	s.appPendingStableTurnID = turnID
 	s.appReservedTurnID = ""
 	s.mu.Unlock()
 }
@@ -811,6 +817,12 @@ func (s *Server) SetProcessingTurn(turnID string) {
 func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
 	if !processing {
+		if s.appPendingStableTurnID != "" {
+			if s.appActiveTurnID == s.appPendingStableTurnID {
+				s.appActiveTurnID = ""
+			}
+			s.appPendingStableTurnID = ""
+		}
 		if s.appProjector != nil && s.appReservedTurnID == "" {
 			reservedTurnID := s.appProjector.ReservedTurnID()
 			if reservedTurnID != "" && s.appActiveTurnID == reservedTurnID {

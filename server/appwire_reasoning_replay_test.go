@@ -67,10 +67,17 @@ func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T)
 	oldEnd := oldStart.Add(4200 * time.Millisecond)
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_reasoning_boundary", Timestamp: oldStart, Data: events.UserInputData{Text: "question", StableTurnID: "turn_old"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning_boundary", Timestamp: oldStart.Add(time.Second), Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "old reasoning"}})
+	srv.SetProcessingTurn("turn_new")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_reasoning_boundary", Timestamp: oldStart.Add(2 * time.Second), Data: events.AssistantTextEndData{Text: "old answer", Usage: llm.Usage{InputTokens: 1000, OutputTokens: 500}}})
+	if got := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"}).Thread.Evener.ActiveTurnID; got != "turn_new" {
+		t.Fatalf("durable active turn after queued assistant end = %q, want turn_new", got)
+	}
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning_boundary", Timestamp: oldStart.Add(3 * time.Second), Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "unfinished reasoning"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_reasoning_boundary", Timestamp: oldEnd, Data: events.TurnEndedData{TurnDurationMS: 4200}})
-	srv.SetProcessingTurn("turn_new")
+	if got := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"}).Thread.Evener.ActiveTurnID; got != "turn_new" {
+		t.Fatalf("durable active turn after queued turn end = %q, want turn_new", got)
+	}
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(time.Millisecond), Data: events.GoalContinuationData{Text: "new question", StableTurnID: "turn_new"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(time.Second)})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(2 * time.Second), Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "new reasoning"}})
 
@@ -110,7 +117,78 @@ func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T)
 	if current.ID != "turn_new" || current.Status != appwire.TurnStatusInProgress {
 		t.Fatalf("current turn=(id %q, status %q), want in-progress turn_new", current.ID, current.Status)
 	}
-	if len(current.Items) != 1 || current.Items[0].Type != "reasoning" || current.Items[0].Text != "new reasoning" || current.Items[0].TurnID != "turn_new" {
+	if len(current.Items) != 2 || current.Items[1].Type != "reasoning" || current.Items[1].Text != "new reasoning" || current.Items[1].TurnID != "turn_new" {
 		t.Fatalf("current items=%+v, want new reasoning on turn_new", current.Items)
+	}
+}
+
+func TestServerAppWireQueuedEventsRetainOwnershipAfterFastProcessingClear(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_fast_clear")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_fast_clear", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_fast_clear", Data: events.ReasoningSummaryDeltaData{Delta: "old reasoning"}})
+	srv.SetProcessingTurn("turn_new")
+	srv.SetProcessing(false)
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_fast_clear", Data: events.AssistantTextEndData{Text: "old answer"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_fast_clear", Data: events.TurnEndedData{TurnDurationMS: 1200}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_fast_clear", Data: events.GoalContinuationData{Text: "new", StableTurnID: "turn_new"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_fast_clear", Data: events.AssistantTextEndData{Text: "new answer"}})
+	srv.mu.RLock()
+	reserved := srv.appReservedTurnID
+	active := srv.appActiveTurnID
+	srv.mu.RUnlock()
+	if reserved != "" || active != "turn_new" {
+		t.Fatalf("after stable carrier reserved=%q active=%q, want empty/turn_new", reserved, active)
+	}
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_fast_clear", IncludeTurns: true})
+	if len(read.Thread.Turns) != 2 {
+		t.Fatalf("turns=%+v, want old and new turns", read.Thread.Turns)
+	}
+	old, current := read.Thread.Turns[0], read.Thread.Turns[1]
+	if old.ID != "turn_old" || len(old.Items) != 3 || old.Items[2].Text != "old answer" || old.Items[2].TurnID != "turn_old" {
+		t.Fatalf("old turn=%+v, want old answer retained on turn_old", old)
+	}
+	if current.ID != "turn_new" || len(current.Items) != 2 || current.Items[1].Text != "new answer" || current.Items[1].TurnID != "turn_new" {
+		t.Fatalf("new turn=%+v, want new answer on turn_new", current)
+	}
+}
+
+func TestServerAppWireUnclaimedStableTurnDoesNotKeepSessionBusy(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_unclaimed")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_unclaimed", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_unclaimed", Data: events.ReasoningSummaryDeltaData{Delta: "old reasoning"}})
+	// The runnable callback precedes claiming the durable input. A failed claim
+	// clears processing without ever emitting the new turn's stable carrier.
+	srv.SetProcessingTurn("turn_unclaimed")
+	srv.SetProcessing(false)
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_unclaimed", Data: events.AssistantTextEndData{Text: "old answer"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_unclaimed", Data: events.TurnEndedData{TurnDurationMS: 1200}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_unclaimed", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_unclaimed", IncludeTurns: true})
+	if read.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("active turn=%q, want idle after failed claim and old completion", read.Thread.Evener.ActiveTurnID)
+	}
+	if len(read.Thread.Turns) != 1 || read.Thread.Turns[0].ID != "turn_old" || read.Thread.Turns[0].Status != appwire.TurnStatusCompleted {
+		t.Fatalf("turns=%+v, want only the completed old turn", read.Thread.Turns)
+	}
+	srv.mu.RLock()
+	reserved := srv.appReservedTurnID
+	srv.mu.RUnlock()
+	if reserved != "" {
+		t.Fatalf("admission reservation=%q, want empty after failed claim", reserved)
+	}
+}
+
+func TestServerAppWireNonstableGoalUpdatesActiveIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_nonstable_goal")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_nonstable_goal", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_nonstable_goal", Data: events.GoalContinuationData{Text: "new"}})
+	srv.mu.RLock()
+	active := srv.appActiveTurnID
+	srv.mu.RUnlock()
+	if active == "turn_old" || active == "" {
+		t.Fatalf("nonstable goal active turn=%q, want a new identity", active)
 	}
 }

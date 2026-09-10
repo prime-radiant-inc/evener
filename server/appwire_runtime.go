@@ -294,6 +294,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
+		s.appPendingStableTurnID = ""
 		s.appReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
@@ -408,8 +409,16 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			return nil
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
+		stableTurnID := eventStableTurnID(event)
+		if stableTurnID != "" && stableTurnID == s.appPendingStableTurnID {
+			s.appProjector.ReserveStableTurnID(stableTurnID)
+			s.appPendingStableTurnID = ""
+		}
 		projected := s.appProjector.Project(event)
-		s.appActiveTurnID = s.appProjector.ActiveTurnID()
+		projectedTurnID := s.appProjector.ActiveTurnID()
+		if s.appPendingStableTurnID == "" {
+			s.appActiveTurnID = projectedTurnID
+		}
 		threadID := s.appThreadID
 		if threadID == "" {
 			threadID = event.SessionID
@@ -498,6 +507,17 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		return committed
 	})
+}
+
+func eventStableTurnID(event events.SessionEvent) string {
+	switch data := event.Data.(type) {
+	case events.UserInputData:
+		return data.StableTurnID
+	case events.GoalContinuationData:
+		return data.StableTurnID
+	default:
+		return ""
+	}
 }
 
 // RecordDescendantAppEvent projects an in-process descendant onto its root
