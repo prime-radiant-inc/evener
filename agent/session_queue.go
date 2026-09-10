@@ -83,7 +83,6 @@ type steeringMessage struct {
 	Provenance       *provenance.Causal `json:"provenance,omitempty"`
 	ClientMutationID string             `json:"client_mutation_id,omitempty"`
 	StableTurnID     string             `json:"stable_turn_id,omitempty"`
-	OwningTurnID     string             `json:"owning_turn_id,omitempty"`
 	// Source marks who sent the steering: events.SteeringSourceUser for
 	// human-sent steering (the UI steer action, or queued user input
 	// drained as steering), empty for daemon/system nudges. Surfaced on the

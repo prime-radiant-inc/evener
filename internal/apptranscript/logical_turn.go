@@ -70,7 +70,7 @@ func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, ow
 		return true
 	}
 	if kind == schema.TurnSteering && owningTurnID != "" {
-		return owningTurnID != openTurnID
+		return !groupOpenAfter(prevKind) || owningTurnID != openTurnID
 	}
 	if continuesLogicalTurn(kind) {
 		return !groupOpenAfter(prevKind)
