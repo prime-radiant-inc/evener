@@ -234,6 +234,59 @@ file from its ownership/staging list. The plan now names it. If wrong, the cost
 is unnecessary localized controller churn; focused admission tests and task review
 must reject any unrelated changes. This ruling changes ownership, not behavior.
 
+## Implementation prerequisite: sandbox mount ordering
+
+Task 1's full agent gate exposed three real-bubblewrap failures: the read-only
+temporary-worktree startup test and both read-only network contract variants.
+The parent reproduced the startup failure. `/tmp` was remounted read-only before
+bubblewrap created the cwd/read-root bind targets in the fresh tmpfs. A controlled
+real-bubblewrap run changed only mount ordering and demonstrated the failure and
+successful startup with write restrictions intact. No TMPDIR workaround was used.
+
+- Separate repair commit: `ac39a681840e5a0b8180cd8b34779d771579b3a0`.
+- Changed only `agent/sandbox/bwrap.go` and its real integration test file;
+  the remount follows mountpoint creation. Grants and masks are unchanged.
+- New `TestBwrapReadOnlyTmpRootsPreserveAccess`: red exited 1 for read-only and
+  write-blocked restricted modes; green exited 0. It checks readable cwd/read
+  grants, writable session scratch, and denied writes to cwd/read grants/other
+  temporary paths using actual filesystem effects.
+- `(cd agent && go test ./sandbox -count=1)` exited 0, including the original
+  failing cases. No assertions, capability gates or timeouts were weakened.
+- Independent prerequisite review: spec compliant, quality approved, no findings;
+  verified unchanged grant/mask precedence and real filesystem-effect assertions.
+- Parent reran `(cd agent && go test ./sandbox -run '^TestBwrapReadOnlyTmp(WorktreeStarts|RootsPreserveAccess)$' -count=1)`,
+  exit 0, with the original TMPDIR unchanged.
+- Post-repair retirement race and full agent gates exited 0.
+  The sandbox prerequisite is complete; Task 1 still requires its own review.
+
+## Task 1: admission and claim controller
+
+- Commit: `dfb31f8b1feb71f5e8ffba30fcb324db9c91b1b0`; task-only review base:
+  `ac39a681840e5a0b8180cd8b34779d771579b3a0`. Exactly the three owned files changed.
+- Initial `(cd agent && go test . -run '^TestRetirement' -count=1)` exited 1
+  with undefined controller APIs, then exited 0 after implementation. Further
+  focused red/green groups covered reader lifecycle, blocker projection, claim
+  identity, failure sanitization, root publication and configuration. Some
+  regression subcases already passed through earlier general phase/identity
+  logic; independent red failures are not claimed for those subcases.
+- Final `(cd agent && go test -race . -run '^TestRetirement' -count=1)` exited 0,
+  with no races. `(cd agent && go test ./...)` exited 0 after the sandbox repair;
+  the parent read its actual complete output. Gofmt and diff checks passed.
+- Twelve tests cover independent/idempotent leases, nested admission, readers
+  across commit, bounded drain failure, exact/stale claims, root replacement,
+  competing root publication, failure categories, timeout configuration and
+  activity notifications. No provider/network or fixed-sleep dependencies.
+- `Session.retirementController` uses an atomic pointer. Root/phase/generation
+  publication remains under the short controller lock without Session locks;
+  later consumers use `Load()`.
+- Full eligibility, preparation, release, timer and daemon activation remain
+  absent as required for this task.
+- Independent review: spec compliant, quality approved, no Critical/Important/Minor
+  findings. The reviewer verified short-lock leases, atomic publication, exact
+  claim authority and irreversible commit against the diff. Grouped-red evidence
+  remains qualified as above; no per-subcase red result is inferred.
+- Task 1 accepted. Tasks 2–13 still require implementation and review.
+
 ## Remaining workflow
 
 Subagent-driven TDD implementation with specification and quality review → fresh
