@@ -235,7 +235,82 @@ func TestReconstructPreservesAttentionEvidenceWithoutInventingDeliveryState(t *t
 		t.Fatalf("reconstructed transcript cannot resume: %v", err)
 	}
 	defer restored.Close()
-	if entry.Turn.Kind != schema.TurnSystem || entry.Turn.AttentionResolution != nil || entry.Turn.Message.Text() == "" {
+	if entry.Turn.Kind != schema.TurnSteering || entry.Turn.AttentionResolution != nil || entry.Turn.Message.Text() == "" {
 		t.Fatalf("incomplete attention bookkeeping entered runtime replay: %+v", entry.Turn)
+	}
+}
+
+func TestReconstructAttentionInsideToolRoundDoesNotInventAnotherResult(t *testing.T) {
+	dbPath, meta, output := reconstructionFixture(t)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`UPDATE sessions SET message_count=6`,
+		`UPDATE messages SET ordinal=5 WHERE id=5`,
+		`INSERT INTO messages VALUES (6,'evener:02wLIRxqmq3AUo6vl2OW37',4,'attention sentinel','2026-09-09T01:03:30Z','entry','ATTENTION_RESOLUTION','','','','','')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"reconstruct", "02wLIRxqmq3AUo6vl2OW37", "--agentsview-db", dbPath, "--meta", meta, "--output-dir", output}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, &errOut)
+	}
+	data, err := os.ReadFile(filepath.Join(output, "sessions", "02wLIRxqmq3AUo6vl2OW37.transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []transcript.Entry
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n"))[1:] {
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, entry)
+	}
+	var results int
+	for _, turn := range agent.ResumeHistory(entries) {
+		for _, part := range turn.Message.Content {
+			if part.ToolResult != nil {
+				results++
+				if part.ToolResult.IsError {
+					t.Fatal("resume invented an interrupted-tool error")
+				}
+			}
+		}
+	}
+	if results != 1 {
+		t.Fatalf("got %d results for one archived call", results)
+	}
+}
+
+func TestReconstructIncludesDrainedSteeringMutationIdentity(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "mutations.json")
+	mustWrite(t, p, `{"session_id":"02wLIRxqmq3AUo6vl2OW37","journal":{"drain-sentinel":{"method":"turn/drainAsSteer","stable_turn_id":"turn_m1"}}}`)
+	ids, _, err := reconstructionMutationIDs(p, "02wLIRxqmq3AUo6vl2OW37")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids["turn_m1"] != "drain-sentinel" {
+		t.Fatal("lost drained input identity")
+	}
+}
+
+func TestReconstructRetainsArchivedCacheUsage(t *testing.T) {
+	source := reconstructionSource{Messages: []archivedMessage{
+		{Ordinal: 0, SourceType: "header", Kind: "system_prompt", Content: "sentinel"},
+		{Ordinal: 1, SourceType: "entry", Kind: "ASSISTANT", Timestamp: "2026-09-09T01:00:00Z", Content: "sentinel", TokenUsage: `{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":30}}`},
+	}}
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := entries[0].Turn.Usage
+	if u.TotalTokens != 81 || u.CacheWriteTokens == nil || *u.CacheWriteTokens != 20 || u.CacheWrite1hTokens == nil || *u.CacheWrite1hTokens != 30 {
+		t.Fatalf("cache usage lost: %+v", u)
 	}
 }

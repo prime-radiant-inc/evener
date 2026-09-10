@@ -42,8 +42,9 @@ result bodies. Those are represented by explicit unavailable-content notices;
 recorded call IDs and result error status remain attached. Archived reasoning
 remains readable text, without invented provider signatures.
 
-Attention resolutions retain their readable evidence as historical system
-messages. The archive does not store the originating steering delivery IDs, so
+Attention resolutions retain their readable evidence as historical steering
+notices. Steering preserves pending tool-round ordering. The archive does not
+store the originating steering delivery IDs, so
 replaying the resolution alone as live attention bookkeeping would be invalid.
 The report counts these historical records explicitly.
 

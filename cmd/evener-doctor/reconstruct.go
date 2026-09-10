@@ -120,7 +120,7 @@ func reconstructSession(ctx context.Context, sid, dbPath, metaPath, mutationsPat
 		"Media bytes, provider replay identifiers/signatures, message phases, and some private runtime fields are unavailable. Archived reasoning is retained as readable text.",
 		"Tool outputs omitted by the archive are replaced with explicit unavailable-content notices. Those notices do not prove the tool succeeded or failed.",
 		"Process, job, delegate, attention, queue, and task state are not reconstructed. Verify current files and process state before continuing work.",
-		"Attention-resolution records are preserved as historical system messages. Their missing originating delivery IDs make them unsuitable for runtime attention replay.",
+		"Attention-resolution records are preserved as historical steering notices. Their missing originating delivery IDs make them unsuitable for runtime attention replay.",
 	}}
 	header, entries, err := reconstructEntries(source, meta, mutationIDs, &report)
 	if err != nil {
@@ -295,7 +295,7 @@ func reconstructionMutationIDs(path, sid string) (map[string]string, []byte, err
 		return nil, nil, errors.New("mutation journal session identity differs")
 	}
 	for id, entry := range journal.Journal {
-		if entry.StableID != "" && (entry.Method == "turn/start" || entry.Method == "turn/steer" || entry.Method == "turn/promoteQueuedAsSteer" || entry.Method == "turn/queue") {
+		if entry.StableID != "" && (entry.Method == "turn/start" || entry.Method == "turn/steer" || entry.Method == "turn/promoteQueuedAsSteer" || entry.Method == "turn/drainAsSteer" || entry.Method == "turn/queue") {
 			if previous := ids[entry.StableID]; previous != "" && previous != id {
 				return nil, nil, fmt.Errorf("ambiguous mutation identity for %s", entry.StableID)
 			}
@@ -389,15 +389,24 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			}
 			if m.TokenUsage != "" {
 				var usage struct {
-					Input     int  `json:"input_tokens"`
-					Output    int  `json:"output_tokens"`
-					Reasoning *int `json:"reasoning_tokens"`
-					CacheRead *int `json:"cache_read_input_tokens"`
+					Input         int  `json:"input_tokens"`
+					Output        int  `json:"output_tokens"`
+					Reasoning     *int `json:"reasoning_tokens"`
+					CacheRead     *int `json:"cache_read_input_tokens"`
+					CacheCreation struct {
+						FiveMinute *int `json:"ephemeral_5m_input_tokens"`
+						OneHour    *int `json:"ephemeral_1h_input_tokens"`
+					} `json:"cache_creation"`
 				}
 				if err := json.Unmarshal([]byte(m.TokenUsage), &usage); err != nil {
 					return fail(err)
 				}
-				turn.Usage = llm.Usage{InputTokens: usage.Input, OutputTokens: usage.Output, TotalTokens: usage.Input + usage.Output, ReasoningTokens: usage.Reasoning, CacheReadTokens: usage.CacheRead}
+				turn.Usage = llm.Usage{InputTokens: usage.Input, OutputTokens: usage.Output, TotalTokens: usage.Input + usage.Output, ReasoningTokens: usage.Reasoning, CacheReadTokens: usage.CacheRead, CacheWriteTokens: usage.CacheCreation.FiveMinute, CacheWrite1hTokens: usage.CacheCreation.OneHour}
+				for _, cached := range []*int{turn.Usage.CacheReadTokens, turn.Usage.CacheWriteTokens, turn.Usage.CacheWrite1hTokens} {
+					if cached != nil {
+						turn.Usage.TotalTokens += *cached
+					}
+				}
 			}
 			for _, c := range calls[m.ID] {
 				marker := "[Tool: " + c.Name + "]"
@@ -422,7 +431,9 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		case schema.TurnAttentionResolution:
 			// The archive omits originating steering AttentionIDs. Replaying only
 			// the resolution half would claim a delivery that cannot be verified.
-			turn.Kind = schema.TurnSystem
+			// Steering can occur inside a tool round without making resume insert
+			// a synthetic interrupted-call result before the archived real result.
+			turn.Kind = schema.TurnSteering
 			turn.Message.Role = llm.RoleUser
 			content = "[Archived runtime record; original attention delivery state unavailable]\n" + m.Content
 			report.HistoricalAttentionRecords++
