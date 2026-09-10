@@ -311,6 +311,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 	fail := func(err error) (transcript.Header, []transcript.Entry, error) { return h, nil, err }
 	calls := map[int][]archivedCall{}
 	callLocations := map[[2]int]archivedCall{}
+	callIDs := map[string]bool{}
 	messages := map[int]archivedMessage{}
 	toolOrdinals := map[time.Time]int{}
 	for i, m := range source.Messages {
@@ -344,6 +345,13 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		if _, exists := callLocations[key]; exists {
 			return fail(fmt.Errorf("duplicate archived tool call at ordinal %d index %d", m.Ordinal, c.Index))
 		}
+		if c.Index != len(calls[c.MessageID]) {
+			return fail(fmt.Errorf("non-contiguous archived tool call indices at ordinal %d", m.Ordinal))
+		}
+		if callIDs[c.ID] {
+			return fail(fmt.Errorf("duplicate archived tool call ID %s", c.ID))
+		}
+		callIDs[c.ID] = true
 		if c.Arguments == "" {
 			c.Arguments = "{}"
 		}

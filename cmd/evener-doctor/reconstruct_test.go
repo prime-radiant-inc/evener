@@ -254,6 +254,75 @@ func TestReconstructNormalizesMissingArgumentsToObject(t *testing.T) {
 	}
 }
 
+func TestReconstructRejectsAmbiguousOrIncompleteToolCalls(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		damage func(*reconstructionSource)
+	}{
+		{"duplicate ID within assistant", func(source *reconstructionSource) {
+			call, result := source.Calls[0], source.Results[0]
+			call.Index, result.CallIndex = 1, 1
+			source.Calls = append(source.Calls, call)
+			source.Results = append(source.Results, result)
+		}},
+		{"duplicate ID across assistants", func(source *reconstructionSource) {
+			assistant, tool := source.Messages[3], source.Messages[4]
+			assistant.ID, assistant.Ordinal, assistant.Timestamp = 6, 5, "2026-09-09T01:05:00Z"
+			tool.ID, tool.Ordinal, tool.Timestamp = 7, 6, "2026-09-09T01:06:00Z"
+			source.Messages = append(source.Messages, assistant, tool)
+			call, result := source.Calls[0], source.Results[0]
+			call.MessageID, result.CallOrdinal, result.Timestamp = assistant.ID, assistant.Ordinal, tool.Timestamp
+			source.Calls = append(source.Calls, call)
+			source.Results = append(source.Results, result)
+		}},
+		{"missing first index", func(source *reconstructionSource) {
+			source.Calls[0].Index, source.Results[0].CallIndex = 1, 1
+		}},
+		{"missing middle index", func(source *reconstructionSource) {
+			call, result := source.Calls[0], source.Results[0]
+			call.ID, result.ID = "call_2", "call_2"
+			call.Index, result.CallIndex = 2, 2
+			source.Calls = append(source.Calls, call)
+			source.Results = append(source.Results, result)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := reconstructionSourceFixture(t)
+			test.damage(&source)
+			_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+			if err == nil || entries != nil {
+				t.Fatal("reconstructed ambiguous or incomplete tool calls")
+			}
+		})
+	}
+}
+
+func TestReconstructPreservesMultipleCallsInOneRound(t *testing.T) {
+	source := reconstructionSourceFixture(t)
+	call, result := source.Calls[0], source.Results[0]
+	call.ID, result.ID = "call_2", "call_2"
+	call.Index, result.CallIndex = 1, 1
+	result.Content = "second-result-sentinel"
+	source.Calls = append(source.Calls, call)
+	source.Results = append(source.Results, result)
+	source.Messages[3].Content += "\n[Tool: read_file]"
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := agent.ResumeHistory(entries)
+	if len(history) != 4 || len(history[1].Message.Content) != 2 || len(history[2].Message.Content) != 2 {
+		t.Fatal("lost a call or inserted a synthetic result")
+	}
+	for i, want := range []struct{ id, content string }{{"call_1", "result sentinel"}, {"call_2", "second-result-sentinel"}} {
+		call := history[1].Message.Content[i].ToolCall
+		result := history[2].Message.Content[i].ToolResult
+		if call == nil || result == nil || call.ID != want.id || result.ToolCallID != want.id || result.Content != want.content || result.IsError {
+			t.Fatalf("lost tool exchange %d", i)
+		}
+	}
+}
+
 func TestReconstructPreservesMetadataProfileAndModel(t *testing.T) {
 	for _, meta := range []schema.SessionMeta{
 		{ProfileID: "profile-sentinel", Model: "configured-model"},

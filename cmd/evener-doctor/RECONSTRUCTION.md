@@ -29,8 +29,9 @@ The output contains:
   and SHA-256 hashes of the transcript and source snapshot.
 
 Only root sessions with surviving metadata are supported. The command refuses
-forked or delegated histories, incomplete message ordinals, duplicate call
-positions, non-object tool arguments, and tool events that cannot be paired with
+forked or delegated histories, incomplete message ordinals, duplicate call IDs
+or positions, gaps in a message's call indices, non-object tool arguments, and
+tool events that cannot be paired with
 their calls and transcript timestamps. Each call must have exactly one result
 event. Timestamps are compared as instants;
 multiple tool-result messages at the same instant are ambiguous and refused.
