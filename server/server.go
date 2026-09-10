@@ -330,6 +330,11 @@ type Server struct {
 	// appPendingStableTurnID publishes runnable identity while the ordered
 	// event consumer drains the previous turn. It is not an admission lock.
 	appPendingStableTurnID string
+	// appDeferredTerminalNotifications retains only the status/closed frames
+	// from a terminal event that raced a durable carrier. The projector has
+	// already applied the event; these frames are published if the carrier is
+	// abandoned, and discarded when its stable carrier arrives.
+	appDeferredTerminalNotifications []pendingAppNotification
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -797,6 +802,9 @@ func (s *Server) SetProcessing(processing bool) {
 	s.mu.Lock()
 	s.setProcessingLocked(processing)
 	s.mu.Unlock()
+	if !processing {
+		s.flushDeferredTerminalNotifications()
+	}
 }
 
 // SetProcessingTurn atomically publishes a durable turn's stable identity as

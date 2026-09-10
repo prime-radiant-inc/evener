@@ -94,6 +94,38 @@ func TestServerAppWireSteeringCarrierTurnStartedConsumesPendingIdentity(t *testi
 	}
 }
 
+func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_abandoned_carrier")
+	client := dialServerAppWire(t, srv)
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_carrier", Subscribe: true}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_abandoned_carrier", Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
+	srv.SetProcessingTurn("abandoned-turn")
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_abandoned_carrier", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
+	srv.SetProcessing(false)
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case notification := <-client.Notifications():
+			if notification.Method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			var params appwire.ThreadStatusChangedParams
+			if err := json.Unmarshal(notification.Params, &params); err != nil {
+				t.Fatalf("decode status: %v", err)
+			}
+			if params.Status.Type == appwire.ThreadStatusIdle {
+				return
+			}
+		case <-deadline:
+			t.Fatal("subscribed client received no idle terminal status after abandoned carrier")
+		}
+	}
+}
+
 func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_reasoning_boundary")

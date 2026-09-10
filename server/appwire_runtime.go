@@ -414,6 +414,9 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		if stableTurnID != "" && stableTurnID == s.appPendingStableTurnID {
 			s.appProjector.ReserveStableTurnID(stableTurnID)
 			s.appPendingStableTurnID = ""
+			// The carrier owns the new turn, so a terminal event from the
+			// previous turn must not be replayed after this boundary.
+			s.appDeferredTerminalNotifications = nil
 		}
 		projected := s.appProjector.Project(event)
 		projectedTurnID := s.appProjector.ActiveTurnID()
@@ -443,6 +446,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			// notifications, but do not publish the old thread status or close
 			// frame over the newer durable active identity.
 			if supersededSessionEnd && (item.Method == appwire.NotifyThreadStatusChanged || item.Method == appwire.NotifyThreadClosed) {
+				s.appDeferredTerminalNotifications = append(s.appDeferredTerminalNotifications, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
 				continue
 			}
 			switch params := item.Params.(type) {
@@ -502,6 +506,46 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			notificationTarget := item.threadID
 			if item.threadID == threadID {
 				notificationTarget = rootNotificationTarget
+			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
+			record := s.appNotifier.Record(notificationTarget, item.method, params)
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
+			committed = append(committed, record)
+		}
+		return committed
+	})
+}
+
+// flushDeferredTerminalNotifications publishes the status side of a terminal
+// event whose old turn raced a durable carrier. The event itself was already
+// projected, so replaying it would duplicate turn/item completion frames.
+func (s *Server) flushDeferredTerminalNotifications() {
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		if s.appPendingStableTurnID != "" || len(s.appDeferredTerminalNotifications) == 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		pending := s.appDeferredTerminalNotifications
+		s.appDeferredTerminalNotifications = nil
+		s.mu.Unlock()
+
+		committed := make([]appserver.SequencedNotification, 0, len(pending))
+		for _, item := range pending {
+			params := s.stampFailureCountOnStatusChange(item.method, item.params)
+			params = s.stampCapabilitiesOnStatusChange(item.method, params)
+			params = stampAppNotificationTarget(params, item.threadID, item.ref)
+			notificationTarget := item.threadID
+			s.mu.RLock()
+			isRoot := item.threadID == s.appThreadID
+			s.mu.RUnlock()
+			if isRoot {
+				notificationTarget = s.appNotificationTarget(item.threadID)
 			}
 			prepared := false
 			if item.snapshot != nil {
