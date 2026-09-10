@@ -1142,17 +1142,22 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       } else {
         // Effort validation reads the scope-stamped catalog, not the merged
         // display ladder: same staleness hole as /model (a value valid only
-        // in the previous scope must not validate). No stamp yet (never
-        // loaded or last refresh failed) falls back to the fallback ladder —
-        // the pre-load status quo — while a stamp for ANOTHER scope
-        // fail-closes to no levels.
+        // in the previous scope must not validate). Only PROVEN staleness
+        // fail-closes (a stamp for another scope/loader): an unknown ladder
+        // with no stamp — never loaded, failed refresh, or an entry without
+        // ladder metadata — falls back to the fallback ladder, the pre-load
+        // status quo. Conflating "don't know" with "known empty" would
+        // refuse valid values whenever the catalog lists the model without
+        // ladder details.
+        const scopeMismatch =
+          modelCatalogStamp !== null &&
+          (modelCatalogStamp.scope !== `${harness}\0${cwd}` || modelCatalogStamp.loader !== loadCatalog);
         const scopedEffortEntry =
           effortModel === ""
             ? undefined
             : scopedModelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel);
         const scopedKnownEffortLevels = catalogEffortLevels(scopedEffortEntry);
-        const scopedEffortLevels =
-          scopedKnownEffortLevels ?? (modelCatalogStamp === null ? FALLBACK_EFFORT_LEVELS : []);
+        const scopedEffortLevels = scopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
         const items =
           builtinMatch.command.id === "model"
             ? resolveSpawnModelItems(scopedModelCatalog)

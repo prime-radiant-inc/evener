@@ -3277,10 +3277,27 @@ test("a bare /model with no catalog spawns with no model follow-up and no error 
 
 test("a /reasoning-effort prompt starts the session with the effort on thread/start and no follow-up set", async () => {
   const user = userEvent.setup();
-  const fake = readyClient();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
   connectionStore.getState().connect(fake);
   renderSpawn(fake);
   await settled();
+
+  // Wait for the pane catalog to commit with a matching scope stamp (the
+  // resolve-commit proxy: the catalog effect is declared before the resolve
+  // effect and both share the one keyed model/list promise, so the resolve's
+  // commit is strictly after the catalog's). The stubbed catalog lists the
+  // default model with no ladder metadata, so validation must fall back to
+  // the fallback ladder here — fail-closed is only for proven scope
+  // staleness, and "high" is on the fallback ladder.
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
 
   await user.type(promptField(), "/reasoning-effort high");
   await user.keyboard("{Escape}");
