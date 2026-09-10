@@ -772,13 +772,6 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return source.ForkThread(ctx, params)
 		})
 	}
-	entry, ok, entryErr := ownershipEntry(ctx, cfg, ref.ThreadID)
-	if entryErr != nil {
-		return appwire.ThreadForkResponse{}, appwire.Unavailable(entryErr.Error())
-	}
-	if !ok {
-		return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
-	}
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, ref.ThreadID)
 	unlockDeletionTarget := lockDeletionTarget(cfg, params.Ref, ref.ThreadID)
 	defer unlockDeletionTarget()
@@ -787,6 +780,13 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	if err := sessionActionRecoveryError(ctx, cfg, params.Ref, ref.ThreadID, epoch); err != nil {
 		return appwire.ThreadForkResponse{}, err
+	}
+	entry, ok, entryErr := ownershipEntry(ctx, cfg, ref.ThreadID)
+	if entryErr != nil {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable(entryErr.Error())
+	}
+	if !ok {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
 	}
 	if entry.Meta.IsSubagent && cfg.Roster != nil && cfg.Roster.IsSubagentActive(ref.ThreadID) {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("subagent threads cannot be forked")
