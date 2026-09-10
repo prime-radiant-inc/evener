@@ -128,7 +128,7 @@ func TestClosedThreadCapabilitiesMatchTheReadThatWouldAnswerTheReload(t *testing
 		Meta:     schema.SessionMeta{ID: "sess_ended", Model: "claude-opus-4-5"},
 		StateDir: t.TempDir(),
 	}
-	read := requirePastEntryThread(t, hubcore.WebConfig{}, entry, false)
+	read := requirePastEntryThread(t, hubcore.WebConfig{StateDir: entry.StateDir}, entry, false)
 
 	if got := pastThreadCapabilities(); got != read.Evener.Capabilities {
 		t.Fatalf("close-frame capabilities = %+v, want the read's %+v", got, read.Evener.Capabilities)
