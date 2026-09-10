@@ -119,6 +119,85 @@ describe("activitySummaryStore", () => {
     });
   });
 
+  test("a failed continuation invalidates a discarded root refresh", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    const initialRoot: ActivityTree = {
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    };
+    const initialSummaryRequest = activitySummaryStore.getState().beginRootFetch("ref_a", 0);
+    activitySummaryStore.getState().publishRootFetch("ref_a", initialSummaryRequest as number, initialRoot.root.counts);
+    const initialPanelRequest = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", initialPanelRequest, { kind: "ready", tree: initialRoot });
+
+    let resolveRoot!: (value: unknown) => void;
+    const root = new Promise<unknown>((resolve) => {
+      resolveRoot = resolve;
+    });
+    activitySummaryStore.getState().refreshRoot("ref_a", 1, async () => root, undefined, true);
+    const continuationRequest = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+
+    resolveRoot({
+      revision: 2,
+      root: {
+        ...initialRoot.root,
+        counts: { active: 2, failed: 0, completed: 0, complete: true },
+      },
+    });
+    await new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        if (state.entries.get("ref_a")?.loading === false) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    activityPanelStore.getState().publishFetch("ref_a", continuationRequest, {
+      kind: "continuation-failed",
+      nodeID: "session:sess_a",
+      message: "continuation unavailable",
+    });
+
+    let replacementStarted = false;
+    const replacementPublished = new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        const entry = state.entries.get("ref_a");
+        if (!entry?.loading && entry?.counts?.active === 3) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+    const replacement = activitySummaryStore.getState().refreshRoot("ref_a", 1, async () => {
+      replacementStarted = true;
+      return {
+        revision: 3,
+        root: {
+          ...initialRoot.root,
+          counts: { active: 3, failed: 0, completed: 0, complete: true },
+        },
+      };
+    });
+    expect(replacement).not.toBeNull();
+    expect(replacementStarted).toBe(true);
+    await replacementPublished;
+    expect(activityPanelStore.getState().entries.get("ref_a")?.continuationFailures).toMatchObject({
+      "session:sess_a": "continuation unavailable",
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts?.active).toBe(3);
+  });
+
   test("uses the established-attempt gate and complete-count badge data", () => {
     resetActivitySummaryStoreForTests();
     expect(activitySummaryStore.getState().entries.has("ref_a")).toBe(false);
