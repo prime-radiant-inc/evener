@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -43,6 +44,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	calls := 0
 	var steerOnce sync.Once
 	var steerErr error
+	var steerStableTurnID string
 
 	adapter := &agenttest.ScriptedAdapter{
 		Provider: "openai",
@@ -59,6 +61,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 						ClientMutationID: "cm-steer-mid-turn",
 						Input:            []appwire.InputItem{{Type: "text", Text: "steer mid turn"}},
 					})
+					steerStableTurnID = sess.clientMutations.snapshot().PendingExecutions["cm-steer-mid-turn"].TurnID
 				})
 			}
 			if calls <= maxBareTextRetries+1 {
@@ -75,7 +78,15 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess = newSession(t, withClient(client))
+	sess = newSession(t, withClient(client), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	}))
 	if err := sess.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
@@ -139,5 +150,26 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	}
 	if got := countBudgetSteering(budgetHistory(sess), "steer mid turn"); got != 1 {
 		t.Fatalf("delivered steering count = %d, want 1", got)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
+	if err != nil {
+		t.Fatalf("read persisted transcript: %v", err)
+	}
+	var steering *schema.Turn
+	for i := range data.Entries {
+		if data.Entries[i].Turn.ClientMutationID == "cm-steer-mid-turn" {
+			steering = &data.Entries[i].Turn
+			break
+		}
+	}
+	if steering == nil {
+		t.Fatal("persisted transcript has no delivered steering turn")
+	}
+	if steering.StableTurnID != steerStableTurnID {
+		t.Fatalf("steering StableTurnID = %q, want reserved mutation id %q", steering.StableTurnID, steerStableTurnID)
+	}
+	if steering.OwningTurnID != "" {
+		t.Fatalf("carrier steering OwningTurnID = %q, want empty because carrier owns a new logical turn", steering.OwningTurnID)
 	}
 }

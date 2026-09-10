@@ -83,7 +83,6 @@ type steeringMessage struct {
 	Provenance       *provenance.Causal `json:"provenance,omitempty"`
 	ClientMutationID string             `json:"client_mutation_id,omitempty"`
 	StableTurnID     string             `json:"stable_turn_id,omitempty"`
-	OwningTurnID     string             `json:"owning_turn_id,omitempty"`
 	// Source marks who sent the steering: events.SteeringSourceUser for
 	// human-sent steering (the UI steer action, or queued user input
 	// drained as steering), empty for daemon/system nudges. Surfaced on the
@@ -985,7 +984,16 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
-	t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
+	if msg.ClientMutationID != "" && s.clientMutations != nil {
+		// A pending steer is owned by the turn already running when it is
+		// delivered inline. When the carrier claims the steer, ActiveTurnID is
+		// the steer's own StableTurnID; that identifies the carrier turn and
+		// must not be persisted as its logical owner.
+		owner := s.clientMutations.snapshot().ActiveTurnID
+		if owner != msg.StableTurnID {
+			t.OwningTurnID = owner
+		}
+	}
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
 			t,

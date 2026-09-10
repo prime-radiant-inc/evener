@@ -257,15 +257,25 @@ func (d turnIndexDisk) logicalTurnCount() int {
 	}
 	n := d.recordCount()
 	groupItems := uint64(0)
+	openTurnID := ""
 	for i := range n {
 		record := d.recordAt(i)
-		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind, record.GoalContinuation, record.OwningTurnID, "") {
+		prevKind := schema.TurnKind("")
+		if i > 0 {
+			prevKind = d.recordAt(i - 1).TurnKind
+		}
+		starts := i == 0 || recordStartsGroup(record.TurnKind, prevKind, record.GoalContinuation, record.OwningTurnID, openTurnID)
+		if starts {
 			// The previous group just closed: count it when it projected
 			// items.
-			if groupItems > 0 {
+			if i > 0 && groupItems > 0 {
 				count++
 			}
 			groupItems = 0
+			openTurnID = record.TurnID
+			if record.OwningTurnID != "" {
+				openTurnID = record.OwningTurnID
+			}
 		}
 		groupItems += uint64(record.GroupItems)
 	}
@@ -305,8 +315,14 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	for i := range n {
 		record := d.recordAt(i)
 		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
-		join := role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
-		if join {
+		prevKind := schema.TurnKind("")
+		openTurnID := ""
+		if len(groups) > 0 {
+			prevKind = d.recordAt(i - 1).TurnKind
+			openTurnID = groups[len(groups)-1].turnID
+		}
+		starts := i == 0 || recordStartsGroup(record.TurnKind, prevKind, record.GoalContinuation, record.OwningTurnID, openTurnID)
+		if !starts && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open {
 			group := &groups[len(groups)-1]
 			group.end = i + 1
 			group.items += uint64(record.GroupItems)
@@ -1775,14 +1791,26 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 		return "", calls
 	}
 	turnID := ""
-	for i := n - 1; i >= 0; i-- {
+	open := false
+	for i := 0; i < n; i++ {
 		record := index.recordAt(i)
+		prevKind := schema.TurnKind("")
+		if i > 0 {
+			prevKind = index.recordAt(i - 1).TurnKind
+		}
+		starts := i == 0 || recordStartsGroup(record.TurnKind, prevKind, record.GoalContinuation, record.OwningTurnID, turnID)
+		if starts {
+			turnID = record.TurnID
+			if record.OwningTurnID != "" {
+				turnID = record.OwningTurnID
+			}
+			calls = map[string]bool{}
+			open = groupRoleFor(record.TurnKind, record.GoalContinuation) != groupStandalone
+		} else if !open {
+			continue
+		}
 		for _, id := range record.GroupCalls {
 			calls[id] = true
-		}
-		turnID = record.TurnID
-		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind, record.GoalContinuation, record.OwningTurnID, turnID) {
-			break
 		}
 	}
 	if turnID == "" && n > 0 {
