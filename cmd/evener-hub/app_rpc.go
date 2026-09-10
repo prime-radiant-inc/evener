@@ -477,7 +477,7 @@ func registerThreadHandlers(
 		}
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
-		resp.Thread = applyHubForkCapability(resp.Thread)
+		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -533,7 +533,7 @@ func registerThreadHandlers(
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
 		// own unsupported fork flag does not describe this hub-owned action.
-		resp.Thread = applyHubForkCapability(resp.Thread)
+		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err

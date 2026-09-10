@@ -31,7 +31,7 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex("")})
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
 	t.Cleanup(func() { _ = client.Close() })
@@ -117,11 +117,17 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := applyHubForkCapability(tc.thread)
+			got := applyHubForkCapability(hubcore.WebConfig{StateDir: t.TempDir()}, tc.thread)
 			if got.Evener.Capabilities.ForkFromTurn != tc.wantFork {
 				t.Fatalf("forkFromTurn=%v, want %v (thread=%+v)", got.Evener.Capabilities.ForkFromTurn, tc.wantFork, got)
 			}
 		})
+	}
+	for _, want := range []bool{false, true} {
+		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: "remote:thread", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: want}}}
+		if got := applyHubForkCapability(hubcore.WebConfig{StateDir: t.TempDir()}, thread); got.Evener.Capabilities.ForkFromTurn != want {
+			t.Fatalf("remote capability=%v, want source declaration %v", got.Evener.Capabilities.ForkFromTurn, want)
+		}
 	}
 }
 

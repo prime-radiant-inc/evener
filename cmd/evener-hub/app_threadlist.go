@@ -38,7 +38,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if err != nil {
 				return appwire.ThreadListResponse{}, err
 			}
-			thread = applyHubForkCapability(thread)
+			thread = applyHubForkCapability(cfg, thread)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}

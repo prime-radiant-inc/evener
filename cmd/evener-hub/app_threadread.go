@@ -91,7 +91,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
-			thread = applyHubForkCapability(thread)
+			thread = applyHubForkCapability(cfg, thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
 	}
@@ -425,12 +425,18 @@ func hubOwnsThreadFork(thread appwire.Thread) bool {
 // recovery fence has been applied. A daemon's capability set is not an
 // authority grant for persisted local forks, and a session needing recovery
 // cannot accept a fork until that fence clears.
-func applyHubForkCapability(thread appwire.Thread) appwire.Thread {
+func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {
 		return thread
 	}
-	thread.Evener.Capabilities.ForkFromTurn = hubOwnsThreadFork(thread) &&
+	storageAvailable := strings.TrimSpace(cfg.StateDir) != ""
+	if !storageAvailable && cfg.Past != nil {
+		if entry, ok := cfg.Past.Find(ref.ThreadID); ok {
+			storageAvailable = strings.TrimSpace(entry.StateDir) != ""
+		}
+	}
+	thread.Evener.Capabilities.ForkFromTurn = storageAvailable && hubOwnsThreadFork(thread) &&
 		!thread.Evener.ResumeRequired && thread.Status.Type != appwire.ThreadStatusRestartRequired
 	return thread
 }
@@ -554,7 +560,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 	} else {
-		thread = applyHubForkCapability(thread)
+		thread = applyHubForkCapability(cfg, thread)
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	return thread, nil
