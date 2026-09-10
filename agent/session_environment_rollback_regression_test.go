@@ -154,3 +154,48 @@ func TestQueuedEnvironmentFailureReportsRollbackFailure(t *testing.T) {
 		t.Fatal("returned queue claim still owns the active turn")
 	}
 }
+
+func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	var wakes atomic.Int32
+	sess.SetPendingUserInputWakeFunc(func() { wakes.Add(1) })
+	mutationID := "environment-queue-retry"
+	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: mutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "queued retry payload"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wakes.Store(0)
+	failure := errors.New("environment transcript durability failure")
+	attachEnvironmentSyncFailure(t, sess, failure, nil)
+	_, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	if !ran || !errors.Is(err, failure) {
+		t.Fatalf("queued attempt ran=%v error=%v, want environment durability failure", ran, err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	if snapshot.ActiveTurnID != "" {
+		t.Fatalf("returned claim still owns active turn %q", snapshot.ActiveTurnID)
+	}
+	if _, pending := snapshot.PendingExecutions[mutationID]; pending {
+		t.Fatal("returned claim still has a pending execution")
+	}
+	if sess.QueueDepth() != 1 || len(snapshot.InputQueue) != 1 || snapshot.InputQueue[0].ClientMutationID != mutationID {
+		t.Fatalf("returned queue=%+v, want original runnable mutation", snapshot.InputQueue)
+	}
+	if wakes.Load() == 0 {
+		t.Fatal("restored queue did not wake its runner")
+	}
+	stableTurnID := snapshot.Journal[mutationID].StableTurnID
+	_, ran, err = sess.ProcessPendingUserInput(t.Context(), nil)
+	if !ran || err != nil {
+		t.Fatalf("queued retry ran=%v error=%v, want accepted retry", ran, err)
+	}
+	snapshot = sess.clientMutations.snapshot()
+	if sess.QueueDepth() != 0 || snapshot.ActiveTurnID != "" || snapshot.Journal[mutationID].StableTurnID != stableTurnID {
+		t.Fatal("retry did not settle the original queued identity")
+	}
+	if count := countEnvironmentTurns(sess); count != 1 {
+		t.Fatalf("environment turns=%d, want one durable retry", count)
+	}
+}
