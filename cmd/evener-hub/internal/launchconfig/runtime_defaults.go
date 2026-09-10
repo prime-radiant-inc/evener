@@ -178,6 +178,12 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 				out.Effective.Verbose = &v
 				set(opt.Field)
 			}
+		case "apiLog":
+			if out.Effective.APILog == nil && opt.BuiltinDefaultBool != nil {
+				v := *opt.BuiltinDefaultBool
+				out.Effective.APILog = &v
+				set(opt.Field)
+			}
 		case "exportATIFProviderHandles":
 			if strings.TrimSpace(out.Effective.ExportATIFProviderHandles) == "" && opt.BuiltinDefault != "" {
 				out.Effective.ExportATIFProviderHandles = opt.BuiltinDefault

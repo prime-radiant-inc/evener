@@ -156,6 +156,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
@@ -201,6 +202,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
@@ -278,6 +280,19 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	// files. They must remain available after the hub RPC returns because the
 	// daemon can reuse the resolved session config later.
 	return resolved, func() {}, nil
+}
+
+// applyHubAPILogDefault fills the hub.toml api_log setting into a resolved
+// launch config as the floor default: it applies only when every launch layer
+// left api_log unset, so an explicit per-session choice (either direction)
+// always wins over the hub-wide default. Mutating the copy in req.Resolved is
+// safe because Resolved was copied by value out of the resolver.
+func applyHubAPILogDefault(resolved *launchconfig.Resolved, apiLog bool) {
+	if resolved == nil || resolved.Effective.APILog != nil || !apiLog {
+		return
+	}
+	value := true
+	resolved.Effective.APILog = &value
 }
 
 // buildSpawnArgs assembles the arg slice for `evener serve` from a hubcore.SpawnRequest.

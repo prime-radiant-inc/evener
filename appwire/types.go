@@ -2931,6 +2931,7 @@ type LaunchConfigLayer struct {
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`
+	APILog                      *bool             `json:"apiLog,omitempty"`
 	TraceFile                   string            `json:"traceFile,omitempty"`
 	CPUProfile                  string            `json:"cpuProfile,omitempty"`
 	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`            //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps

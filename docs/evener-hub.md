@@ -118,10 +118,19 @@ past_index_db = "$HOME/.local/state/evener/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
+api_log = false
 EOF
 
 chmod 600 "$hub_config"
 ```
+
+`api_log` controls the hub's default for durable API-request logging on the
+`evener serve` daemons it spawns: `true` passes `--api-log on`, recording every
+provider request and response body to the session's
+`<state-dir>/sessions/<SID>.api.jsonl` for post-mortem inspection. It defaults to
+`false` because those records grow with every model call. It is a floor, not a
+force: launch config layers that set `api_log` explicitly (either direction)
+win over the hub-wide value.
 
 ## Launch configuration
 
@@ -141,6 +150,11 @@ chmod 600 "$hub_config"
   location.
 - **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
   a single spawn only.
+
+API-request logging is a launch option (`api_log`, in the Debug logging group)
+with the same layering: set it per-launch, per-project, in-repo, or globally in
+`launch.toml`. An unset value inherits the hub default above; evener's built-in
+default is off.
 
 Layers merge in order: global → in-repo → project → per-launch.
 - **Scalars** (model, reasoning_effort, etc.): most-specific value wins.
