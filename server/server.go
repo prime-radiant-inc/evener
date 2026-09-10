@@ -342,9 +342,12 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource         ThreadEnvelopeSource
-	appReservedTurnID         string
-	beforeAppProjectionCommit func()
+	appEnvelopeSource ThreadEnvelopeSource
+	appReservedTurnID string
+	// appProcessingReservedTurnID tracks a generic projector reservation that
+	// was superseded by a durable turn identity before its carrier arrived.
+	appProcessingReservedTurnID string
+	beforeAppProjectionCommit   func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so
@@ -814,6 +817,7 @@ func (s *Server) SetProcessingTurn(turnID string) {
 	s.mu.Lock()
 	s.processing = true
 	s.ensureAppProjectorLocked("")
+	s.appProcessingReservedTurnID = s.appProjector.ReservedTurnID()
 	// The projector reservation is consumed by the ordered event stream. The
 	// callback can run ahead of that consumer, so mutating the projector here
 	// would let queued events from the previous turn use the new identity.
@@ -834,6 +838,10 @@ func (s *Server) setProcessingLocked(processing bool) {
 				s.appActiveTurnID = ""
 			}
 			s.appPendingStableTurnID = ""
+		}
+		if s.appProjector != nil && s.appProcessingReservedTurnID != "" {
+			s.appProjector.ReleaseReservedTurnID(s.appProcessingReservedTurnID)
+			s.appProcessingReservedTurnID = ""
 		}
 		if s.appProjector != nil && s.appReservedTurnID == "" {
 			reservedTurnID := s.appProjector.ReservedTurnID()

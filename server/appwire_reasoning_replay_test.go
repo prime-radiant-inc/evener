@@ -57,6 +57,66 @@ func TestServerAppWireReadReplaysProjectedReasoningWithTerminalIdentity(t *testi
 	}
 }
 
+func TestServerAppWireFailedDurableReplacementReleasesOwnedGenericReservation(t *testing.T) {
+	t.Run("unconsumed reservation gets a fresh next turn", func(t *testing.T) {
+		srv := NewServer(ServerConfig{})
+		srv.SetAppIdentity("local", "th_reservation_cleanup")
+
+		srv.SetProcessing(true)
+		genericID := srv.appProjector.ReservedTurnID()
+		if genericID == "" {
+			t.Fatal("generic processing did not reserve a projector turn")
+		}
+		srv.SetProcessingTurn("durable-turn")
+		srv.SetProcessing(false)
+		srv.SetProcessing(true)
+
+		if got := srv.appProjector.ReservedTurnID(); got == genericID || got == "" {
+			t.Fatalf("next generic reservation=%q, want a fresh ID after releasing %q", got, genericID)
+		}
+	})
+
+	t.Run("consumed reservation remains available to the old projection", func(t *testing.T) {
+		srv := NewServer(ServerConfig{})
+		srv.SetAppIdentity("local", "th_reservation_consumed")
+
+		srv.SetProcessing(true)
+		genericID := srv.appProjector.ReservedTurnID()
+		srv.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventAssistantTextStart,
+			SessionID: "th_reservation_consumed",
+		})
+		srv.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventAssistantTextEnd,
+			SessionID: "th_reservation_consumed",
+			Data: events.AssistantTextEndData{
+				Text: "old turn",
+			},
+		})
+		if got := srv.appProjector.ActiveTurnID(); got != genericID {
+			t.Fatalf("consumed generic projection=%q, want %q", got, genericID)
+		}
+		srv.SetProcessingTurn("durable-turn")
+		srv.SetProcessing(false)
+		srv.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventGoalContinuation,
+			SessionID: "th_reservation_consumed",
+			Data: events.GoalContinuationData{
+				Text:         "new turn",
+				StableTurnID: "durable-turn",
+			},
+		})
+
+		read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{
+			Ref:          "local:th_reservation_consumed",
+			IncludeTurns: true,
+		}).Thread
+		if len(read.Turns) != 2 || read.Turns[0].ID != genericID || read.Turns[1].ID != "durable-turn" {
+			t.Fatalf("turns=%+v, want consumed %q followed by durable-turn", read.Turns, genericID)
+		}
+	})
+}
+
 func TestServerAppWireSteeringCarrierTurnStartedConsumesPendingIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_steering_carrier")
