@@ -66,3 +66,20 @@ func TestConvertToATIF_RoundTimingsDoesNotBreakToolObservationPair(t *testing.T)
 		t.Fatalf("timing step metadata = %#v, want preserved interleaved timing", traj.Steps[1].Extra)
 	}
 }
+
+func TestConvertToATIF_ContextRecoveryCopiesDoNotDuplicateStepsOrUsage(t *testing.T) {
+	assistant := schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer-sentinel"))
+	assistant.Usage = llm.Usage{InputTokens: 7, OutputTokens: 3}
+	timing := schema.NewTurn(schema.TurnRoundTimings, llm.System("timing-sentinel"))
+	timing.RoundTimings = &schema.RoundTimings{Round: 1}
+	header := transcript.Header{SessionID: "session"}
+	entries := []transcript.Entry{{Turn: assistant}, {Turn: timing}}
+	want := Convert(header, entries)
+	for _, entry := range entries {
+		entry.Turn.ContextReplay = true
+		entries = append(entries, entry)
+	}
+	if got := Convert(header, entries); !reflect.DeepEqual(got, want) {
+		t.Fatalf("recovery copies changed the trajectory: steps=%d, want %d", len(got.Steps), len(want.Steps))
+	}
+}

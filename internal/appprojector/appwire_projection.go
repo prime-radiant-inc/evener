@@ -947,6 +947,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if strings.TrimSpace(text) == "" {
 			text = apptranscript.ImagePlaceholder(len(images))
 		}
+		if data.OwningTurnID != "" {
+			// Fold publication can outlive its turn. Use the ordinary item
+			// lifecycle, which carries an owner, so closed turns keep their
+			// durable steering without requiring an active-turn fallback.
+			item := appwire.ThreadItem{
+				Type: "steering", ID: p.nextItemID("steering"), TurnID: data.OwningTurnID,
+				Text: text, Images: images, Source: data.Source, SteeringKind: data.Kind,
+				ClientMutationID: data.ClientMutationID, Status: appwire.TurnStatusCompleted,
+			}
+			if !event.Timestamp.IsZero() {
+				startedAt := event.Timestamp.UnixMilli()
+				item.StartedAt = &startedAt
+			}
+			return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID, Ref: p.ref, TurnID: data.OwningTurnID, Item: item,
+			})}
+		}
 		params := map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -976,7 +993,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()
 		data := eventData[events.CompactionTurnData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text)
+		return p.ownedSystemAnnouncementItem(data.OwningTurnID, appwire.ThreadItemEventKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text, nil, nil)
 	case events.EventTurnLimit:
 		p.clearSkillCandidate()
 		data := eventData[events.TurnLimitData](event.Data)
@@ -1020,7 +1037,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
+		return p.ownedSystemAnnouncementItem(data.OwningTurnID, appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data), nil)
 	case events.EventPluginLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
@@ -1031,7 +1048,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventHookEnd:
 		p.clearSkillCandidate()
 		data := eventData[events.HookEndData](event.Data)
-		return p.systemAnnouncementWithExitCode(appwire.ThreadItemEventKindHookCompleted, "Hook", hookEndAnnouncement(data), data.ExitCode)
+		return p.systemAnnouncementWithExitCode(data.OwningTurnID, appwire.ThreadItemEventKindHookCompleted, "Hook", hookEndAnnouncement(data), data.ExitCode)
 	case events.EventForkSummary:
 		p.clearSkillCandidate()
 		data := eventData[events.ForkSummaryData](event.Data)
@@ -1539,12 +1556,18 @@ func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind appwire.ThreadIt
 // process; the web splits "show every hook exit" from "show clean exits only"
 // on this number rather than re-parsing the "... exit N" prose, so a reworded
 // announcement can never change which lines a reader has chosen to see.
-func (p *AppEventProjector) systemAnnouncementWithExitCode(eventKind appwire.ThreadItemEventKind, description, text string, exitCode int) []AppNotification {
+func (p *AppEventProjector) systemAnnouncementWithExitCode(owner string, eventKind appwire.ThreadItemEventKind, description, text string, exitCode int) []AppNotification {
 	code := int64(exitCode)
-	return p.systemAnnouncementItem(eventKind, description, text, nil, &code)
+	return p.ownedSystemAnnouncementItem(owner, eventKind, description, text, nil, &code)
 }
 
 func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
+	return p.ownedSystemAnnouncementItem("", eventKind, description, text, raw, exitCode)
+}
+
+// An explicitly owned announcement can arrive after its turn finishes. Keep
+// that durable owner without changing the currently running turn's lifecycle.
+func (p *AppEventProjector) ownedSystemAnnouncementItem(owner string, eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
 	description = strings.TrimSpace(description)
 	text = strings.TrimSpace(text)
 	if text == "" && eventKind != appwire.ThreadItemEventKindPluginLoaded {
@@ -1553,7 +1576,10 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemE
 	if description == "" && text == "" {
 		return nil
 	}
-	turnID := p.activeTurnID
+	turnID := owner
+	if turnID == "" {
+		turnID = p.activeTurnID
+	}
 	if turnID == "" {
 		turnID = p.preTurnAnnouncementTurnID()
 	}
@@ -1568,7 +1594,7 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemE
 		EventKind:   eventKind,
 		ExitCode:    exitCode,
 	}
-	if p.activeTurnID == "" {
+	if owner == "" && p.activeTurnID == "" {
 		// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
 			"threadId": p.threadID,
@@ -1680,7 +1706,7 @@ func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
 		data.EstTokensBefore == 0 && data.EstTokensAfter == 0 {
 		return nil
 	}
-	raw, err := marshalContextCompaction(map[string]any{"compaction": data})
+	raw, err := marshalContextCompaction(map[string]any{"compaction": data.Compaction()})
 	if err != nil {
 		return nil
 	}
@@ -1688,7 +1714,7 @@ func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
 }
 
 func contextCompactionAnnouncement(data events.ContextCompactionData) string {
-	return schema.ContextCompaction(data).Announcement()
+	return data.Compaction().Announcement()
 }
 
 func pluginLoadedRaw(data events.PluginLoadedData) json.RawMessage {

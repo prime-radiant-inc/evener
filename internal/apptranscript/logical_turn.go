@@ -57,7 +57,7 @@ func continuesLogicalTurn(kind schema.TurnKind) bool {
 
 func ownedLogicalTurnKind(kind schema.TurnKind) bool {
 	switch kind {
-	case schema.TurnSteering, schema.TurnRoundTimings, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnContextCompaction:
+	case schema.TurnSteering, schema.TurnRoundTimings, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnContextCompaction, schema.TurnHookCompleted:
 		return true
 	default:
 		return false
@@ -150,6 +150,9 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // its per-entry turn id (the per-entry contract unchanged) and buffers the
 // result for grouping.
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
+	if turn.ContextReplay {
+		return
+	}
 	turnID := persistedTurnID(turn, entryIndex)
 	var items []appwire.ThreadItem
 	if project != nil {

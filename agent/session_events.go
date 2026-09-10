@@ -306,6 +306,7 @@ func (s *Session) recordTurnFailure(data events.ErrorData) {
 // — turning it on would reveal only hooks that ran afterwards, which is the
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
+	data.OwningTurnID = s.activeTurnOwner()
 	s.emit(events.EventHookEnd, data)
 	info := schema.HookInfo{
 		Event:      data.Event,
@@ -319,6 +320,7 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	// only turn text still show the hook.
 	turn := schema.NewTurn(schema.TurnHookCompleted, llm.System(info.Announcement()))
 	turn.Hook = &info
+	turn.OwningTurnID = data.OwningTurnID
 
 	// SessionStart hooks run inside initSessionState, before the transcript
 	// writer exists (kata d4es). recordTurn holds the turn until it does; no

@@ -60,7 +60,7 @@ func TestRoundTimingsAfterSelfCompactionRetainLiveReplayIdentity(t *testing.T) {
 	}
 	// Enough ordinary persisted records for a real fold with the default
 	// preserved tail; the assertions below require a durable compaction marker.
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		run(fmt.Sprintf("seed-%d", i))
 	}
 	srv := NewServer(ServerConfig{})

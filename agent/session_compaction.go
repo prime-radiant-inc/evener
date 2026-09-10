@@ -215,6 +215,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	commit.commitTranscriptsLocked()
 	var mergedTailWriteErrs []error
 	for _, turn := range rewriteTail {
+		turn.ContextReplay = true
 		if err := s.writeTranscriptDurableLocked(turn); err != nil {
 			mergedTailWriteErrs = append(mergedTailWriteErrs, err)
 		}
@@ -505,7 +506,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	commitTranscriptsLocked := func() {
 		compactionEventWriteErrs = make([]error, len(pendingCompactionEvents))
 		for i, event := range pendingCompactionEvents {
-			payload := schema.ContextCompaction(event)
+			payload := event.Compaction()
 			turn := schema.NewTurn(schema.TurnContextCompaction, llm.System(payload.Announcement()))
 			turn.ContextCompaction = &payload
 			turn.OwningTurnID = compactionOwner
@@ -541,6 +542,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", compactionEventWriteErrs[i])})
 				continue
 			}
+			event.OwningTurnID = compactionOwner
 			s.emit(events.EventContextCompaction, event)
 		}
 		for i, turn := range pendingCompactionTurns {
@@ -709,7 +711,7 @@ func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []e
 		if i < len(errs) && errs[i] != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: record.kind})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: record.kind, OwningTurnID: record.turn.OwningTurnID})
 	}
 }
 

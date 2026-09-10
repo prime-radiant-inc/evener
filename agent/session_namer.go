@@ -464,7 +464,7 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// ManageContext) funnels through via contextMgr.OnCompactionTurn /
 		// WithCompactionTurnCallback.
 		s.resetEnvContextTrackerAfterCompaction()
-		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text(), OwningTurnID: t.OwningTurnID})
 	}
 	if superseded {
 		return

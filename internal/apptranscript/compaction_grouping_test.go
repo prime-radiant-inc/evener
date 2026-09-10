@@ -19,11 +19,29 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 		}
 		return turn
 	}
+	replay := func(turn schema.Turn) schema.Turn {
+		turn.ContextReplay = true
+		return turn
+	}
 	cases := []struct {
 		name string
 		tail []schema.Turn
 		ids  []string
 	}{
+		{"context recovery copies preserve the open group", []schema.Turn{
+			record(schema.TurnSummary, "summary", "turn_active"),
+			replay(record(schema.TurnUserInput, "turn_active", "")),
+			replay(record(schema.TurnAssistant, "assistant", "")),
+			replay(record(schema.TurnRoundTimings, "timing", "turn_active")),
+			record(schema.TurnSteering, "steering", "turn_active"),
+			record(schema.TurnUserInput, "turn_next", ""),
+		}, []string{"turn_active", "turn_next"}},
+		{"context recovery copies preserve a closed boundary", []schema.Turn{
+			record(schema.TurnSummary, "summary", ""),
+			replay(record(schema.TurnUserInput, "turn_active", "")),
+			replay(record(schema.TurnAssistant, "assistant", "")),
+			record(schema.TurnAssistant, "continuation", ""),
+		}, []string{"turn_active", "summary", "continuation"}},
 		{"owned sequence", []schema.Turn{
 			record(schema.TurnContextCompaction, "layer", "turn_active"),
 			record(schema.TurnCheckpoint, "checkpoint", "turn_active"),

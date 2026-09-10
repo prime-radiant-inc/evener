@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 15
+	turnIndexVersion        = 16
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -865,6 +865,23 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			}
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
+			if entry.Turn.ContextReplay {
+				// Context recovery copies consume physical records, but do not
+				// add items, usage, tool state, or logical turn boundaries.
+				if len(appended) > 0 {
+					previous := appended[len(appended)-1]
+					record.GroupOpen, record.TurnID = previous.GroupOpen, previous.TurnID
+				} else if n := index.recordCount(); n > 0 {
+					previous := index.recordAt(n - 1)
+					record.GroupOpen, record.TurnID = previous.GroupOpen, previous.TurnID
+				}
+				record.VisibleIndex = visibleRecords
+				appended = append(appended, record)
+				offset += length
+				index.CompleteSize = offset
+				index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, framedLine)
+				continue
+			}
 			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
 			// Logical-group bookkeeping runs BEFORE projection: the entry is
@@ -1221,6 +1238,9 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 			return nil, projected, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		projected++
+		if entry.Turn.ContextReplay {
+			continue
+		}
 		entries = append(entries, entry.Turn)
 		if project == nil {
 			continue

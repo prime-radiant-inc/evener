@@ -257,6 +257,9 @@ type Turn struct {
 	// OwningTurnID identifies the logical turn that owns a steering or timing
 	// entry. It differs from StableTurnID, which identifies the client mutation.
 	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	// ContextReplay marks a copy appended after compaction solely to restore
+	// model context. Its original transcript entry already owns the UI item.
+	ContextReplay bool `json:"context_replay,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`

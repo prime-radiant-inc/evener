@@ -319,8 +319,11 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				_ = file.Close()
 				return nil, projectedRecords, fmt.Errorf("parse transcript entry: %w", err)
 			}
-			entries = append(entries, entry.Turn)
 			projectedRecords++
+			if entry.Turn.ContextReplay {
+				continue
+			}
+			entries = append(entries, entry.Turn)
 			if project != nil {
 				projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
 				items = append(items, projectedItems...)

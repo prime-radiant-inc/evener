@@ -139,6 +139,9 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 	for i := range entries {
 		entry := entries[i]
 		turn := entry.Turn
+		if turn.ContextReplay {
+			continue
+		}
 
 		switch turn.Kind {
 		case schema.TurnUserInput:
@@ -158,7 +161,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			// Resolution markers are private and transparent to tool-round
 			// structure, so look through them for this assistant's observation.
 			resultIndex := i + 1
-			for resultIndex < len(entries) && (entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution || entries[resultIndex].Turn.Kind == schema.TurnRoundTimings || entries[resultIndex].Turn.Kind == schema.TurnContextCompaction) {
+			for resultIndex < len(entries) && (entries[resultIndex].Turn.ContextReplay || entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution || entries[resultIndex].Turn.Kind == schema.TurnRoundTimings || entries[resultIndex].Turn.Kind == schema.TurnContextCompaction) {
 				resultIndex++
 			}
 			if resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnToolResults {

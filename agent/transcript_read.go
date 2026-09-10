@@ -159,6 +159,7 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		turns := make([]schema.Turn, len(entries))
 		for i, e := range entries {
 			turns[i] = e.Turn
+			turns[i].ContextReplay = false
 		}
 		repaired, _ := repairOrphanedToolResults(turns)
 		return repaired
@@ -167,7 +168,9 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Return compaction turn + everything after it.
 	result := make([]schema.Turn, 0, len(entries)-compactionIdx)
 	for i := compactionIdx; i < len(entries); i++ {
-		result = append(result, entries[i].Turn)
+		turn := entries[i].Turn
+		turn.ContextReplay = false
+		result = append(result, turn)
 	}
 	repaired, _ := repairOrphanedToolResults(result)
 	return repaired
