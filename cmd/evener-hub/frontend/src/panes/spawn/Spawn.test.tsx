@@ -2874,6 +2874,55 @@ test("a same-cwd catalog refresh hides stale rows until the new response lands",
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/revamp")]);
 });
 
+test("Shift+Tab does not commit the spawn menu", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  // Modified Tab falls through for focus navigation instead of committing:
+  // the prompt keeps its text and no completion is spliced in.
+  await user.keyboard("{Shift>}{Tab}{/Shift}");
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("reopening the identical token restarts the highlight at the first option", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // Move off the first option, dismiss, and reopen the identical token.
+  await user.keyboard("{ArrowDown}");
+  await user.keyboard("{Escape}");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  await user.type(promptField(), "e");
+  await user.clear(promptField());
+  await user.type(promptField(), "/re");
+
+  // Committing now must splice the FIRST option, not the previously
+  // highlighted one.
+  await user.keyboard("{Tab}");
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/reasoning-effort ");
+});
+
 test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
@@ -3198,6 +3247,41 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
 });
 
+test("a model picked after a failed background load validates for /model", async () => {
+  const user = userEvent.setup();
+  let listCalls = 0;
+  const fake = readyClient((f) => {
+    f.on("model/list", () => {
+      listCalls += 1;
+      // The pane's background load fails; the picker's on-demand load (a
+      // cache-cleared retry) succeeds.
+      if (listCalls === 1) throw new Error("list down");
+      return { data: [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] };
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
+
+  // The pick stamps the merged entry as a current-scope snapshot, so a typed
+  // /model for the just-picked model validates instead of fail-closing
+  // against the never-loaded background stamp.
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+});
+
 test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
   const user = userEvent.setup();
   const fake = readyClient();
@@ -3211,6 +3295,27 @@ test("an unknown /model value toasts, starts nothing, and leaves Start usable", 
   await waitFor(() => expect(screen.getByText(/\/model: unknown value "nope"/)).toBeTruthy());
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
+});
+
+test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/goal");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText("/goal needs a value")).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "goal/set")).toBe(false);
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
   expect(button.textContent).toBe("Start");

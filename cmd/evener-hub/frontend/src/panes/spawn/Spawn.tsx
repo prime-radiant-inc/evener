@@ -480,11 +480,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   // A freshly (re)matched token always starts highlighted at its first
   // option - an index carried over from the PREVIOUS token's list is not a
-  // meaningful position once the list itself has changed shape.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, or the same match with a different query), same idiom as the cursor-restore layout effect below
+  // meaningful position once the list itself has changed shape. The presence
+  // flip covers Escape-dismiss→retype of the identical token (same start and
+  // query, so those deps alone would keep a stale index): reopening always
+  // restarts at the first option. Deliberately stricter than the composer's
+  // twin effect, which keeps the index across an identical-token reopen.
+  const slashTokenPresent = slashToken !== null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query/presence are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, the same match with a different query, or a dismiss→reopen flip), same idiom as the cursor-restore layout effect below
   useEffect(() => {
     setSlashHighlighted(0);
-  }, [slashToken?.start, slashToken?.query]);
+  }, [slashToken?.start, slashToken?.query, slashTokenPresent]);
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -1013,6 +1018,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       }
       return { models: [...models, entry], recent, diagnostics };
     });
+    // The picker loads through the same keyed loadCatalog the pane effect
+    // uses, so a successful pick is a current-scope validation snapshot even
+    // when the background load failed (or hasn't landed): stamp it, or a
+    // typed /model for the just-picked model stays refused against the stale
+    // (usually null) stamp.
+    setModelCatalogStamp({ scope: `${harness}\0${cwd}`, loader: loadCatalog });
   }
 
   function handlePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
@@ -1020,9 +1031,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // submit model (deliberately NOT a verbatim Composer port - Composer's
     // Enter sends, Spawn's plain Enter is a newline and only Mod/Ctrl+Enter
     // submits): ArrowUp/Down move the highlighted option (wrapping at both
-    // ends) OVER the caret rather than moving the caret itself, Tab OR
-    // unmodified non-composing Enter commits the highlighted option, Escape
-    // dismisses without touching the prompt. The committing Enter never
+    // ends) OVER the caret rather than moving the caret itself, unmodified Tab
+    // OR unmodified non-composing Enter commits the highlighted option,
+    // Escape dismisses without touching the prompt. Modified Tab (notably
+    // Shift+Tab) falls through for focus navigation. The committing Enter never
     // steals a submit path - it IS the newline key in Spawn, and
     // Mod/Ctrl+Enter always falls through to the submit branch below even
     // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
@@ -1039,7 +1051,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         return;
       }
       if (
-        event.key === "Tab" ||
+        (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) ||
         (event.key === "Enter" &&
           !event.metaKey &&
           !event.ctrlKey &&
@@ -1130,6 +1142,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // invocation: resolved during pre-start validation below and folded into
     // the thread/start scalars under the chips.
     let slashScalars: { modelProvider?: string; model?: string; reasoningEffort?: string } | null = null;
+    // Bare /goal fail-closes pre-start like bare /reasoning-effort: there is
+    // no goal to clear before the session exists, so starting one just to
+    // no-op its clearing is waste, and sending the literal "/goal" as the
+    // first turn is noise.
+    if (builtinMatch && builtinMatch.command.id === "goal" && builtinMatch.argsText.trim() === "") {
+      toasts.push("error", "/goal needs a value");
+      busyRef.current = false;
+      setBusy(false);
+      setBusyStartedAt(null);
+      return;
+    }
     if (builtinMatch && (builtinMatch.command.id === "model" || builtinMatch.command.id === "reasoning-effort")) {
       // Pre-start validation for enum-arg builtins: there is no cheaper
       // moment to refuse than before the session exists. Unknown value ->
