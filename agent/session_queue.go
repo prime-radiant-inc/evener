@@ -1051,8 +1051,17 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 // for a turn that never made it to disk. The durable write happens before the
 // in-memory history append, preserving the crash-window ordering.
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
+	return s.appendSteeringTurnDurablyForOwner(text, kind, "")
+}
+
+// appendSteeringTurnDurablyForOwner durably records a daemon steering turn
+// with the logical turn that owns it. Notification reminders use the caller's
+// supplied turn id because client steering arriving during that notification
+// turn is grouped by the same durable owner.
+func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID string) error {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
+	t.OwningTurnID = owningTurnID
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },

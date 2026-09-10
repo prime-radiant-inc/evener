@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -152,6 +153,56 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	sess.mu.Unlock()
 	if !sawSteering {
 		t.Fatal("no TurnSteering entry carrying the <job-notification ...> block was appended to history")
+	}
+}
+
+// TestNotificationTurnOwnsDurableReminderAndPendingClientSteering pins the
+// grouping boundary shared by the notification opener and a client steer that
+// arrives while that opener is active. The reminder and the steer must carry
+// the same supplied notification turn owner so live and replay projections
+// retain both items in one logical turn.
+func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	const notificationTurnID = "turn_notification_owner"
+	appendPendingJobNotificationRecord(t, s.jobManager, s.ID())
+	s.enqueueJobNotification(jobNotification{JobID: "job_X"})
+
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.ActiveTurnID = notificationTurnID
+		return nil
+	}); err != nil {
+		t.Fatalf("claim notification turn: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID:   "steer_notification_owner",
+		ExpectedInstanceID: s.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "steer during notification"}},
+	}); err != nil {
+		t.Fatalf("accept client steering: %v", err)
+	}
+
+	if !s.acceptNotificationInput(context.Background(), notificationTurnID) {
+		t.Fatal("notification input should proceed")
+	}
+
+	var reminderOwner, steeringOwner string
+	for _, turn := range s.history {
+		if turn.SteeringKind == events.SteeringKindNotification {
+			reminderOwner = turn.OwningTurnID
+		}
+		if turn.ClientMutationID == "steer_notification_owner" {
+			steeringOwner = turn.OwningTurnID
+		}
+	}
+	if reminderOwner != notificationTurnID {
+		t.Fatalf("notification reminder owner=%q, want %q", reminderOwner, notificationTurnID)
+	}
+	if steeringOwner != notificationTurnID {
+		t.Fatalf("pending client steering owner=%q, want %q", steeringOwner, notificationTurnID)
 	}
 }
 
