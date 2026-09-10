@@ -46,6 +46,10 @@ describe("parseChord", () => {
     expect(() => parseChord("")).toThrow();
     expect(() => parseChord("   ")).toThrow();
   });
+
+  test("rejects a modifier-only keybinding", () => {
+    expect(() => parseChord("Meta+")).toThrow();
+  });
 });
 
 describe("serializeChord round-trips", () => {
