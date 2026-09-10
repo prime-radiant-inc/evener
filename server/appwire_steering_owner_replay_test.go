@@ -111,6 +111,9 @@ func TestLiveSteeringOwnerIdentityReplaysFullTranscriptParity(t *testing.T) {
 			if !delayed {
 				assertInlineTimingAndLaterAnswer(t, full)
 			}
+			if countRoundTimingItems(full) == 0 {
+				t.Fatalf("%s replay has no round timing item; delayed steering path was not exercised through a completed round", name)
+			}
 			read, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sess.ID(), IncludeTurns: true})
 			if err != nil {
 				t.Fatalf("live read: %v", err)
@@ -141,6 +144,18 @@ func TestLiveSteeringOwnerIdentityReplaysFullTranscriptParity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func countRoundTimingItems(turns []appwire.Turn) int {
+	count := 0
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.EventKind == appwire.ThreadItemEventKindRoundTimings {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 type steeringOwnerReplayAdapter struct {
