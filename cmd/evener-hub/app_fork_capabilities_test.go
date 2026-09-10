@@ -160,7 +160,7 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 		{
 			name:     "persisted subagent",
 			thread:   appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:child", Kind: "subagent", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}},
-			wantFork: false,
+			wantFork: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

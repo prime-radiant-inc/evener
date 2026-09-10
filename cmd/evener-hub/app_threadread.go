@@ -421,6 +421,16 @@ func hubOwnsThreadFork(thread appwire.Thread) bool {
 	return err == nil && ref.SourceID == "local" && thread.Evener.Kind != "subagent"
 }
 
+func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
+	if !hubOwnsThreadFork(appwire.Thread{Evener: appwire.EvenerThread{Ref: thread.Evener.Ref}}) {
+		return false
+	}
+	if thread.Evener.Kind == "subagent" && cfg.Roster != nil && cfg.Roster.IsSubagentActive(thread.SessionID) {
+		return false
+	}
+	return true
+}
+
 // applyHubForkCapability projects the hub's fork authority after the common
 // recovery fence has been applied. A daemon's capability set is not an
 // authority grant for persisted local forks, and a session needing recovery
@@ -445,7 +455,7 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 			storageAvailable = strings.TrimSpace(entry.StateDir) != ""
 		}
 	}
-	thread.Evener.Capabilities.ForkFromTurn = storageAvailable && hubOwnsThreadFork(thread) &&
+	thread.Evener.Capabilities.ForkFromTurn = storageAvailable && hubCanForkThread(cfg, thread) &&
 		!thread.Evener.ResumeRequired && thread.Status.Type != appwire.ThreadStatusRestartRequired
 	return thread
 }
