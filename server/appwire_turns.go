@@ -466,6 +466,12 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			if params.Turn.DurationMS != nil {
 				turn.DurationMS = params.Turn.DurationMS
 			}
+			if params.Turn.Usage != nil {
+				turn.Usage = params.Turn.Usage
+			}
+			if params.Turn.Cost != "" {
+				turn.Cost = params.Turn.Cost
+			}
 			turn.Error = params.Turn.Error
 			if s.activeTurnID == params.Turn.ID {
 				s.activeTurnID = ""
