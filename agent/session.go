@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
@@ -202,6 +203,10 @@ type Session struct {
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
+	// retirementController is process-owned and published atomically so admission
+	// never nests the controller mutex with a Session lock. Nil leaves ordinary
+	// non-daemon sessions unchanged; descendants inherit it before starting work.
+	retirementController atomic.Pointer[RetirementController]
 	// metaSaveMu serializes each metadata snapshot with its write. It is acquired
 	// before mu by maybeAutoSave, preventing an older snapshot from waiting behind
 	// and then overwriting a newer save from another goroutine.
