@@ -330,6 +330,10 @@ type Server struct {
 	// appPendingStableTurnID publishes runnable identity while the ordered
 	// event consumer drains the previous turn. It is not an admission lock.
 	appPendingStableTurnID string
+	// appLateStableTurnID retains a durable carrier identity after processing
+	// cleanup, until the ordered carrier either arrives or the app identity is
+	// replaced.
+	appLateStableTurnID string
 	// appDeferredTerminalNotifications retains only the status/closed frames
 	// from a terminal event that raced a durable carrier. The projector has
 	// already applied the event; these frames are published if the carrier is
@@ -834,6 +838,7 @@ func (s *Server) setProcessingLocked(processing bool) {
 		// emit no carrier. Buffered events retain their own ordered identity;
 		// keeping this reservation would advertise work that is no longer running.
 		if s.appPendingStableTurnID != "" {
+			s.appLateStableTurnID = s.appPendingStableTurnID
 			if s.appActiveTurnID == s.appPendingStableTurnID {
 				s.appActiveTurnID = ""
 			}

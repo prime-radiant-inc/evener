@@ -295,6 +295,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
 		s.appPendingStableTurnID = ""
+		s.appLateStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
 		s.appReservedTurnID = ""
 		s.appProcessingReservedTurnID = ""
@@ -411,11 +412,19 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			return nil
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
-		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != ""
+		supersededSessionEnd := event.Kind == events.EventSessionEnd && (s.appPendingStableTurnID != "" || s.appLateStableTurnID != "")
 		stableTurnID := eventStableTurnID(event)
-		if stableTurnID != "" && stableTurnID == s.appPendingStableTurnID {
+		lateCarrier := stableTurnID != "" && stableTurnID == s.appLateStableTurnID
+		if stableTurnID != "" && (stableTurnID == s.appPendingStableTurnID || lateCarrier) {
 			s.appProjector.ReserveStableTurnID(stableTurnID)
 			s.appPendingStableTurnID = ""
+			s.appLateStableTurnID = ""
+			if lateCarrier {
+				// Cleanup published the deferred terminal state before this
+				// carrier arrived. Reconcile the pull state with the active
+				// status notification emitted by the carrier.
+				s.status.State = appwire.ThreadStatusActive
+			}
 			// The carrier owns the new turn, so a terminal event from the
 			// previous turn must not be replayed after this boundary.
 			s.appDeferredTerminalNotifications = nil

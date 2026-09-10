@@ -155,6 +155,40 @@ func TestServerAppWireSteeringCarrierTurnStartedConsumesPendingIdentity(t *testi
 	}
 }
 
+func TestServerAppWireLateCarrierReconcilesCleanupStatus(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_late_carrier")
+	srv.SetSteerFunc(func(string) {})
+	srv.SetState("idle")
+	srv.SetProcessingTurn("turn_late")
+	srv.SetProcessing(false)
+	cursor := srv.appNotifier.CurrentSequence()
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_late_carrier", Data: events.TurnStartedData{TurnID: "turn_late"}})
+
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_late_carrier"}).Thread
+	if read.Status.Type != appwire.ThreadStatusActive || read.Evener.ActiveTurnID != "turn_late" {
+		t.Fatalf("late carrier read=(status %q, active %q), want active/turn_late", read.Status.Type, read.Evener.ActiveTurnID)
+	}
+	for _, notification := range srv.AppNotificationsAfter(cursor, "th_late_carrier") {
+		if notification.Notification.Method != appwire.NotifyThreadStatusChanged {
+			continue
+		}
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatalf("decode status: %v", err)
+		}
+		if params.Status.Type != appwire.ThreadStatusActive {
+			t.Fatalf("late carrier status notification=%q, want active", params.Status.Type)
+		}
+		if params.Capabilities == nil || params.Capabilities.Send || !params.Capabilities.Steer {
+			t.Fatalf("late carrier capabilities=%+v, want active controls", params.Capabilities)
+		}
+		return
+	}
+	t.Fatal("late carrier emitted no active status notification")
+}
+
 func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_abandoned_carrier")
