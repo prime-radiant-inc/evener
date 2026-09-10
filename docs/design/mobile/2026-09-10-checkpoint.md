@@ -4,7 +4,9 @@ This page separates source qualification, the owned simulator journey, and deliv
 
 ## Combined source qualification
 
-Candidate: `8081b4e635f54807b6ad186738e2870e8186275f`.
+Candidate: [`8081b4e635f54807b6ad186738e2870e8186275f`](https://github.com/prime-radiant-inc/evener/commit/8081b4e635f54807b6ad186738e2870e8186275f).
+
+The qualified source is published as `codex/mobile-checkpoint-qualified-8081`. Fetch that branch to reproduce the gate or inspect the exact source used for the runtime receipt. Its ancestry also preserves the [prior paired backend `d983930b0e089a26ed8bd1047c2edfb45aa300b4`](https://github.com/prime-radiant-inc/evener/commit/d983930b0e089a26ed8bd1047c2edfb45aa300b4). Later review fixes are separate candidates and do not retroactively change this receipt.
 
 `make merge-approval-gate` completed with exit code 0. It covered repository lint and generation checks, all backend modules, the web gate, 720 native tests, 686 shared-session tests, native TypeScript and the independently installed SDK qualification. The [receipt](assets/2026-09-10-paired-restart-8081.json) records the candidate and full-log hash. The earlier passing `3dcde7559` gate is a prior baseline.
 
