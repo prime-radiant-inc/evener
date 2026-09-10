@@ -410,8 +410,16 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.mu.Unlock()
 			return nil
 		}
+		if isAppTurnCarrier(event) && s.status.State == string(agent.SessionClosed) {
+			s.mu.Unlock()
+			return nil
+		}
+		if sessionEventClosesSession(event) {
+			s.setProcessingLocked(false)
+			s.status.State = string(agent.SessionClosed)
+		}
 		s.ensureAppProjectorLocked(event.SessionID)
-		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != ""
+		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
 		stableTurnID := eventStableTurnID(event)
 		pendingCarrier := stableTurnID != "" && stableTurnID == s.appPendingStableTurnID
 		if pendingCarrier {
