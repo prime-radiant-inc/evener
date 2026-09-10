@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -175,7 +175,10 @@ test("aborts Vite startup and removes its owned profile", async () => {
     }),
     /cancelled Vite startup/,
   );
-  assert.deepEqual(children.map((child) => child.signals), [["SIGTERM"]]);
+  assert.deepEqual(
+    children.map((child) => child.signals),
+    [["SIGTERM"]],
+  );
   assert.equal(existsSync(profileDir), false);
 });
 
@@ -995,6 +998,62 @@ test("the diagnostic blames vite for a vite failure and does not send the reader
   assert.match(message, /Chrome is not implicated/);
   assert.doesNotMatch(message, /install Chrome/);
 });
+
+for (const scenario of [
+  { name: "Vite exit", reason: null },
+  { name: "primitive cancellation", reason: "fixture cancellation" },
+  { name: "frozen cancellation", reason: Object.freeze(new Error("fixture cancellation")) },
+]) {
+  test(`retains startup diagnostics and cleanup after ${scenario.name}`, async (context) => {
+    const vite = new FakeChild(process.execPath);
+    vite.kill = (signal) => {
+      vite.signals.push(signal);
+      queueMicrotask(() => vite.exit(signal));
+      return true;
+    };
+    const controller = new AbortController();
+    const profilePrefix = `browser-guard-failure-${randomUUID()}-`;
+    const stderr = "fixture-vite-startup-stderr";
+    let profileDir;
+    let spawnCount = 0;
+    context.after(() => {
+      vite.exit();
+      if (profileDir) rmSync(profileDir, { recursive: true, force: true });
+    });
+    const startup = startBrowserGuard({
+      frontend: process.cwd(),
+      profilePrefix,
+      chromeBinary: "/fake/chrome",
+      signal: controller.signal,
+      spawnProcess() {
+        spawnCount++;
+        const entry = readdirSync(tmpdir()).find((name) => name.startsWith(profilePrefix));
+        assert.ok(entry, "startup must create its owned profile");
+        profileDir = path.join(tmpdir(), entry);
+        return vite;
+      },
+    });
+    vite.stderr.emit("data", stderr);
+    if (scenario.reason === null) vite.exit();
+    else controller.abort(scenario.reason);
+    await assert.rejects(startup, (error) => {
+      assert.equal(error.browserGuardSubsystem, "vite");
+      assert.equal(error.browserGuardViteStderr, stderr);
+      if (scenario.reason !== null) {
+        assert.equal(error.cause, scenario.reason);
+        assert.equal(error.message, "fixture cancellation");
+      } else {
+        assert.ok(error.cause instanceof Error);
+      }
+      const message = browserGuardProcess.describeBrowserStartupFailure({ error, subsystem: "launch" });
+      assert.ok(message.includes(stderr), "diagnostic must retain the captured Vite failure");
+      return true;
+    });
+    assert.equal(spawnCount, 1, "Chrome must not start after Vite startup failed");
+    if (scenario.reason !== null) assert.deepEqual(vite.signals, ["SIGTERM"]);
+    assert.equal(existsSync(profileDir), false, "startup must remove its owned profile before rejecting");
+  });
+}
 
 test("a browser binary that could not be resolved says nothing was spawned", () => {
   const message = browserGuardProcess.describeBrowserStartupFailure({

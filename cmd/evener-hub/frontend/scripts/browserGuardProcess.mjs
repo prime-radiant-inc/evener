@@ -106,14 +106,16 @@ export function describeBrowserStartupFailure({
   viteStderr = "",
 }) {
   const message = error instanceof Error ? error.message : String(error);
+  const effectiveSubsystem = error?.browserGuardSubsystem ?? subsystem;
+  const effectiveViteStderr = error?.browserGuardViteStderr ?? viteStderr;
   const lines = [`browser guard startup failed (environment problem, not a test case failure): ${message}`, ""];
   // Name the subsystem that actually failed. One try now covers the launch,
   // Vite and Chrome, and remediation aimed at the wrong one is worse than none:
   // a dead Vite told to "install Chrome" sends the reader looking in the wrong
   // place with an authoritative-looking checklist.
-  if (subsystem === "vite") {
+  if (effectiveSubsystem === "vite") {
     lines.push(
-      `vite stderr: ${viteStderr.trim() || "(none)"}`,
+      `vite stderr: ${effectiveViteStderr.trim() || "(none)"}`,
       "",
       "To fix:",
       "  1. Read the vite stderr above - a port clash, a failed transform and a",
@@ -137,7 +139,7 @@ export function describeBrowserStartupFailure({
     `Chrome binary: ${chromeBinary || "(none found)"}`,
     `Chrome argv: ${chromeArgv.join(" ")}`,
     `chrome stderr: ${chromeStderr.trim() || "(none)"}`,
-    `vite stderr: ${viteStderr.trim() || "(none)"}`,
+    `vite stderr: ${effectiveViteStderr.trim() || "(none)"}`,
     "",
     "To fix:",
     `  1. Confirm the binary above exists and runs: "${chromeBinary}" --version`,
@@ -710,6 +712,7 @@ export async function startBrowserGuard({
   let chromeErr = "";
   let viteLaunchError = null;
   let viteReadySettled = false;
+  let viteReadySucceeded = false;
   let resolveViteReady;
   let rejectViteReady;
   const viteReady = new Promise((resolve, reject) => {
@@ -835,6 +838,7 @@ export async function startBrowserGuard({
         signal,
       );
       actualVitePort = viteAddress.port;
+      viteReadySucceeded = true;
     } finally {
       clearTimeout(viteReadyTimer);
     }
@@ -903,6 +907,12 @@ export async function startBrowserGuard({
     });
   } catch (error) {
     await lifecycle.cleanup();
+    if (!viteReadySucceeded) {
+      const startupError = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+      startupError.browserGuardSubsystem = "vite";
+      startupError.browserGuardViteStderr = viteErr;
+      throw startupError;
+    }
     throw error;
   }
 
