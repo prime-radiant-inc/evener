@@ -916,6 +916,41 @@ describe("projectThread", () => {
       }
     });
 
+    it("places clustered activity attachments after the cluster", () => {
+      const c = projectThread(
+        thread([
+          turn("t1", [
+            item({
+              id: "tool1",
+              type: "commandExecution",
+              toolName: "view",
+              status: "completed",
+              outputImages: [
+                { source: "screenshot", name: "one.png", url: "http://x/one" },
+              ],
+            }),
+            item({
+              id: "tool2",
+              type: "commandExecution",
+              toolName: "view",
+              status: "completed",
+              outputImages: [
+                { source: "screenshot", name: "two.png", url: "http://x/two" },
+              ],
+            }),
+          ]),
+        ]),
+      );
+
+      expect(c.items.map((entry) => entry.kind)).toEqual([
+        "activity",
+        "attachments",
+        "attachments",
+      ]);
+      const cluster = c.items[0];
+      expect(cluster?.kind === "activity" ? cluster.members : undefined).toHaveLength(2);
+    });
+
     it("does not emit an attachments item when images array is empty", () => {
       const t = thread([
         turn("t1", [

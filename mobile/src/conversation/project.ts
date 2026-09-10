@@ -609,12 +609,17 @@ export function projectThread(thread: Thread): MobileConversation {
   // rebuild the timeline in original order.
   const items: MobileTimelineItem[] = [];
   let activityRun: PreActivity[] = [];
+  let activityAttachments: Array<{ id: string; items: AttachmentRef[]; sourceTranscriptKey?: string }> = [];
 
   const flushActivityRun = () => {
     if (activityRun.length === 0) return;
     const clustered = clusterActivities(activityRun);
     for (const a of clustered) items.push(a);
+    for (const attachment of activityAttachments) {
+      items.push({ kind: "attachments", ...attachment });
+    }
     activityRun = [];
+    activityAttachments = [];
   };
 
   for (const entry of ordered) {
@@ -626,12 +631,25 @@ export function projectThread(thread: Thread): MobileConversation {
         flushActivityRun();
         activityRun = [entry.pre];
       }
+      if (entry.attachments && entry.attachments.length > 0) {
+        activityAttachments.push({
+          id: `${entry.item.id}:attachments`,
+          items: entry.attachments,
+          ...(entry.item.transcriptKey
+            ? { sourceTranscriptKey: entry.item.transcriptKey }
+            : {}),
+        });
+      }
     } else {
       flushActivityRun();
       items.push(entry.item);
     }
     // Attachments follow the item that produced them.
-    if (entry.attachments && entry.attachments.length > 0) {
+    if (
+      !(entry.type === "activity" && entry.pre) &&
+      entry.attachments &&
+      entry.attachments.length > 0
+    ) {
       items.push({
         kind: "attachments",
         id: `${entry.item.id}:attachments`,

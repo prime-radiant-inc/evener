@@ -36,6 +36,7 @@ import type {
   MobileConversation,
   MobileTimelineItem,
   MobileUsage,
+  ActivityMember,
 } from "../conversation/model";
 import {
   projectApproval,
@@ -2604,6 +2605,43 @@ export function createConversationStore() {
               let replaced = false;
               const eventIdentity = params.item.transcriptKey ?? params.item.id;
               for (const item of conv.items) {
+                if (
+                  item.kind === "activity" &&
+                  item.members &&
+                  projectedWithReasoning.kind === "activity"
+                ) {
+                  const memberIndex = item.members.findIndex(
+                    (member) =>
+                      (member.transcriptKey ?? member.id) === eventIdentity,
+                  );
+                  if (memberIndex >= 0) {
+                    const nextMember: ActivityMember = {
+                      id: projectedWithReasoning.id,
+                      label: projectedWithReasoning.label,
+                      family: projectedWithReasoning.family,
+                      state: projectedWithReasoning.state,
+                      detail: projectedWithReasoning.detail,
+                      ...(projectedWithReasoning.transcriptKey
+                        ? { transcriptKey: projectedWithReasoning.transcriptKey }
+                        : {}),
+                      ...(projectedWithReasoning.position
+                        ? { position: projectedWithReasoning.position }
+                        : {}),
+                    };
+                    const members = [...item.members];
+                    members[memberIndex] = nextMember;
+                    replacement[0] = {
+                      ...item,
+                      state: members.some((member) => member.state === "running")
+                        ? "running"
+                        : "completed",
+                      members,
+                    };
+                    items.push(...replacement);
+                    replaced = true;
+                    continue;
+                  }
+                }
                 const itemIdentity = timelineIdentity(item);
                 const attachmentIdentity = attachmentSourceIdentity(item);
                 if (
