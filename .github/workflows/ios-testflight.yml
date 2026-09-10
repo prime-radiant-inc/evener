@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build_number:
-        description: "New archive build number; recovery uses the original IPA"
+        description: "Required for a new archive; leave blank for recovery"
         required: false
         type: string
 
