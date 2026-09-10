@@ -171,3 +171,15 @@ test("a continuation for a removed branch cannot change the retained tree", () =
   const current = tree([shell("a")]);
   expect(graftContinuationTree(current, tree([shell("foreign")]), "session:missing")).toBe(current);
 });
+
+test("a nested page cannot replace or add coverage on an unrelated branch", () => {
+  const current = tree([delegate(session("child", [shell("a")], "child-next"))], "root-next");
+  const patch = tree([delegate(session("child", [shell("b")]))]);
+  patch.root.branch = { error: "unrelated-page-error" };
+  const result = graftContinuationTree(current, patch, "session:child");
+  expect(result.root.branch).toEqual({ truncated: true, continuation: "root-next" });
+  const child = result.root.entries[0];
+  if (child?.kind !== "delegate" || !child.delegate.child) throw new Error("missing child");
+  expect(ids(child.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(child.delegate.child.branch).toEqual({});
+});

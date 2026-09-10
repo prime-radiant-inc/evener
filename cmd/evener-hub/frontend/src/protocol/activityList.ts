@@ -31,7 +31,7 @@ export class ActivityList {
   private unsubscribe?: () => void;
   private disposed = false;
   private dirty = false;
-  private queuedBranch?: { id: string; continuation: string };
+  private queuedBranches: string[] = [];
   private inFlight?: Promise<void>;
   constructor(
     private client: ActivityClient,
@@ -106,8 +106,7 @@ export class ActivityList {
     if (this.disposed || !this.branches().some((branch) => branch.id === id && branch.continuation === continuation))
       return Promise.resolve();
     if (this.inFlight) {
-      this.queuedBranch = { id, continuation };
-      this.dirty = true;
+      if (!this.queuedBranches.includes(id)) this.queuedBranches.push(id);
       return this.inFlight;
     }
     return this.run({ id, continuation });
@@ -158,9 +157,17 @@ export class ActivityList {
             });
         }
       }
-      branch = this.queuedBranch;
-      this.queuedBranch = undefined;
-    } while (this.dirty && !this.disposed);
+      // Invalidation always gets a full refresh before any queued page. A
+      // page click targets a branch; its token comes from the refreshed tree.
+      branch = undefined;
+      if (!this.dirty) {
+        while (this.queuedBranches.length && !branch) {
+          const id = this.queuedBranches.shift();
+          const current = this.branches().find((candidate) => candidate.id === id);
+          if (current?.continuation) branch = { id: current.id, continuation: current.continuation };
+        }
+      }
+    } while ((this.dirty || branch) && !this.disposed);
     this.publish({ loading: false });
   }
   dispose() {

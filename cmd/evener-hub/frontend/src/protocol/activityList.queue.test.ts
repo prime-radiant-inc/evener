@@ -1,0 +1,165 @@
+import { expect, test } from "vitest";
+import type { ActivityTree } from "./activityData";
+import { type ActivityClient, ActivityList } from "./activityList";
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function delegateEntry(delegateId: string, continuation?: string, projectionRevision = 1) {
+  return {
+    kind: "delegate" as const,
+    delegate: {
+      delegateId,
+      childSessionId: `${delegateId}-child`,
+      childRef: `local:${delegateId}-child`,
+      description: delegateId,
+      projectionRevision,
+      status: projectionRevision > 1 ? "completed" : "running",
+      terminal: projectionRevision > 1,
+      branch: continuation ? { continuation, truncated: true } : {},
+    },
+  };
+}
+
+function activityTree(entries: ReturnType<typeof delegateEntry>[], revision = 1): ActivityTree {
+  return {
+    revision,
+    root: {
+      kind: "session",
+      sessionId: "session",
+      ref: "local:session",
+      label: "session",
+      aggregate: "working",
+      counts: { active: 1, failed: 0, completed: 0, complete: false },
+      entries,
+      branch: {},
+    },
+  };
+}
+
+function boundaryClient(autoResponses: Array<ActivityTree | undefined> = []) {
+  const requests: Array<{ params: Record<string, string>; response: Deferred<{ data: ActivityTree }> }> = [];
+  const started = new Map<number, Deferred<void>>();
+  let notification: Parameters<ActivityClient["onNotification"]>[0] | undefined;
+  const client: ActivityClient = {
+    onNotification(callback) {
+      notification = callback;
+      return () => undefined;
+    },
+    request(_method, params) {
+      const index = requests.length;
+      const response = deferred<{ data: ActivityTree }>();
+      requests.push({ params: params as Record<string, string>, response });
+      started.get(index)?.resolve();
+      const autoResponse = autoResponses[index];
+      if (autoResponse) response.resolve({ data: autoResponse });
+      return response.promise;
+    },
+  };
+  return {
+    client,
+    requests,
+    notify: () =>
+      notification?.({
+        method: "evener/delegate/updated",
+        params: {
+          ref: "local:session",
+          threadId: "session",
+          delegate: {
+            delegateId: "delegate",
+            ownerSessionId: "session",
+            rootSessionId: "session",
+            childSessionId: "delegate-child",
+            transcriptRef: "local:delegate-child",
+            type: "delegate",
+            lifecycle: "terminal",
+            phase: "completed",
+            status: "completed",
+            terminal: true,
+            resumable: false,
+            needsAttention: false,
+            projectionRevision: 2,
+          },
+        },
+      }),
+    resolveFirst(data: ActivityTree) {
+      const first = requests[0];
+      if (!first) throw new Error("No activity request has started");
+      first.response.resolve({ data });
+    },
+    waitForRequest(index: number) {
+      const existing = requests[index];
+      if (existing) return Promise.resolve();
+      const wait = deferred<void>();
+      started.set(index, wait);
+      return wait.promise;
+    },
+  };
+}
+
+test("refresh notification runs before a queued pagination request and retains the fresh delegate state", async () => {
+  const current = activityTree([delegateEntry("delegate", "old-page", 1)]);
+  const fresh = activityTree([delegateEntry("delegate", "new-page", 2)], 2);
+  const page = activityTree([delegateEntry("delegate", undefined, 2)], 2);
+  const boundary = boundaryClient([undefined, fresh, page]);
+  const list = new ActivityList(boundary.client, "local:session", "session", current);
+  list.start();
+  await boundary.waitForRequest(0);
+
+  boundary.notify();
+  const more = list.loadMore("delegate:delegate", "old-page");
+  boundary.resolveFirst(current);
+  await more;
+  expect(boundary.requests.map(({ params }) => params)).toEqual([
+    { ref: "local:session" },
+    { ref: "local:session" },
+    { ref: "local:session", continuation: "new-page" },
+  ]);
+  const entry = list.getSnapshot().tree?.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing delegate");
+  expect(entry.delegate.projectionRevision).toBe(2);
+});
+
+test("queues separate valid pagination requests instead of overwriting the first branch", async () => {
+  const current = activityTree([delegateEntry("first", "first-page"), delegateEntry("second", "second-page")]);
+  const boundary = boundaryClient([undefined, current, current]);
+  const list = new ActivityList(boundary.client, "local:session", "session", current);
+  const refresh = list.refresh();
+  await boundary.waitForRequest(0);
+
+  const first = list.loadMore("delegate:first", "first-page");
+  const second = list.loadMore("delegate:second", "second-page");
+  boundary.resolveFirst(current);
+  await Promise.all([refresh, first, second]);
+
+  expect(boundary.requests.map(({ params }) => params)).toEqual([
+    { ref: "local:session" },
+    { ref: "local:session", continuation: "first-page" },
+    { ref: "local:session", continuation: "second-page" },
+  ]);
+});
+
+test("does not issue a queued continuation after refresh removes that branch", async () => {
+  const current = activityTree([delegateEntry("delegate", "stale-page")]);
+  const fresh = activityTree([], 2);
+  const boundary = boundaryClient([undefined, fresh]);
+  const list = new ActivityList(boundary.client, "local:session", "session", current);
+  const refresh = list.refresh();
+  await boundary.waitForRequest(0);
+
+  const more = list.loadMore("delegate:delegate", "stale-page");
+  boundary.resolveFirst(fresh);
+  await Promise.all([refresh, more]);
+
+  expect(boundary.requests.map(({ params }) => params)).toEqual([{ ref: "local:session" }]);
+});
