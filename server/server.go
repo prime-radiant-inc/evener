@@ -814,6 +814,8 @@ func (s *Server) SetProcessing(processing bool) {
 // SetProcessingTurn atomically publishes a durable turn's stable identity as
 // the active AppWire turn until its ordered stable carrier is projected.
 func (s *Server) SetProcessingTurn(turnID string) {
+	// Serialize admission with deferred terminal publication so their
+	// notification order and authoritative processing identity agree.
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		s.processing = true
