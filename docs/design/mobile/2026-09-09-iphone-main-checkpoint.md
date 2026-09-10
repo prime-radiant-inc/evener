@@ -4,7 +4,22 @@ Landing sequence authorized by Jesse, 9 September 2026. Jesse asked whether to l
 
 ## Current landing update: 10 September
 
-Jesse authorized continuing while he sleeps and skipping the separate approving review when current-head CI and the actual current-head RoboRev review are clean. Failed checks and unresolved findings still block merging. PR #1076 met that condition and merged at `1a5a1e4a0f876107f108489363797559a71dfff3`, bringing the second batch to ten of twelve merged. PR #1083 is refreshed at `b6e74f115`; PR #1073 is refreshed at `32d3c517f`. Their fresh checks/reviews govern readiness.
+### Live status refresh
+
+The second prerequisite batch is now **11 of 12 merged**. PR #1083 is merged at `b6e74f115`; PR #1095 is merged at `33b6b7569`. PR #1073 remains open at `804a028a6`, with named CI checks green and approving review required. This count covers only #1071–#1079 and #1081–#1083; the later mobile follow-on PRs are inventoried separately below.
+
+| PR | Current head | GitHub status on 10 September | Scope boundary |
+| --- | --- | --- | --- |
+| [#1073](https://github.com/prime-radiant-inc/evener/pull/1073) | `804a028a6` | Open; named CI checks green; approving review required | Reasoning lifecycle |
+| [#1083](https://github.com/prime-radiant-inc/evener/pull/1083) | `b6e74f115` | **Merged**; named CI checks green | Browser port allocation |
+| [#1091](https://github.com/prime-radiant-inc/evener/pull/1091) | `003457fca` | Open; race-root, agent-race and tests still running | Portable activity |
+| [#1092](https://github.com/prime-radiant-inc/evener/pull/1092) | `564af8826` | Open; web/static-build, lint and race/test checks still running | SDK package |
+| [#1094](https://github.com/prime-radiant-inc/evener/pull/1094) | `b754dd6bf` | Open; gate checks green except agent-race still running; approving review required | Native helpers |
+| [#1095](https://github.com/prime-radiant-inc/evener/pull/1095) | `33b6b7569` | **Merged**; named CI checks green | Modifier-only chord validation |
+
+The current native candidate is `a60fdea0e`. Its 718 native tests, shared 673-test suite, TypeScript check and package check pass; the integrated web gate is current and running in the coordinator worktree. Simulator evidence is limited to artifact `b246` with backend `f694`: connect/create/send/stop/resend, question note, deny/allow, cold-launch draft and the joined workflow were observed. The current public checkpoint and a new TestFlight artifact have not landed. The storage preservation receipt is retained at `.superpowers/sdd/2026-09-09-iphone-main-checkpoint/simulator-data-preservation.json`; its counts and hashes are the storage audit boundary, and it does not claim conversation reader positions from Question Sheet position data.
+
+Jesse authorized continuing while he sleeps and skipping the separate approving review when current-head CI and the actual current-head RoboRev review are clean. Failed checks and unresolved findings still block merging. PR #1076 met that condition and merged at `1a5a1e4a0f876107f108489363797559a71dfff3`. The live inventory above supersedes the older heads in the historical batch table; its archive remains unchanged.
 
 The latest #1073 test covers a prior `SessionEnd` consumed after `SetProcessing(false)` but before the next stable carrier. The real input runner clears processing after its Process call returns, including failed claims that emit no carrier. Idle is accurate at that point; the test verifies both old/new item ownership and final completion after the buffered stream drains. Full server/projector race suites and vet pass. This adds evidence for the review concern without changing production behavior; fresh independent review remains pending.
 
