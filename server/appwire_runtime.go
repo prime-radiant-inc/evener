@@ -412,14 +412,26 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			return nil
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
-		supersededSessionEnd := event.Kind == events.EventSessionEnd && (s.appPendingStableTurnID != "" || s.appLateStableTurnID != "")
-		stableTurnID := eventStableTurnID(event)
-		lateCarrier := stableTurnID != "" && stableTurnID == s.appLateStableTurnID
-		if stableTurnID != "" && (stableTurnID == s.appPendingStableTurnID || lateCarrier) {
-			s.appProjector.ReserveStableTurnID(stableTurnID)
-			s.appPendingStableTurnID = ""
+		if event.Kind == events.EventSessionEnd && s.appPendingStableTurnID == "" {
+			// Processing cleanup already retired this claim. A terminal event
+			// arriving afterward settles the abandoned turn and consumes the
+			// one-shot late-carrier hint.
 			s.appLateStableTurnID = ""
+		}
+		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != ""
+		stableTurnID := eventStableTurnID(event)
+		pendingCarrier := stableTurnID != "" && stableTurnID == s.appPendingStableTurnID
+		lateCarrier := stableTurnID != "" && stableTurnID == s.appLateStableTurnID
+		if stableTurnID != "" && (pendingCarrier || lateCarrier) {
+			s.appProjector.ReserveStableTurnID(stableTurnID)
+			if pendingCarrier {
+				s.appPendingStableTurnID = ""
+				s.appLateStableTurnID = ""
+			}
 			if lateCarrier {
+				s.appLateStableTurnID = ""
+			}
+			if lateCarrier && !pendingCarrier && s.appPendingStableTurnID == "" {
 				// Cleanup published the deferred terminal state before this
 				// carrier arrived. Reconcile the pull state with the active
 				// status notification emitted by the carrier.

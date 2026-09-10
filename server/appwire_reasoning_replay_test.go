@@ -189,6 +189,57 @@ func TestServerAppWireLateCarrierReconcilesCleanupStatus(t *testing.T) {
 	t.Fatal("late carrier emitted no active status notification")
 }
 
+func TestServerAppWireCleanupBeforeSessionEndDoesNotLeaveLateCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_late_cleanup")
+	srv.SetProcessingTurn("turn_abandoned")
+	srv.SetProcessing(false)
+	cursor := srv.appNotifier.CurrentSequence()
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_late_cleanup", Data: events.SessionEndData{State: "idle"}})
+
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_late_cleanup"}).Thread
+	if read.Status.Type != appwire.ThreadStatusIdle || read.Evener.ActiveTurnID != "" {
+		t.Fatalf("cleanup-before-end read=(status %q, active %q), want idle/empty", read.Status.Type, read.Evener.ActiveTurnID)
+	}
+	for _, notification := range srv.AppNotificationsAfter(cursor, "th_late_cleanup") {
+		if notification.Notification.Method == appwire.NotifyThreadStatusChanged {
+			var params appwire.ThreadStatusChangedParams
+			if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+				t.Fatalf("decode status: %v", err)
+			}
+			if params.Status.Type == appwire.ThreadStatusIdle {
+				return
+			}
+		}
+	}
+	t.Fatal("cleanup-before-end emitted no idle status notification")
+}
+
+func TestServerAppWireLateOldCarrierDoesNotConsumeNewPendingIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_late_old_carrier")
+	srv.SetState("idle")
+	srv.SetProcessingTurn("turn_old")
+	srv.SetProcessing(false)
+	srv.SetProcessingTurn("turn_new")
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_late_old_carrier", Data: events.TurnStartedData{TurnID: "turn_old"}})
+	srv.mu.RLock()
+	pending := srv.appPendingStableTurnID
+	active := srv.appActiveTurnID
+	srv.mu.RUnlock()
+	if pending != "turn_new" || active != "turn_new" {
+		t.Fatalf("after old late carrier=(pending %q, active %q), want turn_new/turn_new", pending, active)
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_late_old_carrier", Data: events.TurnStartedData{TurnID: "turn_new"}})
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_late_old_carrier", IncludeTurns: true}).Thread
+	if read.Status.Type != appwire.ThreadStatusActive || read.Evener.ActiveTurnID != "turn_new" {
+		t.Fatalf("after new carrier read=(status %q, active %q), want active/turn_new", read.Status.Type, read.Evener.ActiveTurnID)
+	}
+}
+
 func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_abandoned_carrier")
