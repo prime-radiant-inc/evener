@@ -22,13 +22,12 @@ func TestProjectTurnRoundTimingsPreservesStructuredPayload(t *testing.T) {
 	if item.Type != "systemMessage" || item.EventKind != appwire.ThreadItemEventKindRoundTimings || item.Description != "Round timings" {
 		t.Fatalf("item identity = %#v", item)
 	}
-	var raw struct {
-		RoundTimings schema.RoundTimings `json:"roundTimings"`
-	}
+	var raw map[string]schema.RoundTimings
 	if err := json.Unmarshal(item.Raw, &raw); err != nil {
 		t.Fatalf("raw: %v", err)
 	}
-	if raw.RoundTimings.Round != 2 || raw.RoundTimings.LLMCall != 3*time.Second {
-		t.Fatalf("raw timing = %#v", raw.RoundTimings)
+	timings := raw["roundTimings"]
+	if timings.Round != 2 || timings.LLMCall != 3*time.Second {
+		t.Fatalf("raw timing = %#v", timings)
 	}
 }
