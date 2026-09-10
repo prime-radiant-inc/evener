@@ -959,3 +959,57 @@ test("a real session pane's scaffold-published title lands in the top bar", asyn
   // ref fallback, Session.tsx) through the channel on mount.
   await vi.waitFor(() => expect(screen.getByTestId("topbar-title").textContent).toBe("local:ref_titled"));
 });
+
+test.each(["exact cycle", "mixed cycle", "session origin", "missing farther ancestor"])(
+  "exact Open origin Back: $0 follows the selected edge rather than a same-ref sibling",
+  async (shape) => {
+    const { recordTranscriptOpenOrigin } = await import("../workspace");
+    const workspace = workspaceStore.getState();
+    const owner = workspace.openPane("session", { ref: "local:owner" });
+    const siblingId = workspace.openPane("session", { ref: "local:b" });
+    const aId = workspace.openPane("transcript", { ref: "local:a", parentRef: "local:b" });
+    const bId = workspace.openPane("transcript", {
+      ref: "local:b",
+      parentRef: shape === "missing farther ancestor" ? "local:missing" : "local:a",
+    });
+    const retained = workspaceStore.getState().panes;
+    const a = retained.find((pane) => pane.id === aId)!;
+    const b = retained.find((pane) => pane.id === bId)!;
+    const sibling = retained.find((pane) => pane.id === siblingId)!;
+    recordTranscriptOpenOrigin(a, shape === "session origin" ? sibling : b);
+    if (shape !== "mixed cycle") recordTranscriptOpenOrigin(b, a);
+    workspace.focusPane(aId);
+    render(<StackHost />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    if (shape === "session origin" || shape === "missing farther ancestor") {
+      expect(workspaceStore.getState().focusedPaneId).toBe(shape === "session origin" ? siblingId : bId);
+      expect(workspaceStore.getState().panes).toEqual(retained);
+      await user.click(screen.getByRole("button", { name: "Back" }));
+    }
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+test("exact Open origin Back: valid local history wins over a recorded origin", async () => {
+  const { openTranscript } = await import("../../panes/session/transcript/openTranscript");
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" });
+  openTranscript("local:leaf", "local:owner");
+  const leaf = workspaceStore.getState().focusedPaneId!;
+  const previous = workspace.openPane("doc", { ref: "previous" });
+  const retained = workspaceStore.getState().panes;
+  render(<StackHost />);
+  await screen.findByText(/doc pane: previous/);
+  act(() => workspace.focusPane(leaf));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(previous);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+  expect(workspaceStore.getState().panes).toEqual(retained);
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
