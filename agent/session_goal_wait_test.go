@@ -1005,6 +1005,35 @@ func TestGoalWaitToolNoGoalNamesState(t *testing.T) {
 	}
 }
 
+// TestGoalWaitToolAskGenerationRemoved pins the ask_generation removal:
+// goal_wait with a non-empty ask_generation rejects naming the removal —
+// approval waits bind by content key alone, since no ask call carries a
+// stable generation.
+func TestGoalWaitToolAskGenerationRemoved(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool generation", clk.Now())
+	args, _ := json.Marshal(map[string]any{
+		"kind": "until_approval", "target": "ship it?",
+		"ask_generation": "gen1", "timeout_seconds": 60,
+	})
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "gw-gen", Name: "goal_wait", Arguments: args, Type: "function"})
+	if !res.IsError {
+		t.Fatalf("goal_wait with ask_generation should be IsError, got output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "ask_generation") {
+		t.Fatalf("rejection %q must name the removed field", res.Output)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (a removed field must not park)", snap.Status)
+	}
+}
+
 // TestGoalWaitToolUnknownKindNamesKind pins the unknown-kind rejection:
 // goal_wait with a kind outside the six registry kinds errors naming the
 // kind - never parked.

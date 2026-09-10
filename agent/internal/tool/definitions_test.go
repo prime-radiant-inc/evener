@@ -1022,7 +1022,7 @@ func TestDefGoalWaitShape(t *testing.T) {
 			t.Fatalf("kind enum = %v, want %q", enum, want)
 		}
 	}
-	for _, prop := range []string{"target", "event_subtype", "matcher", "ask_generation", "label", "timeout_seconds"} {
+	for _, prop := range []string{"target", "event_subtype", "matcher", "label", "timeout_seconds"} {
 		if _, ok := props[prop]; !ok {
 			t.Fatalf("goal_wait missing property %q", prop)
 		}
@@ -1092,7 +1092,7 @@ func TestDefGoalExpectShape(t *testing.T) {
 	}
 	required(t, def, "goal_expect", []string{"desc"})
 	props := def.Parameters["properties"].(map[string]any)
-	for _, prop := range []string{"desc", "kind", "target", "event_subtype", "matcher", "ask_generation", "timeout_seconds"} {
+	for _, prop := range []string{"desc", "kind", "target", "event_subtype", "matcher", "timeout_seconds"} {
 		if _, ok := props[prop]; !ok {
 			t.Fatalf("goal_expect missing property %q", prop)
 		}

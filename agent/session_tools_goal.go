@@ -186,6 +186,15 @@ func validateGoalWaitArgs(args map[string]any) error {
 	if kind != string(goal.WaitUntilTime) && strings.TrimSpace(target) == "" {
 		return fmt.Errorf("invalid_request: target is required for kind %q", kind)
 	}
+	// ask_generation was removed from the advertised contract: no ask
+	// call carries a stable generation, so a generation-bound wait can
+	// never register. Reject the field with the reason named instead of
+	// parking a wait that fails at the store.
+	if gen, err := goalWaitStringArg(args, "ask_generation"); err != nil {
+		return err
+	} else if strings.TrimSpace(gen) != "" {
+		return errors.New("invalid_request: ask_generation is not supported (removed; approval waits bind by content key alone)")
+	}
 	if _, err := goalWaitTimeoutArg(args); err != nil {
 		return err
 	}
@@ -240,10 +249,6 @@ func decodeGoalWaitArgs(args map[string]any) (goal.WaitKind, error) {
 	if err != nil {
 		return goal.WaitKind{}, err
 	}
-	generation, err := goalWaitStringArg(args, "ask_generation")
-	if err != nil {
-		return goal.WaitKind{}, err
-	}
 	label, err := goalWaitStringArg(args, "label")
 	if err != nil {
 		return goal.WaitKind{}, err
@@ -256,13 +261,12 @@ func decodeGoalWaitArgs(args map[string]any) (goal.WaitKind, error) {
 		return goal.WaitKind{}, err
 	}
 	return goal.WaitKind{
-		Kind:          goal.Kind(kind),
-		Target:        target,
-		Timeout:       timeout,
-		Label:         label,
-		Matcher:       matcher,
-		EventSubtype:  goal.EventSubtype(subtype),
-		AskGeneration: generation,
+		Kind:         goal.Kind(kind),
+		Target:       target,
+		Timeout:      timeout,
+		Label:        label,
+		Matcher:      matcher,
+		EventSubtype: goal.EventSubtype(subtype),
 	}, nil
 }
 
@@ -464,11 +468,13 @@ func validateGoalExpectArgs(args map[string]any) error {
 	if err != nil {
 		return err
 	}
-	generation, err := goalWaitStringArg(args, "ask_generation")
-	if err != nil {
+	// ask_generation was removed from the advertised contract (see
+	// validateGoalWaitArgs): reject the field with the reason named.
+	if gen, err := goalWaitStringArg(args, "ask_generation"); err != nil {
 		return err
+	} else if strings.TrimSpace(gen) != "" {
+		return errors.New("invalid_request: ask_generation is not supported (removed; approval conditions bind by content key alone)")
 	}
-	_ = generation
 	if len(matcher) > goal.MaxMatcherBytes {
 		return fmt.Errorf("invalid_request: matcher exceeds %d bytes (cap 1KB)", goal.MaxMatcherBytes)
 	}
@@ -498,7 +504,6 @@ func decodeGoalExpectArgs(args map[string]any) (goal.ExpectRequest, error) {
 	target, _ := goalWaitStringArg(args, "target")
 	subtype, _ := goalWaitStringArg(args, "event_subtype")
 	matcher, _ := goalWaitStringArg(args, "matcher")
-	generation, _ := goalWaitStringArg(args, "ask_generation")
 	label, _ := goalWaitStringArg(args, "label")
 	timeout, _ := goalWaitTimeoutArg(args)
 	_ = label
@@ -511,12 +516,11 @@ func decodeGoalExpectArgs(args map[string]any) (goal.ExpectRequest, error) {
 	return goal.ExpectRequest{
 		Desc: desc,
 		Predicate: goal.WaitKind{
-			Kind:          goal.Kind(kind),
-			Target:        target,
-			Timeout:       timeout,
-			Matcher:       matcher,
-			EventSubtype:  goal.EventSubtype(subtype),
-			AskGeneration: generation,
+			Kind:         goal.Kind(kind),
+			Target:       target,
+			Timeout:      timeout,
+			Matcher:      matcher,
+			EventSubtype: goal.EventSubtype(subtype),
 		},
 	}, nil
 }
