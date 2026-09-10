@@ -417,6 +417,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		if sessionEventClosesSession(event) {
 			s.setProcessingLocked(false)
 			s.status.State = string(agent.SessionClosed)
+			s.appDeferredTerminalNotifications = nil
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
