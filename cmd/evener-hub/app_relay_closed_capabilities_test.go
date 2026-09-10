@@ -71,6 +71,53 @@ func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing
 	}
 }
 
+func TestRelayedCloseFrameDoesNotOfferForkForAReadOnlyDescendant(t *testing.T) {
+	thread := appwire.Thread{
+		ID:        "subagent-closed",
+		SessionID: "subagent-closed",
+		Source:    "local",
+		Evener: appwire.EvenerThread{
+			Ref:  "local:subagent-closed",
+			Kind: "subagent",
+		},
+	}
+	deliveries := make(chan appsource.RelayDelivery, 1)
+	handoff := &recordingRelayHandoff{
+		committed: make(chan struct{}),
+		aborted:   make(chan struct{}),
+		onCommit: func() {
+			deliveries <- appsource.RelayDelivery{
+				Notification: appwire.Notification{
+					Method: appwire.NotifyThreadStatusChanged,
+					Params: testRawJSON(t, map[string]any{
+						"threadId":        thread.ID,
+						"ref":             thread.Evener.Ref,
+						"status":          appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+						"descendant_note": "preserve",
+					}),
+				},
+				Acknowledge: func() {},
+			}
+		},
+	}
+	client := relayedNotificationClient(t, thread, deliveries, handoff)
+	notification := <-client.Notifications()
+
+	var params struct {
+		Capabilities   appwire.ThreadCapabilities `json:"capabilities"`
+		DescendantNote string                     `json:"descendant_note"`
+	}
+	if err := json.Unmarshal(notification.Params, &params); err != nil {
+		t.Fatalf("unmarshal relayed descendant close frame: %v", err)
+	}
+	if params.Capabilities.ForkFromTurn {
+		t.Fatalf("read-only descendant close capabilities advertise fork: %+v", params.Capabilities)
+	}
+	if !params.Capabilities.Send || !params.Capabilities.Compact || params.DescendantNote != "preserve" {
+		t.Fatalf("descendant close capabilities or unknown field changed: capabilities=%+v note=%q", params.Capabilities, params.DescendantNote)
+	}
+}
+
 // The invariant, stated: what the close frame pushes is what the very next read
 // returns. A reload is what used to heal a session that ended mid-turn, and it
 // healed it by asking the hub — so the pushed set has to BE the hub's answer,
@@ -106,7 +153,7 @@ func TestRelayedStatusFramesOtherThanCloseAreLeftToTheDaemon(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original)
+	got := stampClosedThreadCapabilities(original, true)
 
 	if string(got.Params) != string(original.Params) {
 		t.Fatalf("idle frame was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
@@ -125,7 +172,7 @@ func TestNonStatusNotificationsPassTheCloseStampUntouched(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original)
+	got := stampClosedThreadCapabilities(original, true)
 
 	if string(got.Params) != string(original.Params) {
 		t.Fatalf("turn/completed was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
@@ -147,7 +194,7 @@ func TestCloseStampPreservesFieldsItDoesNotUnderstand(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original)
+	got := stampClosedThreadCapabilities(original, true)
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(got.Params, &fields); err != nil {

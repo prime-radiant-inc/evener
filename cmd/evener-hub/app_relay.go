@@ -194,7 +194,7 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 // re-minting it from the fields this hub understands would silently drop
 // anything a newer daemon added (the shape enrichOutputImageNotification uses
 // on this same stream, for the same reason).
-func stampClosedThreadCapabilities(notification appwire.Notification) appwire.Notification {
+func stampClosedThreadCapabilities(notification appwire.Notification, allowFork bool) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
 	}
@@ -209,7 +209,11 @@ func stampClosedThreadCapabilities(notification appwire.Notification) appwire.No
 	if status.Type != appwire.ThreadStatusClosed {
 		return notification
 	}
-	capabilities, err := json.Marshal(pastThreadCapabilities())
+	set := pastThreadCapabilities()
+	if !allowFork {
+		set.ForkFromTurn = false
+	}
+	capabilities, err := json.Marshal(set)
 	if err != nil {
 		return notification
 	}
@@ -599,8 +603,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				// gone.
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
-					notification = stampClosedThreadCapabilities(notification)
-					if hubOwnsThreadFork(target.thread) {
+					ownsFork := hubOwnsThreadFork(target.thread)
+					notification = stampClosedThreadCapabilities(notification, ownsFork)
+					if ownsFork {
 						notification = stampForkCapability(notification)
 					}
 				}
