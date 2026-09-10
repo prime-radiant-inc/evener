@@ -731,6 +731,24 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// later drain can ever appear in it. bridgeSession refuses to start one
 	// past this point; see the refusal there for why that is the right answer.
 	var teardownStarted bool
+	var shutdownExpiryOnce sync.Once
+	var shutdownExpiry <-chan struct{}
+	shutdownExpiryStop := make(chan struct{})
+	sharedShutdownExpiry := func() <-chan struct{} {
+		shutdownExpiryOnce.Do(func() {
+			source := deps.drainWaitExpiry()
+			done := make(chan struct{})
+			shutdownExpiry = done
+			go func() {
+				select {
+				case <-source:
+					close(done)
+				case <-shutdownExpiryStop:
+				}
+			}()
+		})
+		return shutdownExpiry
+	}
 	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
 	// but does not wait for the buffered tail, so a drain is still calling the
 	// observer after the session is closed -- and observe on a closed tee panics
@@ -768,6 +786,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session nothing would ever close, which no budget can end -- the expiry
 	// fired every time, on work that was neither wedged nor real.
 	defer func() {
+		defer close(shutdownExpiryStop)
 		bridgeStartMu.Lock()
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
@@ -778,7 +797,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		bridgeStartMu.Unlock()
 		// One budget for the whole teardown, not one per drain: what must be
 		// bounded is how long SIGTERM goes unanswered.
-		expiry := deps.drainWaitExpiry()
+		expiry := sharedShutdownExpiry()
 		for _, drained := range pending {
 			select {
 			case <-drained:
@@ -953,7 +972,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			}
 			drainsMu.Unlock()
 			return true
-		case <-deps.drainWaitExpiry():
+		case <-sharedShutdownExpiry():
 			return false
 		}
 	}
