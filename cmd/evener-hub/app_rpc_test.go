@@ -9198,7 +9198,7 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	stateRoot := t.TempDir()
 	launchRoot := t.TempDir()
 	cwd := t.TempDir()
-	c := newHubLaunchController(launchRoot)
+	c := newHubLaunchController(launchRoot, false)
 	if _, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
 		Layer:  "global",

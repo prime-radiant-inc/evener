@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
@@ -153,6 +154,66 @@ func TestLoadConfig_APILog(t *testing.T) {
 		}
 		if cfg.APILog {
 			t.Error("explicit api_log = false was overridden back to true")
+		}
+	})
+}
+
+// TestLaunchResolveAppliesHubAPILogDefault pins preview/spawn consistency: with
+// the hub.toml api_log floor on, evener/launch/resolve reports apiLog=true
+// (provenance hub) rather than the builtin false that would contradict the
+// daemon the hub actually spawns, and an explicit launch layer still wins in
+// both directions.
+func TestLaunchResolveAppliesHubAPILogDefault(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	emptyEnv := func(string) string { return "" }
+
+	t.Run("hub default fills unset api_log", func(t *testing.T) {
+		c := newHubLaunchControllerWithEnv(stateRoot, emptyEnv, true)
+		got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if got.Effective.APILog == nil || !*got.Effective.APILog {
+			t.Fatalf("effective apiLog = %v, want true (hub floor)", got.Effective.APILog)
+		}
+		if got.Provenance["api_log"] != string(launchconfig.LayerHub) {
+			t.Fatalf("api_log provenance = %q, want hub", got.Provenance["api_log"])
+		}
+	})
+
+	t.Run("explicit layer false beats hub default", func(t *testing.T) {
+		writer := newHubLaunchControllerWithEnv(stateRoot, emptyEnv, false)
+		if _, err := writer.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+			CWD: cwd, Layer: "global",
+			Config: appwire.LaunchConfigLayer{APILog: new(false)},
+		}); err != nil {
+			t.Fatalf("SetLayer: %v", err)
+		}
+		c := newHubLaunchControllerWithEnv(stateRoot, emptyEnv, true)
+		got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if got.Effective.APILog == nil || *got.Effective.APILog {
+			t.Fatalf("effective apiLog = %v, want false (layer wins over hub floor)", got.Effective.APILog)
+		}
+		if got.Provenance["api_log"] != "global" {
+			t.Fatalf("api_log provenance = %q, want global", got.Provenance["api_log"])
+		}
+	})
+
+	t.Run("hub default off reports builtin false", func(t *testing.T) {
+		c := newHubLaunchControllerWithEnv(t.TempDir(), emptyEnv, false)
+		got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: canonicalTempDir(t)})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if got.Effective.APILog == nil || *got.Effective.APILog {
+			t.Fatalf("effective apiLog = %v, want false (builtin)", got.Effective.APILog)
+		}
+		if got.Provenance["api_log"] != "builtin" {
+			t.Fatalf("api_log provenance = %q, want builtin", got.Provenance["api_log"])
 		}
 	})
 }

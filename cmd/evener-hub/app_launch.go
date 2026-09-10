@@ -20,6 +20,11 @@ type hubLaunchController struct {
 	// ApplyRuntimeDefaults. A seam so tests inject a fixed environment
 	// instead of reading the ambient one (deterministic default tests).
 	getenv func(string) string
+	// hubAPILogDefault is the hub.toml api_log floor: what a hub-spawned
+	// session runs with when no launch layer set api_log. The preview paths
+	// apply it so the resolved view matches what Spawn actually launches
+	// (HubSpawner injects the same default into the daemon argv).
+	hubAPILogDefault bool
 }
 
 var (
@@ -27,15 +32,28 @@ var (
 	hubLaunchSaveMeta = launchconfig.SaveMeta
 )
 
-func newHubLaunchController(stateRoot string) *hubLaunchController {
-	return newHubLaunchControllerWithEnv(stateRoot, os.Getenv)
+func newHubLaunchController(stateRoot string, hubAPILogDefault bool) *hubLaunchController {
+	return newHubLaunchControllerWithEnv(stateRoot, os.Getenv, hubAPILogDefault)
 }
 
-func newHubLaunchControllerWithEnv(stateRoot string, getenv func(string) string) *hubLaunchController {
+func newHubLaunchControllerWithEnv(stateRoot string, getenv func(string) string, hubAPILogDefault bool) *hubLaunchController {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	return &hubLaunchController{stateRoot: stateRoot, now: time.Now, getenv: getenv}
+	return &hubLaunchController{stateRoot: stateRoot, now: time.Now, getenv: getenv, hubAPILogDefault: hubAPILogDefault}
+}
+
+// resolveWithHubDefaults resolves the launch layers and applies the hub's own
+// api_log floor ahead of the runtime defaults, so the effective view reports
+// what a hub-spawned session would actually run with: the hub floor beats the
+// builtin default but never an explicit launch-layer value.
+func (c *hubLaunchController) resolveWithHubDefaults(cwd string, overrides launchconfig.Layer) (launchconfig.Resolved, error) {
+	resolved, err := hubLaunchResolve(c.stateRoot, cwd, overrides)
+	if err != nil {
+		return launchconfig.Resolved{}, err
+	}
+	applyHubAPILogDefault(&resolved, c.hubAPILogDefault)
+	return resolved, nil
 }
 
 func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
@@ -86,7 +104,7 @@ func (c *hubLaunchController) Resolve(ctx context.Context, params appwire.Launch
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
 	}
-	resolved, err := hubLaunchResolve(c.stateRoot, cwd, overrides)
+	resolved, err := c.resolveWithHubDefaults(cwd, overrides)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
@@ -165,7 +183,7 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	if err := launchconfig.SaveLayer(path, layer); err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
-	resolved, err := hubLaunchResolve(c.stateRoot, cwd, launchconfig.Layer{})
+	resolved, err := c.resolveWithHubDefaults(cwd, launchconfig.Layer{})
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
@@ -179,7 +197,7 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())
 	}
-	resolved, err := hubLaunchResolve(c.stateRoot, cwd, launchconfig.Layer{})
+	resolved, err := c.resolveWithHubDefaults(cwd, launchconfig.Layer{})
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
