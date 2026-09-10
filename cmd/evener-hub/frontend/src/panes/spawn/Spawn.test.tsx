@@ -2992,6 +2992,53 @@ test("a /model prompt bootstraps past the required-model guard with the value on
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
 });
 
+test("a /model prompt wins over a matching Advanced Options model override on thread/start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "model",
+          wireField: "model",
+          kind: "text",
+          label: "Model",
+          group: "general",
+          perLaunch: true,
+          driverSupport: { evener: true },
+        },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  // An Advanced Options model override loses to the typed slash value: the
+  // user typed the value as the submit itself, the most specific intent.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.type(screen.getByLabelText("Model"), "anthropic/other-model");
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+});
+
 test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
   const user = userEvent.setup();
   const fake = readyClient();

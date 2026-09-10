@@ -1131,18 +1131,19 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
-    // An explicit /model or /reasoning-effort invocation wins over both: the
-    // user typed the value as the submit itself, so it is the most specific
-    // intent in the room.
+    // An explicit /model or /reasoning-effort invocation wins over ALL of
+    // that: the user typed the value as the submit itself, so it is the most
+    // specific intent in the room. The overlay applies AFTER resolveScalars
+    // (not as chip input to it) because resolveScalars gives overrides.model /
+    // overrides.reasoningEffort precedence - folding the slash value into the
+    // chips would let an Advanced Options value silently win instead.
     const overrides = combinedOverrides;
-    const scalars = resolveScalars(
-      {
-        model: slashScalars?.model ?? model,
-        modelProvider: slashScalars?.modelProvider,
-        reasoningEffort: slashScalars?.reasoningEffort ?? reasoningEffort,
-      },
-      overrides,
-    );
+    const resolved = resolveScalars({ model, reasoningEffort }, overrides);
+    const scalars: { modelProvider?: string; model?: string; reasoningEffort?: string } = {
+      modelProvider: slashScalars?.modelProvider ?? resolved.modelProvider,
+      model: slashScalars?.model ?? resolved.model,
+      reasoningEffort: slashScalars?.reasoningEffort ?? resolved.reasoningEffort,
+    };
     // Snapshot before the await (mirrors Composer.tsx's submitAction) so an
     // attachment staged WHILE this request is in flight isn't in the set
     // clearSubmitted removes below - it survives untouched, same contract
