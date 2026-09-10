@@ -1999,9 +1999,9 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 // conversationSignals reports the two numbers the re-injection detector weighs,
 // read together under one lock so they describe the same instant.
 //
-// The turn count is conversation only, excluding the HOOK_COMPLETED records
-// that report a hook ran. It answers "does this session already carry a
-// conversation?" — the question the detector asks — with a number no hook
+// The turn count is conversation only, excluding hook execution records and
+// environment context saved before the user's first input. It answers
+// "does this session already carry a conversation?" — the question the detector asks — with a number no hook
 // dispatch can inflate. modelResponses is guarded by the same mutex (see the
 // field's documentation on Session), and the detector reaches it on the drain
 // path, where steering turns append from other goroutines.
@@ -2012,7 +2012,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		if t.Kind != schema.TurnHookCompleted {
+		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnEnvironment {
 			historyTurns++
 		}
 	}
