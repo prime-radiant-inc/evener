@@ -724,6 +724,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// A session gets a new one on thread/clear, and each ends when its own session's
 	// event channel closes.
 	var drainsMu sync.Mutex
+	var bridgeStartMu sync.Mutex
 	var bridgeDrains []<-chan struct{}
 	bridgeDrainBySession := make(map[string]<-chan struct{})
 	// teardownStarted says the snapshot below has already been taken, so no
@@ -767,12 +768,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session nothing would ever close, which no budget can end -- the expiry
 	// fired every time, on work that was neither wedged nor real.
 	defer func() {
+		bridgeStartMu.Lock()
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
-		// Closing the list and reading it are ONE critical section, so no
-		// bridgeSession can slip a drain in behind the snapshot.
+		// The bridge-start lock prevents bridgeSession from slipping a drain
+		// behind this snapshot while drainsMu protects the list itself.
 		teardownStarted = true
 		drainsMu.Unlock()
+		bridgeStartMu.Unlock()
 		// One budget for the whole teardown, not one per drain: what must be
 		// bounded is how long SIGTERM goes unanswered.
 		expiry := deps.drainWaitExpiry()
@@ -866,32 +869,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// Spawning this would reopen the window in which the session is live
 		// and its feed is still best-effort.
 		//
-		// The call and the registration are ONE critical section. An entry in
-		// bridgeDrains means "a drain exists that will close this channel", and
-		// each ordering without the lock breaks that in an opposite direction:
-		//
-		//   - Appending BEFORE the call leaves a channel nothing will ever close
-		//     if deps.bridge does not reach the drain. That is not theoretical
-		//     noise -- bridgeSession also runs from SetClearFunc on a net/http
-		//     handler goroutine, and net/http RECOVERS handler panics, so the
-		//     daemon would survive the panic and then wait out its whole
-		//     shutdown budget on a phantom, abandoning the tee. A loud crash
-		//     becomes a silent truncation.
-		//   - Appending AFTER it but outside the lock leaves a window in which
-		//     the teardown's snapshot misses a drain that is already live and
-		//     closes the tee under it, which is the crash this whole wait exists
-		//     to prevent.
-		//
-		// Holding drainsMu across both makes neither state observable: the
-		// snapshot runs either before deps.bridge is called or after the append,
-		// never between. deps.bridge does not block by contract, and nothing
-		// reachable from it takes drainsMu, so the section stays short. The
-		// unlock is deferred rather than written out because it must also run
-		// when deps.bridge panics -- an explicit unlock would leave the mutex
-		// held and deadlock the shutdown that the phantom was going to stall.
+		// The bridge start and drain registration are one critical section with
+		// teardown, but the bridge call itself must stay outside drainsMu because
+		// a closed session invokes onDrained synchronously.
 		drained := make(chan struct{})
-		drainsMu.Lock()
-		defer drainsMu.Unlock()
+		bridgeStartMu.Lock()
+		defer bridgeStartMu.Unlock()
 		// Past the teardown's snapshot, a drain started here would be one the
 		// wait cannot see, and the tee would be closed under it -- the same
 		// crash the wait exists to prevent, reached from the other side. The
@@ -917,12 +900,33 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// exits, it survives AFTER exit. Do not read this refusal as the thing
 		// that prevents that: declining to bridge a session and closing one are
 		// different acts, and only the second reaches the env.
-		if teardownStarted {
+		drainsMu.Lock()
+		teardown := teardownStarted
+		drainsMu.Unlock()
+		if teardown {
 			return
 		}
-		deps.bridge(srv, s, eventObserver, func() { close(drained) })
+		deps.bridge(srv, s, eventObserver, func() {
+			close(drained)
+			drainsMu.Lock()
+			if bridgeDrainBySession[s.ID()] == drained {
+				delete(bridgeDrainBySession, s.ID())
+			}
+			drainsMu.Unlock()
+		})
+		drainsMu.Lock()
 		bridgeDrains = append(bridgeDrains, drained)
 		bridgeDrainBySession[s.ID()] = drained
+		completed := false
+		select {
+		case <-drained:
+			completed = true
+		default:
+		}
+		if completed && bridgeDrainBySession[s.ID()] == drained {
+			delete(bridgeDrainBySession, s.ID())
+		}
+		drainsMu.Unlock()
 	}
 	waitForSessionBridgeDrain := func(sessionID string) bool {
 		drainsMu.Lock()

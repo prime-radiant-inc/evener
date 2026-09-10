@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -226,7 +225,7 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 		select {
 		case <-waitEntered:
 		case err := <-clearDone:
-			return fmt.Errorf("clear completed before old SESSION_END drained: %v", err)
+			return errors.Join(errors.New("clear completed before old SESSION_END drained"), err)
 		case <-t.Context().Done():
 			return t.Context().Err()
 		}
