@@ -78,6 +78,19 @@ func TestRegistrationRemoveClearsEntry(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("expected empty list after Remove, got %+v", entries)
 	}
+	if err := reg.UpdateSessionID("01LATE"); err == nil {
+		t.Fatal("expected UpdateSessionID after Remove to fail")
+	}
+	if err := reg.Register(runDir, rendezvous.Entry{PID: 9999}); err == nil {
+		t.Fatal("expected Register after Remove to fail")
+	}
+	entries, err = rendezvous.List(runDir)
+	if err != nil {
+		t.Fatalf("List after rejected resurrection: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected rejected resurrection to leave directory empty, got %+v", entries)
+	}
 }
 
 // TestUpdateSessionIDDefensiveBranches covers the two early-return guards in

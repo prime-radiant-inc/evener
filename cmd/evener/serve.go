@@ -656,8 +656,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	var currentMu sync.RWMutex
 	// identityTransitionMu serializes shutdown's ownership claim with a clear's
-	// final identity swap. It is the outer lock for the brief currentMu access;
-	// neither is held while acquiring the projection gate or waiting on a drain.
+	// final identity swap. It remains held through the old session's drain and
+	// identity projection; currentMu is held only for the brief ownership check.
 	var identityTransitionMu sync.Mutex
 	currentSess := sess
 	// currentEnv tracks the CURRENT session's execution environment (each session
@@ -933,11 +933,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		select {
 		case <-drained:
+			drainsMu.Lock()
+			if bridgeDrainBySession[sessionID] == drained {
+				delete(bridgeDrainBySession, sessionID)
+			}
+			drainsMu.Unlock()
 			return true
 		default:
 		}
 		select {
 		case <-drained:
+			drainsMu.Lock()
+			if bridgeDrainBySession[sessionID] == drained {
+				delete(bridgeDrainBySession, sessionID)
+			}
+			drainsMu.Unlock()
 			return true
 		case <-deps.drainWaitExpiry():
 			return false
