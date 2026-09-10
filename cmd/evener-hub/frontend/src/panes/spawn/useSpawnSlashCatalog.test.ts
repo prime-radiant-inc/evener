@@ -270,3 +270,37 @@ describe("useSpawnSlashCatalog", () => {
     expect(client.calls.filter((call) => call.method === "evener/spawn/slashCatalog")).toHaveLength(1);
   });
 });
+
+test("drops a late response from a replaced client", async () => {
+  vi.useFakeTimers();
+  const clientA = new FakeClient();
+  const clientB = new FakeClient();
+  let resolveA!: (response: SpawnSlashCatalogResponse) => void;
+  clientA.on("evener/spawn/slashCatalog", () => new Promise((done) => (resolveA = done)));
+  clientB.on("evener/spawn/slashCatalog", () => RESPONSE);
+  const { result, rerender } = renderHook(
+    ({ client }: { client: FakeClient }) =>
+      useSpawnSlashCatalog({ client, cwd: "/repo", harness: "evener", launchOverrides: {}, pluginRevision: 0 }),
+    { initialProps: { client: clientA } },
+  );
+  // Fire A's request, then swap the client before it resolves.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(250);
+  });
+  expect(clientA.calls.filter((call) => call.method === "evener/spawn/slashCatalog")).toHaveLength(1);
+  rerender({ client: clientB });
+  await act(async () => {
+    resolveA({
+      commands: [{ name: "stale-client", source: "test" }],
+      skills: [],
+    });
+    await flush();
+  });
+  // A's late response commits nothing; B's request serves the state.
+  expect(result.current.state.status).not.toBe("ready");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(250);
+    await flush();
+  });
+  expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
+});

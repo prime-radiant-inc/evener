@@ -2931,7 +2931,13 @@ test("a /goal prompt starts the session with the literal text and applies goal/s
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
   expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/goal build the widget" }] });
-  const goal = fake.calls.find((c) => c.method === "goal/set");
+  // The goal follow-up fires after navigation without blocking it, so wait
+  // for the call rather than assuming it landed.
+  let goal: { params?: unknown } | undefined;
+  await waitFor(() => {
+    goal = fake.calls.find((c) => c.method === "goal/set");
+    expect(goal).toBeTruthy();
+  });
   expect(goal?.params).toMatchObject({ ref: "local:abc123", objective: "build the widget" });
 });
 

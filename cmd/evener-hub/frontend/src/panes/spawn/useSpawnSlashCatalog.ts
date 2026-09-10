@@ -38,6 +38,18 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     launchOverridesRef.current = launchOverrides;
     harnessRef.current = harness;
   }, [launchOverrides, harness]);
+  // Client generation: bumped whenever the client identity changes, stamped
+  // into the request guard below. A reconnect that swaps the client object
+  // while a request is in flight must not let the old client's late response
+  // commit under a reused key — the key alone only covers catalog inputs.
+  const clientGenerationRef = useRef(0);
+  const lastClientRef = useRef(client);
+  useEffect(() => {
+    if (lastClientRef.current !== client) {
+      lastClientRef.current = client;
+      clientGenerationRef.current += 1;
+    }
+  }, [client]);
   const serializedOverrides = JSON.stringify(launchOverrides);
 
   const retry = useCallback(() => setRetryRevision((revision) => revision + 1), []);
@@ -66,6 +78,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     const timer = setTimeout(() => {
       const currentOverrides = launchOverridesRef.current;
       const currentHarness = harnessRef.current;
+      const requestGeneration = clientGenerationRef.current;
       const hasOverrides = Object.keys(currentOverrides).length > 0;
       const params = {
         cwd,
@@ -74,13 +87,13 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
       };
       void client.request("evener/spawn/slashCatalog", params).then(
         (response) => {
-          if (latestKey.current === requestKey) {
+          if (latestKey.current === requestKey && clientGenerationRef.current === requestGeneration) {
             lastResponse.current = { cwd, logicalKey, response };
             setState({ status: "ready", response });
           }
         },
         (error) => {
-          if (latestKey.current !== requestKey) return;
+          if (latestKey.current !== requestKey || clientGenerationRef.current !== requestGeneration) return;
           const cachedResponse = lastResponse.current;
           const response = cachedResponse?.logicalKey === logicalKey ? cachedResponse.response : undefined;
           setState(

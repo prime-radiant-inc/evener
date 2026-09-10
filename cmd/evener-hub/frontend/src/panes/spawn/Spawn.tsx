@@ -1177,9 +1177,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
-      // Post-start application failure toasts but does NOT block navigation:
-      // the session started fine, only the follow-up setting failed.
-      await runSpawnBuiltinAfterStart(builtinMatch.command.id, builtinMatch.argsText, ref, toasts);
+      // Post-start application runs AFTER navigation below: awaiting goal/set
+      // here would hold the UI in "Starting…" for the RPC timeout on a
+      // delayed follow-up even though the session already exists (and a retry
+      // could then create a duplicate session). Failure still toasts without
+      // blocking anything - the session started fine, only the follow-up
+      // setting failed. Not awaited: the pane stays mounted behind the
+      // session pane (floor §1.14), and toasts are global, so the outcome
+      // still surfaces.
+      void runSpawnBuiltinAfterStart(builtinMatch.command.id, builtinMatch.argsText, ref, toasts);
     }
     saveDefaults({
       cwd,
