@@ -74,7 +74,10 @@ func TestHubThreadListCancellationReleasesSourceWait(t *testing.T) {
 
 func TestPastEntryThreadForListUsesMetadataOnly(t *testing.T) {
 	entry := hubcore.PastEntry{StateDir: "/path-that-must-not-be-opened", Meta: schema.SessionMeta{ID: "session-1", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/project"}}}
-	thread := pastEntryThreadForList(hubcore.WebConfig{}, entry)
+	thread, err := pastEntryThreadForList(context.Background(), hubcore.WebConfig{}, entry)
+	if err != nil {
+		t.Fatalf("metadata projection: %v", err)
+	}
 	if thread.ID != entry.Meta.ID || thread.CWD != entry.Meta.EnvInfo.WorkingDir {
 		t.Fatalf("metadata projection=%+v, want session metadata", thread)
 	}
