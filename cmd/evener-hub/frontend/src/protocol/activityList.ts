@@ -103,7 +103,12 @@ export class ActivityList {
     return this.run();
   };
   loadMore = (id: string, continuation: string): Promise<void> => {
-    if (this.disposed || !this.branches().some((branch) => branch.id === id && branch.continuation === continuation))
+    if (
+      this.disposed ||
+      this.state.unsupported ||
+      this.state.ended ||
+      !this.branches().some((branch) => branch.id === id && branch.continuation === continuation)
+    )
       return Promise.resolve();
     if (this.inFlight) {
       if (!this.queuedBranches.includes(id)) this.queuedBranches.push(id);
@@ -155,6 +160,7 @@ export class ActivityList {
             this.publish({
               error: sessionActionError("Could not load activity", error),
             });
+          if (!branch) this.queuedBranches = [];
         }
       }
       // Invalidation always gets a full refresh before any queued page. A
