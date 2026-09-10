@@ -24,6 +24,7 @@ import type {
   PluginSelectionError,
 } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
+import { slashCommandInvocation } from "../../shell/palette/catalogCommands";
 import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { effortLabel } from "../../shell/reasoningEffort";
@@ -96,6 +97,7 @@ import {
   sweepStaleModels,
 } from "./spawnDefaults";
 import {
+  PRE_SESSION_BUILTIN_IDS,
   resolveSpawnEffortItems,
   resolveSpawnModelItems,
   runSpawnBuiltinAfterStart,
@@ -441,10 +443,21 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // entry would submit as literal text once the session no longer loads it.
   // Only ready rows complete; the pre-session builtins stay offered throughout.
   const slashCatalogResponse = slashCatalog.state.status === "ready" ? catalogResponse : { commands: [], skills: [] };
+  // Pre-session builtins reserve their invocations: a catalog command or
+  // skill addressing the same "/name" would display as the builtin but always
+  // lose to it at submit (matchBuiltinInvocation runs first), so offering it
+  // is a lie. Plugin-qualified "/plugin:name" invocations never collide and
+  // pass through untouched.
+  // Pre-session builtins reserve their invocations: a catalog command or
+  // skill addressing the same "/name" would display as the builtin but always
+  // lose to it at submit (matchBuiltinInvocation runs first), so offering it
+  // is a lie. Plugin-qualified "/plugin:name" invocations never collide and
+  // pass through untouched.
+  const builtinInvocations = new Set(PRE_SESSION_BUILTIN_IDS.map((id) => `/${id}`));
   const slashMenuCatalog = mergeSlashCommands(
     spawnBuiltinCommands(),
-    slashCatalogResponse.commands,
-    slashCatalogResponse.skills ?? [],
+    slashCatalogResponse.commands.filter((c) => !builtinInvocations.has(slashCommandInvocation(c))),
+    (slashCatalogResponse.skills ?? []).filter((s) => !builtinInvocations.has(`/${s.name}`)),
   );
   // The menu is only ever open when a token matched AND the merged catalog
   // has at least one fuzzy label hit for it - a matched-but-empty token
@@ -1121,8 +1134,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // a prompt carrying attachments is never read as a command, and on a
     // non-evener harness there is no menu and no interception - the prompt
     // always spawns verbatim (same pluginSelectionSupported gate as slashOpen).
-    // A match still starts the session with the literal prompt text (the
-    // daemon expands plugin commands/skills in the first input itself).
+    // A match is CONSUMED like in-session Composer: the invocation text is
+    // stripped from the start input (these builtins are frontend-only, so the
+    // daemon would only receive the literal slash line as noise), and the
+    // builtin applies through its own path instead. Non-builtin prompts
+    // (including plugin commands/skills) still spawn verbatim - the daemon
+    // expands those in the first input itself.
     //
     // /goal applies post-start via runSpawnBuiltinAfterStart (goal/set has no
     // processing gate - it queues behind the running turn). /model and
@@ -1236,7 +1253,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
     const { ref } = await startThread(client, {
       cwd,
-      prompt,
+      // A matched builtin is consumed: its invocation text is stripped so the
+      // session starts dormant/configured rather than with a literal slash
+      // line as its first turn. Anything else spawns verbatim.
+      prompt: builtinMatch ? "" : prompt,
       attachments: attachments.toInputAttachments(),
       harness: harness || undefined,
       modelProvider: scalars.modelProvider,

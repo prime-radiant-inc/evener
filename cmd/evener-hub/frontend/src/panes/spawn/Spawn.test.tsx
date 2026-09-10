@@ -2923,6 +2923,37 @@ test("reopening the identical token restarts the highlight at the first option",
   expect((promptField() as HTMLTextAreaElement).value).toBe("/reasoning-effort ");
 });
 
+test("catalog entries colliding with pre-session builtins are not offered twice", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [
+        { name: "goal", description: "project goal runner", source: "project" },
+        { name: "deploy", description: "deploy the thing", source: "project" },
+      ],
+      skills: [{ name: "model", description: "project model helper" }],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  // "/goal" the project command and "/model" the project skill share their
+  // invocations with pre-session builtins, which always win at submit — so
+  // the menu offers each invocation exactly once (the builtin), while the
+  // non-colliding project command still appears.
+  await typeSlashQuery(user, fake, "/goal");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/goal")]);
+
+  await user.clear(promptField());
+  await typeSlashQuery(user, fake, "/model");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/model")]);
+
+  await user.clear(promptField());
+  await typeSlashQuery(user, fake, "/dep");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/deploy")]);
+});
+
 test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
@@ -3005,7 +3036,7 @@ test("the open spawn menu wires listbox roles and aria-activedescendant on the p
 // with the literal text, then applies the builtin against the new ref, then
 // navigates. Everything else spawns exactly as today.
 
-test("a /goal prompt starts the session with the literal text and applies goal/set on the new ref", async () => {
+test("a /goal prompt starts a dormant session and applies goal/set on the new ref", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("goal/set", () => ({ started: true }));
@@ -3022,7 +3053,7 @@ test("a /goal prompt starts the session with the literal text and applies goal/s
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
-  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/goal build the widget" }] });
+  expect((start?.params as { input?: unknown[] } | undefined)?.input ?? []).toEqual([]);
   // The goal follow-up fires after navigation without blocking it, so wait
   // for the call rather than assuming it landed.
   let goal: { params?: unknown } | undefined;
@@ -3033,7 +3064,7 @@ test("a /goal prompt starts the session with the literal text and applies goal/s
   expect(goal?.params).toMatchObject({ ref: "local:abc123", objective: "build the widget" });
 });
 
-test("a /model prompt starts the session with the model on thread/start and no follow-up set", async () => {
+test("a /model prompt starts a dormant session with the model on thread/start and no follow-up set", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
@@ -3066,7 +3097,7 @@ test("a /model prompt starts the session with the model on thread/start and no f
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
   expect(start?.params).toMatchObject({
-    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    input: [],
     modelProvider: "openai",
     model: "gpt-5",
   });
@@ -3077,7 +3108,7 @@ test("a /model prompt starts the session with the model on thread/start and no f
   expect(getToasts()).toEqual([]);
 });
 
-test("a /model prompt bootstraps past the required-model guard with the value on thread/start", async () => {
+test("a /model prompt bootstraps past the required-model guard with the value on thread/start and no literal first turn", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
@@ -3104,14 +3135,14 @@ test("a /model prompt bootstraps past the required-model guard with the value on
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
   expect(start?.params).toMatchObject({
-    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    input: [],
     modelProvider: "openai",
     model: "gpt-5",
   });
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
 });
 
-test("a /model prompt wins over a matching Advanced Options model override on thread/start", async () => {
+test("a /model prompt wins over a matching Advanced Options model override on thread/start with no literal first turn", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
@@ -3151,7 +3182,7 @@ test("a /model prompt wins over a matching Advanced Options model override on th
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
   expect(start?.params).toMatchObject({
-    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    input: [],
     modelProvider: "openai",
     model: "gpt-5",
   });
@@ -3276,7 +3307,7 @@ test("a model picked after a failed background load validates for /model", async
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
   expect(start?.params).toMatchObject({
-    input: [{ type: "text", text: "/model openai/gpt-5" }],
+    input: [],
     modelProvider: "openai",
     model: "gpt-5",
   });
@@ -3374,13 +3405,13 @@ test("a bare /model with no catalog spawns with no model follow-up and no error 
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
-  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/model" }] });
+  expect((start?.params as { input?: unknown[] } | undefined)?.input ?? []).toEqual([]);
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
   // No error toast: the fail-open path toasts nothing.
   expect(getToasts()).toEqual([]);
 });
 
-test("a /reasoning-effort prompt starts the session with the effort on thread/start and no follow-up set", async () => {
+test("a /reasoning-effort prompt starts a dormant session with the effort on thread/start and no follow-up set", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
@@ -3411,7 +3442,7 @@ test("a /reasoning-effort prompt starts the session with the effort on thread/st
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
   expect(start?.params).toMatchObject({
-    input: [{ type: "text", text: "/reasoning-effort high" }],
+    input: [],
     reasoningEffort: "high",
   });
   // No follow-up mutation: the value rides the start call itself, so it
