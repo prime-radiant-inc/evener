@@ -1,7 +1,7 @@
 // Pure formatting helpers for the dense activity tree rows. Kept React-free so
 // each is trivially unit-testable (same contract as transcript/messages/format).
 
-import type { ActivityUsage } from "../../../protocol/activityData";
+import { type ActivityUsage, isActivityFailure } from "../../../protocol/activityData";
 import { formatTokenCount } from "../transcript/messages/format";
 
 // formatUsagePair renders a delegate row's token cluster ("↑41k ↓6k"), or null
@@ -37,8 +37,7 @@ export function quietAnchorMillis(job: { lastOutputAt?: string; startedAt: strin
 // isFailedStatus is the single source for the danger set, shared by row dots,
 // fold-row failure counts, and terminal meta text.
 export function isFailedStatus(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  return normalized === "failed" || normalized === "exhausted" || normalized === "error";
+  return isActivityFailure(undefined, status);
 }
 
 export function jobStatusDotState(

@@ -6,6 +6,29 @@ import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activ
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
 describe("activitySummaryStore", () => {
+  test("stale continuation counts cannot settle a newer root request", () => {
+    resetActivitySummaryStoreForTests();
+    const continuationGeneration = activitySummaryStore.getState().beginRootFetch("ref_a", 1);
+    activitySummaryStore.getState().publishRootFetch("ref_a", continuationGeneration as number, {
+      active: 1,
+      failed: 0,
+      completed: 0,
+      complete: false,
+    });
+    const newerRoot = activitySummaryStore.getState().beginRootFetch("ref_a", 2, true);
+    activitySummaryStore.getState().publishContinuationCounts("ref_a", continuationGeneration as number, {
+      active: 9,
+      failed: 0,
+      completed: 0,
+      complete: false,
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      requestID: newerRoot,
+      loading: true,
+      counts: { active: 1, failed: 0, completed: 0, complete: false },
+    });
+  });
+
   test("uses the established-attempt gate and complete-count badge data", () => {
     resetActivitySummaryStoreForTests();
     expect(activitySummaryStore.getState().entries.has("ref_a")).toBe(false);

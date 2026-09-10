@@ -110,6 +110,19 @@ test("turn-based delegates aggregate their work without becoming unavailable", (
   expect(result.root.aggregate).toBe("ended");
 });
 
+test("turn-container continuation refresh is not blocked by stable projection fencing", () => {
+  const currentEntry = delegate();
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.turns = [shell("old-turn").job];
+  const patchEntry = delegate();
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.turns = [shell("new-turn").job];
+  const result = graftContinuationTree(tree([currentEntry], "next"), "session:root", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["new-turn"]);
+});
+
 test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
   const entry = delegate();
   const raw = tree([entry]);
@@ -149,6 +162,27 @@ test("merged summaries count failures and keep coverage separate from running st
   running.job.terminal = true;
   const settled = graftContinuationTree(current, "session:root", tree([running, exhausted]));
   expect(settled.root.aggregate).toBe("failed");
+});
+
+test("merged summaries classify failed statuses without requiring an outcome", () => {
+  const failed = shell("failed");
+  failed.job.status = "error";
+  failed.job.outcome = undefined;
+  const result = graftContinuationTree(tree([]), "session:root", tree([failed]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 1, completed: 0 });
+  expect(result.root.aggregate).toBe("failed");
+});
+
+test("merged summaries count empty turn-container delegates as one entry", () => {
+  const emptyTurns = delegate();
+  if (emptyTurns.delegate.type !== "delegate") throw new Error("unexpected delegate type");
+  delete emptyTurns.delegate.type;
+  emptyTurns.delegate.status = "completed";
+  emptyTurns.delegate.outcome = "completed";
+  emptyTurns.delegate.branch = {};
+  const result = graftContinuationTree(tree([]), "session:root", tree([emptyTurns]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 0, completed: 0 });
+  expect(result.root.aggregate).toBe("idle");
 });
 
 test("partial descendant coverage stays incomplete until its last page loads", () => {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ActivityTree } from "../protocol/activityData";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
+import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activitySummary";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
 function tree(revision = 1) {
@@ -108,6 +109,30 @@ describe("activityPanelStore", () => {
     expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
       kind: "ready",
       tree: { root: { aggregate: "idle", counts: { active: 0, failed: 0, completed: 0, complete: true } } },
+    });
+  });
+
+  test.each([false, true])("continuation summary preserves a newer root request: %s", (newerRoot) => {
+    resetActivityPanelStoreForTests();
+    resetActivitySummaryStoreForTests();
+    const original = tree();
+    const summaryRequest = activitySummaryStore.getState().beginRootFetch("ref_a", 1);
+    if (summaryRequest === null) throw new Error("initial summary request was not admitted");
+    activitySummaryStore.getState().publishRootFetch("ref_a", summaryRequest, original.root.counts);
+    const rootRequest = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", rootRequest, { kind: "ready", tree: original });
+
+    const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+    const expectedGeneration = newerRoot
+      ? activitySummaryStore.getState().beginRootFetch("ref_a", 2, true)
+      : summaryRequest;
+    // Deliver the already-requested page only after the optional newer root request.
+    activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: tree(2) });
+
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      requestID: expectedGeneration,
+      loading: newerRoot,
+      counts: newerRoot ? original.root.counts : { active: 0, failed: 0, completed: 0, complete: true },
     });
   });
 

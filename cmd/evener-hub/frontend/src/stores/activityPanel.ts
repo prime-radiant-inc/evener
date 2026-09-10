@@ -10,6 +10,7 @@ import {
   defaultExpandedIDs,
   reconcileActivityState,
 } from "../protocol/activityData";
+import { activitySummaryStore } from "./activitySummary";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 import type { PanelLoadFailure } from "./tasksPanel";
 
@@ -28,7 +29,7 @@ export interface ActivityPanelEntry {
   continuationLoadingID?: string;
   continuationFailures: Record<string, string | undefined>;
   requestID: number;
-  pending?: { kind: "root" } | { kind: "continuation"; nodeID: string };
+  pending?: { kind: "root" } | { kind: "continuation"; nodeID: string; summaryRequestID: number };
   expandedFoldIDs: string[];
 }
 
@@ -126,13 +127,14 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       const current = entryFor(state.entries, ref);
       requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
+      const summaryRequestID = activitySummaryStore.getState().entries.get(ref)?.requestID ?? 0;
       const next: ActivityPanelEntry = continuation
         ? {
             ...current,
             continuationLoadingID: continuation.nodeID,
             continuationFailures: { ...current.continuationFailures, [continuation.nodeID]: undefined },
             requestID,
-            pending: { kind: "continuation", nodeID: continuation.nodeID },
+            pending: { kind: "continuation", nodeID: continuation.nodeID, summaryRequestID },
           }
         : {
             ...current,
@@ -169,6 +171,11 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
           const previousTree = retainedTree(current.load);
           if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
+            const summary = activitySummaryStore.getState().entries.get(ref);
+            if (summary)
+              activitySummaryStore
+                .getState()
+                .publishContinuationCounts(ref, pending.summaryRequestID, tree.root.counts);
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];

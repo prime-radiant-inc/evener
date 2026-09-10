@@ -68,6 +68,88 @@ function timelineIdentity(item: MobileTimelineItem): string {
   return item.transcriptKey ?? item.id;
 }
 
+function timelineIdentities(item: MobileTimelineItem): Set<string> {
+  const identities = new Set([timelineIdentity(item)]);
+  if (item.kind === "activity" && item.members) {
+    for (const member of item.members) {
+      identities.add(member.transcriptKey ?? member.id);
+    }
+  }
+  const source = attachmentSourceIdentity(item);
+  if (source !== null) identities.add(source);
+  return identities;
+}
+
+function liveRevisionForItem(
+  item: MobileTimelineItem,
+  revisions: Map<string, number>,
+): number {
+  let revision = revisions.get(timelineIdentity(item)) ?? 0;
+  for (const identity of timelineIdentities(item)) {
+    revision = Math.max(revision, revisions.get(identity) ?? 0);
+  }
+  return revision;
+}
+
+function isLiveOwned(
+  item: MobileTimelineItem,
+  revisions: Map<string, number>,
+): boolean {
+  return [...timelineIdentities(item)].some((identity) => revisions.has(identity));
+}
+
+function projectActivityMembers(members: ActivityMember[]): MobileTimelineItem[] {
+  return clusterActivities(
+    members.map((member) => ({
+      family: member.state === "failed" ? `failed:${member.id}` : member.family,
+      item: { kind: "activity", ...member },
+    })),
+  );
+}
+
+function mergeLiveActivityMembers(
+  snapshot: Extract<MobileTimelineItem, { kind: "activity" }>,
+  currentItems: MobileTimelineItem[],
+  revisions: Map<string, number>,
+  entryRevision: number,
+): MobileTimelineItem[] | undefined {
+  const liveMembers = new Map<string, ActivityMember>();
+  for (const candidate of currentItems) {
+    if (candidate.kind !== "activity") continue;
+    for (const member of candidate.members ?? [candidate]) {
+      const identity = member.transcriptKey ?? member.id;
+      if ((revisions.get(identity) ?? 0) > entryRevision) {
+        liveMembers.set(identity, member);
+      }
+    }
+  }
+  let changed = false;
+  const members = (snapshot.members ?? [snapshot]).map((member) => {
+    const current = liveMembers.get(member.transcriptKey ?? member.id);
+    if (current) changed = true;
+    return current ?? member;
+  });
+  // Reuse the lifecycle projector so failed members retain their own rows.
+  return changed ? projectActivityMembers(members) : undefined;
+}
+
+function itemsAbsentFromSnapshot(
+  items: MobileTimelineItem[],
+  snapshotIdentities: Set<string>,
+  snapshotRows: Set<string>,
+): MobileTimelineItem[] {
+  return items.flatMap((item) => {
+    if (item.kind !== "activity") {
+      return snapshotRows.has(timelineIdentity(item)) ? [] : [item];
+    }
+    const members = item.members ?? [item];
+    const omitted = members.filter(
+      (member) => !snapshotIdentities.has(member.transcriptKey ?? member.id),
+    );
+    return omitted.length === members.length ? [item] : projectActivityMembers(omitted);
+  });
+}
+
 function decorateLifecycleItem(
   item: MobileTimelineItem,
   source: ThreadItem,
@@ -82,7 +164,8 @@ function decorateLifecycleItem(
 // Snapshot/live-tail merging can introduce a companion after later messages.
 // Keep attachments beside their source whenever both rows are retained.
 function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  const ids = new Set(items.map(timelineIdentity));
+  const sourceItems = items.filter((item) => item.kind !== "attachments");
+  const ids = new Set(sourceItems.flatMap((item) => [...timelineIdentities(item)]));
   const companions = new Map<string, MobileTimelineItem>();
   for (const item of items) {
     const sourceId = attachmentSourceIdentity(item);
@@ -90,9 +173,12 @@ function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
   }
   return items.flatMap((item) => {
     const sourceId = attachmentSourceIdentity(item);
-    if (sourceId !== null && companions.has(sourceId)) return [];
-    const companion = companions.get(timelineIdentity(item));
-    return companion ? [item, companion] : [item];
+    if (sourceId !== null) return companions.has(sourceId) ? [] : [item];
+    const attachments = [...timelineIdentities(item)].flatMap((identity) => {
+      const companion = companions.get(identity);
+      return companion ? [companion] : [];
+    });
+    return [item, ...attachments];
   });
 }
 
@@ -103,12 +189,7 @@ function activityClusterSegments(
 ): MobileTimelineItem[] {
   const members = cluster.members ? [...cluster.members] : [];
   members[updatedIndex] = updatedMember;
-  return clusterActivities(
-    members.map((member) => ({
-      family: member.state === "failed" ? `failed:${member.id}` : member.family,
-      item: { kind: "activity", ...member },
-    })),
-  );
+  return projectActivityMembers(members);
 }
 
 export type ConversationStatus =
@@ -1046,7 +1127,7 @@ export function createConversationStore() {
     priorFrozenIds: Set<string> = new Set(),
     supersededFrozenIds: Set<string> = new Set(),
   ): void {
-    const retainedIds = new Set(items.map(timelineIdentity));
+    const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
     truncatedItemIds.clear();
     for (const item of items) {
       let needsTruncation = false;
@@ -1118,9 +1199,9 @@ export function createConversationStore() {
     for (const id of [...pageOwnedIds]) {
       if (!retainedIds.has(id)) pageOwnedIds.delete(id);
     }
-    const retainedWireIds = new Set(items.map((item) => item.id));
+    const retainedIdentities = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
     for (const id of [...liveOwnedRevs.keys()]) {
-      if (!retainedWireIds.has(id)) liveOwnedRevs.delete(id);
+      if (!retainedIdentities.has(id)) liveOwnedRevs.delete(id);
     }
   }
 
@@ -1621,6 +1702,9 @@ export function createConversationStore() {
           // history drops.
           const rereadIds = new Set(conversation.items.map((i) => i.id));
           const rereadKeys = new Set(conversation.items.map(timelineIdentity));
+          const rereadIdentities = new Set(
+            conversation.items.flatMap((item) => [...timelineIdentities(item)]),
+          );
           const currentConvForMerge = currentSnapshot.conversation;
           const preservePageHistory =
             currentConvForMerge?.instanceId === conversation.instanceId &&
@@ -1628,18 +1712,24 @@ export function createConversationStore() {
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
           const supersededIds = new Set<string>();
-          const supersededVersions = new Map<string, MobileTimelineItem>();
+          const supersededVersions = new Map<string, MobileTimelineItem[]>();
           if (currentConvForMerge !== null) {
             for (const item of conversation.items) {
-              const current = currentConvForMerge.items.find(
-                (i) => timelineIdentity(i) === timelineIdentity(item),
-              );
-              const rev = current && liveOwnedRevs.get(current.id);
-              if (rev !== undefined && rev > entryLiveRev) {
-                if (current !== undefined) {
-                  supersededIds.add(item.id);
-                  supersededVersions.set(item.id, current);
+              const identity = timelineIdentity(item);
+              if (item.kind === "activity") {
+                const replacement = mergeLiveActivityMembers(item, currentConvForMerge.items, liveOwnedRevs, entryLiveRev);
+                if (replacement) {
+                  supersededIds.add(identity);
+                  supersededVersions.set(identity, replacement);
                 }
+                continue;
+              }
+              const current = currentConvForMerge.items.find(
+                (candidate) => candidate.kind === item.kind && timelineIdentity(candidate) === identity,
+              );
+              if (current && liveRevisionForItem(current, liveOwnedRevs) > entryLiveRev) {
+                supersededIds.add(identity);
+                supersededVersions.set(identity, [current]);
               }
             }
           }
@@ -1648,9 +1738,9 @@ export function createConversationStore() {
             // A newer whole-item notification can remove its attachment row.
             // Use the retained source's revision so a stale snapshot cannot
             // resurrect it, without keeping tombstones for evicted rows.
-            const sourceId = attachmentSourceId(item);
+            const sourceId = attachmentSourceIdentity(item);
             if (sourceId !== null) {
-              const sourceRev = liveOwnedRevs.get(sourceId);
+              const sourceRev = liveRevisionForItem(item, liveOwnedRevs);
               if (
                 sourceRev !== undefined &&
                 sourceRev > entryLiveRev &&
@@ -1661,12 +1751,11 @@ export function createConversationStore() {
                 return [];
               }
             }
-            return [
-              supersededIds.has(item.id)
-                ? (supersededVersions.get(item.id) as MobileTimelineItem)
-                : item,
-            ];
+            return supersededVersions.get(timelineIdentity(item)) ?? [item];
           });
+          const omittedItems = currentConvForMerge === null ? [] : itemsAbsentFromSnapshot(
+            currentConvForMerge.items, rereadIdentities, rereadKeys,
+          );
           let mergedCursor = olderCursor;
           if (preservePageHistory) {
             if (currentConvForMerge !== null) {
@@ -1678,16 +1767,14 @@ export function createConversationStore() {
               //    liveOwnedRevs that are not in the reread projection).
               // 4. Drop current-only items owned by NEITHER (not pageOwned,
               //    not liveOwned, not in reread) as omitted old history.
-              const pageOnlyItems = currentConvForMerge.items.filter(
+              const pageOnlyItems = omittedItems.filter(
                 (i) =>
-                  !rereadKeys.has(timelineIdentity(i)) &&
                   pageOwnedIds.has(timelineIdentity(i)),
               );
-              const liveTailItems = currentConvForMerge.items.filter(
+              const liveTailItems = omittedItems.filter(
                 (i) =>
-                  !rereadKeys.has(timelineIdentity(i)) &&
                   !pageOwnedIds.has(timelineIdentity(i)) &&
-                  liveOwnedRevs.has(i.id),
+                  isLiveOwned(i, liveOwnedRevs),
               );
               // Page history first (oldest), then reread items, then live tail.
               // Items owned by neither are dropped (omitted old history).
@@ -1703,11 +1790,10 @@ export function createConversationStore() {
           } else if (currentConvForMerge !== null) {
             // No page race, but still append live-owned items omitted from the
             // reread (live notifications that arrived during the await).
-            const liveTailItems = currentConvForMerge.items.filter(
+            const liveTailItems = omittedItems.filter(
               (i) =>
-                !rereadKeys.has(timelineIdentity(i)) &&
                 !pageOwnedIds.has(timelineIdentity(i)) &&
-                liveOwnedRevs.has(i.id),
+                isLiveOwned(i, liveOwnedRevs),
             );
             if (liveTailItems.length > 0) {
               mergedItems = [...mergedItems, ...liveTailItems];
@@ -1716,13 +1802,12 @@ export function createConversationStore() {
           // Accept a snapshot's removal of a companion when it also contains
           // the source, unless a live event changed that group during the read.
           mergedItems = mergedItems.filter((item) => {
-            const sourceId = attachmentSourceId(item);
+            const sourceId = attachmentSourceIdentity(item);
             return (
               sourceId === null ||
-              !rereadIds.has(sourceId) ||
+              !rereadIdentities.has(sourceId) ||
               rereadIds.has(item.id) ||
-              (liveOwnedRevs.get(sourceId) ?? 0) > entryLiveRev ||
-              (liveOwnedRevs.get(item.id) ?? 0) > entryLiveRev
+              liveRevisionForItem(item, liveOwnedRevs) > entryLiveRev
             );
           });
           mergedItems = attachToSources(mergedItems);
@@ -1809,9 +1894,9 @@ export function createConversationStore() {
           // to survive a future page merge. Live-owned items NOT in the reread
           // stay in the map (still live-only / live tail).
           for (const item of conversation.items) {
-            const rev = liveOwnedRevs.get(item.id);
+            const rev = liveRevisionForItem(item, liveOwnedRevs);
             if (rev === undefined || rev <= entryLiveRev) {
-              liveOwnedRevs.delete(item.id);
+              for (const identity of timelineIdentities(item)) liveOwnedRevs.delete(identity);
             }
           }
           pruneEvictedIds(committedItems);
@@ -2605,7 +2690,7 @@ export function createConversationStore() {
               ];
               const attachmentId = `${params.item.id}:attachments`;
               const attachments = projectItemAttachments(params.item);
-              markLiveOwned(params.item.id);
+              markLiveOwned(timelineIdentity(projectedWithReasoning));
               if (attachments) {
                 replacement.push({
                   kind: "attachments",
@@ -2723,7 +2808,7 @@ export function createConversationStore() {
                 truncatedItemIds.add(params.itemId);
               }
               // Fix round 1: Mark as live-owned — accepted delta update.
-              markLiveOwned(params.itemId);
+              markLiveOwned(timelineIdentity(existing));
               set({
                 conversation: {
                   ...conv,
@@ -2754,7 +2839,7 @@ export function createConversationStore() {
               // to "" (short content), so the item must no longer be frozen.
               truncatedItemIds.delete(params.itemId);
               // Fix round 1: Mark as live-owned — accepted reset update.
-              markLiveOwned(params.itemId);
+              markLiveOwned(timelineIdentity(existing));
               set({
                 conversation: {
                   ...conv,
@@ -2802,7 +2887,7 @@ export function createConversationStore() {
               truncatedItemIds.add(params.itemId);
             }
             // Mark live revision only on accepted exact update.
-            markLiveOwned(params.itemId);
+            markLiveOwned(timelineIdentity(existing));
             set({
               conversation: {
                 ...conv,
@@ -2872,7 +2957,7 @@ export function createConversationStore() {
               truncatedItemIds.add(params.itemId);
             }
             // Mark live revision only on accepted exact update.
-            markLiveOwned(params.itemId);
+            markLiveOwned(timelineIdentity(existing));
             set({
               conversation: {
                 ...conv,

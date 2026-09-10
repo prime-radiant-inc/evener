@@ -9,6 +9,12 @@ export interface ActivityCounts {
   complete: boolean;
 }
 
+export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
+  if (outcome === "failure" || outcome === "failed" || outcome === "exhausted") return true;
+  const normalized = status?.trim().toLowerCase();
+  return normalized === "failed" || normalized === "exhausted" || normalized === "error";
+}
+
 export interface ActivityBranchState {
   error?: string;
   truncated?: boolean;
