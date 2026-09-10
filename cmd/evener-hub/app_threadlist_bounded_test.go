@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -100,7 +101,7 @@ func TestHubThreadListCancellationReleasesSourceWait(t *testing.T) {
 	}()
 	<-entered
 	cancel()
-	if err := <-result; err != context.Canceled {
+	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("hubThreadList error=%v, want context cancellation", err)
 	}
 	<-done
@@ -113,7 +114,7 @@ func TestHubThreadListBoundsConcurrentSourcesAndKeepsOptionalErrors(t *testing.T
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	sources := appsource.NewRegistry()
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		sources.Add(&barrierThreadListSource{scriptedAppSource: &scriptedAppSource{id: fmt.Sprintf("source-%d", i), thread: appwire.Thread{ID: fmt.Sprintf("thread-%d", i)}}, started: started, release: release, current: &current, maximum: &maximum})
 	}
 	result := make(chan appwire.ThreadListResponse, 1)
@@ -131,6 +132,20 @@ func TestHubThreadListBoundsConcurrentSourcesAndKeepsOptionalErrors(t *testing.T
 	}
 	if maximum > threadListSourceWorkers {
 		t.Fatalf("maximum concurrent sources=%d, want <=%d", maximum, threadListSourceWorkers)
+	}
+}
+
+func TestHubThreadListZeroSourceTimeoutPreservesOptionalAndExplicitErrors(t *testing.T) {
+	sources := appsource.NewRegistry()
+	sources.Add(&failingThreadListSource{scriptedAppSource: &scriptedAppSource{id: "optional-expired"}, err: context.DeadlineExceeded})
+	response, err := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadListParams{}, 0)
+	if err != nil || len(response.Data) != 0 {
+		t.Fatalf("optional expired source response=%+v err=%v, want empty success", response, err)
+	}
+	params := appwire.ThreadListParams{SourceIDs: []string{"optional-expired"}}
+	_, err = hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, params, 0)
+	if err == nil {
+		t.Fatal("explicit expired source unexpectedly succeeded")
 	}
 }
 

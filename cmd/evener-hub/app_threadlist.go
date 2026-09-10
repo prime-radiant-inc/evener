@@ -40,7 +40,7 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	results := make(chan sourceResult, len(allowed))
 	jobs := make(chan int)
 	workerCount := min(threadListSourceWorkers, len(allowed))
-	for worker := 0; worker < workerCount; worker++ {
+	for range workerCount {
 		go func() {
 			for {
 				select {
