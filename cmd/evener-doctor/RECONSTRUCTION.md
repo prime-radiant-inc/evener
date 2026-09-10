@@ -63,6 +63,8 @@ whether output is an error; successful output keeps literal error-like prefixes.
 Text matching archive placeholders is retained because the archive cannot
 distinguish it from literal conversation text. Archived reasoning
 remains readable text, without invented provider signatures.
+Assistant tool markers are removed only when the entire content is the
+canonical marker-only block for its recorded calls; mixed text is retained.
 
 Attention resolutions retain their readable evidence in `source-snapshot.json`
 and are omitted from the runtime transcript. The archive lacks their originating

@@ -341,7 +341,7 @@ func TestReconstructPreservesMultipleCallsInOneRound(t *testing.T) {
 	result.Content = "second-result-sentinel"
 	source.Calls = append(source.Calls, call)
 	source.Results = append(source.Results, result)
-	source.Messages[3].Content += "\n[Tool: read_file]"
+	source.Messages[3].Content += "\n\n[Tool: read_file]"
 	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
 	if err != nil {
 		t.Fatal(err)
@@ -371,6 +371,43 @@ func TestReconstructPreservesLiteralMessageText(t *testing.T) {
 	}
 	if entries[0].Turn.Message.Text() != "[USER_INPUT]" || entries[2].Turn.Message.Text() != "[ASSISTANT]" {
 		t.Fatal("discarded literal message text")
+	}
+}
+
+func TestReconstructPreservesLiteralToolMarkerInAssistantText(t *testing.T) {
+	source := reconstructionSourceFixture(t)
+	const content = "[Tool: read_file]\n\nliteral-sentinel [Tool: read_file] tail-sentinel"
+	source.Messages[3].Content = content
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := agent.ResumeHistory(entries)
+	if history[1].Message.Text() != content {
+		t.Fatalf("changed ambiguous assistant content: %q", history[1].Message.Text())
+	}
+	parts := history[1].Message.Content
+	if len(parts) != 2 || parts[1].ToolCall == nil || parts[1].ToolCall.ID != "call_1" {
+		t.Fatal("lost structured tool call while preserving assistant text")
+	}
+}
+
+func TestReconstructRejectsMissingCallIndexBeforeStaging(t *testing.T) {
+	dbPath, meta, output := reconstructionFixture(t)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE tool_calls SET call_index=NULL`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = reconstructSession(context.Background(), "02wLIRxqmq3AUo6vl2OW37", dbPath, meta, "", output)
+	if err == nil {
+		t.Fatal("invented zero index for a call with an unknown position")
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("published output with unknown call index: %v", err)
 	}
 }
 

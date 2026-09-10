@@ -262,7 +262,7 @@ func readReconstructionSource(ctx context.Context, dbPath, sid string) (reconstr
 	if len(source.Messages) != source.MessageCount || source.MessageCount == 0 {
 		return source, errors.New("archive message count is incomplete or empty")
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT message_id, tool_name, COALESCE(tool_use_id,''), COALESCE(input_json,''), COALESCE(call_index,0) FROM tool_calls WHERE session_id=? ORDER BY message_id, call_index`, archiveID)
+	rows, err = tx.QueryContext(ctx, `SELECT message_id, tool_name, COALESCE(tool_use_id,''), COALESCE(input_json,''), call_index FROM tool_calls WHERE session_id=? ORDER BY message_id, call_index`, archiveID)
 	if err != nil {
 		return source, err
 	}
@@ -467,11 +467,14 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 					}
 				}
 			}
+			var markers []string
 			for _, c := range calls[m.ID] {
-				marker := "[Tool: " + c.Name + "]"
-				if n := strings.LastIndex(content, marker); n >= 0 {
-					content = content[:n] + content[n+len(marker):]
-				}
+				markers = append(markers, "[Tool: "+c.Name+"]")
+			}
+			// Only a canonical tool-only block has unambiguous provenance.
+			// In mixed content a matching marker may be literal assistant text.
+			if content == strings.Join(markers, "\n\n") {
+				content = ""
 			}
 		case schema.TurnTool, schema.TurnToolResults:
 			turn.Message.Role = llm.RoleTool
