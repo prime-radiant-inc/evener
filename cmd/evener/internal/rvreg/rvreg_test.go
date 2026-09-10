@@ -1,6 +1,8 @@
 package rvreg
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/rendezvous"
@@ -48,6 +50,51 @@ func TestRegistrationUpdatesSessionIdentity(t *testing.T) {
 	}
 	if entries[0].SourceID != "local" {
 		t.Errorf("SourceID=%q, want local", entries[0].SourceID)
+	}
+}
+
+func TestRegistrationRemoveRetriesAfterFailure(t *testing.T) {
+	runDir := t.TempDir()
+	reg := &Registration{}
+	const pid = 5151
+	if err := reg.Register(runDir, rendezvous.Entry{PID: pid, ThreadID: "01OLD", SessionID: "01OLD"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	artifact := filepath.Join(runDir, "5151.json")
+	if err := os.Remove(artifact); err != nil {
+		t.Fatalf("remove rendezvous artifact: %v", err)
+	}
+	if err := os.Mkdir(artifact, 0o700); err != nil {
+		t.Fatalf("replace artifact with directory: %v", err)
+	}
+	child := filepath.Join(artifact, "blocker")
+	if err := os.WriteFile(child, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	if err := reg.Remove(); err == nil {
+		t.Fatal("expected first Remove to fail")
+	}
+	if err := reg.UpdateSessionID("01LATE"); err == nil {
+		t.Fatal("expected late update to remain rejected after failed Remove")
+	}
+	if err := reg.Register(runDir, rendezvous.Entry{PID: pid}); err == nil {
+		t.Fatal("expected Register to remain rejected after failed Remove")
+	}
+	if err := os.Remove(child); err != nil {
+		t.Fatalf("remove blocker: %v", err)
+	}
+	if err := os.Remove(artifact); err != nil {
+		t.Fatalf("remove artifact directory: %v", err)
+	}
+	if err := reg.Remove(); err != nil {
+		t.Fatalf("retry Remove: %v", err)
+	}
+	entries, err := rendezvous.List(runDir)
+	if err != nil {
+		t.Fatalf("List after retry: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries after retry=%+v", entries)
 	}
 }
 

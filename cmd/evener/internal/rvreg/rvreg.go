@@ -55,14 +55,13 @@ func (r *Registration) UpdateSessionID(sessionID string) error {
 func (r *Registration) Remove() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.removed {
-		return nil
-	}
 	if !r.registered {
 		return nil
 	}
 	r.removed = true
 	err := rendezvous.Remove(r.runDir, r.entry.PID)
-	r.registered = false
+	if err == nil {
+		r.registered = false
+	}
 	return err
 }
