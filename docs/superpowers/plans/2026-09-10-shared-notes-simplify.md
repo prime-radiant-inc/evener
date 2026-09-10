@@ -19,7 +19,7 @@
 - Stop's existing steering-held gate remains authoritative: accepted notification stays parked, and saving does not release Stop.
 - Acknowledgment clears only the submitted generation. Older responses and pushes cannot overwrite newer or failed text.
 - Failed drafts survive panel close/reopen. Ambiguous requests retain their original identity for retry.
-- Preserve existing stored notes, including an explicitly cleared note.
+- Jesse approved a clean cutover: no migration or backward-compatibility layer. Preserve new-format notes across restore, including explicit clears.
 - Normalize once on the server using the existing whitespace and Unicode limits.
 - Read `docs/developing-evener/testing.md` before changing tests. Use real product code with external filesystem, clock, RPC, or provider seams; no internal behavior mocks.
 - Scope is PR #1070. Commit named paths and push normally to `origin/shared-notes`; do not merge into main.
@@ -40,8 +40,8 @@
 - Consume `clientMutationStore.executeAtomic(request, prepare, effect)`, `addPendingSteering`, `reflectDurableClientSteering`, `wakeForPendingSteering`.
 - Produce the existing `notes/human/set` method with the unchanged request fields and a response containing `Note string` (`note`) and `Receipt appwire.MutationReceipt` (`receipt`).
 - Change `Session.SetHumanNote(clientMutationID, note string)` to return `(appwire.NotesHumanSetResponse, error)` and update its actual callers; do not add a wrapper solely to preserve tests.
-- Canonical human-note state lives in `clientMutationSnapshot`. Ensure schema cloning/validation and read-only projection distinguish absent authority from an explicitly empty note. Resolve the preservation policy before implementing storage migration.
-- Existing metadata fields are in `agent/schema/snapshot.go`; the mutation loader in `agent/session_client_mutation_persist.go` rejects unknown fields. Removing journal fields therefore requires an explicit current-format preservation policy. Never reset a journal or weaken strict decoding globally.
+- Canonical human-note state lives in `clientMutationSnapshot`. Ensure schema cloning/validation and read-only projection distinguish absent authority from an explicitly empty note. Jesse confirmed no running instance has notes and approved a clean cutover without migration.
+- Existing metadata fields are in `agent/schema/snapshot.go`; the mutation loader in `agent/session_client_mutation_persist.go` rejects unknown fields. Remove obsolete notes delivery fields under the approved cutover, retaining strict decoding and unrelated journal fields. Do not reset or alter real journals.
 
 - [ ] **Write and run the first behavioral red test.** This catches storage committed through a refused notification. The existing fixture creates real session code; the store mutation seeds a durable fence.
 
@@ -78,7 +78,7 @@ type NotesHumanSetResponse struct {
 
 - [ ] **Add red/green durability tests one boundary at a time.** Use `clientMutationFaults.AfterReservation`, `BeforeEffectSnapshotRename`, and `AfterEffectSnapshotRename` with the real filesystem snapshot loader. Assert old note/no steer before effect, and new note/one typed steer after effect even when the call reports uncertainty. Retry with the same ID after restore and after a newer note: assert the recorded response, current latest note, and no duplicate steering. Two different IDs with the same canonical note produce one notification. Reject same-ID/different-payload reuse. Check recovery's effect-time fence because prepare is skipped.
 
-- [ ] **Project committed authority through every read.** Live `Meta`, notes snapshots/context, restore, thread snapshot, and past-session reads must expose the same committed note. Add independent fixture-file tests for a saved nonempty note, a saved clear with stale nonempty metadata, and the approved existing-data preservation policy. Remove old notes-specific intents, adoption, tombstones, annotation-after-acceptance, and their recovery calls only after equivalent durable guarantees are covered under the approved transaction semantics.
+- [ ] **Project committed authority through every read.** Live `Meta`, notes snapshots/context, restore, thread snapshot, and past-session reads must expose the same committed note. Add independent fixture-file tests for a saved nonempty note and a saved clear with stale nonempty metadata. Remove old notes-specific intents, adoption, tombstones, annotation-after-acceptance, and their recovery calls after equivalent new-format durable guarantees are covered. Do not add legacy import or delivery conversion.
 
 - [ ] **Preserve standard delivery behavior.** Test a held queue accepts note+typed notification while staying held; replay does not unpark it. Test receipt projection/consumption through normal steering delivery and no-op reconciliation. Update server/hub response forwarding and generated protocol declarations. Existing non-notes queue/start/stop contracts must remain unchanged.
 

@@ -20,7 +20,7 @@ A pre-commit persistence failure leaves the previous note and queue intact. A lo
 
 The mutation snapshot owns the human note. Live metadata, model context, notes reads, authoritative thread snapshots, restored sessions, and past-session reads must project that same committed value. Metadata's human-note field is a projection, not a second writer.
 
-Preserve existing stored notes, including an explicitly cleared note. Inspect the existing format before deciding how to seed the new authority. Any necessary compatibility/migration policy requiring approval must be resolved before implementation; do not silently discard data or invent a general compatibility layer.
+Jesse approved a clean cutover and confirmed that no running instance has any notes. Add no migration or backward-compatibility layer for this PR's old notes format. Remove its obsolete persisted delivery fields and keep strict journal decoding. Do not inspect or modify personal session files. Preserve notes written under the new format across restore, including an explicitly cleared note; an empty canonical value must never resurrect stale metadata.
 
 Agent notes and URLs stay in existing metadata storage. Their persistence lock must cover tentative mutation, durable write, and rollback. Preserve ownership, capability checks, scope enforcement, limits, events, TUI, and past-session display.
 
@@ -48,7 +48,7 @@ Keep the existing panel layout, agent-note rendering, URL list, and removal cont
 
 Use deterministic tests at real store/session boundaries with filesystem, network/RPC, provider, and clock seams only. Read `docs/developing-evener/testing.md` before changing tests.
 
-Backend cases: atomic acceptance; reservation-only crash; pre/post-effect-rename errors; same-ID replay after a newer save; concurrent same-value requests; fence rejection; held steering; restart and cleared-note restoration; live/past/context authority; no duplicate delivery; metadata rollback; literal-percent filenames with an independently constructed file-URL control.
+Backend cases: atomic acceptance; reservation-only crash; pre/post-effect-rename errors; same-ID replay after a newer save; concurrent same-value requests; fence rejection; held steering; restart and cleared-note restoration; live/past/context authority; no duplicate delivery; metadata rollback; literal-percent filenames with an independently constructed file-URL control. Tests cover the clean-cutover format rather than inventing legacy migration guarantees.
 
 Frontend cases: no request before 10 seconds; submission at 10 seconds; refocus cancellation; two panels sharing one draft/timer; clean focused remote updates; edits/reverts during pending saves; delayed old acknowledgment followed by newer rejection; failed close/reopen; unmount lifecycle; stable retry ID/payload; liveness/capability recheck; outbox receipt/rejoin integration. Use fake timers and real stores with scripted external RPC responses.
 

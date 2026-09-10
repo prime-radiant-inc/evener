@@ -1,5 +1,8 @@
 # Shared Notes Implementation Plan
 
+Historical implementation plan. Continue development with
+[the 2026-09-10 simplification plan](2026-09-10-shared-notes-simplify.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement per-session shared notes (human paragraph, agent paragraph, agent-curated URL list) across daemon, wire, hub, web UI, and TUI.

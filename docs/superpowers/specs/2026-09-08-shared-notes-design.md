@@ -1,5 +1,9 @@
 # Shared Notes Design
 
+Human-note persistence, delivery, and editor lifecycle are superseded by
+[the 2026-09-10 simplification design](2026-09-10-shared-notes-simplify-design.md).
+The remaining feature requirements continue to apply.
+
 Date: 2026-09-08. Approach A: first-class persisted fields, goal-style RPCs.
 Revision 2 folds in two adversarial review rounds (10 unique significant
 findings plus minors; neither reviewer disqualified).
