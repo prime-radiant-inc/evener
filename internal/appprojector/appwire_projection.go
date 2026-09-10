@@ -1688,20 +1688,7 @@ func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
 }
 
 func contextCompactionAnnouncement(data events.ContextCompactionData) string {
-	var lines []string
-	if strings.TrimSpace(data.Layer) != "" {
-		lines = append(lines, "Layer: "+strings.TrimSpace(data.Layer))
-	}
-	if data.TurnsBefore > 0 || data.TurnsAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", data.TurnsBefore, data.TurnsAfter))
-	}
-	if data.EstTokensBefore > 0 || data.EstTokensAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", data.EstTokensBefore, data.EstTokensAfter))
-	}
-	if len(lines) == 0 {
-		return "Context compaction ran"
-	}
-	return strings.Join(lines, "\n")
+	return schema.ContextCompaction(data).Announcement()
 }
 
 func pluginLoadedRaw(data events.PluginLoadedData) json.RawMessage {

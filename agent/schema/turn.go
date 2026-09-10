@@ -65,6 +65,9 @@ const (
 	// breakdown. It is retained in semantic history for transcript parity but
 	// excluded from provider history.
 	TurnRoundTimings TurnKind = "ROUND_TIMINGS"
+	// TurnContextCompaction records one context-management layer for replay.
+	// It is presentational and excluded from provider history.
+	TurnContextCompaction TurnKind = "CONTEXT_COMPACTION"
 )
 
 // AttentionResolutionInfo identifies one durable attention item and its
@@ -91,6 +94,35 @@ type RoundTimings struct {
 	AfterAction   time.Duration `json:"after_action_ns"`
 	LoopOverhead  time.Duration `json:"loop_overhead_ns"`
 	TotalRound    time.Duration `json:"total_round_ns"`
+}
+
+// ContextCompaction is the persisted counterpart of the live compaction
+// event. Its fields mirror events.ContextCompactionData without coupling the
+// transcript schema to the event package.
+type ContextCompaction struct {
+	Layer           string `json:"layer,omitempty"`
+	TurnsBefore     int    `json:"turns_before,omitempty"`
+	TurnsAfter      int    `json:"turns_after,omitempty"`
+	EstTokensBefore int    `json:"est_tokens_before,omitempty"`
+	EstTokensAfter  int    `json:"est_tokens_after,omitempty"`
+}
+
+// Announcement renders the stable presentational text for a compaction layer.
+func (c ContextCompaction) Announcement() string {
+	var lines []string
+	if strings.TrimSpace(c.Layer) != "" {
+		lines = append(lines, "Layer: "+strings.TrimSpace(c.Layer))
+	}
+	if c.TurnsBefore > 0 || c.TurnsAfter > 0 {
+		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", c.TurnsBefore, c.TurnsAfter))
+	}
+	if c.EstTokensBefore > 0 || c.EstTokensAfter > 0 {
+		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", c.EstTokensBefore, c.EstTokensAfter))
+	}
+	if len(lines) == 0 {
+		return "Context compaction ran"
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Announcement is the stable presentational text shared by live and cold
@@ -235,6 +267,8 @@ type Turn struct {
 	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
 	// RoundTimings carries the detail of one completed presentational round.
 	RoundTimings *RoundTimings `json:"round_timings,omitempty"`
+	// ContextCompaction carries one persisted compaction layer for replay.
+	ContextCompaction *ContextCompaction `json:"context_compaction,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`

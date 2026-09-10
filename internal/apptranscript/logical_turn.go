@@ -28,7 +28,9 @@ import (
 //     may retry after a failure, and grouping it into the opener's turn keeps
 //     StampTurnFailure applied to that turn). A continuation with no open
 //     group (a transcript that starts mid-turn) starts its own group.
-//   - Every other kind (SYSTEM, ENVIRONMENT, CHECKPOINT, SUMMARY,
+//   - Explicitly owned context compaction, CHECKPOINT and SUMMARY records
+//     extend the owner's contiguous open group.
+//   - Every other kind (SYSTEM, ENVIRONMENT, unowned CHECKPOINT or SUMMARY,
 //     MODEL_SWITCH, HOOK_COMPLETED, ATTENTION_RESOLUTION) is its own logical
 //     turn, grouped with nothing, and CLOSES the open group. This matches live
 //     gap-turn semantics.
@@ -53,27 +55,36 @@ func continuesLogicalTurn(kind schema.TurnKind) bool {
 	}
 }
 
+func ownedLogicalTurnKind(kind schema.TurnKind) bool {
+	switch kind {
+	case schema.TurnSteering, schema.TurnRoundTimings, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnContextCompaction:
+		return true
+	default:
+		return false
+	}
+}
+
 // groupOpenAfter reports whether the logical-turn group is open for
 // continuations once this kind has been appended: openers and continuations
 // leave a group open; standalone kinds close it.
-func groupOpenAfter(kind schema.TurnKind) bool {
-	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind)
+func groupOpenAfter(kind schema.TurnKind, owningTurnID string) bool {
+	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind) || ownedLogicalTurnKind(kind) && owningTurnID != ""
 }
 
 // recordStartsGroup reports whether a record of this kind starts a new
-// logical group given the kind of the record immediately before it ("" when
-// there is none). Openers always start a group; continuations join the open
+// logical group given whether the previous record left its group open.
+// Openers always start a group; continuations join the open
 // group (start one only when the previous record closed it); standalone kinds
 // always start — and close — their own group.
-func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, owningTurnID, openTurnID string) bool {
+func recordStartsGroup(kind schema.TurnKind, previousOpen, goalContinuation bool, owningTurnID, openTurnID string) bool {
 	if opensLogicalTurn(kind, goalContinuation) {
 		return true
 	}
-	if (kind == schema.TurnSteering || kind == schema.TurnRoundTimings) && owningTurnID != "" {
-		return !groupOpenAfter(prevKind) || owningTurnID != openTurnID
+	if ownedLogicalTurnKind(kind) && owningTurnID != "" && !goalContinuation {
+		return !previousOpen || owningTurnID != openTurnID
 	}
 	if continuesLogicalTurn(kind) {
-		return !groupOpenAfter(prevKind)
+		return !previousOpen
 	}
 	return true
 }
@@ -112,8 +123,9 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
 		a.open = true
-	case (kind == schema.TurnSteering || kind == schema.TurnRoundTimings) && owner != "":
+	case ownedLogicalTurnKind(kind) && owner != "" && entry.GoalContinuation == nil:
 		if a.open && len(a.turns) > 0 && a.turns[len(a.turns)-1].turnID == owner {
+			a.open = true
 			break
 		}
 		a.turns = append(a.turns, groupedTurn{turnID: owner})

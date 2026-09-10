@@ -147,7 +147,7 @@ func keysForTurns(turns []appwire.Turn) []string {
 }
 
 func TestItemReadersHonorRoundTimingOwner(t *testing.T) {
-	if recordStartsGroup(schema.TurnRoundTimings, schema.TurnAssistant, false, "turn_m10", "turn_m10") {
+	if recordStartsGroup(schema.TurnRoundTimings, true, false, "turn_m10", "turn_m10") {
 		t.Fatal("owned round timing started a new logical group")
 	}
 	timing := schema.NewTurn(schema.TurnRoundTimings, llm.System("Round 1 total=1s"))

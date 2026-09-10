@@ -367,6 +367,10 @@ func registerNoteClaim(ctx context.Context, claimLocked func()) bool {
 func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), *foldCommit, func() int) {
 	preCompactRan := false
 	artifactProduced := false
+	// Capture the owner once for this fold. The active owner is a mutation
+	// snapshot, so this read does not acquire s.mu while the publication
+	// transaction later holds attentionMu.
+	compactionOwner := s.activeTurnOwner()
 	var existingArtifacts []schema.Turn
 	if history != nil {
 		for _, turn := range *history {
@@ -405,6 +409,16 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// no side effect) and stays inline.
 	var pendingCompactionTurns []schema.Turn
 	ctx = contextmgr.WithCompactionTurnCallback(ctx, func(turn schema.Turn) {
+		if compactionOwner != "" {
+			turn.OwningTurnID = compactionOwner
+			// The context manager passes the newly created marker by value after
+			// placing it at history[0]. Update the folded history copy as well;
+			// otherwise the durable callback record and published history would
+			// disagree about its owner.
+			if len(*history) > 0 && (*history)[0].Kind == turn.Kind {
+				(*history)[0].OwningTurnID = compactionOwner
+			}
+		}
 		pendingCompactionTurns = append(pendingCompactionTurns, turn)
 		if isSessionNameCompactionTurn(turn) && !consumeMatchingCompactionArtifact(&existingArtifacts, turn) {
 			artifactProduced = true
@@ -455,6 +469,14 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				preCompactRan = true
 				var records []steeringTurnRecord
 				records, noteCommit = s.runPreCompactHook(ctx, history)
+				if compactionOwner != "" {
+					for i := len(*history) - len(records); i < len(*history); i++ {
+						(*history)[i].OwningTurnID = compactionOwner
+					}
+					for i := range records {
+						records[i].turn.OwningTurnID = compactionOwner
+					}
+				}
 				pendingSteering = append(pendingSteering, records...)
 			}
 			return
@@ -469,7 +491,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// self-compact nudge latch.
 	//
 	// commitTranscriptsLocked appends the fold's own transcript entries
-	// (checkpoint/summary turns, then the steering turns the fold injected,
+	// (context layer events, checkpoint/summary turns, then injected steering,
 	// in their history order) while the publication transaction still holds
 	// attentionMu — the transcript door — so no concurrently recorded
 	// turn's entry can sequence between the publish and these markers
@@ -478,8 +500,17 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// recorded after the fold). Write errors are carried into flush, where
 	// emitting is safe again.
 	var compactionTurnWriteErrs []error
+	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
 	commitTranscriptsLocked := func() {
+		compactionEventWriteErrs = make([]error, len(pendingCompactionEvents))
+		for i, event := range pendingCompactionEvents {
+			payload := schema.ContextCompaction(event)
+			turn := schema.NewTurn(schema.TurnContextCompaction, llm.System(payload.Announcement()))
+			turn.ContextCompaction = &payload
+			turn.OwningTurnID = compactionOwner
+			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
+		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
 		for i, turn := range pendingCompactionTurns {
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
@@ -505,8 +536,12 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if hook := s.cfg.testOnly.afterFoldSupersessionCheck; hook != nil {
 			hook()
 		}
-		for _, ccd := range pendingCompactionEvents {
-			s.emit(events.EventContextCompaction, ccd)
+		for i, event := range pendingCompactionEvents {
+			if i < len(compactionEventWriteErrs) && compactionEventWriteErrs[i] != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", compactionEventWriteErrs[i])})
+				continue
+			}
+			s.emit(events.EventContextCompaction, event)
 		}
 		for i, turn := range pendingCompactionTurns {
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)

@@ -96,22 +96,32 @@ func TestRoundTimingsAfterSelfCompactionRetainLiveReplayIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	latest := func(turns []appwire.Turn) replayItemIdentity {
+	affected := func(turns []appwire.Turn) []replayItemIdentity {
 		t.Helper()
 		var found []replayItemIdentity
 		for _, item := range replayItemIdentities(turns) {
-			if item.EventKind == appwire.ThreadItemEventKindRoundTimings {
+			if item.TurnID != owner {
+				continue
+			}
+			if item.EventKind == appwire.ThreadItemEventKindContextCompaction ||
+				item.EventKind == appwire.ThreadItemEventKindCompaction ||
+				item.EventKind == appwire.ThreadItemEventKindRoundTimings || item.Type == "steering" {
 				found = append(found, item)
 			}
 		}
-		if len(found) == 0 {
-			t.Fatal("missing completed round timing")
-		}
-		return found[len(found)-1]
+		return found
 	}
-	want, got := latest(read.Thread.Turns), latest(cold)
-	if want.TurnID != owner {
-		t.Fatalf("live timing owner=%s, want active turn %s", want.TurnID, owner)
+	want, got := affected(read.Thread.Turns), affected(cold)
+	if len(want) < 6 {
+		t.Fatalf("live compaction sequence has %d items, want context compaction, checkpoint, summary, steering, and timing: %#v", len(want), want)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("cold compaction sequence has %d items, live has %d:\nlive=%#v\ncold=%#v", len(got), len(want), want, got)
+	}
+	for i, item := range want {
+		if item.TurnID != owner {
+			t.Fatalf("live compaction item %d owner=%s, want active turn %s: %#v", i, item.TurnID, owner, item)
+		}
 	}
 	if !reflect.DeepEqual(got, want) {
 		for i, entry := range entries {
@@ -143,7 +153,7 @@ func TestRoundTimingsAfterSelfCompactionRetainLiveReplayIdentity(t *testing.T) {
 		paged = append(page.Data, paged...)
 		cursor = page.NextCursor
 	}
-	if got := latest(paged); !reflect.DeepEqual(got, want) {
+	if got := affected(paged); !reflect.DeepEqual(got, want) {
 		t.Fatalf("bounded compaction timing changed identity:\nlive=%#v\npaged=%#v", want, got)
 	}
 }

@@ -1282,7 +1282,7 @@ func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []stri
 func contextTurns(history []schema.Turn) []schema.Turn {
 	visibleCount := 0
 	for _, turn := range history {
-		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings {
+		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings && turn.Kind != schema.TurnContextCompaction {
 			visibleCount++
 		}
 	}
@@ -1291,7 +1291,7 @@ func contextTurns(history []schema.Turn) []schema.Turn {
 	}
 	visible := make([]schema.Turn, 0, visibleCount)
 	for _, turn := range history {
-		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings {
+		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings && turn.Kind != schema.TurnContextCompaction {
 			visible = append(visible, turn)
 		}
 	}
@@ -1304,13 +1304,13 @@ func recentContextCutoff(history []schema.Turn, preserveRecent int) (int, bool) 
 	}
 	seen := 0
 	for i, turn := range slices.Backward(history) {
-		if turn.Kind == schema.TurnAttentionResolution || turn.Kind == schema.TurnRoundTimings {
+		if turn.Kind == schema.TurnAttentionResolution || turn.Kind == schema.TurnRoundTimings || turn.Kind == schema.TurnContextCompaction {
 			continue
 		}
 		seen++
 		if seen == preserveRecent {
 			for j := i - 1; j >= 0; j-- {
-				if history[j].Kind != schema.TurnAttentionResolution && history[j].Kind != schema.TurnRoundTimings {
+				if history[j].Kind != schema.TurnAttentionResolution && history[j].Kind != schema.TurnRoundTimings && history[j].Kind != schema.TurnContextCompaction {
 					return i, true
 				}
 			}

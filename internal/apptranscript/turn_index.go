@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 14
+	turnIndexVersion        = 15
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -171,36 +171,13 @@ type indexedTurn struct {
 	// StartsGroup is derived once with the owning turn in scope. Readers and
 	// append recovery reuse the same boundary instead of inferring ownership
 	// from a continuation record's per-entry identity.
-	StartsGroup bool     `json:"starts_group,omitempty"`
-	TurnID      string   `json:"turn_id,omitempty"`
-	GroupItems  uint32   `json:"group_items,omitempty"`
-	GroupCalls  []string `json:"group_calls,omitempty"`
-}
-
-// groupRole classifies a record within its logical turn group.
-type groupRole string
-
-const (
-	// groupOpener starts a logical turn (USER_INPUT).
-	groupOpener groupRole = "opener"
-	// groupContinuation extends the open logical turn (ASSISTANT, TOOL,
-	// TOOL_RESULTS, TURN_FAILURE, STEERING). With no open turn it starts one.
-	groupContinuation groupRole = "continuation"
-	// groupStandalone is its own logical turn, grouped with nothing
-	// (every other kind).
-	groupStandalone groupRole = "standalone"
-)
-
-// groupRoleFor classifies a turn kind's role in a logical turn.
-func groupRoleFor(kind schema.TurnKind, goalContinuation bool) groupRole {
-	switch {
-	case opensLogicalTurn(kind, goalContinuation):
-		return groupOpener
-	case continuesLogicalTurn(kind):
-		return groupContinuation
-	default:
-		return groupStandalone
-	}
+	StartsGroup bool `json:"starts_group,omitempty"`
+	// GroupOpen retains the previous record's ownership-aware continuation
+	// boundary when a later append resumes from this index.
+	GroupOpen  bool     `json:"group_open,omitempty"`
+	TurnID     string   `json:"turn_id,omitempty"`
+	GroupItems uint32   `json:"group_items,omitempty"`
+	GroupCalls []string `json:"group_calls,omitempty"`
 }
 
 type turnIndexAnchor struct {
@@ -293,8 +270,6 @@ type indexedGroup struct {
 	items uint64
 	// calls is the set of command call ids the group's merged items use.
 	calls map[string]bool
-	// open reports whether the group accepts continuations.
-	open bool
 }
 
 // indexedGroups materializes the whole record list into logical groups in
@@ -307,8 +282,7 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	n := d.recordCount()
 	for i := range n {
 		record := d.recordAt(i)
-		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
-		join := !record.StartsGroup && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
+		join := !record.StartsGroup && len(groups) > 0
 		if join {
 			group := &groups[len(groups)-1]
 			group.end = i + 1
@@ -332,7 +306,6 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 			openerIndex: record.Index,
 			items:       uint64(record.GroupItems),
 			calls:       cloneGroupCalls(record.GroupCalls),
-			open:        role != groupStandalone,
 		}
 		groups = append(groups, group)
 	}
@@ -900,7 +873,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			// projection cannot disagree (kata: one name per entry).
 			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
 			owner := ""
-			if (entry.Turn.Kind == schema.TurnSteering || entry.Turn.Kind == schema.TurnRoundTimings) && !record.GoalContinuation {
+			if ownedLogicalTurnKind(entry.Turn.Kind) && !record.GoalContinuation {
 				owner = entry.Turn.OwningTurnID
 			}
 			if owner != "" {
@@ -909,13 +882,14 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 					openTurnID, openCalls = openGroupState(*index)
 				}
 			}
-			prevKind := schema.TurnKind("")
+			previousOpen := false
 			if len(appended) > 0 {
-				prevKind = appended[len(appended)-1].TurnKind
+				previousOpen = appended[len(appended)-1].GroupOpen
 			} else if n := index.recordCount(); n > 0 {
-				prevKind = index.recordAt(n - 1).TurnKind
+				previousOpen = index.recordAt(n - 1).GroupOpen
 			}
-			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, owner, openTurnID)
+			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, previousOpen, record.GoalContinuation, owner, openTurnID)
+			record.GroupOpen = groupOpenAfter(entry.Turn.Kind, owner)
 			if record.StartsGroup {
 				openTurnID = record.TurnID
 				openCalls = map[string]bool{}
@@ -1204,7 +1178,7 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		if err := ctx.Err(); err != nil {
 			return nil, projected, err
 		}
-		group := indexedGroup{id: thisSlot, start: groupStart, end: spanEnd, turnID: index.recordAt(groupStart).TurnID, openerIndex: index.recordAt(groupStart).Index, items: groupItems, calls: nil, open: false}
+		group := indexedGroup{id: thisSlot, start: groupStart, end: spanEnd, turnID: index.recordAt(groupStart).TurnID, openerIndex: index.recordAt(groupStart).Index, items: groupItems, calls: nil}
 		turn, projectedGroup, err := projectIndexedGroup(ctx, path, index, &group, entryOrdinalAt, project)
 		if err != nil {
 			return nil, projected, err

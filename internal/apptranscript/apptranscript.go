@@ -336,6 +336,25 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Status:               appwire.TurnStatusCompleted,
 			EventKind:            appwire.ThreadItemEventKindCompaction,
 		}}
+	case schema.TurnContextCompaction:
+		if turn.ContextCompaction == nil {
+			return nil
+		}
+		var raw json.RawMessage
+		if *turn.ContextCompaction != (schema.ContextCompaction{}) {
+			raw, _ = json.Marshal(map[string]any{"compaction": *turn.ContextCompaction})
+		}
+		return []appwire.ThreadItem{{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_context_compaction_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          "Context compaction",
+			Text:                 turn.ContextCompaction.Announcement(),
+			Status:               appwire.TurnStatusCompleted,
+			EventKind:            appwire.ThreadItemEventKindContextCompaction,
+			Raw:                  raw,
+		}}
 	case schema.TurnModelSwitch:
 		text := strings.TrimSpace(turn.Message.Text())
 		if text == "" {

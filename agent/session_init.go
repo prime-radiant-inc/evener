@@ -2012,7 +2012,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnRoundTimings {
+		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnRoundTimings && t.Kind != schema.TurnContextCompaction {
 			historyTurns++
 		}
 	}

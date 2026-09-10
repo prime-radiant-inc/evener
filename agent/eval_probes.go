@@ -121,7 +121,7 @@ func turnsToMessages(turns []schema.Turn) []llm.Message {
 	msgs := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
 		switch t.Kind {
-		case schema.TurnAttentionResolution, schema.TurnRoundTimings:
+		case schema.TurnAttentionResolution, schema.TurnRoundTimings, schema.TurnContextCompaction:
 			continue
 		case schema.TurnSteering:
 			msgs = append(msgs, llm.User(t.Message.Text()))

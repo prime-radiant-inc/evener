@@ -158,7 +158,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			// Resolution markers are private and transparent to tool-round
 			// structure, so look through them for this assistant's observation.
 			resultIndex := i + 1
-			for resultIndex < len(entries) && (entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution || entries[resultIndex].Turn.Kind == schema.TurnRoundTimings) {
+			for resultIndex < len(entries) && (entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution || entries[resultIndex].Turn.Kind == schema.TurnRoundTimings || entries[resultIndex].Turn.Kind == schema.TurnContextCompaction) {
 				resultIndex++
 			}
 			if resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnToolResults {
@@ -279,6 +279,20 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			}
 			if turn.RoundTimings != nil {
 				step.Extra["round_timings"] = turn.RoundTimings
+			}
+			steps = append(steps, step)
+			stepID++
+
+		case schema.TurnContextCompaction:
+			step := Step{
+				StepID:    stepID,
+				Source:    "system",
+				Message:   turn.Message.Text(),
+				Timestamp: formatTimestamp(turn),
+				Extra:     map[string]any{"evener_kind": "context_compaction"},
+			}
+			if turn.ContextCompaction != nil {
+				step.Extra["context_compaction"] = turn.ContextCompaction
 			}
 			steps = append(steps, step)
 			stepID++

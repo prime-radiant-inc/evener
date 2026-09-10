@@ -441,7 +441,7 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 func estimateTokens(turns []schema.Turn) int {
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
-		if t.Kind == schema.TurnAttentionResolution || t.Kind == schema.TurnRoundTimings {
+		if t.Kind == schema.TurnAttentionResolution || t.Kind == schema.TurnRoundTimings || t.Kind == schema.TurnContextCompaction {
 			continue
 		}
 		messages = append(messages, t.Message)
@@ -452,7 +452,7 @@ func estimateTokens(turns []schema.Turn) int {
 func contextTurnCount(history []schema.Turn) int {
 	count := 0
 	for _, turn := range history {
-		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings {
+		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings && turn.Kind != schema.TurnContextCompaction {
 			count++
 		}
 	}
@@ -465,7 +465,7 @@ func contextHistory(history []schema.Turn) []schema.Turn {
 	}
 	visible := make([]schema.Turn, 0, len(history))
 	for _, turn := range history {
-		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings {
+		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings && turn.Kind != schema.TurnContextCompaction {
 			visible = append(visible, turn)
 		}
 	}
@@ -478,7 +478,7 @@ func recentContextCutoff(history []schema.Turn, preserveRecent int) int {
 	}
 	seen := 0
 	for i, turn := range slices.Backward(history) {
-		if turn.Kind == schema.TurnAttentionResolution || turn.Kind == schema.TurnRoundTimings {
+		if turn.Kind == schema.TurnAttentionResolution || turn.Kind == schema.TurnRoundTimings || turn.Kind == schema.TurnContextCompaction {
 			continue
 		}
 		seen++
@@ -1455,7 +1455,7 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 // arguments and tool-result content — the parts that carry the exact values the
 // elicitor must preserve. Returns "" for turns with no textual content.
 func renderTurnForElicit(t schema.Turn) string {
-	if t.Kind == schema.TurnAttentionResolution || t.Kind == schema.TurnRoundTimings {
+	if t.Kind == schema.TurnAttentionResolution || t.Kind == schema.TurnRoundTimings || t.Kind == schema.TurnContextCompaction {
 		return ""
 	}
 	var b strings.Builder
@@ -1614,7 +1614,7 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 	crossedSteering := false
 	for i := cutoff; i < len(history); i++ {
 		k := history[i].Kind
-		if k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution || k == schema.TurnRoundTimings {
+		if k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution || k == schema.TurnRoundTimings || k == schema.TurnContextCompaction {
 			continue
 		}
 		if k == schema.TurnSteering {
@@ -1632,7 +1632,7 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 			cutoff--
 			continue
 		}
-		if k == schema.TurnSteering || ((k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution || k == schema.TurnRoundTimings) && (tracingToolResult || crossedSteering)) {
+		if k == schema.TurnSteering || ((k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution || k == schema.TurnRoundTimings || k == schema.TurnContextCompaction) && (tracingToolResult || crossedSteering)) {
 			cutoff--
 			continue
 		}
