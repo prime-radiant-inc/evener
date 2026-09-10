@@ -1,0 +1,123 @@
+default_platform(:ios)
+
+require_relative "testflight_readiness"
+
+platform :ios do
+  def api_key
+    app_store_connect_api_key(
+      key_id: ENV.fetch("APP_STORE_CONNECT_API_KEY_ID"),
+      issuer_id: ENV.fetch("APP_STORE_CONNECT_API_ISSUER_ID"),
+      key_content: ENV.fetch("APP_STORE_CONNECT_API_KEY_CONTENT"),
+      is_key_content_base64: true,
+      in_house: false,
+    )
+  end
+
+  def internal_group(app)
+    groups = Spaceship::ConnectAPI.get_beta_groups(filter: { app: app.id }, limit: 200).all_pages.flat_map(&:to_models).select do |candidate|
+      candidate.name == ENV.fetch("IOS_INTERNAL_TESTFLIGHT_GROUP") && candidate.is_internal_group
+    end
+    UI.user_error!("Expected one matching internal TestFlight group") unless groups.length == 1
+    group = groups.first
+    UI.user_error!("Configured internal TestFlight group does not have automatic build access") unless group.has_access_to_all_builds
+    group
+  end
+
+  def requested_build_query(app)
+    {
+      app_id: app.id,
+      version: ENV.fetch("IOS_MARKETING_VERSION"),
+      build_number: ENV.fetch("IOS_BUILD_NUMBER"),
+      platform: "IOS",
+    }
+  end
+
+  def ipa_identity(ipa_path)
+    info = FastlaneCore::IpaFileAnalyser.fetch_info_plist_file(ipa_path)
+    expected = {
+      "CFBundleIdentifier" => ENV.fetch("IOS_BUNDLE_IDENTIFIER"),
+      "CFBundleShortVersionString" => ENV.fetch("IOS_MARKETING_VERSION"),
+      "CFBundleVersion" => ENV.fetch("IOS_BUILD_NUMBER"),
+      "UIDeviceFamily" => [1],
+      "DTPlatformName" => "iphoneos",
+    }
+    UI.user_error!("IPA identity does not match the requested iPhone build") unless info && expected.all? { |key, value| info[key] == value }
+  end
+
+  def wait_for_internal_build(app, group)
+    timeout = Float(ENV.fetch("IOS_BUILD_READINESS_TIMEOUT_SECONDS", "120"))
+    interval = Float(ENV.fetch("IOS_BUILD_READINESS_POLL_INTERVAL_SECONDS", "5"))
+    TestflightReadiness.wait(timeout: timeout, interval: interval) do
+      builds = Spaceship::ConnectAPI::Build.all(**requested_build_query(app))
+      assigned = builds.length == 1 && group.fetch_builds.any? { |candidate| candidate.id == builds.first.id }
+      [builds, assigned]
+    end
+  rescue TestflightReadiness::AmbiguousError, TestflightReadiness::TerminalError, TestflightReadiness::TimeoutError => error
+    UI.user_error!(error.message)
+  end
+
+  def write_testflight_receipt(group, build, ipa_path)
+    require "digest"
+    require "json"
+    receipt_path = ENV.fetch("IOS_RECEIPT_PATH", "build/testflight-receipt.json")
+    File.write(receipt_path, JSON.pretty_generate({
+      bundle_identifier: ENV.fetch("IOS_BUNDLE_IDENTIFIER"),
+      marketing_version: ENV.fetch("IOS_MARKETING_VERSION"),
+      build_number: ENV.fetch("IOS_BUILD_NUMBER"),
+      internal_group: group.name,
+      internal_group_id: group.id,
+      processing_state: build.processing_state,
+      internal_build_state: build.build_beta_detail.internal_build_state,
+      build_id: build.id,
+      ipa_sha256: Digest::SHA256.file(ipa_path).hexdigest,
+    }) + "\n")
+  end
+
+  lane :preflight do
+    api_key()
+    app = Spaceship::ConnectAPI::App.find(ENV.fetch("IOS_BUNDLE_IDENTIFIER"))
+    UI.user_error!("App Store Connect app record was not found") unless app
+    internal_group(app)
+    builds = Spaceship::ConnectAPI::Build.all(**requested_build_query(app))
+    UI.user_error!("App Store Connect already contains this version/build") unless builds.empty?
+  end
+
+  desc "Upload the signed archive to the internal TestFlight track"
+  lane :testflight do
+    required = %w[APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_CONTENT IOS_INTERNAL_TESTFLIGHT_GROUP IOS_BUILD_NUMBER IOS_MARKETING_VERSION]
+    missing = required.reject { |name| ENV[name] && !ENV[name].empty? }
+    UI.user_error!("Missing App Store Connect credentials: #{missing.join(', ')}") unless missing.empty?
+
+    api_key = api_key()
+    app = Spaceship::ConnectAPI::App.find(ENV.fetch("IOS_BUNDLE_IDENTIFIER"))
+    UI.user_error!("App Store Connect app record was not found") unless app
+    group = internal_group(app)
+
+    ipa_path = ENV.fetch("IOS_IPA_PATH", "build/Evener.ipa")
+    ipa_identity(ipa_path)
+
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: ipa_path,
+      skip_waiting_for_build_processing: false,
+      distribute_external: false,
+      notify_external_testers: false,
+      submit_beta_review: false,
+    )
+
+    build = wait_for_internal_build(app, group)
+    write_testflight_receipt(group, build, ipa_path)
+  end
+
+  desc "Verify an already uploaded exact iPhone build without uploading"
+  lane :verify_testflight do
+    api_key()
+    app = Spaceship::ConnectAPI::App.find(ENV.fetch("IOS_BUNDLE_IDENTIFIER"))
+    UI.user_error!("App Store Connect app record was not found") unless app
+    group = internal_group(app)
+    ipa_path = ENV.fetch("IOS_IPA_PATH", "build/Evener.ipa")
+    ipa_identity(ipa_path)
+    build = wait_for_internal_build(app, group)
+    write_testflight_receipt(group, build, ipa_path)
+  end
+end
