@@ -18,13 +18,16 @@ import {
   type ActivityRow,
   buildActivityRows,
 } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/activityRows";
-import type { ActivityTree } from "../../cmd/evener-hub/frontend/src/protocol/activityData";
 import { ActivityList } from "../../cmd/evener-hub/frontend/src/protocol/activityList";
 import { stableDelegateDisplayStatus } from "../../cmd/evener-hub/frontend/src/protocol/stableDelegate";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ActivityDelegateDetails } from "./ActivityDelegateDetails";
 import { AnsiOutputLine } from "./AnsiOutputLine";
+import {
+  retainedActivityTree,
+  type RetainedActivity,
+} from "./activityRetention";
 import { JobOutput } from "./jobOutput";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -116,15 +119,23 @@ export function ActivitySheet({
   openSession: (ref: string, title: string) => void;
 }) {
   const colors = useColors();
-  const retained = useRef<ActivityTree | null>(null);
+  const retained = useRef<RetainedActivity>(null);
   const list = useMemo(
-    () => new ActivityList(client, sessionRef, threadId, retained.current),
+    () =>
+      new ActivityList(
+        client,
+        sessionRef,
+        threadId,
+        retainedActivityTree(retained.current, sessionRef, threadId),
+      ),
     [client, sessionRef, threadId],
   );
   const state = useSyncExternalStore(list.subscribe, list.getSnapshot);
   useEffect(() => {
-    retained.current = state.tree;
-  }, [state.tree]);
+    retained.current = state.tree
+      ? { ref: sessionRef, threadId, tree: state.tree }
+      : null;
+  }, [sessionRef, state.tree, threadId]);
   useEffect(() => () => list.dispose(), [list]);
   const started = useRef<ActivityList | undefined>(undefined);
   useEffect(() => {
