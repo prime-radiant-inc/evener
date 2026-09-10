@@ -29,17 +29,12 @@ env:
 
 jobs:
   archive-and-upload:
-    if: inputs.recovery_run_id == ''
+    if: inputs.recovery_run_id == '' && github.ref == 'refs/heads/main'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@v7
-      - name: Require main branch for TestFlight archive
-        if: github.ref != 'refs/heads/main'
-        run: |
-          echo "TestFlight archive must be dispatched from main; recovery accepts artifacts from main only." >&2
-          exit 1
       - name: Select and verify Xcode
         run: |
           sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
@@ -235,7 +230,7 @@ jobs:
           exit "$cleanup_status"
 
   verify-upload:
-    if: inputs.recovery_run_id != ''
+    if: inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
     runs-on: macos-26
     permissions:
       contents: read
@@ -278,9 +273,11 @@ jobs:
           bundle exec ruby -rfastlane_core/ipa_file_analyser -e '
             info = FastlaneCore::IpaFileAnalyser.fetch_info_plist_file("build/Evener.ipa")
             version = info.fetch("CFBundleShortVersionString")
+            build = info.fetch("CFBundleVersion")
+            abort "Invalid artifact build number" unless build.match?(/\A[1-9][0-9]{0,3}(?:\.[0-9]{1,2}){0,2}\z/)
             abort "IPA export encryption compliance is not false" unless info.fetch("ITSAppUsesNonExemptEncryption") == false
             abort "Invalid artifact marketing version" unless version.match?(/\A[0-9]+(?:\.[0-9]+){0,2}\z/)
-            File.open(ENV.fetch("GITHUB_ENV"), "a") { |file| file.puts("IOS_MARKETING_VERSION=#{version}") }
+            File.open(ENV.fetch("GITHUB_ENV"), "a") { |file| file.puts("IOS_MARKETING_VERSION=#{version}", "IOS_BUILD_NUMBER=#{build}") }
           '
       - name: Verify internal TestFlight availability without uploading
         working-directory: mobile-native
@@ -289,7 +286,6 @@ jobs:
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
           IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
-          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
           IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/recovered-testflight-receipt.json
           IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
         run: bundle exec fastlane ios verify_testflight
