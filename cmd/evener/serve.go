@@ -924,12 +924,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		bridgeDrains = append(bridgeDrains, drained)
 		bridgeDrainBySession[s.ID()] = drained
 	}
-	waitForSessionBridgeDrain := func(sessionID string) {
+	waitForSessionBridgeDrain := func(sessionID string) bool {
 		drainsMu.Lock()
 		drained := bridgeDrainBySession[sessionID]
 		drainsMu.Unlock()
-		if drained != nil {
-			<-drained
+		if drained == nil {
+			return true
+		}
+		select {
+		case <-drained:
+			return true
+		case <-deps.drainWaitExpiry():
+			return false
 		}
 	}
 
@@ -1091,15 +1097,20 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// client that discovers the new session id can always reach a daemon
 		// already serving it; a failure here still names the old session, which
 		// is still the live one.
-		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
-			newSess.Close() // disposes clearEnv
-			return fmt.Errorf("rendezvous update: %w", err)
-		}
 		identityTransitionMu.Lock()
 		shutdownClaimed := shutdownClosedTheLiveSession()
 		if shutdownClaimed {
 			closeSupersededSession(oldSess, true) // disposes oldEnv
-			waitForSessionBridgeDrain(oldSess.ID())
+			if !waitForSessionBridgeDrain(oldSess.ID()) {
+				identityTransitionMu.Unlock()
+				newSess.Close() // disposes clearEnv; old identity remains current
+				return errors.New("old session bridge did not drain before clear deadline")
+			}
+		}
+		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
+			identityTransitionMu.Unlock()
+			newSess.Close() // disposes clearEnv
+			return fmt.Errorf("rendezvous update: %w", err)
 		}
 		// One projection commit swaps the live session, the daemon's identity,
 		// and the turn snapshot. The stable workspace ref remains subscribed while
