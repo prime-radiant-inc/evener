@@ -192,7 +192,7 @@ func stampGroupedTurnFromEntries(turn *appwire.Turn, entries []schema.Turn) {
 	interrupted := false
 	for _, entry := range entries {
 		StampTurnFailure(turn, entry)
-		if entry.SteeringKind == events.SteeringKindInterrupted {
+		if entry.Kind == schema.TurnSteering && entry.SteeringKind == events.SteeringKindInterrupted {
 			interrupted = true
 		}
 		if startedAt == nil && !entry.Timestamp.IsZero() {
