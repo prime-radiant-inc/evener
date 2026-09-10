@@ -51,7 +51,7 @@ func (t *Tracker) State() State { return t.st }
 
 // ReplayBlock folds one durable environment block into the tracker state.
 // Blocks are diffs, so callers replay them in transcript order starting from
-// the metadata checkpoint. This closes the write-before-metadata crash window
+// the effective history boundary. This closes the write-before-metadata crash window
 // without treating the rendered model text as a new observation.
 func (t *Tracker) ReplayBlock(block string) bool {
 	if t == nil || !strings.Contains(block, "<environment_context>") {
