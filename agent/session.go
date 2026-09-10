@@ -1626,44 +1626,23 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 	); err != nil {
 		// RenderDiff advances the tracker before the transcript write so it can
 		// render the diff. Restore that state when durability fails, allowing a
-		// retry to emit the environment block. Only restore the same tracker:
-		// compaction may have replaced it while the write was in flight.
+		// retry to emit the environment block. attentionMu keeps compaction
+		// from replacing the tracker during this transaction.
 		s.mu.Lock()
-		if s.envTracker == tracker {
-			s.envTracker = envctx.NewTracker(before)
-		}
+		s.envTracker = envctx.NewTracker(before)
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		return err
 	}
 	// Persist tracker state so resume stays silent when nothing changed.
-	s.setEnvContextStateForTracker(tracker, st)
+	s.mu.Lock()
+	s.envContextState = &st
+	s.mu.Unlock()
 	s.attentionMu.Unlock()
+	s.maybeAutoSave()
 	s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	return nil
-}
-
-// setEnvContextState updates the mu-guarded mirror of envTracker.State() that
-// Meta() reads, then flushes meta.json — mirroring the lock-then-release-then-
-// maybeAutoSave pattern used by SetReasoningEffort/Rename (maybeAutoSave
-// re-acquires mu via Meta(), so it must not be called while mu is held).
-func (s *Session) setEnvContextState(st envctx.State) {
-	s.mu.Lock()
-	s.envContextState = &st
-	s.mu.Unlock()
-	s.maybeAutoSave()
-}
-
-func (s *Session) setEnvContextStateForTracker(tracker *envctx.Tracker, st envctx.State) {
-	s.mu.Lock()
-	if s.envTracker != tracker {
-		s.mu.Unlock()
-		return
-	}
-	s.envContextState = &st
-	s.mu.Unlock()
-	s.maybeAutoSave()
 }
 
 // resetEnvContextTrackerAfterCompaction clears the environment-context tracker
@@ -1676,15 +1655,17 @@ func (s *Session) setEnvContextStateForTracker(tracker *envctx.Tracker, st envct
 // can no longer see anything about.
 func (s *Session) resetEnvContextTrackerAfterCompaction() {
 	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	changed := s.resetEnvContextTrackerLocked()
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if changed {
 		s.maybeAutoSave()
 	}
 }
 
+// resetEnvContextTrackerLocked requires attentionMu and mu, so a fold and an
+// environment append cannot publish different tracker generations together.
 func (s *Session) resetEnvContextTrackerLocked() bool {
 	if s.envTracker == nil {
 		return false
