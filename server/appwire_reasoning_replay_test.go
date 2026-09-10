@@ -56,6 +56,49 @@ func TestServerAppWireReadReplaysProjectedReasoningWithTerminalIdentity(t *testi
 	}
 }
 
+func TestServerAppWireSteeringCarrierTurnStartedConsumesPendingIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_steering_carrier")
+	srv.SetProcessingTurn("turn_steer")
+	cursor := srv.appNotifier.CurrentSequence()
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_steering_carrier", Data: events.TurnStartedData{TurnID: "turn_steer"}})
+	srv.mu.RLock()
+	pending := srv.appPendingStableTurnID
+	srv.mu.RUnlock()
+	if pending != "" {
+		t.Fatalf("pending stable carrier identity=%q, want consumed by TurnStarted", pending)
+	}
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSteeringInjected, SessionID: "th_steering_carrier", Data: events.SteeringInjectedData{Text: "steering payload", Source: events.SteeringSourceUser}})
+	srv.SetProcessing(false)
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_steering_carrier", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	notifications := srv.AppNotificationsAfter(cursor, "th_steering_carrier")
+	var sawCompleted, sawIdle bool
+	for _, notification := range notifications {
+		switch notification.Notification.Method {
+		case appwire.NotifyTurnCompleted:
+			sawCompleted = true
+		case appwire.NotifyThreadStatusChanged:
+			var params appwire.ThreadStatusChangedParams
+			if err := json.Unmarshal(notification.Notification.Params, &params); err == nil && params.Status.Type == appwire.ThreadStatusIdle {
+				sawIdle = true
+			}
+		}
+	}
+	if !sawCompleted || !sawIdle {
+		t.Fatalf("carrier terminal notifications=%+v, want completed turn and idle status", notifications)
+	}
+
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_steering_carrier", IncludeTurns: true})
+	if read.Thread.Evener.ActiveTurnID != "" || read.Thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("carrier read state=(active %q, status %q), want empty/idle", read.Thread.Evener.ActiveTurnID, read.Thread.Status.Type)
+	}
+	if len(read.Thread.Turns) != 1 || read.Thread.Turns[0].ID != "turn_steer" || read.Thread.Turns[0].Status != appwire.TurnStatusCompleted {
+		t.Fatalf("carrier turns=%+v, want completed turn_steer", read.Thread.Turns)
+	}
+}
+
 func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_reasoning_boundary")
