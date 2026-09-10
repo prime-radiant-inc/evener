@@ -817,6 +817,9 @@ func (s *Server) SetProcessingTurn(turnID string) {
 func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
 	if !processing {
+		// The input runner has returned, including failed durable claims that
+		// emit no carrier. Buffered events retain their own ordered identity;
+		// keeping this reservation would advertise work that is no longer running.
 		if s.appPendingStableTurnID != "" {
 			if s.appActiveTurnID == s.appPendingStableTurnID {
 				s.appActiveTurnID = ""

@@ -184,6 +184,13 @@ func TestServerAppWireQueuedEventsRetainOwnershipAfterFastProcessingClear(t *tes
 	srv.SetProcessing(false)
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_fast_clear", Data: events.AssistantTextEndData{Text: "old answer"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_fast_clear", Data: events.TurnEndedData{TurnDurationMS: 1200}})
+	// Processing returns before this buffered event stream is consumed. Idle is
+	// now accurate, while the stable carrier still owns the queued new items.
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_fast_clear", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
+	settled := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_fast_clear"}).Thread
+	if settled.Status.Type != appwire.ThreadStatusIdle || settled.Evener.ActiveTurnID != "" {
+		t.Fatalf("settled state=(%q, %q), want idle/empty after processing returned", settled.Status.Type, settled.Evener.ActiveTurnID)
+	}
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_fast_clear", Data: events.GoalContinuationData{Text: "new", StableTurnID: "turn_new"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_fast_clear", Data: events.AssistantTextEndData{Text: "new answer"}})
 	srv.mu.RLock()
@@ -203,6 +210,11 @@ func TestServerAppWireQueuedEventsRetainOwnershipAfterFastProcessingClear(t *tes
 	}
 	if current.ID != "turn_new" || len(current.Items) != 2 || current.Items[1].Text != "new answer" || current.Items[1].TurnID != "turn_new" {
 		t.Fatalf("new turn=%+v, want new answer on turn_new", current)
+	}
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_fast_clear", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
+	completed := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_fast_clear", IncludeTurns: true}).Thread
+	if completed.Status.Type != appwire.ThreadStatusIdle || completed.Evener.ActiveTurnID != "" || completed.Turns[1].Status != appwire.TurnStatusCompleted {
+		t.Fatalf("completed buffered turn=%+v, want idle, no active identity, and completed new turn", completed)
 	}
 }
 
