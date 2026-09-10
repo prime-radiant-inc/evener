@@ -86,6 +86,42 @@ func TestHubForkCapabilityExcludesReadOnlyAndRemoteThreads(t *testing.T) {
 	}
 }
 
+func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		thread   appwire.Thread
+		wantFork bool
+	}{
+		{
+			name:     "owned idle local session",
+			thread:   appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:root", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}},
+			wantFork: true,
+		},
+		{
+			name:     "resume required",
+			thread:   appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:root", ResumeRequired: true, Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}},
+			wantFork: false,
+		},
+		{
+			name:     "restart required fallback",
+			thread:   appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusRestartRequired}, Evener: appwire.EvenerThread{Ref: "local:root", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}},
+			wantFork: false,
+		},
+		{
+			name:     "persisted subagent",
+			thread:   appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:child", Kind: "subagent", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}},
+			wantFork: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := applyHubForkCapability(tc.thread)
+			if got.Evener.Capabilities.ForkFromTurn != tc.wantFork {
+				t.Fatalf("forkFromTurn=%v, want %v (thread=%+v)", got.Evener.Capabilities.ForkFromTurn, tc.wantFork, got)
+			}
+		})
+	}
+}
+
 func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 	original := appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: testRawJSON(t, map[string]any{
 		"ref": "local:root", "status": map[string]any{"type": "active"}, "future_field": 17,

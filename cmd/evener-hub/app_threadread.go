@@ -91,6 +91,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
+			thread = applyHubForkCapability(thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
 	}
@@ -420,6 +421,16 @@ func hubOwnsThreadFork(thread appwire.Thread) bool {
 	return err == nil && ref.SourceID == "local" && thread.Evener.Kind != "subagent"
 }
 
+// applyHubForkCapability projects the hub's fork authority after the common
+// recovery fence has been applied. A daemon's capability set is not an
+// authority grant for persisted local forks, and a session needing recovery
+// cannot accept a fork until that fence clears.
+func applyHubForkCapability(thread appwire.Thread) appwire.Thread {
+	thread.Evener.Capabilities.ForkFromTurn = hubOwnsThreadFork(thread) &&
+		!thread.Evener.ResumeRequired && thread.Status.Type != appwire.ThreadStatusRestartRequired
+	return thread
+}
+
 // pastThreadCapabilities is what the hub can carry out for a thread with no
 // daemon behind it: the resume-and-retry session mutations (compact, clear,
 // change model, shutdown) plus the always-available ones (send, fork, goal,
@@ -539,6 +550,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 	}
+	thread = applyHubForkCapability(thread)
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	return thread, nil
 }

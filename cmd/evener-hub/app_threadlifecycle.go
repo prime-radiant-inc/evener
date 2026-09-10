@@ -768,6 +768,17 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return source.ForkThread(ctx, params)
 		})
 	}
+	if cfg.Past != nil {
+		if entry, ok := cfg.Past.Find(ref.ThreadID); ok {
+			thread, err := pastEntryThreadForList(ctx, cfg, entry)
+			if err != nil {
+				return appwire.ThreadForkResponse{}, err
+			}
+			if !hubOwnsThreadFork(thread) {
+				return appwire.ThreadForkResponse{}, appwire.Unavailable("subagent threads cannot be forked")
+			}
+		}
+	}
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, ref.ThreadID)
 	unlockDeletionTarget := lockDeletionTarget(cfg, params.Ref, ref.ThreadID)
 	defer unlockDeletionTarget()
