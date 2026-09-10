@@ -1,6 +1,6 @@
 # Evener Web Hub — Design System & Style Guide (v3)
 
-Status: **current editorial implementation, 2026-09-09; browser acceptance pending**. The canonical
+Status: **current editorial design system**. The canonical
 system for the React + CSS Modules frontend under `cmd/evener-hub/frontend/src/`.
 The real `/dev/widgets`, `/dev/type`, and `/dev/surfaces` galleries show it in both themes.
 
@@ -10,10 +10,8 @@ It does **not** replace the interaction law, widget APIs, semantic color meaning
 accessibility floors or honest-liveness rules. Source now implements tokens, shared
 widgets, typography, inline tool/delegate hierarchy, shell, forms, composer and ledgers.
 Some surfaces inherit shared styling rather than a separate redesign; see
-[source coverage](#editorial-source-coverage). Source implementation is not browser acceptance:
-the full-AppShell fixture review, actual-UI panel/fix/retest loop, final integrated gates,
-detached preview and unmerged PR remain pending. Nested Open transcript navigation has an
-unresolved review finding; this guide does not certify that workflow.
+[source coverage](#editorial-source-coverage). Release verification is recorded separately
+under [acceptance and limits](#acceptance-and-limits); this guide is not a release certificate.
 
 **Provenance and attribution.** The 2026-08-13 system adapted
 [Beautiful UI](https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine.
@@ -25,6 +23,56 @@ Source Serif 4 is self-hosted from `@fontsource-variable/source-serif-4` 5.3.0,
 SIL Open Font License 1.1; the package notice and license are reproduced below.
 
 ---
+
+## Design model: an editorial instrument
+
+**Conversation supports understanding; evidence supports verification; controls support
+intervention.** This is our design argument, inspired by Tufte, not a quotation or a claim
+of measured usability improvement. Typography and spacing serve that division of work.
+The reader should be able to follow a claim, inspect what happened, and act without
+losing the conversation that made the evidence relevant.
+
+- **Put evidence beside claims.** A tool row leads with authored intent, then the exact
+  action and target, then native code, diff, output or structured evidence. Intent explains
+  why; it does not replace the action or prove the result. This adds hierarchy rather than
+  another generated summary for the reader to trust.
+- **Disclose detail, not consequences.** Collapse bulky evidence to keep a conversation
+  readable, but leave failure and actionable status legible. Disclosure inspects in place;
+  Open navigates independently. Neither action should accidentally trigger the other.
+  Progressive disclosure costs an extra action to inspect detail; it must not conceal
+  the reason to inspect it.
+- **Keep different facts distinct.** Delegate lifecycle, attention, immutable launch receipt
+  and child-authored report answer different questions. A successful launch is not finished
+  work; an earlier report is not current activity. Prefer an honest unknown to an inferred
+  success. This is less reassuring than a single green badge, but more useful for supervision.
+- **Preserve the path into evidence.** Nested transcript inspection retains the owner and
+  immediate parent. Back returns to that parent, not an arbitrary focused pane or the root;
+  when the exact originating surface survives, retain its identity even if a session and a
+  read-only transcript share a ref. Context bookkeeping is the cost of letting a reader
+  investigate without rebuilding their place. See
+  [Open routing](../../cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx)
+  and [retained origins](../../cmd/evener-hub/frontend/src/shell/workspace.ts).
+- **Quiet the frame, not the controls.** Fine rules and aligned columns replace decorative
+  enclosure. Fields still look editable, overlays retain boundaries, focus remains visible,
+  and semantic color distinguishes attention, activity, failure and selection with text or
+  shape as well as hue. Minimalism is not permission to hide an affordance.
+- **Optimize readable density, not maximum density.** Prose gets a reading face and measure;
+  operations use compact sans; machine evidence uses mono. Larger prose occupies more space
+  but separates reading from scanning. Shared size and width preferences remain available.
+  Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
+  wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+
+The provenance corrections and nested navigation/focus repairs change behavior. Folding,
+disclosure persistence, keyboard rules, preferences and semantic hue roles are retained
+contracts, not inventions of this redesign. Other surfaces gain a coherent shared system
+without necessarily gaining a new workflow; the coverage section identifies that boundary.
+
+**Review questions.** Can a reader distinguish intent from execution and a receipt from a
+report? Is failure visible before expansion? Can they open evidence without toggling its
+disclosure, then return to the immediate context? Are editable fields and keyboard focus
+unmistakable in both themes? At phone widths and larger text settings, do prose, controls
+and wide evidence remain usable without hiding content? Review the real components and
+workflows, not only token swatches.
 
 ## Inline tools and delegates
 
@@ -64,7 +112,27 @@ Documents, read-only transcripts, menus, dialogs and notices inherit shared Mark
 CodeBlock, PaneScaffold, palette, radius and overlay styling; this is not a separate
 interaction rewrite for each surface. Gallery examples and deterministic tests support
 source coverage, not a claim that every workflow, theme, viewport or assistive technology
-has passed the pending browser acceptance work.
+has passed browser acceptance.
+
+## Acceptance and limits
+
+Release snapshot, 2026-09-10: the implementation is integrated and
+[PR #1124](https://github.com/prime-radiant-inc/evener/pull/1124) is an open draft, not
+merged-main acceptance. Source review, automation and hands-on review are separate evidence:
+
+- **Source and automation:** source changes were reviewed and integrated. The latest
+  unchanged browser suite and build passed; the final integrated twelve-gate run and its
+  full-output and power-state audits passed. An earlier writer scroll-guard failure was not
+  reproduced and remains unresolved; later passes do not explain it.
+- **Hands-on panel:** phone and workspace reviewers endorsed their reviewed surfaces.
+  The same tools reviewer still owes the mixed-origin native retest; its rejection remains
+  open. Source regression tests for nested Open/Back repairs do not substitute for that retest.
+- **Preview:** the detached preview still serves an older build; the authorized refresh
+  has not happened. It is not evidence for the final integrated implementation.
+
+No perceptual color/leading A/B study, real-device, Safari, assistive-technology or live-provider
+validation is claimed. Automated contrast and geometry checks constrain the design; they do
+not establish reading comfort or usability. The accessibility gaps in §8 remain documented.
 
 ## 1. Direction (the design law)
 
