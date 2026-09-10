@@ -114,6 +114,91 @@ func TestBwrapReadOnlyTmpWorktreeStarts(t *testing.T) {
 	}
 }
 
+// The /tmp remount must not happen before bwrap has created the mountpoints for
+// the cwd and explicit read grants. Exercise real mount enforcement, including
+// write-blocked restricted mode, without changing TMPDIR or widening grants.
+func TestBwrapReadOnlyTmpRootsPreserveAccess(t *testing.T) {
+	facts := requireRealBwrap(t)
+	for _, tc := range []struct {
+		name         string
+		mode         Mode
+		writeBlocked bool
+	}{
+		{"read-only", ModeReadOnly, false},
+		{"write-blocked-restricted", ModeRestricted, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Explicit /tmp fixture: this regression is about mounts shadowed by
+			// the private /tmp tmpfs, regardless of the test runner's TMPDIR.
+			base, err := os.MkdirTemp("/tmp", "evener-bwrap-read-roots-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(base) })
+			cwd := filepath.Join(base, "cwd")
+			readRoot := filepath.Join(base, "read-grant")
+			sessionTmp := filepath.Join(base, "session")
+			for _, dir := range []string{cwd, readRoot, sessionTmp} {
+				if err := os.Mkdir(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Keep git real: Resolve derives the grants from this checkout.
+			gitHarness(t, cwd, "init", "-q")
+			for _, dir := range []string{cwd, readRoot} {
+				if err := os.WriteFile(filepath.Join(dir, "readable"), []byte("fixture"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f := facts
+			f.Home = t.TempDir()
+			policy := SandboxPolicy{Mode: tc.mode, WriteBlocked: tc.writeBlocked}
+			grantArg := ""
+			if tc.mode == ModeRestricted {
+				policy.ExtraReadRoots = []string{readRoot}
+				grantArg = readRoot
+			}
+			rp, err := Resolve(policy, f, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := NewWrapper(rp, facts.BwrapPath, sessionTmp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const script = `set -eu
+test "$(cat "$1/readable")" = fixture
+printf writable > "$3/written"
+for dir in "$1" "$4"; do
+    if (printf forbidden > "$dir/forbidden") 2>/dev/null; then exit 11; fi
+done
+if test -n "$2"; then
+    test "$(cat "$2/readable")" = fixture
+    if (printf forbidden > "$2/forbidden") 2>/dev/null; then exit 12; fi
+fi
+echo ACCESS-OK`
+			argv := w.Wrap([]string{"/bin/bash", "-c", script, "read-roots-test", cwd, grantArg, sessionTmp, base}, cwd)
+			cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
+			cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("temporary read roots failed: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), "ACCESS-OK") {
+				t.Fatalf("access assertions did not finish: %s", out)
+			}
+			if data, err := os.ReadFile(filepath.Join(sessionTmp, "written")); err != nil || string(data) != "writable" {
+				t.Fatalf("session scratch write not preserved: %q %v", data, err)
+			}
+			for _, dir := range []string{cwd, readRoot, base} {
+				if _, err := os.Stat(filepath.Join(dir, "forbidden")); !os.IsNotExist(err) {
+					t.Fatalf("unexpected write under %s: %v", dir, err)
+				}
+			}
+		})
+	}
+}
+
 func TestBwrapConfinesAndMasks(t *testing.T) {
 	facts := requireRealBwrap(t)
 
