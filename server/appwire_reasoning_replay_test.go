@@ -118,10 +118,76 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T
 				t.Fatalf("decode status: %v", err)
 			}
 			if params.Status.Type == appwire.ThreadStatusIdle {
+				read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_carrier"})
+				if err != nil {
+					t.Fatalf("read after deferred terminal status: %v", err)
+				}
+				if read.Thread.Status.Type != appwire.ThreadStatusIdle || read.Thread.Evener.ActiveTurnID != "" {
+					t.Fatalf("read after deferred terminal status=(status %q, active %q), want idle/empty", read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID)
+				}
 				return
 			}
 		case <-deadline:
 			t.Fatal("subscribed client received no idle terminal status after abandoned carrier")
+		}
+	}
+}
+
+func TestServerAppWireCarrierDiscardsDeferredPriorTerminalStatus(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_carrier_wins")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_carrier_wins", Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
+	srv.SetProcessingTurn("new-turn")
+	cursor := srv.appNotifier.CurrentSequence()
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_carrier_wins", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_carrier_wins", Data: events.TurnStartedData{TurnID: "new-turn"}})
+	srv.SetProcessing(false)
+
+	for _, notification := range srv.AppNotificationsAfter(cursor, "th_carrier_wins") {
+		if notification.Notification.Method == appwire.NotifyThreadClosed {
+			t.Fatalf("deferred prior terminal closed the new carrier: %+v", notification)
+		}
+		if notification.Notification.Method != appwire.NotifyThreadStatusChanged {
+			continue
+		}
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatalf("decode status: %v", err)
+		}
+		if params.Status.Type == appwire.ThreadStatusIdle {
+			t.Fatalf("deferred prior terminal idled the new carrier: %+v", params)
+		}
+	}
+}
+
+func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_abandoned_closed")
+	client := dialServerAppWire(t, srv)
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_closed", Subscribe: true}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	srv.SetProcessingTurn("abandoned-closed-turn")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_abandoned_closed", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}})
+	srv.SetProcessing(false)
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case notification := <-client.Notifications():
+			if notification.Method != appwire.NotifyThreadClosed {
+				continue
+			}
+			read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_closed"})
+			if err != nil {
+				t.Fatalf("read after deferred closed status: %v", err)
+			}
+			if read.Thread.Status.Type != appwire.ThreadStatusClosed {
+				t.Fatalf("read after deferred closed status=%q, want closed", read.Thread.Status.Type)
+			}
+			return
+		case <-deadline:
+			t.Fatal("subscribed client received no deferred thread/closed notification")
 		}
 	}
 }

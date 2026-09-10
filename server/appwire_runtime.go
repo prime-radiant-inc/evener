@@ -533,6 +533,14 @@ func (s *Server) flushDeferredTerminalNotifications() {
 		}
 		pending := s.appDeferredTerminalNotifications
 		s.appDeferredTerminalNotifications = nil
+		for _, item := range pending {
+			if item.method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok {
+				s.status.State = params.Status.Type
+			}
+		}
 		s.mu.Unlock()
 
 		committed := make([]appserver.SequencedNotification, 0, len(pending))
