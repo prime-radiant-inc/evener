@@ -55,10 +55,8 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 			return nil
 		}
 		projection := appwire.MutationProjectionRemoved
-		record.ExecutionState = "completed"
 		if changed {
 			reserveClientMutationTurnID(snapshot, record)
-			record.ExecutionState = "accepted"
 			record.SteeringKind = events.SteeringKindHumanNote
 			text := "human updated their whiteboard: " + stored
 			if stored == "" {
