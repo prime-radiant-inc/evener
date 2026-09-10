@@ -68,6 +68,29 @@ function timelineIdentity(item: MobileTimelineItem): string {
   return item.transcriptKey ?? item.id;
 }
 
+function timelineIdentities(item: MobileTimelineItem): Set<string> {
+  const identities = new Set([timelineIdentity(item)]);
+  if (item.kind === "activity" && item.members) {
+    for (const member of item.members) {
+      identities.add(member.transcriptKey ?? member.id);
+    }
+  }
+  const source = attachmentSourceIdentity(item);
+  if (source !== null) identities.add(source);
+  return identities;
+}
+
+function liveRevisionForItem(
+  item: MobileTimelineItem,
+  revisions: Map<string, number>,
+): number {
+  let revision = revisions.get(timelineIdentity(item)) ?? 0;
+  for (const identity of timelineIdentities(item)) {
+    revision = Math.max(revision, revisions.get(identity) ?? 0);
+  }
+  return revision;
+}
+
 function decorateLifecycleItem(
   item: MobileTimelineItem,
   source: ThreadItem,
@@ -1046,7 +1069,7 @@ export function createConversationStore() {
     priorFrozenIds: Set<string> = new Set(),
     supersededFrozenIds: Set<string> = new Set(),
   ): void {
-    const retainedIds = new Set(items.map(timelineIdentity));
+    const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
     truncatedItemIds.clear();
     for (const item of items) {
       let needsTruncation = false;
@@ -1118,7 +1141,7 @@ export function createConversationStore() {
     for (const id of [...pageOwnedIds]) {
       if (!retainedIds.has(id)) pageOwnedIds.delete(id);
     }
-    const retainedIdentities = new Set(items.map(timelineIdentity));
+    const retainedIdentities = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
     for (const id of [...liveOwnedRevs.keys()]) {
       if (!retainedIdentities.has(id)) liveOwnedRevs.delete(id);
     }
@@ -1631,10 +1654,11 @@ export function createConversationStore() {
           const supersededVersions = new Map<string, MobileTimelineItem>();
           if (currentConvForMerge !== null) {
             for (const item of conversation.items) {
-              const current = currentConvForMerge.items.find(
-                (i) => timelineIdentity(i) === timelineIdentity(item),
+              const current = currentConvForMerge.items.find((i) =>
+                (i.kind === "attachments") === (item.kind === "attachments") &&
+                [...timelineIdentities(i)].some((id) => timelineIdentities(item).has(id)),
               );
-              const rev = current && liveOwnedRevs.get(timelineIdentity(current));
+              const rev = current && liveRevisionForItem(current, liveOwnedRevs);
               if (rev !== undefined && rev > entryLiveRev) {
                 if (current !== undefined) {
                   const identity = timelineIdentity(item);
@@ -1649,7 +1673,7 @@ export function createConversationStore() {
             // A newer whole-item notification can remove its attachment row.
             // Use the retained source's revision so a stale snapshot cannot
             // resurrect it, without keeping tombstones for evicted rows.
-            const sourceId = attachmentSourceIdentity(item);
+            const sourceId = attachmentSourceId(item);
             if (sourceId !== null) {
               const sourceRev = liveOwnedRevs.get(sourceId);
               if (
@@ -1717,13 +1741,13 @@ export function createConversationStore() {
           // Accept a snapshot's removal of a companion when it also contains
           // the source, unless a live event changed that group during the read.
           mergedItems = mergedItems.filter((item) => {
-            const sourceId = attachmentSourceIdentity(item);
+            const sourceId = attachmentSourceId(item);
             return (
               sourceId === null ||
-              !rereadKeys.has(sourceId) ||
-              rereadKeys.has(timelineIdentity(item)) ||
+              !rereadIds.has(sourceId) ||
+              rereadIds.has(item.id) ||
               (liveOwnedRevs.get(sourceId) ?? 0) > entryLiveRev ||
-              (liveOwnedRevs.get(timelineIdentity(item)) ?? 0) > entryLiveRev
+              (liveOwnedRevs.get(item.id) ?? 0) > entryLiveRev
             );
           });
           mergedItems = attachToSources(mergedItems);
@@ -1810,9 +1834,9 @@ export function createConversationStore() {
           // to survive a future page merge. Live-owned items NOT in the reread
           // stay in the map (still live-only / live tail).
           for (const item of conversation.items) {
-            const rev = liveOwnedRevs.get(timelineIdentity(item));
+            const rev = liveRevisionForItem(item, liveOwnedRevs);
             if (rev === undefined || rev <= entryLiveRev) {
-              liveOwnedRevs.delete(timelineIdentity(item));
+              for (const identity of timelineIdentities(item)) liveOwnedRevs.delete(identity);
             }
           }
           pruneEvictedIds(committedItems);
