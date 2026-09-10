@@ -10,6 +10,9 @@ export interface MutationDispatcherOptions {
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void;
   onHumanNoteResponse?: (record: MutationOutboxRecord, response: NotesHumanSetResponse) => void;
+  // Capture response authority immediately before each transport attempt,
+  // after any reconnect hydration, rather than once at durable enqueue.
+  prepareHumanNoteResponse?: (record: MutationOutboxRecord) => (response: NotesHumanSetResponse) => void;
   onHumanNoteReconciled?: (record: MutationRecord) => void;
 }
 
@@ -19,7 +22,7 @@ export class MutationDispatcher {
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions["onStorageChange"]>;
   readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions["onBlockedMutation"]>;
   readonly #onClearResponse: NonNullable<MutationDispatcherOptions["onClearResponse"]>;
-  readonly #onHumanNoteResponse: NonNullable<MutationDispatcherOptions["onHumanNoteResponse"]>;
+  readonly #prepareHumanNoteResponse: NonNullable<MutationDispatcherOptions["prepareHumanNoteResponse"]>;
   readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions["onHumanNoteReconciled"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
@@ -30,7 +33,8 @@ export class MutationDispatcher {
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
     this.#onClearResponse = options.onClearResponse ?? (() => undefined);
-    this.#onHumanNoteResponse = options.onHumanNoteResponse ?? (() => undefined);
+    this.#prepareHumanNoteResponse =
+      options.prepareHumanNoteResponse ?? ((record) => (response) => options.onHumanNoteResponse?.(record, response));
     this.#onHumanNoteReconciled = options.onHumanNoteReconciled ?? (() => undefined);
   }
 
@@ -114,6 +118,7 @@ export class MutationDispatcher {
         requestMethod: MethodName,
         params: Record<string, unknown>,
       ) => Promise<unknown>;
+      const applyHumanNoteResponse = method === "notes/human/set" ? this.#prepareHumanNoteResponse(record) : undefined;
       const result = await request.call(client, method, record.payload);
       const receipt = mutationReceipt(result);
       if (
@@ -131,7 +136,7 @@ export class MutationDispatcher {
       if (method === "notes/human/set") {
         if (!result || typeof result !== "object" || !("note" in result) || typeof result.note !== "string")
           return "stop";
-        this.#onHumanNoteResponse(record, { note: result.note, receipt });
+        applyHumanNoteResponse?.({ note: result.note, receipt });
       }
       await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       this.#onStorageChange([record.targetRef]);

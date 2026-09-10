@@ -178,10 +178,9 @@ export interface ThreadsStoreState {
   // after it). A successful response commits the known goal state locally;
   // the structured goal update push keeps every other client synchronized.
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
-  // Sets the session's human shared-note (an empty note clears it). Returns
-  // the stored post-clamp value. A successful response commits the known
-  // note locally; the evener/notes/updated push keeps every other client
-  // synchronized. Same generation-guard contract as setGoal above.
+  // Durably enqueues the human shared-note (an empty note clears it). Returns
+  // the committed outbox record, not the daemon acknowledgment. Receipt
+  // responses and evener/notes/updated publish canonical note state.
   setHumanNote(
     ref: string,
     note: string,
@@ -280,11 +279,12 @@ function invalidateGoalResponseFallback(ref: string): void {
 // not shared with urls: the two verbs write disjoint fields (humanNote vs
 // sessionUrls), and a urls/updated push carries no note state — sharing one
 // generation would drop a note commit on an unrelated URL removal.
-const notesResponseMutationIds = new Map<string, string>();
+// Durable ordering survives hydration: an older retry must not displace a
+// newer queued note even when both share the current authority generation.
+const notesLatestIntentSequences = new Map<string, number>();
 const notesUpdateGenerations = new Map<string, number>();
 
 function invalidateNotesResponseFallback(ref: string): void {
-  notesResponseMutationIds.delete(ref);
   notesUpdateGenerations.set(ref, (notesUpdateGenerations.get(ref) ?? 0) + 1);
 }
 
@@ -821,17 +821,26 @@ function getMutationRuntime(): MutationRuntime | null {
       const model = trackedThreadModel(record.targetRef);
       if (model) acknowledgeHumanNote(record, model.humanNote);
     },
-    onHumanNoteResponse: (record, response) => {
-      if (!isCurrentMutationRuntime(runtime)) return;
+    prepareHumanNoteResponse: (record) => {
       const ref = record.targetRef;
-      const current = notesResponseMutationIds.get(ref) === record.clientMutationId;
-      if (current) {
-        threadsStore.setState((state) => ({
-          threads: replaceThread(state.threads, ref, (model) => ({ ...model, humanNote: response.note })),
-          watchedThreads: replaceThread(state.watchedThreads, ref, (model) => ({ ...model, humanNote: response.note })),
-        }));
-      }
-      acknowledgeHumanNote(record, current ? response.note : (trackedThreadModel(ref)?.humanNote ?? response.note));
+      const generation = notesUpdateGenerations.get(ref);
+      notesLatestIntentSequences.set(ref, Math.max(notesLatestIntentSequences.get(ref) ?? 0, record.intentSequence));
+      return (response) => {
+        if (!isCurrentMutationRuntime(runtime)) return;
+        const current =
+          notesUpdateGenerations.get(ref) === generation &&
+          notesLatestIntentSequences.get(ref) === record.intentSequence;
+        if (current) {
+          threadsStore.setState((state) => ({
+            threads: replaceThread(state.threads, ref, (model) => ({ ...model, humanNote: response.note })),
+            watchedThreads: replaceThread(state.watchedThreads, ref, (model) => ({
+              ...model,
+              humanNote: response.note,
+            })),
+          }));
+        }
+        acknowledgeHumanNote(record, current ? response.note : (trackedThreadModel(ref)?.humanNote ?? response.note));
+      };
     },
   });
   const outbox = new MutationOutbox(storage, {
@@ -2810,7 +2819,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         optimisticDisplay: null,
       },
       (record) => {
-        if (notesUpdateGenerations.get(ref) === generation) notesResponseMutationIds.set(ref, record.clientMutationId);
+        notesLatestIntentSequences.set(ref, Math.max(notesLatestIntentSequences.get(ref) ?? 0, record.intentSequence));
         onCommitted?.(record);
       },
     );
@@ -3028,7 +3037,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   resetHumanNoteDrafts();
-  notesResponseMutationIds.clear();
+  notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
   resetActivitySummaryStoreForTests();
   resetTasksPanelStoreForTests();
