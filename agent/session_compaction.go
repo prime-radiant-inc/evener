@@ -160,6 +160,7 @@ func (s *Session) bumpHistoryRevisionLocked() {
 func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool) {
 	s.attentionMu.Lock()
 	s.mu.Lock()
+	previousEnvironmentIDs := environmentTurnIDs(s.history)
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
 	if !ok {
 		s.mu.Unlock()
@@ -191,7 +192,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if onPublishLocked != nil {
 		onPublishLocked(published)
 	}
-	commit.resetEnvContextTrackerLocked()
+	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
 	commit.claimNoteLocked()
 	commit.publishedRevision = s.historyRevision
 	// Publication-order marker for last-write-wins effect suppression, set
@@ -340,8 +341,31 @@ type foldCommit struct {
 	claimNoteLocked              func()
 	commitTranscriptsLocked      func()
 	flush                        func()
-	resetEnvContextTrackerLocked func()
+	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
+}
+
+func environmentTurnIDs(history []schema.Turn) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, turn := range history {
+		if turn.Kind == schema.TurnEnvironment && turn.StableTurnID != "" {
+			ids[turn.StableTurnID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func environmentTurnsRemoved(previous map[string]struct{}, published []schema.Turn) bool {
+	if len(previous) == 0 {
+		return false
+	}
+	present := environmentTurnIDs(published)
+	for id := range previous {
+		if _, ok := present[id]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // noteClaimRegistrarKey carries the fold staging's registrar for the
@@ -489,9 +513,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
 	commit := &foldCommit{}
-	commit.resetEnvContextTrackerLocked = func() {
+	commit.resetEnvContextTrackerLocked = func(removed bool) {
 		if len(pendingCompactionTurns) > 0 {
-			s.resetEnvContextTrackerLocked()
+			if removed {
+				s.resetEnvContextTrackerLocked()
+			}
 		}
 	}
 	flush := func() {
