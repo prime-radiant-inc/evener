@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -479,6 +480,11 @@ type GoalSnapshot struct {
 type Store struct {
 	mu   sync.Mutex
 	goal *Goal // nil = no goal set
+	// inRegisterCritical marks the registration mutation section (test seam
+	// for the lock-order discipline: substrate reads must never observe it
+	// set). Plain atomic, never under mu — the probe substrate reads it from
+	// inside substrate calls. Production ignores it.
+	inRegisterCritical atomic.Bool
 	// nextWaitID mints wait_ids monotonically (wait_1, wait_2, ...) so ids
 	// are deterministic in tests and never reused within the store lifetime
 	// (no ABA across cancel/re-register).
@@ -673,6 +679,13 @@ func (s *Store) SetSubstrate(sub Substrate) {
 	s.substrate = sub
 }
 
+// InRegisterCritical reports whether the store is inside a registration
+// mutation section (RegisterWait/RegisterExpect locked commit). Test seam
+// for the lock-order discipline: substrate reads must never observe it set
+// (ClassifyWaits precedent — session-locking substrate methods must run
+// outside Store.mu). Production ignores it.
+func (s *Store) InRegisterCritical() bool { return s.inRegisterCritical.Load() }
+
 // LastRejectReason names the most recent registration rejection, or "" when
 // the last RegisterWait succeeded (or none ran since Clear).
 func (s *Store) LastRejectReason() string {
@@ -791,21 +804,28 @@ func cloneLedgerSummary(in LedgerSummary) LedgerSummary {
 // SetSubstrate wiring is a later task's job; nil substrate rejects every
 // substrate kind fail-closed.)
 func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
-	// Baseline pre-read (lock-order discipline, cf. ClassifyWaits): StatFile
-	// is a session read (Session.mu → env) that must never run under the
-	// store lock. Snapshot the substrate pointer under a short hold, stat
-	// outside it, then re-acquire to mutate. SetSubstrate runs once at
-	// wiring, so the pointer is stable across the two holds.
+	// Substrate pre-pass (lock-order discipline, cf. ClassifyWaits): every
+	// Substrate method is a session read (LookupApproval takes Session.mu;
+	// StatFile takes Session.mu via currentEnv; job/delegate/child take
+	// manager/controller locks) that must never run under the store lock —
+	// SetGoal/ClearGoal take Session.mu across store.Set/Clear (the s.mu →
+	// Store.mu order), so any Store.mu → session-lock read here inverts it.
+	// Snapshot the substrate pointer under a short hold, evaluate the FULL
+	// validation + attach-scan snapshot outside it (prescanRegister), then
+	// re-acquire to commit the decision. SetSubstrate runs once at wiring,
+	// so the pointer is stable across the two holds.
+	//
+	// TOCTOU window (documented): registration validation is point-in-time.
+	// The timer/gate re-validates continuously — a stale-park self-corrects
+	// at the next tick via loss/expiry, a stale-reject is retryable.
 	s.mu.Lock()
 	preSub := s.substrate
 	s.mu.Unlock()
-	var preBaseline string
-	var preBaselineOK bool
-	if req.Kind == WaitUntilEvent && req.EventSubtype == EventFileModified && preSub != nil {
-		preBaseline, preBaselineOK = preSub.StatFile(req.Target)
-	}
+	pre := prescanRegister(preSub, req)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.inRegisterCritical.Store(true)
+	defer s.inRegisterCritical.Store(false)
 	g := s.goal
 	if g == nil {
 		return Wait{}, false
@@ -834,11 +854,13 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	// is a different wait), so an identical re-register dedupes instead of
 	// minting a duplicate lease. The replace-then-rescan below only
 	// handles the same-target-different-deadline shape.
-	// The baseline is the hoisted pre-read above (never re-stat under the
-	// lock — see the pre-read note): it feeds norm pre-key exactly as the
-	// in-lock stat did.
-	if norm.Kind == WaitUntilEvent && norm.EventSubtype == EventFileModified && s.substrate != nil && preBaselineOK {
-		norm.Baseline = preBaseline
+	// The baseline is the pre-pass snapshot above (never re-stat under the
+	// lock — see the pre-pass note): it feeds norm pre-key exactly as the
+	// in-lock stat did. A nil-substrate pre-pass leaves baselineOK false,
+	// so norm keeps its zero baseline and validation below rejects
+	// fail-closed exactly as before.
+	if norm.Kind == WaitUntilEvent && norm.EventSubtype == EventFileModified && pre.baselineOK {
+		norm.Baseline = pre.baseline
 	}
 	key := idempotencyKey(norm, deadline)
 	for _, w := range g.Waits {
@@ -913,60 +935,57 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	// trigger excerpt) instead of parking; anything else rejects with the
 	// reason named. Approval answers are excluded from catch-up by design: a
 	// consumed answer must not refire.
-	sub := s.substrate
-	if sub == nil {
+	// The decision replays the pre-pass snapshot (no substrate calls under
+	// the lock — see the pre-pass note). Error strings are byte-identical to
+	// the in-lock reads they replace.
+	if pre.subNil {
 		s.lastRejectReason = fmt.Sprintf("%s %q: no wait substrate wired", norm.Kind, norm.Target)
 		return Wait{}, false
 	}
-	catchUp := ""
+	catchUp := pre.catchUp
 	switch norm.Kind {
 	case WaitUntilJob:
-		liveT, retained, excerpt, ok := sub.LookupJob(norm.Target)
-		if !ok {
+		if !pre.validOK {
 			s.lastRejectReason = fmt.Sprintf("unknown job %q: no record in this session tree", norm.Target)
 			return Wait{}, false
 		}
 		switch {
-		case liveT:
-		case retained:
-			catchUp = excerpt
+		case pre.live:
+		case pre.retained:
 		default:
 			s.lastRejectReason = fmt.Sprintf("job %q is neither running nor retained-terminal", norm.Target)
 			return Wait{}, false
 		}
 	case WaitUntilDelegate:
-		liveT, retained, excerpt, ok := sub.LookupDelegate(norm.Target)
-		if !ok {
+		if !pre.validOK {
 			s.lastRejectReason = fmt.Sprintf("unknown delegate %q: no record in this session tree", norm.Target)
 			return Wait{}, false
 		}
 		switch {
-		case liveT:
-		case retained:
-			catchUp = excerpt
+		case pre.live:
+		case pre.retained:
 		default:
 			s.lastRejectReason = fmt.Sprintf("delegate %q is neither running/settling/stopping nor retained-terminal", norm.Target)
 			return Wait{}, false
 		}
 	case WaitUntilApproval:
-		if !sub.LookupApproval(norm.Target, norm.AskGeneration) {
-			s.lastRejectReason = fmt.Sprintf("no live ask for content key %q generation %q", norm.Target, norm.AskGeneration)
+		if !pre.validOK {
+			s.lastRejectReason = fmt.Sprintf("no live ask for content key %q", norm.Target)
 			return Wait{}, false
 		}
 	case WaitUntilChild:
-		if !sub.LookupChild(norm.Target) {
+		if !pre.validOK {
 			s.lastRejectReason = fmt.Sprintf("unknown child session %q: not a known descendant", norm.Target)
 			return Wait{}, false
 		}
 	case WaitUntilEvent:
 		switch norm.EventSubtype {
 		case EventFileModified:
-			baseline, ok := sub.StatFile(norm.Target)
-			if !ok {
+			if !pre.validOK {
 				s.lastRejectReason = fmt.Sprintf("unstatable file %q: not inside the session sandbox or missing", norm.Target)
 				return Wait{}, false
 			}
-			norm.Baseline = baseline
+			norm.Baseline = pre.baseline
 		case EventHTTPMatch:
 			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: http_match was removed (issue #1061 — follow it for the fetch-based watch type)", norm.EventSubtype)
 			return Wait{}, false
@@ -1013,23 +1032,33 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	}
 	// Attach-scan at registration (spec §2: already-true predicates do not
 	// park): evaluate the fresh lease against the substrate now. Already-true
-	// (file already modified, approval already answered, HTTP already
-	// matching) fires immediately with the §5 cooldown armed — the evaluation
-	// turn drives at once instead of parking until expiry. Job/delegate
-	// retained-terminal already routed to catchUp above; live ones park. A
-	// same-target replacement compares against the REPLACED lease's file
-	// baseline (not the just-snapshotted one, which would swallow the delta
-	// the re-register means to observe).
-	scanWait := w
-	if replacedBaseline != "" {
-		scanWait.Lease.Predicate.Baseline = replacedBaseline
+	// (file already modified, approval already answered) fires immediately
+	// with the §5 cooldown armed — the evaluation turn drives at once
+	// instead of parking until expiry. Job/delegate retained-terminal
+	// already routed to catchUp above; live ones park. The scan replays the
+	// pre-pass snapshot (no substrate calls under the lock): pre.scanFire /
+	// pre.scanTrigger were computed outside via waitPredicateTruth on the
+	// same predicate. A same-target replacement compares against the
+	// REPLACED lease's file baseline (not the just-snapshotted one, which
+	// would swallow the delta the re-register means to observe) — the
+	// pre-pass cannot know the replaced baseline (it is store state), so a
+	// replacement re-derives the file-delta scan from the two baselines
+	// without session reads.
+	scanFire, scanTrigger := pre.scanFire, pre.scanTrigger
+	if replacedBaseline != "" && norm.Kind == WaitUntilEvent && norm.EventSubtype == EventFileModified {
+		scanFire = pre.baseline != "" && pre.baseline != replacedBaseline
+		if scanFire {
+			scanTrigger = "file modified: " + norm.Target
+		} else {
+			scanTrigger = ""
+		}
 	}
-	if fire, trigger, _, _ := waitPredicateTruth(sub, scanWait, nil); fire {
+	if scanFire {
 		g.Waits = kept
 		if !hasLiveWait(kept) && g.Status == StatusWaiting {
 			g.Status = StatusActive
 		}
-		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: trigger, FiredAt: now, Kind: w.Lease.Kind})
+		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: scanTrigger, FiredAt: now, Kind: w.Lease.Kind})
 		g.UpdatedAt = now
 		s.settleParkAnchorLocked(now)
 		if s.cooldownUntil == nil {
@@ -1048,6 +1077,94 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	s.settleParkAnchorLocked(now)
 	s.lastRejectReason = ""
 	return w, true
+}
+
+// registerPrescan is the full substrate validation + attach-scan snapshot
+// for one RegisterWait request, evaluated OUTSIDE the store lock (the
+// lock-order discipline: Substrate methods take session/manager locks that
+// SetGoal/ClearGoal already order under Session.mu). The locked section
+// replays this snapshot without a single substrate call. Pure over (sub,
+// req): no store locks. A nil sub marks subNil and every validation
+// fail-closed, exactly as the in-lock reads did.
+type registerPrescan struct {
+	subNil      bool
+	validOK     bool
+	live        bool
+	retained    bool
+	catchUp     string
+	baseline    string
+	baselineOK  bool
+	scanFire    bool
+	scanTrigger string
+}
+
+// prescanRegister evaluates the registration snapshot for req against sub
+// with no store lock held. Caller passes the substrate pointer copied under
+// a short hold (nil = unwired).
+func prescanRegister(sub Substrate, req WaitKind) registerPrescan {
+	var pre registerPrescan
+	if sub == nil {
+		pre.subNil = true
+		return pre
+	}
+	timeout := req.Timeout
+	if timeout == 0 {
+		timeout = DefaultWaitTimeout
+	}
+	norm := req
+	norm.Timeout = timeout
+	switch norm.Kind {
+	case WaitUntilJob:
+		live, retained, excerpt, ok := sub.LookupJob(norm.Target)
+		pre.validOK = ok && (live || retained)
+		pre.live, pre.retained = live, retained
+		if ok && retained {
+			pre.catchUp = excerpt
+		}
+		if ok && live {
+			scan := Wait{Lease: Lease{Kind: norm.Kind, Predicate: norm}}
+			pre.scanFire, pre.scanTrigger, _, _ = waitPredicateTruth(sub, scan, nil)
+		}
+	case WaitUntilDelegate:
+		live, retained, excerpt, ok := sub.LookupDelegate(norm.Target)
+		pre.validOK = ok && (live || retained)
+		pre.live, pre.retained = live, retained
+		if ok && retained {
+			pre.catchUp = excerpt
+		}
+		if ok && live {
+			scan := Wait{Lease: Lease{Kind: norm.Kind, Predicate: norm}}
+			pre.scanFire, pre.scanTrigger, _, _ = waitPredicateTruth(sub, scan, nil)
+		}
+	case WaitUntilApproval:
+		pre.validOK = sub.LookupApproval(norm.Target, norm.AskGeneration)
+		if pre.validOK {
+			scan := Wait{Lease: Lease{Kind: norm.Kind, Predicate: norm}}
+			pre.scanFire, pre.scanTrigger, _, _ = waitPredicateTruth(sub, scan, nil)
+		}
+	case WaitUntilChild:
+		pre.validOK = sub.LookupChild(norm.Target)
+	case WaitUntilEvent:
+		switch norm.EventSubtype {
+		case EventFileModified:
+			baseline, ok := sub.StatFile(norm.Target)
+			pre.validOK = ok
+			pre.baseline, pre.baselineOK = baseline, ok
+			if ok {
+				scanNorm := norm
+				scanNorm.Baseline = baseline
+				scan := Wait{Lease: Lease{Kind: norm.Kind, Predicate: scanNorm}}
+				pre.scanFire, pre.scanTrigger, _, _ = waitPredicateTruth(sub, scan, nil)
+			}
+		case EventHTTPMatch, EventExternalLabel:
+			pre.validOK = false
+		default:
+			pre.validOK = false
+		}
+	default:
+		pre.validOK = false
+	}
+	return pre
 }
 
 // AutoWaitLabel is the chip label for the bounded stage-2 auto-wait lease

@@ -162,6 +162,12 @@ func TestRegisterWaitRetainedTerminalCatchUp(t *testing.T) {
 }
 
 func TestRegisterWaitApprovalGenerationBinding(t *testing.T) {
+	// AskGeneration is legacy-only (interface compat): the fake substrate
+	// models the (content key, generation) pair, so a stale generation
+	// still fails closed here; production additionally fail-closes ANY
+	// non-empty generation (no ask call carries a stable generation) and
+	// the tool layer rejects non-empty ask_generation outright. The store
+	// rejection names the content key, never the generation.
 	sub := &fakeSubstrate{approvals: map[string]bool{"ship it?\x00gen2": true}}
 	s := goal.NewStore()
 	s.Set("x", waveBClock())
@@ -170,8 +176,8 @@ func TestRegisterWaitApprovalGenerationBinding(t *testing.T) {
 	if _, ok := s.RegisterWait(stale, waveBClock()); ok {
 		t.Fatal("dangling wait from an earlier same-text ask must not validate against a later generation")
 	}
-	if reason := s.LastRejectReason(); !strings.Contains(reason, "gen1") {
-		t.Fatalf("reject reason %q must name the stale generation", reason)
+	if reason := s.LastRejectReason(); !strings.Contains(reason, "ship it?") || strings.Contains(reason, "gen1") {
+		t.Fatalf("reject reason %q must name the content key without the legacy generation", reason)
 	}
 	fresh := goal.WaitKind{Kind: goal.WaitUntilApproval, Target: "ship it?", AskGeneration: "gen2", Timeout: time.Minute}
 	if _, ok := s.RegisterWait(fresh, waveBClock()); !ok {
@@ -179,6 +185,29 @@ func TestRegisterWaitApprovalGenerationBinding(t *testing.T) {
 	}
 	if snap, _ := s.Snapshot(); snap.Status != goal.StatusWaiting {
 		t.Fatalf("status = %q, want waiting", snap.Status)
+	}
+}
+
+// TestAskGenerationExcludedFromIdempotency pins the legacy-only key: two
+// registrations differing only in AskGeneration are the same predicate and
+// dedupe to one lease (the tool layer rejects non-empty generations anyway;
+// the store key must not resurrect the dead state). The substrate answers
+// both pairs so validation passes either way and the key alone decides.
+func TestAskGenerationExcludedFromIdempotency(t *testing.T) {
+	s := goal.NewStore()
+	s.Set("x", waveBClock())
+	s.SetSubstrate(&fakeSubstrate{approvals: map[string]bool{"ship it?\x00": true, "ship it?\x00legacy-gen": true}})
+	first, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilApproval, Target: "ship it?", Timeout: time.Minute}, waveBClock())
+	if !ok {
+		t.Fatalf("first registration must park: %q", s.LastRejectReason())
+	}
+	dup, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilApproval, Target: "ship it?", AskGeneration: "legacy-gen", Timeout: time.Minute}, waveBClock())
+	if !ok || dup.Lease.WaitID != first.Lease.WaitID {
+		t.Fatalf("generation-only difference must dedupe to %q, got %+v ok=%v", first.Lease.WaitID, dup, ok)
+	}
+	gsnap, _ := s.GoalSnapshot()
+	if len(gsnap.Waits) != 1 {
+		t.Fatalf("generation split must not mint a second lease: %+v", gsnap.Waits)
 	}
 }
 

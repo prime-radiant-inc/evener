@@ -727,9 +727,17 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 			// committed AutoReparks.
 			snap, stillActive := s.foldGoalLedgerTurn(store, foldOutcome, waitAdvanced, now)
 			s.emitGoalUpdated(snap)
+			autoFull, _ := store.GoalSnapshot()
 			s.goalUpdateMu.Unlock()
 			if !stillActive {
 				return s.finishStallBlock()
+			}
+			if boundsBreachedAt(autoFull, store.ParkedTotalAt(now), now) {
+				// The auto-park-consumed fold just spent the last
+				// continuation: same committed-exhaustion rule as the
+				// plain-drive site — block instead of re-parking or
+				// rendering another prompt.
+				return s.blockGoalFromGate(goal.VerdictBudgetExhausted)
 			}
 			// Still stalled but bound remains: re-park the auto-wait for the
 			// next evaluation. The fold above already released goalUpdateMu
@@ -974,6 +982,18 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 		// would resume on restart). finishStallBlock also disarms the
 		// coalesced timer (Task-7 Minor-6 parity).
 		return s.finishStallBlock()
+	}
+	if boundsBreachedAt(driveFull, store.ParkedTotalAt(now), now) {
+		// The committed fold just spent the last continuation (or the parked
+		// total crossed mid-turn): rule 2 would block on the FOLLOWING gate,
+		// but rendering another prompt first hands the model a free turn past
+		// the cap. Enforce on the committed snapshot instead — same predicate
+		// as DecideGoalStep rule 2 (boundsBreachedAt), same terminal path as
+		// the StepBlock arm (blockGoalFromGate with VerdictBudgetExhausted).
+		// Count semantics unchanged: the fold already accrued exactly once.
+		// goalUpdateMu is already released above; blockGoalFromGate takes no
+		// locks itself.
+		return s.blockGoalFromGate(goal.VerdictBudgetExhausted)
 	}
 	// Turn-tail watchdog eval + activity signals (spec §6 Task-8 residual):
 	// the committed fold is ledger activity (signal 1 — the fold's own

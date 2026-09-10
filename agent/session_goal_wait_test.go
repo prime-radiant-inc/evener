@@ -1988,3 +1988,76 @@ func TestFixWaveTimerLossesKickNotice(t *testing.T) {
 	requirePersistedLossCause(t, store)
 	requireSingleLossNotice(t, sess)
 }
+
+// TestGoalWaitApprovalKeyPairContract pins the round-14 MEDIUM (header,
+// question) pair contract against the REAL goalSessionSubstrate: with a
+// headed ask {Header, Question} pending, an until_approval wait with the
+// two-half "header\x00question" key parks; a bare half-key against a
+// two-half ask rejects (documented behavior — bare halves match only
+// header-empty-or-question-empty asks); a bare half-key against a lone-half
+// ask parks (ambiguous-by-construction).
+func TestGoalWaitApprovalKeyPairContract(t *testing.T) {
+	t.Parallel()
+	newHeadedSession := func(t *testing.T, clk *agenttest.FakeClock, header, question string) *Session {
+		t.Helper()
+		sess := newWaitGateSession(t, clk)
+		wireKickAndNotify(sess)
+		store := sess.getOrCreateGoalStore()
+		store.Set("wait on the ask", clk.Now())
+		sess.mu.Lock()
+		sess.askPending = []askQuestion{{Header: header, Question: question}}
+		sess.mu.Unlock()
+		return sess
+	}
+	approvalCall := func(id, target string) llm.ToolCallData {
+		args, _ := json.Marshal(map[string]any{
+			"kind": "until_approval", "target": target, "timeout_seconds": 60,
+		})
+		return llm.ToolCallData{ID: id, Name: "goal_wait", Arguments: args, Type: "function"}
+	}
+
+	// Two-half key against a headed ask parks (the documented contract).
+	t.Run("two-half parks", func(t *testing.T) {
+		t.Parallel()
+		clk := agenttest.NewFakeClock()
+		sess := newHeadedSession(t, clk, "ship it?", "merge now?")
+		defer sess.Close()
+		res := sess.reg.ExecuteCall(context.Background(), sess.env, approvalCall("gw-pair", "ship it?\x00merge now?"))
+		if res.IsError {
+			t.Fatalf("two-half key should park, got error: %s", res.Output)
+		}
+		if snap, _ := sess.getOrCreateGoalStore().Snapshot(); snap.Status != goal.StatusWaiting {
+			t.Fatalf("status = %q, want waiting on the live ask", snap.Status)
+		}
+	})
+
+	// Bare half-key against a two-half ask rejects (both halves non-empty).
+	t.Run("bare half rejects on headed ask", func(t *testing.T) {
+		t.Parallel()
+		clk := agenttest.NewFakeClock()
+		sess := newHeadedSession(t, clk, "ship it?", "merge now?")
+		defer sess.Close()
+		res := sess.reg.ExecuteCall(context.Background(), sess.env, approvalCall("gw-bare", "ship it?"))
+		if !res.IsError {
+			t.Fatalf("bare half-key against a headed ask should reject, got: %s", res.Output)
+		}
+		if snap, _ := sess.getOrCreateGoalStore().Snapshot(); snap.Status != goal.StatusActive {
+			t.Fatalf("status = %q, want active (rejected registration must not park)", snap.Status)
+		}
+	})
+
+	// Bare half-key against a lone-half ask parks (ambiguous-by-construction).
+	t.Run("bare half parks on lone half", func(t *testing.T) {
+		t.Parallel()
+		clk := agenttest.NewFakeClock()
+		sess := newHeadedSession(t, clk, "", "merge now?")
+		defer sess.Close()
+		res := sess.reg.ExecuteCall(context.Background(), sess.env, approvalCall("gw-lone", "merge now?"))
+		if res.IsError {
+			t.Fatalf("bare half-key against a lone-half ask should park, got error: %s", res.Output)
+		}
+		if snap, _ := sess.getOrCreateGoalStore().Snapshot(); snap.Status != goal.StatusWaiting {
+			t.Fatalf("status = %q, want waiting on the live ask", snap.Status)
+		}
+	})
+}

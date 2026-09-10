@@ -69,10 +69,11 @@ type WaitKind struct {
 	EventSubtype EventSubtype
 	// Baseline is the file sha/mtime baseline for file_modified predicates.
 	Baseline string
-	// AskGeneration binds an UntilApproval lease to the stable turn/ask-call ID
-	// of the ask_user call (never the positional transcript index), so a
-	// dangling wait from an earlier same-text ask cannot validate against a
-	// later generation (spec §2).
+	// AskGeneration is legacy-only (persisted-lease compat): pre-removal
+	// snapshots restore it, but new registrations never set it — the tool
+	// layer rejects non-empty ask_generation (no ask call carries a stable
+	// generation), and the production substrate fail-closes non-empty
+	// generations. Approval waits bind by content key alone.
 	AskGeneration string
 }
 
@@ -142,9 +143,11 @@ type Substrate interface {
 	// StatFile resolves a file_modified target inside the session sandbox,
 	// returning the current baseline for the lease.
 	StatFile(path string) (baseline string, ok bool)
-	// LookupApproval reports whether the (content key, ask generation) pair
-	// matches a live ask. Consumed answers never match (no catch-up by
-	// design, spec §2).
+	// LookupApproval reports whether the content key matches a live ask.
+	// The generation parameter is legacy-only (pre-removal leases restore
+	// it; new registrations pass ""); production fail-closes non-empty
+	// generations. Consumed answers never match (no catch-up by design,
+	// spec §2).
 	LookupApproval(contentKey, generation string) (live bool)
 	// LookupChild reports whether id is a known descendant session.
 	LookupChild(id string) (known bool)
@@ -206,8 +209,10 @@ func canonicalPredicate(req WaitKind) string {
 	b.WriteString(string(req.EventSubtype))
 	b.WriteByte(0)
 	b.WriteString(req.Baseline)
+	// AskGeneration is excluded (legacy-only, never set on new leases):
+	// two registrations differing only in generation are the same
+	// predicate. The trailing NUL keeps the wire shape stable.
 	b.WriteByte(0)
-	b.WriteString(req.AskGeneration)
 	return b.String()
 }
 

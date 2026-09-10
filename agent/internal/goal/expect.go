@@ -70,8 +70,20 @@ func expectKindRejected(pred WaitKind) (reason string, rejected bool) {
 // condition). The attach-scan snapshot (file baseline + current truth) is
 // informational: the verifier re-evaluates at claim time.
 func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, bool) {
+	// Substrate pre-pass (lock-order discipline, cf. RegisterWait): the
+	// attach-scan validation reads (LookupJob/LookupDelegate/LookupApproval/
+	// LookupChild/StatFile) take session/manager locks and must never run
+	// under the store lock. Evaluate the snapshot outside it, then replay
+	// the decision under it. TOCTOU: point-in-time, like RegisterWait --
+	// the verifier re-evaluates at claim time.
+	s.mu.Lock()
+	preSub := s.substrate
+	s.mu.Unlock()
+	pre := prescanExpect(preSub, req.Predicate)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.inRegisterCritical.Store(true)
+	defer s.inRegisterCritical.Store(false)
 	g := s.goal
 	if g == nil {
 		return Condition{}, false
@@ -97,10 +109,12 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 		return Condition{}, false
 	}
 	// Identical §2 substrate validation (fail-closed), shared with RegisterWait
-	// via validatePredicateLocked minus the timer/catch-up branches: expect
-	// never parks, so terminal catch-up does not apply (a retained-terminal
-	// target snapshots satisfied=true instead).
-	satisfied, baseline, ok := s.expectAttachScanLocked(pred)
+	// minus the timer/catch-up branches: expect never parks, so terminal
+	// catch-up does not apply (a retained-terminal target snapshots
+	// satisfied=true instead). The decision replays the pre-pass snapshot
+	// (no substrate calls under the lock). Error strings are byte-identical
+	// to the in-lock reads they replace.
+	satisfied, baseline, ok := replayExpectPrescan(s, pre, pred)
 	if !ok {
 		return Condition{}, false
 	}
@@ -125,63 +139,118 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 	return cond, true
 }
 
-// expectAttachScanLocked runs the §2 validation + attach-scan snapshot for an
-// expect predicate under the held store lock. It mirrors RegisterWait's
-// substrate branches (same fail-closed reasons) without parking: job/delegate
-// retained-terminal targets snapshot satisfied=true; live targets snapshot
-// their current truth; file_modified snapshots the baseline and compares;
-// approval snapshots the live-ask match; until_child snapshots
-// known-descendant truth. Caller must hold s.mu.
-func (s *Store) expectAttachScanLocked(pred WaitKind) (satisfied bool, baseline string, ok bool) {
-	sub := s.substrate
+// expectPrescan is the §2 validation + attach-scan snapshot for one expect
+// predicate, evaluated OUTSIDE the store lock (the lock-order discipline).
+// Pure over (sub, pred): no store locks. The jobOK/delegateOK bits preserve
+// the unknown-vs-neither distinction so the replay names byte-identical
+// rejection reasons.
+type expectPrescan struct {
+	subNil      bool
+	jobOK       bool
+	delegateOK  bool
+	live        bool
+	retained    bool
+	approval    bool
+	approvalSet bool
+	childKnown  bool
+	childSet    bool
+	baseline    string
+	baselineOK  bool
+}
+
+// prescanExpect evaluates the expect snapshot for pred against sub with no
+// store lock held. Caller passes the substrate pointer copied under a short
+// hold (nil = unwired).
+func prescanExpect(sub Substrate, pred WaitKind) expectPrescan {
+	var pre expectPrescan
 	if sub == nil {
+		pre.subNil = true
+		return pre
+	}
+	switch pred.Kind {
+	case WaitUntilJob:
+		live, retained, _, ok := sub.LookupJob(pred.Target)
+		pre.jobOK = ok
+		pre.live, pre.retained = live, retained
+	case WaitUntilDelegate:
+		live, retained, _, ok := sub.LookupDelegate(pred.Target)
+		pre.delegateOK = ok
+		pre.live, pre.retained = live, retained
+	case WaitUntilApproval:
+		if strings.TrimSpace(pred.Target) == "" {
+			return pre
+		}
+		pre.approvalSet = true
+		pre.approval = sub.LookupApproval(pred.Target, pred.AskGeneration)
+	case WaitUntilChild:
+		if strings.TrimSpace(pred.Target) == "" {
+			return pre
+		}
+		pre.childSet = true
+		pre.childKnown = sub.LookupChild(pred.Target)
+	case WaitUntilEvent:
+		if pred.EventSubtype == EventFileModified {
+			baseline, ok := sub.StatFile(pred.Target)
+			pre.baseline, pre.baselineOK = baseline, ok
+		}
+	}
+	return pre
+}
+
+// replayExpectPrescan replays the pre-pass snapshot without substrate calls.
+// It mirrors RegisterWait's substrate branches (same fail-closed reasons)
+// without parking: job/delegate retained-terminal targets snapshot
+// satisfied=true; live targets snapshot their current truth; file_modified
+// snapshots the baseline and compares; approval snapshots the live-ask
+// match; until_child snapshots known-descendant truth. Caller must hold
+// s.mu (it writes lastRejectReason); it performs no substrate calls — the
+// s.substrate read below is a pointer comparison only, never a method call.
+func replayExpectPrescan(s *Store, pre expectPrescan, pred WaitKind) (satisfied bool, baseline string, ok bool) {
+	if s.substrate == nil {
 		s.lastRejectReason = fmt.Sprintf("%s %q: no wait substrate wired", pred.Kind, pred.Target)
 		return false, "", false
 	}
 	switch pred.Kind {
 	case WaitUntilJob:
-		live, retained, _, ok := sub.LookupJob(pred.Target)
-		if !ok {
+		if !pre.jobOK {
 			s.lastRejectReason = fmt.Sprintf("unknown job %q: no record in this session tree", pred.Target)
 			return false, "", false
 		}
-		if !live && !retained {
+		if !pre.live && !pre.retained {
 			s.lastRejectReason = fmt.Sprintf("job %q is neither running nor retained-terminal", pred.Target)
 			return false, "", false
 		}
-		return retained, "", true
+		return pre.retained, "", true
 	case WaitUntilDelegate:
-		live, retained, _, ok := sub.LookupDelegate(pred.Target)
-		if !ok {
+		if !pre.delegateOK {
 			s.lastRejectReason = fmt.Sprintf("unknown delegate %q: no record in this session tree", pred.Target)
 			return false, "", false
 		}
-		if !live && !retained {
+		if !pre.live && !pre.retained {
 			s.lastRejectReason = fmt.Sprintf("delegate %q is neither running/settling/stopping nor retained-terminal", pred.Target)
 			return false, "", false
 		}
-		return retained, "", true
+		return pre.retained, "", true
 	case WaitUntilApproval:
 		if strings.TrimSpace(pred.Target) == "" {
 			s.lastRejectReason = "approval condition requires a content key target"
 			return false, "", false
 		}
-		return sub.LookupApproval(pred.Target, pred.AskGeneration), "", true
+		return pre.approval, "", true
 	case WaitUntilChild:
 		if strings.TrimSpace(pred.Target) == "" {
 			s.lastRejectReason = "child condition requires a child session id"
 			return false, "", false
 		}
-		return sub.LookupChild(pred.Target), "", true
+		return pre.childKnown, "", true
 	case WaitUntilEvent:
 		switch pred.EventSubtype {
 		case EventFileModified:
-			baseline, ok := sub.StatFile(pred.Target)
-			if !ok {
+			if !pre.baselineOK {
 				s.lastRejectReason = fmt.Sprintf("unstatable file %q: not inside the session sandbox or missing", pred.Target)
 				return false, "", false
 			}
-			return false, baseline, true
+			return false, pre.baseline, true
 		case EventHTTPMatch:
 			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: http_match was removed (issue #1061 — follow it for the fetch-based watch type)", pred.EventSubtype)
 			return false, "", false

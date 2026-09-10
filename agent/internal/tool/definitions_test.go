@@ -1027,6 +1027,19 @@ func TestDefGoalWaitShape(t *testing.T) {
 			t.Fatalf("goal_wait missing property %q", prop)
 		}
 	}
+	// Stale-subtype shrink (round-14 LOW): the advertised enum carries
+	// file_modified only — http_match (issue #1061) and external_label
+	// (issue #1063) stay named in the description text but are no longer
+	// offered values. Validation keeps REJECTING them (store + tool layer).
+	if subtype, ok := props["event_subtype"].(map[string]any); !ok {
+		t.Fatal("goal_wait missing event_subtype property")
+	} else if enum, ok := subtype["enum"].([]string); !ok {
+		t.Fatalf("event_subtype enum = %T, want []string", subtype["enum"])
+	} else if len(enum) != 1 || enum[0] != "file_modified" {
+		t.Fatalf("event_subtype enum = %v, want [file_modified]", enum)
+	} else if desc, _ := subtype["description"].(string); !strings.Contains(desc, "1061") || !strings.Contains(desc, "1063") {
+		t.Fatalf("event_subtype description %q must keep the removal notes", desc)
+	}
 	timeout, ok := props["timeout_seconds"].(map[string]any)
 	if !ok {
 		t.Fatalf("goal_wait missing timeout_seconds property")
@@ -1052,6 +1065,40 @@ func TestDefGoalWaitPerKindShapes(t *testing.T) {
 	} {
 		if !strings.Contains(desc, shape) {
 			t.Fatalf("goal_wait description missing per-kind shape %q:\n%s", shape, desc)
+		}
+	}
+}
+
+// TestDefGoalWaitApprovalKeyEncoding pins the round-14 MEDIUM docs: the
+// until_approval target is the two-half "header\\x00question" key, and a bare
+// single half matches only a header-empty-or-question-empty ask.
+func TestDefGoalWaitApprovalKeyEncoding(t *testing.T) {
+	desc := DefGoalWait().Description
+	for _, want := range []string{`"header\x00question"`, "ambiguous-by-construction"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("goal_wait description missing approval-key note %q:\n%s", want, desc)
+		}
+	}
+	props := DefGoalWait().Parameters["properties"].(map[string]any)
+	target, ok := props["target"].(map[string]any)
+	if !ok {
+		t.Fatal("goal_wait missing target property")
+	}
+	targetDesc, _ := target["description"].(string)
+	for _, want := range []string{`"header\x00question"`, "a bare single half matches only a header-empty-or-question-empty ask"} {
+		if !strings.Contains(targetDesc, want) {
+			t.Fatalf("goal_wait target description missing approval-key note %q: %q", want, targetDesc)
+		}
+	}
+	props2 := DefGoalExpect().Parameters["properties"].(map[string]any)
+	target2, ok := props2["target"].(map[string]any)
+	if !ok {
+		t.Fatal("goal_expect missing target property")
+	}
+	targetDesc2, _ := target2["description"].(string)
+	for _, want := range []string{`"header\x00question"`, "a bare single half matches only a header-empty-or-question-empty ask"} {
+		if !strings.Contains(targetDesc2, want) {
+			t.Fatalf("goal_expect target description missing approval-key note %q: %q", want, targetDesc2)
 		}
 	}
 }
@@ -1109,6 +1156,16 @@ func TestDefGoalExpectShape(t *testing.T) {
 		if !slices.Contains(enum, want) {
 			t.Fatalf("kind enum = %v, want %q (no until_time: timers are waits, not claim conditions)", enum, want)
 		}
+	}
+	// Stale-subtype shrink (round-14 LOW): the event_subtype enum carries
+	// file_modified only (description keeps the http/external-label removal
+	// notes; validation keeps rejecting them).
+	if subtype, ok := props["event_subtype"].(map[string]any); !ok {
+		t.Fatal("goal_expect missing event_subtype property")
+	} else if enum, ok := subtype["enum"].([]string); !ok {
+		t.Fatalf("event_subtype enum = %T, want []string", subtype["enum"])
+	} else if len(enum) != 1 || enum[0] != "file_modified" {
+		t.Fatalf("event_subtype enum = %v, want [file_modified]", enum)
 	}
 	// v1 restriction (fix-1/4 I1): the schema enum keeps all kinds (validation
 	// rejects approval/child/http/external-label with named reasons), but the
