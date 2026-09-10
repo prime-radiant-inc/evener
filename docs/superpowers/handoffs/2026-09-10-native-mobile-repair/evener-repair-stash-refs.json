@@ -1,0 +1,18 @@
+[
+  {
+    "sha": "67a86da5e44f9e8a02c6facec9c31c3485cd1279",
+    "branch": "codex/mobile-repair-stash-current"
+  },
+  {
+    "sha": "3695a99ea2c5344facb504201032804a837be53a",
+    "branch": "codex/mobile-repair-stash-20260906"
+  },
+  {
+    "sha": "7a3d1459ed8dfb780d491960834c7cb23b02ec26",
+    "branch": "codex/mobile-repair-stash-20260905-signing"
+  },
+  {
+    "sha": "7447e21ef94fb1b1a327bf8f1c83a27ef3116549",
+    "branch": "codex/mobile-repair-stash-20260905-rebase"
+  }
+]

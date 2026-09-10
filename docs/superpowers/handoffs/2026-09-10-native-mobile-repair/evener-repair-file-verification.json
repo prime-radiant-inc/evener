@@ -1,0 +1,36 @@
+[
+  {
+    "file": "mobile/src-tauri/gen/apple/app.xcodeproj/project.pbxproj",
+    "sha256": "18ea8957e133dfe5212d80bb743d40477c6f984efadbe936f54a02272e23dc1e",
+    "remote_blob_matches": true
+  },
+  {
+    "file": "mobile/src-tauri/gen/apple/app_iOS/Info.plist",
+    "sha256": "5d2466b3aa245aa71c6b1562cd4865be4f8b7ef9c97f4a099f95f682a8614814",
+    "remote_blob_matches": true
+  },
+  {
+    "source": "mobile-land-empty-navigation",
+    "preservation": "mobile-repair-preserve-empty-navigation",
+    "file": "cmd/evener-hub/navigation_normalize.go",
+    "identical": true
+  },
+  {
+    "source": "mobile-land-empty-navigation",
+    "preservation": "mobile-repair-preserve-empty-navigation",
+    "file": "cmd/evener-hub/navigation_empty_delta_test.go",
+    "identical": true
+  },
+  {
+    "source": "mobile-land-roster-loading",
+    "preservation": "mobile-repair-preserve-roster-loading",
+    "file": "cmd/evener-hub/app_threadlist.go",
+    "identical": true
+  },
+  {
+    "source": "mobile-land-roster-loading",
+    "preservation": "mobile-repair-preserve-roster-loading",
+    "file": "cmd/evener-hub/app_threadlist_bounded_test.go",
+    "identical": true
+  }
+]

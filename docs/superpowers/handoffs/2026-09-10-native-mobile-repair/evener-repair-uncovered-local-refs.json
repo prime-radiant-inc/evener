@@ -1,0 +1,459 @@
+{
+  "generatedBy": "read-only local ref audit",
+  "candidateCount": 18,
+  "refs": [
+    {
+      "ref": "refs/heads/backup/mobile-portable-activity-before-main-rebase",
+      "sha": "c67025d31896b605c33d5eceb6233631d1f85389",
+      "subject": "refactor(web): extract portable activity helpers",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/backup/mobile-sdk-package-before-review",
+      "sha": "22b3955ecec410753559d48c9404e50f73f5a9f4",
+      "subject": "feat(protocol): add installable AppWire SDK substrate",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-before-main-rebase-20260906",
+      "sha": "ae823298504723adc725b436ad9eb3f0b0667a5b",
+      "subject": "Define whole-product native mobile delivery and acceptance plan",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-before-rebase-20260905",
+      "sha": "0ad358b3ffae7d8b668b806d91e191a5645bf08e",
+      "subject": "fix(mobile): model coordinator keyboard inset in browser matrix",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-before-ui-rebase-20260905",
+      "sha": "bc6da31c4228a8e0cc14350888cbfc59dfde7265",
+      "subject": "docs(mobile): study Codex and Claude mobile workflows",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-checkpoint-assembled-backup",
+      "sha": "9446323059af4318bbd262a98acb2816c7460372",
+      "subject": "feat(mobile): assemble native iPhone checkpoint",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-checkpoint-before-sdk-review",
+      "sha": "b246b53f6069bc4c20475a48bc6451543650d280",
+      "subject": "test(mobile): gate the native checkpoint and shared session core",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-helpers",
+      "sha": "0b9c0a5957ffb771e562ed418eed9e34042749ee",
+      "subject": "refactor(mobile): route web consumers through native helpers",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-reasoning-before-keybinding",
+      "sha": "f694911a2521e12923d25c8bc8eeb8a76554ba52",
+      "subject": "test(appwire): verify steering completion before runner cleanup",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/mobile-sdk-package-before-keybinding",
+      "sha": "a1dff173331512c3dcaddc3c873c5e4ba5ebc2f3",
+      "subject": "fix(client): gate snapshots on package qualification",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/round-timing-before-direct-steering-rebase",
+      "sha": "3ea1e0319ed39fe6df33daf9607faff31210a85e",
+      "subject": "Preserve interleaved timing data in ATIF export",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/round-timing-before-stacked-review",
+      "sha": "c35e01fb308e8ade15fc5630d7f3cee1997d75bd",
+      "subject": "Render persisted round timing entries explicitly",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/testflight-before-final-main-rebase",
+      "sha": "a363ada89295f177aa2202d8fe370888f3211de7",
+      "subject": "ci: pin TestFlight workflow to Xcode 26.6",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "refs/heads/codex/testflight-before-stacked-review",
+      "sha": "4de77f3a4659c3c6ed18477fb681b402556ffe8e",
+      "subject": "ci: pin TestFlight workflow to Xcode 26.6",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "stash@{0}",
+      "sha": "67a86da5e44f9e8a02c6facec9c31c3485cd1279",
+      "subject": "On live-concepts-plan2-integrate: Preserve unrelated Tauri Apple edits for requested main rebase",
+      "kind": "stash",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "stash@{1}",
+      "sha": "3695a99ea2c5344facb504201032804a837be53a",
+      "subject": "On live-concepts-plan2-integrate: mobile-unrelated-ios-before-main-rebase-20260906",
+      "kind": "stash",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "stash@{2}",
+      "sha": "7a3d1459ed8dfb780d491960834c7cb23b02ec26",
+      "subject": "On live-concepts-plan2-integrate: mobile signing edits before current-main rebase 2026-09-05",
+      "kind": "stash",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "stash@{3}",
+      "sha": "7447e21ef94fb1b1a327bf8f1c83a27ef3116549",
+      "subject": "On live-concepts-plan2-integrate: mobile pre-rebase signing edits 2026-09-05",
+      "kind": "stash",
+      "ancestorOfAnyOrigin": false
+    }
+  ]
+}
+
+fs/heads/codex/mobile-goal-transcript",
+      "sha": "b23d2fa3a3afe5c453cba9260435375f69a84cac",
+      "subject": "fix(transcript): preserve goal continuation identity on reload",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-initialize-boundary",
+      "sha": "79ccc0471ac750aeaaf9ff50409ed825c6e28ac2",
+      "subject": "fix(client): identify malformed handshake fields",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-interrupted-replay",
+      "sha": "49b3619d05413bf80dc8756e406b4d1b806a5c33",
+      "subject": "Verify interruption and failure replay through production readers",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-logout-result",
+      "sha": "5eaebfe6e9522a2d8cd9715ddc85c26df7aedd9c",
+      "subject": "fix(hub): serialize logout credential removal with concurrent writes",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-checkpoint",
+      "sha": "14c36a330f7c4f81ce8b1da26a3911a6c94f5afc",
+      "subject": "chore(security): allow generated native signature manifests",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-checkpoint-assembled-backup",
+      "sha": "9446323059af4318bbd262a98acb2816c7460372",
+      "subject": "feat(mobile): assemble native iPhone checkpoint",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-checkpoint-before-sdk-review",
+      "sha": "b246b53f6069bc4c20475a48bc6451543650d280",
+      "subject": "test(mobile): gate the native checkpoint and shared session core",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-contracts",
+      "sha": "a6d6eb0bf35f9c993df40c36e024bb141e22d44b",
+      "subject": "fix(mobile): align native navigation fixtures and chord parsing",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-final-qualification",
+      "sha": "0097e3841fe9296ebe32da4cb6780cd7d2a8923f",
+      "subject": "Merge commit '77fcabca9' into codex/mobile-native-final-qualification",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-helpers",
+      "sha": "0b9c0a5957ffb771e562ed418eed9e34042749ee",
+      "subject": "refactor(mobile): route web consumers through native helpers",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-native-helpers-before-main-refresh",
+      "sha": "df8d0b5eb67b6c17330b4ac0a555e2024fc5c922",
+      "subject": "fix(mobile): repair native helper web wiring",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-pairing-appwire",
+      "sha": "b8ce21f9a0599826cb4463dc0a91b2652800c2b0",
+      "subject": "hub: move mobile pairing read to AppWire",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-portable-activity",
+      "sha": "77fcabca9687b318ec244028d533212dd5b0543a",
+      "subject": "Retain successful activity snapshots when later paging fails",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-project-delete-results",
+      "sha": "370045f708b16211d2edad9818d0f23eba5c7faa",
+      "subject": "fix(appwire): return arrays for empty project deletion results",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-question-answers",
+      "sha": "49a442845ddcb4c7bde8f02b4051ed5d5d32ee10",
+      "subject": "docs: update shared question formatter references",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-reasoning-before-keybinding",
+      "sha": "f694911a2521e12923d25c8bc8eeb8a76554ba52",
+      "subject": "test(appwire): verify steering completion before runner cleanup",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-reasoning-lifecycle",
+      "sha": "c4b49c767ee7b019c13618ae27e404fb5e4c1433",
+      "subject": "Qualify admission serialization through existing behavior tests",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-repair-activity-regression",
+      "sha": "6f103518f4d8d55b10323498fcfbf177570cb01f",
+      "subject": "test(activity): preserve continuation progress regression",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-repair-handoff-20260910",
+      "sha": "f6e219f9f1322142089d6a3462b08cecc1d985f0",
+      "subject": "fix(appwire): return arrays for empty project deletion results (#1106)",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-repair-preserve-empty-navigation",
+      "sha": "e7160ec0b9b64ac5cbc301a2af64a5a8178dde21",
+      "subject": "Preserve empty navigation recovery snapshot",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true,
+      "preservationHead": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-repair-preserve-roster-loading",
+      "sha": "956a0ea6dd5aea40df9d5e86aed3c664f3640937",
+      "subject": "Preserve roster loading recovery snapshot",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true,
+      "preservationHead": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-repair-sdk-evidence",
+      "sha": "eaf8da681f0f4484271cc4882c7ea4359e59c9e1",
+      "subject": "docs(mobile): record SDK evidence source hashes",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-repair-sdk-recipes",
+      "sha": "c89d37ae2eefe6690358336855e2972001635e5b",
+      "subject": "Preserve authoritative SDK recipe backlog",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true,
+      "preservationHead": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-repair-source-preservation-20260910",
+      "sha": "15ccc74a8aa37c15c4ec8b40ffda9a93b0e3f8f0",
+      "subject": "Preserve original mobile source and unfinished Apple configuration",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-replay-integration",
+      "sha": "5137914ccb66b04aa1b980757888f63141cf2f27",
+      "subject": "Merge commit '2cc8d50b4' into codex/mobile-replay-integration",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-roster-loading",
+      "sha": "50565eb465981d4b5a8fbbc939ad0bfb245aec68",
+      "subject": "fix(web): align glyph icons with text in baseline-aligned tool rows (#1064)",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-roster-metadata",
+      "sha": "b733c5edae418d0af557172a8b15cfcbf7955259",
+      "subject": "perf(hub): skip persisted detail hydration in session lists",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-round-timing-replay",
+      "sha": "9cfee4a2a1c6cc142f445e40b3b65bbc3d819f17",
+      "subject": "Preserve compaction ownership across turn completion",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-sdk-discovery-examples",
+      "sha": "32ecd0b5760edf337308840e5efa0401ddb9cb7e",
+      "subject": "Enforce discovery request key contracts",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-sdk-package",
+      "sha": "564af8826adb836f8b1e6deb99696aaf3cd815f3",
+      "subject": "fix(client): require package qualification in the CI aggregate",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-sdk-package-before-keybinding",
+      "sha": "a1dff173331512c3dcaddc3c873c5e4ba5ebc2f3",
+      "subject": "fix(client): gate snapshots on package qualification",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-shutdown-boundary",
+      "sha": "08cbcdbc8b9d7596e962189b2ae3f819c0c366cc",
+      "subject": "test(shutdown): prove forced close preserves terminal boundary",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-steering-identity",
+      "sha": "3180202a1a6cfcd4f160b61b1d7e5ec7b41b67f0",
+      "subject": "Preserve active owner for direct steering",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-steering-images",
+      "sha": "e6128ae080601836388791727f9503b62c99d275",
+      "subject": "fix(appwire): omit absent images from steering notifications",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-transcript-identity",
+      "sha": "2cc8d50b4978732d892ffaca28e70a37e5e8b2d6",
+      "subject": "Verify the reported compaction append failure",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/mobile-update-entrypoint",
+      "sha": "3705a90980087c703aa7c79245d5babe0c2ce877",
+      "subject": "fix(hub): preserve restart entrypoints across directory aliases",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/register-ios-testflight-refresh",
+      "sha": "1f1bd61353acc7ff71551b0e6199df1d31eebf00",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/register-ios-testflight-refresh",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/round-timing-before-direct-steering-rebase",
+      "sha": "3ea1e0319ed39fe6df33daf9607faff31210a85e",
+      "subject": "Preserve interleaved timing data in ATIF export",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/round-timing-before-stacked-review",
+      "sha": "c35e01fb308e8ade15fc5630d7f3cee1997d75bd",
+      "subject": "Render persisted round timing entries explicitly",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/testflight-before-final-main-rebase",
+      "sha": "a363ada89295f177aa2202d8fe370888f3211de7",
+      "subject": "ci: pin TestFlight workflow to Xcode 26.6",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/testflight-before-stacked-review",
+      "sha": "4de77f3a4659c3c6ed18477fb681b402556ffe8e",
+      "subject": "ci: pin TestFlight workflow to Xcode 26.6",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/codex/testflight-xcode-current",
+      "sha": "7fe472fcf52833f81983dd91991651c459fb4656",
+      "subject": "Merge commit '016b118f78767e6b325bfe782c974135835242db' into codex/testflight-xcode-current",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "refs/heads/live-concepts-plan2-integrate",
+      "sha": "f6614d6cc137d3498460ad6b9a5d0071aea67742",
+      "subject": "Record restart proof for durable environment recovery candidate",
+      "kind": "branch",
+      "ancestorOfAnyOrigin": true
+    },
+    {
+      "ref": "stash@{1}",
+      "sha": "3695a99ea2c5344facb504201032804a837be53a",
+      "subject": "On live-concepts-plan2-integrate: mobile-unrelated-ios-before-main-rebase-20260906",
+      "kind": "stash",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "stash@{2}",
+      "sha": "7a3d1459ed8dfb780d491960834c7cb23b02ec26",
+      "subject": "On live-concepts-plan2-integrate: mobile signing edits before current-main rebase 2026-09-05",
+      "kind": "stash",
+      "ancestorOfAnyOrigin": false
+    },
+    {
+      "ref": "stash@{3}",
+      "sha": "7447e21ef94fb1b1a327bf8f1c83a27ef3116549",
+      "subject": "On live-concepts-plan2-integrate: mobile pre-rebase signing edits 2026-09-05",
+      "kind": "stash",
+      "ancestorOfAnyOrigin": false
+    }
+  ]
+}
