@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,9 +18,21 @@ type barrierThreadListSource struct {
 	*scriptedAppSource
 	started chan<- struct{}
 	release <-chan struct{}
+	current *int32
+	maximum *int32
 }
 
 func (s *barrierThreadListSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	if s.current != nil {
+		current := atomic.AddInt32(s.current, 1)
+		defer atomic.AddInt32(s.current, -1)
+		for {
+			maximum := atomic.LoadInt32(s.maximum)
+			if current <= maximum || atomic.CompareAndSwapInt32(s.maximum, maximum, current) {
+				break
+			}
+		}
+	}
 	s.started <- struct{}{}
 	<-s.release
 	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
@@ -95,9 +109,12 @@ func TestHubThreadListCancellationReleasesSourceWait(t *testing.T) {
 func TestHubThreadListBoundsConcurrentSourcesAndKeepsOptionalErrors(t *testing.T) {
 	started := make(chan struct{}, 8)
 	release := make(chan struct{})
+	var current, maximum int32
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	sources := appsource.NewRegistry()
 	for i := 0; i < 6; i++ {
-		sources.Add(&barrierThreadListSource{scriptedAppSource: &scriptedAppSource{id: fmt.Sprintf("source-%d", i), thread: appwire.Thread{ID: fmt.Sprintf("thread-%d", i)}}, started: started, release: release})
+		sources.Add(&barrierThreadListSource{scriptedAppSource: &scriptedAppSource{id: fmt.Sprintf("source-%d", i), thread: appwire.Thread{ID: fmt.Sprintf("thread-%d", i)}}, started: started, release: release, current: &current, maximum: &maximum})
 	}
 	result := make(chan appwire.ThreadListResponse, 1)
 	go func() {
@@ -107,15 +124,13 @@ func TestHubThreadListBoundsConcurrentSourcesAndKeepsOptionalErrors(t *testing.T
 	for range threadListSourceWorkers {
 		<-started
 	}
-	select {
-	case <-started:
-		t.Fatal("started more sources than worker cap")
-	default:
-	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	response := <-result
 	if len(response.Data) != 6 {
 		t.Fatalf("threads=%d, want 6", len(response.Data))
+	}
+	if maximum > threadListSourceWorkers {
+		t.Fatalf("maximum concurrent sources=%d, want <=%d", maximum, threadListSourceWorkers)
 	}
 }
 
