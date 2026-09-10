@@ -4,7 +4,6 @@ import {
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
-  isActivityFailure,
 } from "./activityData";
 
 function cloneEntry(entry: ActivityEntry): ActivityEntry {
@@ -45,10 +44,12 @@ function maxActivity(current: string | undefined, incoming: string | undefined):
 }
 
 function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
-  if (current.type !== "delegate" || patch.type !== "delegate") return cloneDelegate(patch);
-  const currentRevision = current.projectionRevision ?? 0;
-  const patchRevision = patch.projectionRevision ?? 0;
-  const state = patchRevision > currentRevision ? cloneDelegate(patch) : cloneDelegate(current);
+  const state =
+    current.type !== "delegate" || patch.type !== "delegate"
+      ? cloneDelegate(patch)
+      : (patch.projectionRevision ?? 0) > (current.projectionRevision ?? 0)
+        ? cloneDelegate(patch)
+        : cloneDelegate(current);
   const latestActivityAt = maxActivity(current.latestActivityAt, patch.latestActivityAt);
   if (latestActivityAt !== state.latestActivityAt) state.latestActivityAt = latestActivityAt;
   return state;
@@ -104,6 +105,7 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
   const completeBranch = (branch: ActivitySessionNode["branch"]) =>
     !branch.error && !branch.truncated && !branch.continuation;
   const counts = { active: 0, failed: 0, completed: 0, complete: completeBranch(session.branch) };
+  const outcomeFailure = (outcome: string | undefined) => outcome === "failure";
   const add = (terminal: boolean, failed: boolean) => {
     if (!terminal) counts.active++;
     else if (failed) counts.failed++;
@@ -111,13 +113,13 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
   };
   for (const entry of session.entries) {
     if (entry.kind === "shell") {
-      add(entry.job.terminal, isActivityFailure(entry.job.outcome, entry.job.status));
+      add(entry.job.terminal, outcomeFailure(entry.job.outcome));
       continue;
     }
     const delegate = entry.delegate;
     if (delegate.type === "delegate")
-      add(delegate.terminal === true, isActivityFailure(delegate.outcome, delegate.status));
-    else for (const turn of delegate.turns ?? []) add(turn.terminal, isActivityFailure(turn.outcome, turn.status));
+      add(delegate.terminal === true, outcomeFailure(delegate.outcome));
+    else for (const turn of delegate.turns ?? []) add(turn.terminal, outcomeFailure(turn.outcome));
     if (!completeBranch(delegate.branch)) counts.complete = false;
     if (delegate.child) {
       counts.active += delegate.child.counts.active;
