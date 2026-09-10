@@ -215,7 +215,7 @@ func teardownChildSession(ctx context.Context, sess *Session, scratch childScrat
 	if sess == nil {
 		return
 	}
-	sess.close(ctx, false, false)
+	sess.close(ctx, closeOptions{})
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that

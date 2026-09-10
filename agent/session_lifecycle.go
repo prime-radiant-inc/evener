@@ -82,14 +82,19 @@ type retryTracker struct {
 // for the root session, removes any embedded skills directory, waits for
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
-	s.close(context.Background(), true, false)
+	s.close(context.Background(), closeOptions{cleanupEnv: true})
 }
 
 // CloseForShutdown closes the session with a terminal lifecycle boundary.
 // A cancelled in-flight turn may already have published an interrupted idle
 // boundary; that boundary must not suppress the session's closed notification.
 func (s *Session) CloseForShutdown() {
-	s.close(context.Background(), true, true)
+	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true})
+}
+
+type closeOptions struct {
+	cleanupEnv    bool
+	forceTerminal bool
 }
 
 // joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
@@ -322,12 +327,12 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 		strings.Join(outstanding, "; "))})
 }
 
-func (s *Session) close(ctx context.Context, cleanupEnv bool, forceTerminal bool) {
+func (s *Session) close(ctx context.Context, options closeOptions) {
 	s.closeOnce.Do(func() {
-		emitTerminal := forceTerminal
+		emitTerminal := options.forceTerminal
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
-		// close(budgetCtx, false, false) reuse it rather than minting their own.
+		// close(budgetCtx, closeOptions{}) reuse it rather than minting their own.
 		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 		defer cancelBudget()
 		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
@@ -512,7 +517,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool, forceTerminal bool
 		}
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
-		if cleanupEnv {
+		if options.cleanupEnv {
 			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
 				observe(s.currentEnv())
 			}

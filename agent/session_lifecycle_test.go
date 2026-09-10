@@ -499,6 +499,55 @@ func TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd(t *testing.T) {
 	}
 }
 
+func TestSession_CloseForShutdownAfterInterruptedTurnEmitsClosedBoundary(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	blocked := make(chan struct{})
+	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(turnCtx, "hello", nil)
+		done <- err
+	}()
+	<-blocked
+	cancelTurn()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("ProcessInput did not return after per-turn cancel")
+	}
+	sess.CloseForShutdown()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	interrupted, closed := 0, 0
+	for _, ev := range *eventsPtr {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		d, ok := ev.Data.(events.SessionEndData)
+		if !ok {
+			continue
+		}
+		if d.Reason == "interrupted" {
+			interrupted++
+		}
+		if d.State == string(SessionClosed) {
+			closed++
+		}
+	}
+	if interrupted != 1 || closed != 1 {
+		t.Fatalf("session ends=(interrupted:%d,closed:%d), want exactly one of each", interrupted, closed)
+	}
+}
+
 func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 	t.Parallel()
 	blocked := make(chan struct{})
