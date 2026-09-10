@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -17,7 +18,7 @@ func TestRoundTimingsRepairKeepsCompletedToolPair(t *testing.T) {
 	if repairs != 0 {
 		t.Fatalf("round timing between tool call and result caused %d repair(s)", repairs)
 	}
-	if len(got) != len(history) || got[2].Message.Text() != "result" {
+	if !reflect.DeepEqual(got, history) {
 		t.Fatalf("repaired history = %v, want original completed tool pair", turnKinds(got))
 	}
 }
@@ -53,12 +54,21 @@ func TestRoundTimingsDelegateSnapshotKeepsCompletedToolPair(t *testing.T) {
 	if len(got) != 3 || got[0].Kind != schema.TurnUserInput || got[1].Kind != schema.TurnAssistant || got[2].Kind != schema.TurnToolResults {
 		t.Fatalf("snapshot turns = %v, want completed user/assistant/tool-result prefix", turnKinds(got))
 	}
-	if got[2].Message.Text() != "completed-result-sentinel" {
-		t.Fatalf("completed tool result = %q, want sentinel", got[2].Message.Text())
+	if len(got[2].Message.Content) != 1 || got[2].Message.Content[0].ToolResult == nil || got[2].Message.Content[0].ToolResult.Content != "completed-result-sentinel" {
+		t.Fatalf("completed tool result = %#v, want sentinel", got[2].Message.Content)
 	}
 	for _, turn := range got {
 		if turn.Kind == schema.TurnRoundTimings {
 			t.Fatal("round timing marker entered delegate context")
 		}
+	}
+}
+
+func TestRoundTimingsDoNotEnterEvaluationRequests(t *testing.T) {
+	before := schema.NewTurn(schema.TurnUserInput, llm.User("input sentinel"))
+	after := schema.NewTurn(schema.TurnAssistant, llm.Assistant("output sentinel"))
+	marker := schema.NewTurn(schema.TurnRoundTimings, llm.System("diagnostic sentinel"))
+	if got, want := turnsToMessages([]schema.Turn{before, marker, after}), turnsToMessages([]schema.Turn{before, after}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("evaluation request contains timing metadata: %#v", got)
 	}
 }
