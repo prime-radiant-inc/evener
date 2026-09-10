@@ -200,6 +200,10 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 	}
 
 	clearReachedPreparation := make(chan struct{})
+	waitEntered := make(chan struct{})
+	var waitOnce sync.Once
+	neverExpiry := make(chan time.Time)
+	deps.drainWaitExpiry = func() <-chan time.Time { waitOnce.Do(func() { close(waitEntered) }); return neverExpiry }
 	newClearSession := deps.newClearSession
 	deps.newClearSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		sess, err := newClearSession(client, profile, env, cfg)
@@ -228,7 +232,7 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 			})
 		}()
 		select {
-		case <-clearReachedPreparation:
+		case <-waitEntered:
 		case <-t.Context().Done():
 			return t.Context().Err()
 		}
@@ -281,5 +285,88 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 	want := []string{appwire.NotifyThreadClosed, appwire.NotifyEvenerThreadResync}
 	if len(methods) != len(want) || methods[0] != want[0] || methods[1] != want[1] {
 		t.Fatalf("old identity notifications=%v, want exactly closed then resync", methods)
+	}
+}
+
+// TestServeClearAbortsWhenShutdownOwnedSessionDrainExpires proves a wedged old
+// bridge cannot force clear to publish a half-swapped identity. The prepared
+// replacement is disposed and the old rendezvous/identity remain authoritative.
+func TestServeClearAbortsWhenShutdownOwnedSessionDrainExpires(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	sessionEndReceived := make(chan struct{})
+	releaseSessionEnd := make(chan struct{})
+	defer close(releaseSessionEnd)
+	var bridgeCount int
+	var bridgeMu sync.Mutex
+	deps.bridge = func(s serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
+		bridgeMu.Lock()
+		bridgeCount++
+		first := bridgeCount == 1
+		bridgeMu.Unlock()
+		sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			if first && ev.Kind == events.EventSessionEnd {
+				close(sessionEndReceived)
+				<-releaseSessionEnd
+			}
+			server.BridgeEvent(s.(*clearIdentityServer).Server, ev, observer)
+		}, onDrained)
+	}
+	replacementReady := make(chan struct{})
+	newClearSession := deps.newClearSession
+	deps.newClearSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		sess, err := newClearSession(client, profile, env, cfg)
+		if err == nil {
+			close(replacementReady)
+		}
+		return sess, err
+	}
+	waitEntered := make(chan struct{})
+	var waitOnce sync.Once
+	expired := make(chan time.Time)
+	close(expired)
+	deps.drainWaitExpiry = func() <-chan time.Time { waitOnce.Do(func() { close(waitEntered) }); return expired }
+	clearResult := make(chan error, 1)
+	clearStepStart := 0
+	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		state.srv.shutdown()
+		select {
+		case <-sessionEndReceived:
+		case <-t.Context().Done():
+			return t.Context().Err()
+		}
+		old := state.session(0)
+		clearStepStart = len(state.recorded())
+		clearResult <- state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref: "local:" + old.ID(), ClientMutationID: "clear-expired-old-drain", ExpectedInstanceID: old.ID(),
+		})
+		return http.ErrServerClosed
+	}
+	if err := runServeWithDeps(args, deps); err != nil {
+		t.Fatalf("runServeWithDeps: %v", err)
+	}
+	if err := <-clearResult; err == nil {
+		t.Fatal("clear succeeded despite expired old-session bridge drain")
+	}
+	select {
+	case <-waitEntered:
+	default:
+		t.Fatal("clear failed without entering the old-session drain wait")
+	}
+	select {
+	case <-replacementReady:
+	default:
+		t.Fatal("clear did not prepare a replacement before testing drain expiry")
+	}
+	steps := state.recorded()[clearStepStart:]
+	for _, step := range steps {
+		if step == "rendezvous" || step == "replace" {
+			t.Fatalf("expired clear published partial identity transition: steps=%v", steps)
+		}
+	}
+	if replacement := state.session(1); replacement == nil || replacement.State() != agent.SessionClosed {
+		if replacement == nil {
+			t.Fatal("expired clear did not retain its prepared replacement for cleanup verification")
+		}
+		t.Fatalf("expired clear replacement state=%q, want closed", replacement.State())
 	}
 }
