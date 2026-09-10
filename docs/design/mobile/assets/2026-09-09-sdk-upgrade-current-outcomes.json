@@ -1,0 +1,134 @@
+{
+  "status": "accepted-bounded",
+  "source": {
+    "commit": "d683abe21e949173f431201cda9ec169a1e9d349",
+    "docsHead": "60f276696",
+    "indexedAtHead": "b40d18c8ef3724647563856ab183aaffb53584ba"
+  },
+  "sdk": {
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "driverSha256": "32ec03ae9c41a74fc34a055f9567e4bd95d7168de75159e31487c2bfb973d7ed",
+    "runtimeDistSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36"
+  },
+  "fixture": {
+    "harness": "TestNativeUpgradeHarness",
+    "envKeys": [
+      "EVENER_NATIVE_UPGRADE_HARNESS",
+      "EVENER_NATIVE_UPGRADE_EVENER",
+      "EVENER_NATIVE_UPGRADE_EVENER_DEV"
+    ],
+    "harnessLog": {
+      "path": "<private-temp-artifact>",
+      "sha256": "f3a9ad7168e458cf75a0ce3a4a6ba7452ecc301709784c7b5123411b6e107019",
+      "exitCode": 0
+    },
+    "finalCounts": {
+      "downloads": 2,
+      "installs": 2
+    },
+    "failureThenRetry": {
+      "failureOutcome": "uncertain",
+      "failureErrorClass": "upgrade",
+      "retryOutcome": "acknowledged"
+    },
+    "harnessBinary": {
+      "path": "<private-temp-artifact>",
+      "sha256": "a706c6064b5810bffa4effc277cc23535a518c5b6506aaabf4a4491c1bbd24c1"
+    },
+    "source": {
+      "path": "cmd/evener-hub/native_upgrade_harness_test.go",
+      "sha256": "81ed347fd23af123e788581491485be65d6972ff837c261f328e1b70f6755fbf"
+    }
+  },
+  "binaries": {
+    "evener": {
+      "sourceSha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+      "installedSha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+      "executionExitCode": 0,
+      "version": "evener d683abe21-dirty (2026-09-09T05:37:07Z)"
+    },
+    "evener-dev": {
+      "sourceSha256": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a",
+      "installedSha256": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a",
+      "executionExitCode": 2,
+      "stderr": "unknown subcommand \"--version\""
+    }
+  },
+  "sdkRequestCounts": {
+    "evener/settings/overview": 3,
+    "evener/upgrade": 2
+  },
+  "rawEvidence": {
+    "path": "<private-temp-artifact>",
+    "sha256": "ae5b7bd5090698fcc58946e9a2b5e0de0ee7f272aa7165d2f4a6974bb46a072e",
+    "retained": true
+  },
+  "cleanup": {
+    "closeRpc": true,
+    "stop": true,
+    "harnessExit": 0,
+    "installedPrefixRemovedByFixture": true
+  },
+  "limits": [
+    "Round1 raw run is retained as excluded because installed Hub startup attempted unsolicited GitHub marketplace cloning.",
+    "Root cause: Hub first-run bootstrap seeds default marketplaces when known_marketplaces.json is absent, and plugin auto-upgrade is enabled by default.",
+    "This run pre-created the supported empty known_marketplaces.json state and set plugin_auto_upgrade=false; EVENER_OFFLINE=1 was supplementary and not treated as the sole guarantee.",
+    "Installed Hub SDK readback asserted hub.commit=d683abe21 and the launched binary identity d683abe21-dirty; startup log contained no git clone or plugin auto-upgrade.",
+    "Post-cleanup listener probe and process probe both returned their expected absence codes.",
+    "No credentials, providers, shared hubs, proxies, simulators, or production prefixes were used.",
+    "The registered handler fixture scripts the external release archive. SDK execution remains unverified; separate installed-byte and executable/Hub readback establish this bounded effect. No disconnect, lost-acknowledgement, restart, or production-release qualification is inferred."
+  ],
+  "installedHub": {
+    "sdkRequestCounts": {
+      "evener/settings/overview": 1
+    },
+    "identity": {
+      "version": "0.1.0",
+      "commit": "d683abe21",
+      "spawnTimeout": "30s",
+      "bearerTokenAge": "created during isolated fixture run",
+      "pastIndex": {
+        "path": "~/.local/state/evener/index.db",
+        "size": "60 KB",
+        "perPage": 50
+      }
+    },
+    "installedBinaryIdentity": "d683abe21-dirty",
+    "expectedInstalledBinaryIdentity": "d683abe21-dirty",
+    "exitCode": 0,
+    "logSha256": "ba04c172dcdbbb0965145609c876d133a603a262951ab3728765c342f7e25c39",
+    "postCleanup": {
+      "listenerProbe": {
+        "path": "curl",
+        "args": [
+          "--silent",
+          "--fail",
+          "http://loopback/"
+        ],
+        "exitCode": 7,
+        "stdout": "",
+        "stderr": ""
+      },
+      "processProbe": {
+        "path": "pgrep",
+        "args": [
+          "-f",
+          "<private-temp-artifact> hub"
+        ],
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    "startupNetworkEvidence": "No marketplace clone or plugin auto-upgrade appeared in the retained configured startup log; no enforced network sandbox was used."
+  },
+  "review": {
+    "independentReviewer": "Luna medium /root/sdk_current_evidence_review",
+    "verdict": "Accepted bounded; hard network isolation and production release infrastructure remain unqualified.",
+    "coordinatorChecks": [
+      "Retained raw, harness log, public driver and installed Hub log hashes match.",
+      "Installed Hub readback commit d683abe21; child exit 0 and recorded listener/process absence.",
+      "Fixture RPC/control listeners absent and owned installed prefix removed."
+    ]
+  }
+}

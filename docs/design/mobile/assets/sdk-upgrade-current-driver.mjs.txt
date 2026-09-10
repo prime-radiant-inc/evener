@@ -1,0 +1,106 @@
+// Historical driver receipt. Paths and runtime credentials are intentionally redacted; this file is not a current qualification command.
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile, writeFile, stat, readlink, mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AppwireClient } from "<installed-sdk-path>";
+import ws from "<installed-sdk-path>";
+import { runHubUpgrade } from "<installed-sdk-path>";
+
+const sh = promisify(execFile);
+const control = process.env.QUAL_CONTROL;
+// Runtime auth-token input intentionally omitted from this public historical excerpt.
+const tokenFile = "<redacted-runtime-token-file>";
+const output = process.env.QUAL_RAW_OUTPUT;
+const rpc = process.env.QUAL_RPC;
+const evener = process.env.QUAL_EVENER;
+const dev = process.env.QUAL_EVENER_DEV;
+assert(control && tokenFile && output && rpc && evener && dev);
+const token = "<redacted-runtime-token>";
+const snapshot = { driver: "sdk-upgrade-current-driver", executedAt: new Date().toISOString(), rpc, control, operations: [] };
+const sdkRequestCounts = { "evener/settings/overview": 0, "evener/upgrade": 0 };
+async function controlPost(path) { const r = await fetch(control + path, { method: "POST" }); assert.equal(r.status, 204, `${path}: ${r.status}`); }
+async function status() { const r = await fetch(control + "/status"); assert.equal(r.status, 200); return await r.json(); }
+function client() { return new AppwireClient({ url: rpc, clientInfo: { name: "sdk-upgrade-current-driver", version: "0.1.0" }, socketFactory: endpoint => new ws.WebSocket(endpoint, { headers: { Authorization: `Bearer ${token}` } }) }); }
+async function identity() { const hub = client(); try { await hub.connect(); sdkRequestCounts["evener/settings/overview"]++; return await hub.request("evener/settings/overview", {}); } finally { hub.close(); } }
+async function upgrade(reviewed) { const hub = client(); try { sdkRequestCounts["evener/upgrade"]++; return await runHubUpgrade(hub, { action: "upgrade", params: { requested: "snapshot", reviewed }, ownedHub: rpc, mutationOptIn: "1", rpcUrl: rpc }); } finally { hub.close(); } }
+async function command(path, args) { try { const r = await sh(path, args, { encoding: "utf8" }); return { path, args, exitCode: 0, stdout: r.stdout, stderr: r.stderr }; } catch (e) { return { path, args, exitCode: e.code ?? 1, stdout: e.stdout ?? "", stderr: e.stderr ?? String(e) }; } }
+function sha(path) { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
+async function freePort() { const net = await import("node:net"); return await new Promise((resolve, reject) => { const s = net.createServer(); s.once("error", reject); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); }); }); }
+async function installedHubReadback(path, expectedVersion) {
+  const root = await mkdtemp(join(tmpdir(), "sdk-upgrade-installed-hub."));
+  const home = join(root, "home");
+  const config = join(home, ".config", "evener", "hub.toml");
+  await mkdir(join(home, ".config", "evener"), { recursive: true, mode: 0o700 });
+  await mkdir(join(home, ".config", "evener", "plugins"), { recursive: true, mode: 0o700 });
+  await mkdir(join(home, ".local", "state", "evener"), { recursive: true, mode: 0o700 });
+  const port = await freePort();
+  await writeFile(config, `addr = "loopback:${port}"\nhub_state_root = "${home}/.local/state/evener"\nrun_dir = "${home}/.local/state/evener/run"\nstate_glob = "${home}/.local/state/evener/projects/*"\npast_index_db = "${home}/.local/state/evener/index.db"\nplugin_auto_upgrade = false\n`, { mode: 0o600 });
+  await writeFile(join(home, ".config", "evener", "plugins", "known_marketplaces.json"), "{}\n", { mode: 0o600 });
+  const log = join(root, "hub.log");
+  await writeFile(log, "", { mode: 0o600 });
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, ".local", "state"), XDG_CACHE_HOME: join(home, ".cache"), EVENER_PROVIDERS_CONFIG: "", EVENER_API_KEY: "", EVENER_OFFLINE: "1" };
+  const child = spawn(path, ["hub", "--config", config], { env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = ""; child.stdout.on("data", b => { stdout += b; }); child.stderr.on("data", b => { stderr += b; });
+  const started = Date.now();
+  while (!stdout.includes(`listening on loopback:${port}`) && !stderr.includes(`listening on loopback:${port}`)) { if (child.exitCode !== null) throw new Error(`installed hub exited: ${stderr}`); if (Date.now() - started > 10000) throw new Error(`installed hub did not listen: ${stdout}${stderr}`); await new Promise(resolve => setTimeout(resolve, 50)); }
+  const hubToken = "<redacted-runtime-token>";
+  const h = new AppwireClient({ url: `ws://loopback:${port}/rpc`, clientInfo: { name: "installed-hub-readback", version: "0.1.0" }, socketFactory: endpoint => new ws.WebSocket(endpoint, { headers: { Authorization: `Bearer ${hubToken}` } }) });
+  const startup = stdout + stderr; assert(!startup.includes("git clone")); assert(!startup.includes("plugin auto-upgrade"));
+  let value; try { await h.connect(); value = await h.request("evener/settings/overview", {}); } finally { h.close(); }
+  const observed = value.hub.version; assert.equal(observed, "0.1.0"); assert.equal(value.hub.commit, "d683abe21"); assert.equal(expectedVersion, "d683abe21-dirty");
+  child.kill("SIGTERM"); const exitCode = await new Promise(resolve => child.once("exit", (code, signal) => resolve(code ?? signal)));
+  const listenerAfterCleanup = await command("curl", ["--silent", "--fail", `http://loopback:${port}/`]);
+  assert.equal(listenerAfterCleanup.exitCode, 7);
+  const processAfterCleanup = await command("pgrep", ["-f", `${path} hub`]);
+  assert.equal(processAfterCleanup.exitCode, 1);
+  const sanitized = startup.replace(/\/auth\/[A-Za-z0-9_-]+/g, "/auth/<redacted>");
+  await writeFile(log, sanitized, { mode: 0o600 });
+  snapshot.operations.push({ kind: "installed-hub-readback", invocation: { path, args: ["hub", "--config", config], envKeys: ["HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "EVENER_PROVIDERS_CONFIG", "EVENER_OFFLINE"] }, sdkRequestCounts: { "evener/settings/overview": 1 }, identity: value.hub, installedBinaryIdentity: expectedVersion, expectedInstalledBinaryIdentity: "d683abe21-dirty", startupNetworkAttempt: false, exitCode, stdout: sanitized, stderr: "", logPath: log, logSha256: sha(log), postCleanup: { listenerProbe: listenerAfterCleanup, processProbe: processAfterCleanup } });
+}
+
+const before = await status();
+const reviewedRaw = (await identity()).hub;
+const reviewed = { version: reviewedRaw.version, commit: reviewedRaw.commit ?? "" };
+snapshot.operations.push({ kind: "settings-review", identity: reviewed, fixture: before });
+await controlPost("/mode/fail");
+const failed = await upgrade(reviewed);
+assert.equal(failed.outcome, "uncertain");
+const afterFailure = await status();
+assert.equal(afterFailure.error_class, "upgrade");
+snapshot.operations.push({ kind: "upgrade-failure", result: { outcome: failed.outcome, execution: failed.execution }, fixture: afterFailure });
+await controlPost("/mode/success");
+const succeeded = await upgrade(reviewed);
+assert.equal(succeeded.outcome, "acknowledged");
+assert.equal(succeeded.execution, "unverified");
+const installed = await status();
+assert.equal(installed.installs, 2);
+const prefix = installed.owned_paths.prefix;
+const paths = { evener: `${prefix}/share/evener/bin/evener`, dev: `${prefix}/share/evener/bin/evener-dev` };
+for (const [name, path] of Object.entries(paths)) { const s = await stat(path); assert(s.isFile()); snapshot.operations.push({ kind: "installed-byte-readback", name, path, sha256: sha(path), bytes: s.size }); }
+for (const [name, path] of Object.entries(paths)) {
+  const result = await command(path, ["--version"]);
+  assert.equal(result.exitCode, name === "evener" ? 0 : 2);
+  snapshot.operations.push({ kind: "installed-execution", name, ...result });
+}
+for (const [name, path] of Object.entries(paths)) assert.equal(sha(path), name === "evener" ? sha(evener) : sha(dev));
+for (const name of ["evener", "dev"]) { const link = `${prefix}/bin/${name === "evener" ? "evener" : "evener-dev"}`; assert.equal(await readlink(link), paths[name]); }
+const freshRaw = (await identity()).hub;
+const fresh = { version: freshRaw.version, commit: freshRaw.commit ?? "" };
+assert.deepEqual(fresh, reviewed);
+snapshot.operations.push({ kind: "fresh-sdk-readback", identity: fresh, note: "registered fixture RPC remained live; no new installed hub was started" });
+const versionOutput = await command(paths.evener, ["--version"]);
+assert.equal(versionOutput.exitCode, 0);
+const expectedVersion = versionOutput.stdout.trim().replace(/^evener /, "").replace(/ \(.*/, "");
+await installedHubReadback(paths.evener, expectedVersion);
+snapshot.finalFixture = await status();
+snapshot.sourceBinaries = { evener: { path: evener, sha256: sha(evener) }, evenerDev: { path: dev, sha256: sha(dev) } };
+snapshot.sdkRequestCounts = sdkRequestCounts;
+await writeFile(output, JSON.stringify(snapshot, null, 2) + "\n", { mode: 0o600 });
+console.log(JSON.stringify({ outcome: "qualified", rawOutput: output, installedPrefix: prefix, fixture: snapshot.finalFixture }));
