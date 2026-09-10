@@ -165,10 +165,8 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 		if parsed.RawQuery != "" || parsed.Fragment != "" {
 			return "", fmt.Errorf("urls/add: file URL %q must not carry a query or fragment", raw)
 		}
-		// Resolve from the ESCAPED path form: parsed.Path is already decoded,
-		// so an encoded "%2F" would change path hierarchy before the scope
-		// check. EscapedPath preserves the caller's separators.
-		return canonicalFilePath(parsed.EscapedPath(), cwd, raw)
+		// Decode URL syntax before the scope check; bare paths stay literal.
+		return canonicalFilePath(parsed.Path, cwd, raw)
 	default:
 		// Any explicit scheme that is not http(s) or file is rejected here,
 		// BEFORE the bare-path fallback: inputs like "javascript:alert(1)",
@@ -267,17 +265,11 @@ func canonicalHTTPURL(raw string) (string, error) {
 // returns its file:/// absolute form, rejecting out-of-scope paths via the
 // execenv.RootBoundary precedent (the same symlink-aware escape check the
 // shell tool applies to a model-chosen cwd). file-URL callers pass the
-// ESCAPED path form (see canonicalSessionURL): it is unescaped here, BEFORE
-// the scope check, and must stay that way — decoding first is what keeps an
-// encoded "%2F" traversal inside the scoped hierarchy instead of smuggling
-// it past the check to unescape later. The stored form serializes back
-// through net/url below.
+// decoded path, so encoded traversal is checked against the scoped hierarchy.
+// Bare-path callers pass literal filenames, including any percent signs.
 func canonicalFilePath(path, cwd, raw string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("urls/add: empty file path in %q", raw)
-	}
-	if unescaped, err := url.PathUnescape(path); err == nil {
-		path = unescaped
 	}
 	abs := path
 	if !filepath.IsAbs(abs) {

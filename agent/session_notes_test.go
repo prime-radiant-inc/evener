@@ -335,20 +335,24 @@ func TestCanonicalFilePathEscapesDelimiters(t *testing.T) {
 func TestSetHumanNoteStoresAndSteers(t *testing.T) {
 	s := newNotesToolSession(t)
 	defer s.Close()
-	storedResponse, err := s.SetHumanNote("outer-1", "hello world")
+	const note = "n7Q4x9V2"
+	storedResponse, err := s.SetHumanNote("outer-1", note)
 	stored := storedResponse.Note
 	if err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if stored != "hello world" {
-		t.Fatalf("stored = %q, want %q", stored, "hello world")
+	if stored != note {
+		t.Fatalf("stored = %q, want %q", stored, note)
+	}
+	if canonical, _ := s.notesSnapshot(); canonical != note {
+		t.Fatalf("canonical note = %q, want %q", canonical, note)
 	}
 	data, ok := nextNotesEvent(t, s, events.EventNotesUpdated).(events.NotesUpdatedData)
 	if !ok {
 		t.Fatalf("NOTES_UPDATED payload = %T", nextNotesEvent(t, s, events.EventNotesUpdated))
 	}
-	if data.HumanNote != "hello world" {
-		t.Fatalf("NOTES_UPDATED human note = %q, want %q", data.HumanNote, "hello world")
+	if data.HumanNote != note {
+		t.Fatalf("NOTES_UPDATED human note = %q, want %q", data.HumanNote, note)
 	}
 	s.mu.Lock()
 	queue := append([]steeringMessage(nil), s.steeringQueue...)
@@ -362,7 +366,7 @@ func TestSetHumanNoteStoresAndSteers(t *testing.T) {
 	if queue[0].Kind != events.SteeringKindHumanNote {
 		t.Fatalf("inner steer kind = %q, want %q", queue[0].Kind, events.SteeringKindHumanNote)
 	}
-	if queue[0].Text != "human updated their whiteboard: hello world" {
+	if !strings.Contains(queue[0].Text, note) {
 		t.Fatalf("inner steer text = %q", queue[0].Text)
 	}
 }

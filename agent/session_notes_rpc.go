@@ -118,9 +118,8 @@ func (s *Session) notesSnapshotPair(stored string, changed bool) (string, bool, 
 //
 // persistNotesMetaLocked is the same write for callers that already hold
 // metaSaveMu (a mutation+rollback critical section): the lock must stay held
-// from the save attempt through the rollback, so a concurrent maybeAutoSave
-// cannot snapshot a transient mutation between a failed save and its restore
-// and persist it to disk.
+// from before the tentative mutation through persistence and rollback, so a
+// concurrent maybeAutoSave cannot snapshot and persist uncommitted state.
 func (s *Session) persistNotesMeta() error {
 	if fault := s.cfg.testOnly.notesAutoSaveFault; fault != nil {
 		if err := fault(); err != nil {
@@ -191,9 +190,11 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	// the projector (G1).
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
+	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
 	removed := s.removeSessionURL(id)
 	if !removed {
+		s.metaSaveMu.Unlock()
 		if lookup.Record.AttemptGeneration > 1 {
 			// Crash-recovery takeover: the pre-crash attempt passed validation
 			// (only unseen IDs reach the reservation) and removed the entry
@@ -225,9 +226,8 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	// and a retry still owns the removal. The store rolls back to the
 	// pre-removal list, so the removed entry is present again for the retry
 	// to own instead of standing removed-but-unannounced (G2). The
-	// save+rollback holds metaSaveMu so a concurrent autosave cannot persist
-	// the transient removal between the failed save and the restore.
-	s.metaSaveMu.Lock()
+	// mutation+save+rollback holds metaSaveMu so a concurrent autosave cannot
+	// snapshot the transient removal before the save or during rollback.
 	if err := s.persistNotesMetaLocked(); err != nil {
 		s.restoreSessionURLsLocked(prev)
 		s.metaSaveMu.Unlock()
@@ -291,9 +291,9 @@ func (s *Session) setAgentNoteSerialized(note string) (stored string, changed bo
 func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed bool, human, agent string, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
+	s.metaSaveMu.Lock()
 	_, prevAgent := s.notesSnapshot()
 	stored, changed = s.setAgentNote(note)
-	s.metaSaveMu.Lock()
 	if err = s.persistNotesMetaLocked(); err != nil {
 		s.mu.Lock()
 		s.agentNote = prevAgent
@@ -336,12 +336,13 @@ func (s *Session) addSessionURLSerialized(rawURL, label string) (schema.SessionU
 func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry schema.SessionURL, urls []schema.SessionURL, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
+	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
 	entry, err = s.addSessionURL(rawURL, label)
 	if err != nil {
+		s.metaSaveMu.Unlock()
 		return schema.SessionURL{}, nil, err
 	}
-	s.metaSaveMu.Lock()
 	if err = s.persistNotesMetaLocked(); err != nil {
 		s.restoreSessionURLsLocked(prev)
 		s.metaSaveMu.Unlock()
@@ -362,12 +363,13 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, urls []schema.SessionURL, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
+	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
 	removed = s.removeSessionURL(id)
 	if !removed {
+		s.metaSaveMu.Unlock()
 		return false, nil, nil
 	}
-	s.metaSaveMu.Lock()
 	if err = s.persistNotesMetaLocked(); err != nil {
 		s.restoreSessionURLsLocked(prev)
 		s.metaSaveMu.Unlock()

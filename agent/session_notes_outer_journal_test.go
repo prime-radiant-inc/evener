@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -127,7 +128,7 @@ func TestRemoveSessionURLReusedIDWithDifferentInputConflicts(t *testing.T) {
 		t.Fatalf("remove a = %v, %v; want true, nil", removed, err)
 	}
 	nextNotesEvent(t, s, events.EventUrlsUpdated)
-	if _, err := s.RemoveSessionURL("outer-rm-1", b.ID); !isHumanNoteConflict(err) {
+	if _, err := s.RemoveSessionURL("outer-rm-1", b.ID); !errors.Is(err, errClientMutationMismatch) {
 		t.Fatalf("reused ID with different entry err = %v, want mismatch", err)
 	}
 	got := s.sessionURLsForTest()
