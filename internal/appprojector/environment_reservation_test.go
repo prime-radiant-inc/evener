@@ -25,3 +25,15 @@ func TestEnvironmentPreservesReservedRunnableIdentity(t *testing.T) {
 		t.Fatalf("user input left reservation %q", got)
 	}
 }
+
+func TestEmptyEnvironmentDoesNotOpenTurnOrConsumeReservation(t *testing.T) {
+	projector := NewAppEventProjector("empty-environment", "local:empty-environment")
+	reserved := projector.ReserveTurnID()
+	notifications := projector.Project(events.SessionEvent{Kind: events.EventEnvironment, Data: events.EnvironmentData{TurnID: "turn_empty", Text: " \n\t "}})
+	if len(notifications) != 0 {
+		t.Fatalf("empty environment emitted %d notifications, want none", len(notifications))
+	}
+	if got := projector.ReservedTurnID(); got != reserved {
+		t.Fatalf("empty environment changed runnable reservation to %q, want %q", got, reserved)
+	}
+}

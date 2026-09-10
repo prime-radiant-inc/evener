@@ -374,6 +374,15 @@ func (s *Session) claimDirectClientMutationTurn(acceptedTurnsFloor uint64) error
 	})
 }
 
+func (s *Session) returnClaimedDirectClientMutationTurn(acceptedTurnsFloor uint64) error {
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if snapshot.AcceptedTurns > acceptedTurnsFloor {
+			snapshot.AcceptedTurns--
+		}
+		return nil
+	})
+}
+
 func queueResponseFromRecord(threadID string, record clientMutationRecord, disposition appwire.MutationDisposition) (appwire.TurnQueueResponse, error) {
 	var response appwire.TurnQueueResponse
 	if len(record.Result) != 0 {

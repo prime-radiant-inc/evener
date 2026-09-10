@@ -1595,10 +1595,12 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 		Sandbox: s.cfg.Sandbox,
 	})
 
+	s.attentionMu.Lock()
 	s.mu.Lock()
 	tracker := s.envTracker
 	if tracker == nil {
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		return nil
 	}
 	before := tracker.State()
@@ -1609,6 +1611,7 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 	}
 	s.mu.Unlock()
 	if block == "" {
+		s.attentionMu.Unlock()
 		return nil
 	}
 
@@ -1616,7 +1619,7 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 	// its length cannot name a durable transcript turn.
 	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
-	if err := s.appendTurnAfterTranscriptWrite(
+	if err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
@@ -1630,12 +1633,14 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 			s.envTracker = envctx.NewTracker(before)
 		}
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		return err
 	}
-	s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	// Persist tracker state so resume stays silent when nothing changed.
 	s.setEnvContextStateForTracker(tracker, st)
+	s.attentionMu.Unlock()
+	s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	return nil
 }
 
@@ -1670,6 +1675,8 @@ func (s *Session) setEnvContextStateForTracker(tracker *envctx.Tracker, st envct
 // re-emit a full block rather than staying silent on an environment the model
 // can no longer see anything about.
 func (s *Session) resetEnvContextTrackerAfterCompaction() {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	if s.envTracker == nil {
 		s.mu.Unlock()
@@ -1711,15 +1718,18 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 // with a placeholder.
 func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
 	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+}
+
+func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
 	if err := write(); err != nil {
-		s.attentionMu.Unlock()
 		return err
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
-	s.attentionMu.Unlock()
 	return nil
 }
 

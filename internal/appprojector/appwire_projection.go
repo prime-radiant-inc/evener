@@ -255,6 +255,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	switch event.Kind {
 	case events.EventEnvironment:
 		data := eventData[events.EnvironmentData](event.Data)
+		if strings.TrimSpace(data.Text) == "" {
+			return nil
+		}
 		// Environment context is a standalone saved turn, not a runnable
 		// work carrier. Close its group before the following user input.
 		reserved := p.reservedTurnID

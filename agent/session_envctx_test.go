@@ -292,6 +292,9 @@ func TestEnvironmentContextWriteFailureAbortsUserAcceptance(t *testing.T) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if snapshot := s.clientMutations.snapshot(); snapshot.AcceptedTurns != uint64(s.turns) {
+		t.Fatalf("accepted turns after environment write failure = %d, want %d", snapshot.AcceptedTurns, s.turns)
+	}
 	if len(s.history) != before {
 		t.Fatalf("history length after environment write failure = %d, want %d", len(s.history), before)
 	}
