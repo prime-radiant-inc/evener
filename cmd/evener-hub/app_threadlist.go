@@ -15,6 +15,8 @@ import (
 
 const threadListSourceTimeout = 3 * time.Second
 
+const threadListSourceWorkers = 4
+
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	return hubThreadListWithSourceTimeout(ctx, cfg, sources, params, threadListSourceTimeout)
 }
@@ -28,23 +30,47 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 		resp  appwire.ThreadListResponse
 		err   error
 	}
-	results := make(chan sourceResult, len(allSources))
+	allowed := make([]int, 0, len(allSources))
 	for index, source := range allSources {
 		if !sourceAllowedForList(source.ID(), params) {
 			continue
 		}
-		go func(index int, source appsource.Source) {
-			sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
-			defer cancel()
-			resp, err := source.ListThreads(sourceCtx, params)
-			results <- sourceResult{index: index, resp: resp, err: err}
-		}(index, source)
+		allowed = append(allowed, index)
 	}
-	listed := make([]sourceResult, 0, len(allSources))
-	for _, source := range allSources {
-		if !sourceAllowedForList(source.ID(), params) {
-			continue
+	results := make(chan sourceResult, len(allowed))
+	jobs := make(chan int)
+	workerCount := min(threadListSourceWorkers, len(allowed))
+	for worker := 0; worker < workerCount; worker++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					source := allSources[index]
+					sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
+					resp, err := source.ListThreads(sourceCtx, params)
+					cancel()
+					results <- sourceResult{index: index, resp: resp, err: err}
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, index := range allowed {
+			select {
+			case jobs <- index:
+			case <-ctx.Done():
+				return
+			}
 		}
+	}()
+	listed := make([]sourceResult, 0, len(allowed))
+	for range allowed {
 		select {
 		case result := <-results:
 			listed = append(listed, result)
