@@ -201,21 +201,6 @@ func TestHubForkAdmissionRejectsLiveSubagentAliasFromRoster(t *testing.T) {
 	}
 }
 
-func TestHubForkCapabilityExcludesReadOnlyAndRemoteThreads(t *testing.T) {
-	for _, tc := range []struct {
-		ref, kind string
-		want      bool
-	}{
-		{"local:root", "", true}, {"local:aside", "aside", true},
-		{"local:child", "subagent", false}, {"remote:root", "", false}, {"", "", false},
-	} {
-		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: tc.ref, Kind: tc.kind}}
-		if got := hubOwnsThreadFork(thread); got != tc.want {
-			t.Errorf("ref=%q kind=%q: fork ownership=%v, want %v", tc.ref, tc.kind, got, tc.want)
-		}
-	}
-}
-
 func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -262,7 +247,7 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 	}
 }
 
-func TestHubRPCPersistedSubagentCannotReadvertiseOrFork(t *testing.T) {
+func TestHubRPCPersistedSubagentCanForkAfterStop(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-subagent-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
@@ -289,30 +274,26 @@ func TestHubRPCPersistedSubagentCannotReadvertiseOrFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Data) != 1 || list.Data[0].Evener.Capabilities.ForkFromTurn {
-		t.Fatalf("persisted subagent list capability=%+v, want fork disabled", list.Data)
+	if len(list.Data) != 1 || !list.Data[0].Evener.Capabilities.ForkFromTurn {
+		t.Fatalf("persisted subagent list capability=%+v, want fork enabled", list.Data)
 	}
 	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read.Thread.Evener.Capabilities.ForkFromTurn {
-		t.Fatalf("persisted subagent read advertised fork: %+v", read.Thread.Evener.Capabilities)
+	if !read.Thread.Evener.Capabilities.ForkFromTurn {
+		t.Fatalf("persisted subagent read did not advertise fork: %+v", read.Thread.Evener.Capabilities)
 	}
 	before := len(past.Search("", 100, 0))
 	_, err = client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "fork"})
-	if err == nil {
-		t.Fatal("persisted subagent fork succeeded")
-	}
-	wire, ok := errors.AsType[appwire.WireError](err)
-	if !ok || wire.Code != appwire.CodeUnavailable {
-		t.Fatalf("persisted subagent fork error=%v, want structured unavailable", err)
+	if err != nil {
+		t.Fatalf("persisted subagent fork: %v", err)
 	}
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	if after := len(past.Search("", 100, 0)); after != before {
-		t.Fatalf("rejected subagent fork changed persisted index count from %d to %d", before, after)
+	if after := len(past.Search("", 100, 0)); after != before+1 {
+		t.Fatalf("accepted subagent fork changed persisted index count from %d to %d", before, after)
 	}
 	if _, ok := past.Find(sessionID); !ok {
 		t.Fatal("parent subagent disappeared after rejected fork")

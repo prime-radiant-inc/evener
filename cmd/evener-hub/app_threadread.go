@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -415,21 +416,36 @@ func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread
 	return thread
 }
 
-// The hub forks persisted local sessions; in-process descendants remain read-only.
-func hubOwnsThreadFork(thread appwire.Thread) bool {
-	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	return err == nil && ref.SourceID == "local" && thread.Evener.Kind != "subagent"
-}
-
 func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {
 		return false
 	}
+	// A live subagent alias remains daemon-owned and read-only. Once its
+	// daemon has stopped, the persisted delegate is hub-owned like any other
+	// saved local session and may be forked.
 	if thread.Evener.Kind == "subagent" && cfg.Roster != nil && cfg.Roster.IsSubagentActive(ref.ThreadID) {
 		return false
 	}
 	return true
+}
+
+func hubForkRecoveryFenced(thread appwire.Thread) bool {
+	return thread.Evener.ResumeRequired ||
+		thread.Status.Type == appwire.ThreadStatusRestartRequired ||
+		slices.Contains(thread.Status.ActiveFlags, "resumeRequired")
+}
+
+func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool {
+	if hubForkRecoveryFenced(thread) {
+		return true
+	}
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != "local" || cfg.ResumeLocks == nil {
+		return false
+	}
+	state := cfg.ResumeLocks.RecoveryState(ref.ThreadID)
+	return state.ResumeRequired || state.Stopping > 0
 }
 
 // applyHubForkCapability projects the hub's fork authority after the common
@@ -446,7 +462,7 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 		}
 		return thread
 	}
-	if cfg.Roster != nil && cfg.Roster.OwnershipError() != nil {
+	if cfg.Roster != nil && (cfg.Roster.OwnershipError() != nil || unconfirmedDaemonForThread(cfg.Roster, ref.ThreadID)) {
 		thread.Evener.Capabilities.ForkFromTurn = false
 		return thread
 	}
@@ -457,7 +473,7 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 		}
 	}
 	thread.Evener.Capabilities.ForkFromTurn = storageAvailable && hubCanForkThread(cfg, thread) &&
-		!thread.Evener.ResumeRequired && thread.Status.Type != appwire.ThreadStatusRestartRequired
+		!hubForkRecoveryFencedNow(cfg, thread)
 	return thread
 }
 

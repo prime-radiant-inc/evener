@@ -617,6 +617,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
 					ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
+					// The relay target is a subscription-time snapshot. Recovery can
+					// begin after it is captured, so consult the shared lock registry
+					// for every frame before advertising the hub-owned action.
+					if hubForkRecoveryFencedNow(cfg, target.thread) {
+						ownsFork = false
+					}
 					notification = stampClosedThreadCapabilities(notification, ownsFork)
 					notification = stampForkCapability(notification, ownsFork)
 				}
