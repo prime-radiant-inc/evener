@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "date": "2026-09-08",
+  "status": "partial-native-journey-observed",
+  "scope": "Native Simulator UI actions through Computer Use, real authenticated Hub and daemon, scripted external HTTP provider; independent installed-SDK authoritative readbacks. No SDK mutations substitute for the recorded native actions.",
+  "nativeArtifact": {
+    "sourceCommit": "bc519b1c1",
+    "bundleIdentifier": "com.primeradiant.evener.native",
+    "executableSha256": "b0266f0654924c04e4f4473beb390a395ed64ab745a027c419ca040a081fda5c",
+    "javascriptSha256": "934a2359e3ab1dd4a7cd54bdb584a28c9212c99d12cbe4a3dbdceb49a9e3b9c1",
+    "provenanceReceipt": "2026-09-08-iphone-execution.json"
+  },
+  "simulator": {
+    "uuid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "device": "iPhone 17 Pro",
+    "os": "iOS 26.5"
+  },
+  "fixture": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j",
+    "profile": "iPhone daily journey",
+    "url": "http://127.0.0.1:64838",
+    "runtimeSourceVersion": "9bb59d643-dirty",
+    "retainedForFurtherValidation": true,
+    "cleanupComplete": false
+  },
+  "thread": {
+    "ref": "local:034LTaHspOapGYPMW40hTr",
+    "id": "034LTaHspOapGYPMW40hTr",
+    "instanceId": "034LTaHspOapGYPMW40hTr"
+  },
+  "observed": [
+    "Created one conversation after choosing Fixture Model; default-model failure preserved the opening prompt and created no extra session.",
+    "Rendered the real response with a heading, inline code, link, and fenced code block.",
+    "Sent held turn through the native composer; authoritative turn_m2 was inProgress.",
+    "Pressed native Stop; authoritative turn_m2 became interrupted and native interrupted notice appeared.",
+    "Sent the next ordinary turn; turn_m3 completed and the native response rendered.",
+    "Requested a question, opened its native panel, entered Native answer note 4f87, left and reopened the panel with the same choice and note preserved.",
+    "Submitted Keep current and the note through native Send answers; askPending cleared and turn_m5 completed with a response.",
+    "Entered Native unsent draft 4f87; switched to the empty seed session and back with no draft leak and exact draft restored.",
+    "Backgrounded through Simulator Home, reopened native Evener and observed Connected, conversation history and exact ordinary draft."
+  ],
+  "readback": {
+    "creationTurn": "turn_m1",
+    "interruptedTurn": "turn_m2",
+    "continuedTurn": "turn_m3",
+    "answeredTurn": "turn_m5",
+    "questionPendingBefore": true,
+    "questionPendingAfter": false,
+    "terminalStatus": {
+      "type": "awaiting"
+    }
+  },
+  "preservation": {
+    "drafts": {
+      "before": 9,
+      "after": 10,
+      "allOriginalRowsPreserved": true
+    },
+    "question_drafts": {
+      "before": 8,
+      "after": 9,
+      "allOriginalRowsPreserved": true
+    },
+    "question_positions": {
+      "before": 3,
+      "after": 3,
+      "allOriginalRowsPreserved": true
+    },
+    "draft_images": {
+      "before": 0,
+      "after": 0,
+      "allOriginalRowsPreserved": true
+    },
+    "draft_image_sets": {
+      "before": 0,
+      "after": 0,
+      "allOriginalRowsPreserved": true
+    },
+    "creation_drafts": {
+      "before": 1,
+      "after": 1,
+      "allOriginalRowsPreserved": true
+    },
+    "creation_draft_images": {
+      "before": 0,
+      "after": 0,
+      "allOriginalRowsPreserved": true
+    }
+  },
+  "restoration": {
+    "selectedProfile": "v4 acceptance",
+    "profileRestoredThroughUI": true,
+    "originalSessionReopened": false,
+    "reason": "Original hub is unreachable and its roster is not exposed while disconnected. Original session draft row remains byte-preserved.",
+    "temporaryHardwareKeyboardConnectionRestored": true,
+    "keyboardMenuEvidence": "Toggle Software Keyboard returned to disabled after reversing the temporary Connect Hardware Keyboard change."
+  },
+  "defectObserved": {
+    "description": "Completed turn retained a reasoning item with status inProgress; native rendered Reasoning running.",
+    "location": "internal/appprojector/appwire_projection.go",
+    "sourceFixValidation": "Source regression suites and independent review pass separately; this installed native/runtime pair has not been replaced with the fix."
+  },
+  "captures": [
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/before-model-retry.json",
+      "sha256": "74d1647ab8581897b58dc1c36da54b8c708f6a1266cf1f50a2b783fdaccf2888"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/after-native-create.json",
+      "sha256": "a6efc3efbb33566c11f8403a617fd2349a74e9b710239fa18fc48b5fbf4d0f85"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/after-native-held-send.json",
+      "sha256": "d2fd81612786d8491683b33b902c81badfec09324c18b5b15fabd331ae818765"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/after-native-stop.json",
+      "sha256": "0fbd045f902bb48f8785c9e12044799cb1257d97ccd81eed2156b63362c899b3"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/after-native-continue.json",
+      "sha256": "00f72eb6535527061a6bc370cc43f0fc419847a0a54152a1c2108cbaf12fa0e1"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/before-native-question-answer.json",
+      "sha256": "47be710bca9e3d3600fa74d9461c8ce30f126cfe6e1bf7cc16272e5ab55fb6eb"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/after-native-question-answer.json",
+      "sha256": "6abd7e6977ba54a03323512c95c9f6898825abd0c90b99876f5dd15f3a83e515"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/drafts-after-native-journey-summary.json",
+      "sha256": "4dc517f377d5a3937acd1c0338eb1ac2978122f62bd36fa845df68b2bc039690"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-usable-live-660meb9j/native-readback.mjs",
+      "sha256": "07054d8f00c1dbfebaeb1e1084cf1d43d7c22d3507e81abc8671662798367692"
+    }
+  ],
+  "excludedClaims": [
+    "Physical iPhone acceptance",
+    "TestFlight delivery or update",
+    "Native approval journey",
+    "Network interruption/reconnect stress",
+    "Force-quit or cold-launch restoration in this journey",
+    "Updated reasoning lifecycle fix installed or observed",
+    "Complete Usable or whole iPhone v1 acceptance"
+  ]
+}

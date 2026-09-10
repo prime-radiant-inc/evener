@@ -1,0 +1,326 @@
+{
+  "date": "2026-09-09",
+  "status": "bounded image draft, send, viewer and question journey passed; media acceptance remains open",
+  "device": {
+    "name": "iPhone 17 Pro simulator",
+    "os": "iOS 26.5",
+    "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0"
+  },
+  "beforeCorrection": {
+    "nativeSource": "c5fb198a92520c4f807999a3102c1ce473af6332",
+    "scope": "Picker, cancel, removal/reselection, cold restart, navigation, native image send and both full-size viewers"
+  },
+  "currentNative": {
+    "source": "841220ee2f96e49481faacbdda71ca5d53dfff3d",
+    "launch": "com.primeradiant.evener.native: 3511",
+    "appPath": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/A35E3E04-37DC-4991-80D0-2E4CC89F0217/Evener.app",
+    "hashes": {
+      "Evener": "9fc1a5685c16bd2f8db2ac7d857bd89b1f9c67e3710b2ffbd68dd79d73ebce03",
+      "main.jsbundle": "bd76e0510677862d7986746d2fb1a9f26c6194a5c671e129633778c8f81f28ae"
+    },
+    "dataContainer": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Data/Application/19BBF34B-DD39-4B49-BFDF-8917E666D7AB"
+  },
+  "build": {
+    "command": [
+      "xcodebuild",
+      "-workspace",
+      "mobile-native/ios/Evener.xcworkspace",
+      "-scheme",
+      "Evener",
+      "-configuration",
+      "Release",
+      "-sdk",
+      "iphonesimulator",
+      "-destination",
+      "id=F9170898-2B92-4420-BD12-9B54B3FC4AE0,arch=arm64",
+      "-derivedDataPath",
+      "mobile-native/ios/build",
+      "-jobs",
+      "2",
+      "ONLY_ACTIVE_ARCH=YES",
+      "build"
+    ],
+    "head": "841220ee2f96e49481faacbdda71ca5d53dfff3d",
+    "exitCode": 0,
+    "durationSeconds": 12.725,
+    "logPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/build-correction.log",
+    "appPath": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build/Build/Products/Release-iphonesimulator/Evener.app",
+    "artifactSha256": {
+      "Evener": "9fc1a5685c16bd2f8db2ac7d857bd89b1f9c67e3710b2ffbd68dd79d73ebce03",
+      "main.jsbundle": "bd76e0510677862d7986746d2fb1a9f26c6194a5c671e129633778c8f81f28ae"
+    },
+    "signatureVerifyExitCode": 0
+  },
+  "checks": {
+    "nativeTests": 703,
+    "nativeTestFiles": 75,
+    "typeScriptExitCode": 0,
+    "biomeExitCode": 0,
+    "independentSourceReview": "Luna medium; no blockers"
+  },
+  "fixture": {
+    "privateRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk",
+    "hubRoot": "/private/tmp/evener-iphone-joined-8MIBV9",
+    "rpc": "ws://127.0.0.1:64940/rpc",
+    "backendSource": "6a0278e36331 with fixture build dirty state; separate from d683abe21 SDK backend",
+    "session": {
+      "ref": "local:034LjduVETkiVBt340o8Sd",
+      "instanceId": "034LjduVETkiVBt340o8Sd",
+      "providerName": "ios-review-obase0wi"
+    },
+    "createdThroughSdkWithoutPrompt": true,
+    "nativeCreationFormQualified": false,
+    "provider": "owned scripted external boundary on 127.0.0.1:55450",
+    "hubAndProviderRetained": true
+  },
+  "imageDraft": {
+    "picked": 2,
+    "removed": 1,
+    "reselected": 1,
+    "pickerCancelPreservedRemainingImageAndText": true,
+    "coldAndNavigationRestoredExactTextAndImages": true,
+    "images": [
+      {
+        "id": "aeac7964-8bf7-4872-a807-1f7ebc9517ff",
+        "marker": 1,
+        "mediaType": "image/png",
+        "name": "2026-09-09-corrected-running-keyboard-light.png",
+        "bytes": 296236,
+        "sha256": "ff70e28e74fd7b48635e2ceb5f2b75c864a82fc778e271660e8a0cf1790adfa7"
+      },
+      {
+        "id": "0bf365de-9ec5-4a83-8935-3a48cf5091ac",
+        "marker": 3,
+        "mediaType": "image/png",
+        "name": "2026-09-09-corrected-running-keyboard-dark.png",
+        "bytes": 281189,
+        "sha256": "441e82511f1b81cd0374499c4dc05438629c194f8e28c7bb748d7307c7d254df"
+      }
+    ],
+    "providerInputImages": [
+      {
+        "bytes": 296236,
+        "sha256": "ff70e28e74fd7b48635e2ceb5f2b75c864a82fc778e271660e8a0cf1790adfa7"
+      },
+      {
+        "bytes": 281189,
+        "sha256": "441e82511f1b81cd0374499c4dc05438629c194f8e28c7bb748d7307c7d254df"
+      }
+    ],
+    "providerRequestIndex": 12,
+    "nativeSend": true
+  },
+  "captionCorrection": {
+    "source": "841220ee2f96e49481faacbdda71ca5d53dfff3d",
+    "geometry": [
+      {
+        "filename": "2026-09-09-corrected-running-keyboard-light.png",
+        "before": {
+          "x": 16,
+          "y": 587,
+          "width": 112,
+          "height": 95
+        },
+        "after": {
+          "x": 16,
+          "height": 38,
+          "y": 587,
+          "width": 112
+        }
+      },
+      {
+        "filename": "2026-09-09-corrected-running-keyboard-dark.png",
+        "before": {
+          "width": 112,
+          "y": 587,
+          "height": 95,
+          "x": 140
+        },
+        "after": {
+          "width": 112,
+          "y": 587,
+          "height": 38,
+          "x": 140
+        }
+      }
+    ],
+    "fullFilenamesRetainedInViewerAndLabels": true,
+    "bothImagesViewedAfterInstall": true
+  },
+  "question": {
+    "status": "passed",
+    "readback": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/readback-1788945207108.json",
+    "sha256": "7f3946c6ac5b41e565924c919c38be383387da80aa0a4eaf0366717536b9f7f7",
+    "answeredTurn": "turn_m2",
+    "statusAfter": {
+      "type": "awaiting"
+    },
+    "askPending": false,
+    "queueDepth": 0
+  },
+  "preservation": {
+    "coldRestartDraftTablesExactlyEqual": true,
+    "allSevenOriginalDraftTablesExactlyEqual": true,
+    "allThreeOriginalStoredValuesExactlyEqual": true,
+    "originalConversationAndUnsentDraftRestored": true,
+    "appearance": "dark",
+    "draftTableRows": {
+      "drafts": 13,
+      "question_drafts": 11,
+      "question_positions": 3,
+      "draft_images": 0,
+      "draft_image_sets": 0,
+      "creation_drafts": 1,
+      "creation_draft_images": 0
+    },
+    "storedRows": 3
+  },
+  "screenshots": {
+    "cold-restored": {
+      "path": "docs/design/mobile/assets/2026-09-09-media-cold-restored.png",
+      "sha256": "322f4b91a86f347b0d37d09defeb64abb6a353fb2a275d6e7cebe7ca62658394"
+    },
+    "caption-installed": {
+      "path": "docs/design/mobile/assets/2026-09-09-media-caption-installed.png",
+      "sha256": "ff161d5cafc15b950bd43ca182186575c5e030e69ea9d2be73efaa8d6da7edb4"
+    },
+    "corrected-gallery-first": {
+      "path": "docs/design/mobile/assets/2026-09-09-media-corrected-gallery-first.png",
+      "sha256": "f90811d6e50a65f65314a8e60c23f1ef9ecd65c70cfb22c4bac9d57028298f98"
+    },
+    "corrected-gallery-second": {
+      "path": "docs/design/mobile/assets/2026-09-09-media-corrected-gallery-second.png",
+      "sha256": "5450a21ab9e8ea0382fb3fa93b031c9276ce60e2b37a0af33f44a60e7aa05871"
+    },
+    "question-sheet": {
+      "path": "docs/design/mobile/assets/2026-09-09-media-question-sheet.png",
+      "sha256": "cf02da3f2cfdd51bec5d89c94b543facef8c823f2d149ed962dfb873409d0589"
+    }
+  },
+  "independentVisualReview": {
+    "path": "docs/design/mobile/assets/2026-09-09-native-media-confirmation-review.md",
+    "sha256": "0815b156c5858cd09195b847691bceaf7f1882269eaa64cd770a5e604063d434",
+    "verdict": "Narrow correction confirmed; no new obvious layout fault"
+  },
+  "rawArtifacts": {
+    "before.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/before.json",
+      "sha256": "3c55bd80bc738a62fd8dcfb6c1bc78d8030d60e88afa2b241901ea2eb86e2912"
+    },
+    "before-cold-draft.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/before-cold-draft.json",
+      "sha256": "99744b50fff4977126f282de01cbfddac2df2e024ce0635bf4e7d770fc636b16"
+    },
+    "provider-image-result.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/provider-image-result.json",
+      "sha256": "f972baab6c201286d28c11a8d7563ad1e36d750239a26286befecd806468ca3c"
+    },
+    "caption-install.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/caption-install.json",
+      "sha256": "20b9baebfdd01c67df3b09cf3e3e092c05070305a793e8d7e94cf77372b82a7c"
+    },
+    "build-correction-result.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/build-correction-result.json",
+      "sha256": "03ab6a0792c01c30c478be93693618df33f19431e3ff5d6421015e5e11855960"
+    },
+    "question-answer-result.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/question-answer-result.json",
+      "sha256": "5a99084e1d27e57efa1dfc4f1a1448c5ca121137a27e0ca3393650050ee41d63"
+    },
+    "preservation-result.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/preservation-result.json",
+      "sha256": "7d48f86800bf35855722611b3d800d5e1cf609750b4fdad3ebf4cc8c9d9302ff"
+    },
+    "media.mjs": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/media.mjs",
+      "sha256": "52d5fce7877800678ff44189eadc17731912dde3ca0787bbf18befbade2310fb"
+    },
+    "publish-evidence.py": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/publish-evidence.py",
+      "sha256": "a7b9d39e14c9acdca6e09c883b3f730d40cdd99fd0fffb7d19644577d0513c69"
+    },
+    "one-removed.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/one-removed.ax.json",
+      "sha256": "76e7e9e7aecf48d2d6c6de050a356961a13c4f8ad63b2982ee5b774bfed98463"
+    },
+    "picker-cancelled.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/picker-cancelled.ax.json",
+      "sha256": "6433467ad30e1339c649a98db18a41282a9be48ae0c9f85cbfa554469468304e"
+    },
+    "cold-restored.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/cold-restored.ax.json",
+      "sha256": "a8114dc1b3a359e622e73bad07d3a3e2cfaf788b4b57625e8f09d6d3bf863265"
+    },
+    "navigation-return.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/navigation-return.ax.json",
+      "sha256": "3551f5996d25cfe3b583c55eb00f20506fa33738e2d088338fcfede2b46a0c1f"
+    },
+    "before-install.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/before-install.ax.json",
+      "sha256": "a6f47520c7542f90932362555a5c10e61faaf2d4d80e436af38e03b230c13ec8"
+    },
+    "caption-installed.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/caption-installed.ax.json",
+      "sha256": "4298992b40f5d9f06061151c811e97d9098e8cf5a902443daa88297123b5c907"
+    },
+    "corrected-gallery-first.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/corrected-gallery-first.ax.json",
+      "sha256": "c74f306efdb690642c3065589d4b4fef3004507a4cc1bfbde4fa695df03be7be"
+    },
+    "corrected-gallery-second.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/corrected-gallery-second.ax.json",
+      "sha256": "d907f5289639d339e1891dda5f3bdad55507d9b94eb77e55ee415a733916c8fd"
+    },
+    "question-sheet.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/question-sheet.ax.json",
+      "sha256": "164affc6ea4ebc1f4d23fb0127755eb97ad215aebd98cf2eb01fefb55d0cd7d8"
+    },
+    "question-answered.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/question-answered.ax.json",
+      "sha256": "da513d8040f5faaa3dfaf1a9a95b3beece1b3a26e2d7d2346eb17e86bc727bca"
+    },
+    "restored-original.ax.json": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/restored-original.ax.json",
+      "sha256": "6eda4b7a24c462a3a63938b887633751513f47eef375e9d412cb6ad3690c8e5a"
+    },
+    "provider-request-12": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/provider-request-12.json",
+      "sha256": "cacad4a93e0887cd480d45e8e61c2c230ae3742f27be4ba9a180d0a299445f94"
+    },
+    "question-completion-readback": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/readback-1788945207108.json",
+      "sha256": "7f3946c6ac5b41e565924c919c38be383387da80aa0a4eaf0366717536b9f7f7"
+    },
+    "before-cold-drafts.db": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/before-cold-drafts.db",
+      "sha256": "ca1dfcb3ee06b3044b0f58433c14a700623c59962a3612b88c739527411add01"
+    },
+    "after-cold-drafts.db": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/after-cold-drafts.db",
+      "sha256": "ca1dfcb3ee06b3044b0f58433c14a700623c59962a3612b88c739527411add01"
+    },
+    "before-evener-drafts.db": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/before-evener-drafts.db",
+      "sha256": "935b2de7f250f792e1077c95946f382cf0fe53d5c422476e1da98309cbcc9c66"
+    },
+    "after-media-evener-drafts.db": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/after-media-evener-drafts.db",
+      "sha256": "2811c690d69548d380af3524ce83debf5bf83c76da53fdc07b5dd712bb7de209"
+    },
+    "before-ExpoSQLiteStorage": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/before-ExpoSQLiteStorage",
+      "sha256": "a6de49b43c864a346434a4459162ee5f9628979415b05ab020db7023d04e22c3"
+    },
+    "after-media-ExpoSQLiteStorage": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/after-media-ExpoSQLiteStorage",
+      "sha256": "71322573ad1b5201636c3b678bda391fe99c91f9339b2ece5619f89b5aebbc21"
+    }
+  },
+  "limits": [
+    "Simulator only; physical device, TestFlight update and real-network performance remain open",
+    "The two input images use inline image bytes; this does not qualify authenticated HTTP image URLs or unavailable-image recovery",
+    "Full Task 6/15 joined workflow, overlapping-hub destination identity, landscape, streaming reflow and large-data performance remain open",
+    "Image message bubbles still show verbose canonical attachment descriptions; do not remove arbitrary user text to conceal them",
+    "iPad and dedicated accessibility qualification remain paused"
+  ]
+}

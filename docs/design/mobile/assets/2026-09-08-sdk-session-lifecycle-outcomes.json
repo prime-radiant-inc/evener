@@ -1,0 +1,163 @@
+{
+  "schema": "evener.sdk.session-lifecycle.outcomes.v1",
+  "verifiedAt": "2026-09-08",
+  "source": {
+    "worktreeHead": "694b85a7f0697fef89cccbb1c92e640ed6bea019",
+    "evidenceReceipts": [
+      "sdk-runtime-compaction-receipt.json",
+      "sdk-queue-close-receipt.json",
+      "sdk-saved-items-receipt.json"
+    ],
+    "provider": "scripted fixture only",
+    "savedItemsSDK": {
+      "package": "@evener/appwire-client@0.1.0",
+      "installedConsumer": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/@evener/appwire-client",
+      "tarballSHA256": "01e1a26e0fabc7bdba878ebd75140299b65c720b3fc47e9a8ead98e2c6c753a0",
+      "recipeSourceCommit": "a229b0c82",
+      "currentByteEquivalence": [
+        {
+          "file": "saved-items.mjs",
+          "sha256": "47f8e54c0f80571de73eb3e3374f4331271e09edc42af3547bb6a5c2b1ede688"
+        },
+        {
+          "file": "saved-items-cli.mjs",
+          "sha256": "e6b75ec48ca7c3c9a20b21371d553057a7d884f1da0a8dfd0c3feece01c94402"
+        },
+        {
+          "file": "saved-items-logic.mjs",
+          "sha256": "a85fc81c5083ba6ff9c39e7d9d8096178cfb1d0c901d911e8da427459abf7dc3"
+        },
+        {
+          "file": "saved-items.contract.mjs",
+          "sha256": "86e64e36a79e7df43e9bc00cd209809697e3ae06e6fa4ff4a98f43b09d720f47"
+        }
+      ]
+    },
+    "shutdownSDK": {
+      "tarRegularFiles": 139,
+      "tarFilesByteEqual": true,
+      "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+    }
+  },
+  "outcomes": [
+    {
+      "method": "thread/compact/start",
+      "status": "unqualified",
+      "requestEvidence": "sdk-runtime-compaction-receipt.json",
+      "observed": {
+        "recipeOutcome": "acknowledged",
+        "independentReadback": "projection count only",
+        "compactionEffectVerified": false,
+        "providerRequestsObserved": 3
+      },
+      "limitation": "The receipt explicitly says acknowledgment and projection counts are insufficient evidence of completed compaction; no compact summary/effect readback is claimed."
+    },
+    {
+      "method": "thread/shutdown",
+      "status": "historical-event-verified-helper-provenance-unresolved",
+      "requestEvidence": "sdk-queue-close-receipt.json",
+      "targetRef": "local:034LDDYNYueRbYWOZqrRGr",
+      "targetThreadId": "034LDDYNYueRbYWOZqrRGr",
+      "sourceRevision": "3284d6ac54e34409e8115f872fbe8479a3dc7006",
+      "effect": "matching thread/closed event after queued turns completed and canonical thread status was awaiting",
+      "eventEvidence": {
+        "matchingClosedCount": 1,
+        "rawEventCount": 28,
+        "rawEventsSha256": "78202ea7a30907c2a3b62e1b0f972fd71bee29faefcf9b142eb44d336323e72f"
+      },
+      "cleanup": {
+        "proof": "/tmp/evener-sdk-idle-close-current-OwRkNp/cleanup-proof.json",
+        "daemonAudit": "/tmp/evener-sdk-idle-close-current-OwRkNp/daemon-audit.json"
+      },
+      "targetInstanceId": "034LDDYNYueRbYWOZqrRGr",
+      "rawEventsPath": "/tmp/evener-sdk-idle-close-current-OwRkNp/run/qualification/raw-events-final.json",
+      "helperHash": {
+        "expected": "3d9088dad761e89ddf5e02983e5be1a736f6397c6428603ea79032f2b674adfb",
+        "current": "a0d1e0ee054f26a632228f33f0cf8828b16fa9d4943e37e5e123e9ab3a4bdac2"
+      },
+      "limitation": "Raw event and final-read hashes match, but the current helper differs from the recorded helper hash. Do not promote this method success cell until exact execution provenance is restored or a fresh run verifies it."
+    },
+    {
+      "method": "evener/session/delete",
+      "status": "qualified-scoped",
+      "requestEvidence": "sdk-saved-items-receipt.json",
+      "effect": {
+        "action": "sessionDelete",
+        "deleted": 1,
+        "skipped": 0,
+        "navigationTargets": 0
+      },
+      "readback": {
+        "method": "thread/read",
+        "code": -32014,
+        "meaning": "sessionUnavailable",
+        "sessionIdMatched": true
+      },
+      "requestAndReadbackSha256": "cdeed5b1340103809d1f7ad649b4615d2fa912fa52c9bcf96c7972566a2a5354",
+      "cleanup": "receipt reports all owned daemons terminated and listener ports absent",
+      "targetRef": "local:034L3AsTEEpQVPO0arpm2S",
+      "targetSessionId": "034L3AsTEEpQVPO0arpm2S",
+      "requestAndReadbackPath": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/run/qualification-v3/session-delete-readback.json",
+      "backend": {
+        "sourceHead": "dc9a9aaa33d6ca0d8cd00c6c7a63b8c67bba331c",
+        "uncommittedFix": "cmd/evener-hub/project_delete.go normalizes deleted/skipped arrays",
+        "sourceFiles": [
+          {
+            "file": "cmd/evener-hub/project_delete.go",
+            "sha256": "8d71dd6d742c76b0a6693b7cf77ac4b3da3d6543593f56fbd448ccbb826d5a00"
+          },
+          {
+            "file": "cmd/evener-hub/project_delete_test.go",
+            "sha256": "5a4f0f185d062951ae8a7d2c7f1b19fb8516e5814d237c1cc9ecba31cb6f30fa"
+          }
+        ],
+        "binarySHA256": {
+          "evener": "1f79cf2fecf5bb3cba9090270d41d7e480ff13d45af7ed228c7c23c9146eef94",
+          "evener-dev": "ffdbdfe0fda350978a6261795e3a232f7806019e59837ad686738c071108b27a"
+        },
+        "sourcePatch": "diff --git a/cmd/evener-hub/project_delete.go b/cmd/evener-hub/project_delete.go\nindex dbb249f6a..20dbe006a 100644\n--- a/cmd/evener-hub/project_delete.go\n+++ b/cmd/evener-hub/project_delete.go\n@@ -31,7 +31,11 @@ func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, s\n \t\t\treturn appwire.ProjectDeleteResponse{}, appwire.Unavailable(err.Error())\n \t\t}\n \t}\n-\treturn appwire.ProjectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation}, nil\n+\treturn appwire.ProjectDeleteResponse{\n+\t\tDeleted:    append([]string{}, deleted...),\n+\t\tSkipped:    append([]projectDeleteSkip{}, skipped...),\n+\t\tNavigation: navigation,\n+\t}, nil\n }\n \n var (\ndiff --git a/cmd/evener-hub/project_delete_test.go b/cmd/evener-hub/project_delete_test.go\nindex f1e4d1d18..e24cfe9f4 100644\n--- a/cmd/evener-hub/project_delete_test.go\n+++ b/cmd/evener-hub/project_delete_test.go\n@@ -312,6 +312,9 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {\n \tif len(resp.Deleted) != 1 {\n \t\tt.Fatalf(\"want 1 deleted ref, got %+v\", resp)\n \t}\n+\tif resp.Skipped == nil || len(resp.Skipped) != 0 {\n+\t\tt.Fatalf(\"successful deletion must return an empty skipped array, got %#v\", resp.Skipped)\n+\t}\n \tfor _, suffix := range []string{\".meta.json\", \".transcript.jsonl\", \".log.jsonl\", \".api.jsonl\", \".future-artifact\"} {\n \t\tif _, err := os.Stat(filepath.Join(stateDir, \"sessions\", webTestSessionID+suffix)); !os.IsNotExist(err) {\n \t\t\tt.Fatalf(\"%s should be removed\", suffix)\n@@ -1630,7 +1633,7 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {\n \tif err != nil {\n \t\tt.Fatalf(\"project delete: %v\", err)\n \t}\n-\tif len(got.Deleted) != 0 {\n-\t\tt.Fatalf(\"expected nothing actually deleted (session skipped), got %+v\", got.Deleted)\n+\tif got.Deleted == nil || len(got.Deleted) != 0 {\n+\t\tt.Fatalf(\"skipped deletion must return an empty deleted array, got %#v\", got.Deleted)\n \t}\n }\n"
+      }
+    },
+    {
+      "method": "evener/project/delete",
+      "status": "qualified-scoped",
+      "requestEvidence": "sdk-saved-items-receipt.json",
+      "effect": {
+        "action": "projectDelete",
+        "deleted": 1,
+        "skipped": 0,
+        "navigationTargets": 4
+      },
+      "readback": "The executed qualification driver asserts that the deleted project is absent from active and archived catalogs before writing its passed receipt; the raw catalog responses were not separately retained.",
+      "requestAndReadbackSha256": "4fb1281f4e194d286bc0f3686514ad0e64e5c0bddc5bf9010d4ff4b7dd4a6181",
+      "cleanup": "receipt reports all owned daemons terminated and listener ports absent",
+      "targetProjectKey": "j150sqxn8b8y1c0000gn-T-evener-saved-items-fixed-u18cvov7-throwaway-v3-HJpZy15Roo",
+      "deletedSessionId": "034L3AuUgR8A1wDC4b0GDT",
+      "requestAndReadbackPath": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/run/qualification-v3/project-delete-readback.json"
+    }
+  ],
+  "scopeLimitations": [
+    "Evidence uses an isolated scripted provider and does not qualify public-provider or native-UI behavior.",
+    "No automatic mutation replay, lost-reply, partial-project-deletion, or overlapping-hub qualification.",
+    "The compact operation remains unqualified until a real compaction summary/effect is independently read back.",
+    "This indexes historical owned-fixture results, not a new run at the current worktree head. The saved-items backend includes the recorded project-delete normalization patch."
+  ],
+  "files": {
+    "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/run/qualification-v3/session-delete-readback.json": "cdeed5b1340103809d1f7ad649b4615d2fa912fa52c9bcf96c7972566a2a5354",
+    "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/run/qualification-v3/project-delete-readback.json": "4fb1281f4e194d286bc0f3686514ad0e64e5c0bddc5bf9010d4ff4b7dd4a6181",
+    "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/qualification-v3.mjs": "5575cde051a2326dda59c8c118acf98574aeb21474a0fa2dee92823a55697b10",
+    "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/run/qualification-v3/saved-items-receipt.json": "6503e2f119ced1988dd983f39de1732157b4d7d5ced2877bee30fc2d728b3d92",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/run/qualification/raw-events-final.json": "78202ea7a30907c2a3b62e1b0f972fd71bee29faefcf9b142eb44d336323e72f",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/run/qualification/raw-events.jsonl": "05c655ca61b8dfce4de94c53fcd67431a626d554b7bf023b5f76710c3d3b3ca7",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/run/qualification/final-read.json": "f9241f128f4dcda9ee26fdade14cc42b9264fb60ec7eea0d778670276d88601f",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/run/qualification/provider-http-evidence.json": "54bab94e73e66054a3fb2d2ffe10bf34f7512786e3d2c3e9fa4536eb553c6b67",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/cleanup-proof.json": "f9ef4549296c7739caf289ccda2120982134435a26a335456e51890962a56d2f",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/daemon-audit.json": "473564456950490a84d97fe40ead98ff235381ac44e1ac039a5beca622b2516c",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/run-await-close.mjs": "a0d1e0ee054f26a632228f33f0cf8828b16fa9d4943e37e5e123e9ab3a4bdac2",
+    "/private/tmp/evener-sdk-idle-close-current-OwRkNp/run/qualification/shutdown-response.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/docs/design/mobile/assets/sdk-runtime-compaction-receipt.json": "99ebd594a39603d8d8ed8ec1a99931a5713471e72f74672c64e4ce09e2ea9f85",
+    "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/docs/design/mobile/assets/sdk-queue-close-receipt.json": "4d280ed287be5a8f6c1d12fd7e6954443d1cf693655715c3fa0074773c315e5e",
+    "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/docs/design/mobile/assets/sdk-saved-items-receipt.json": "f2d67a55f3f5f4a786bb5901b1f4145d095d09a7667574f0c7627b54ddf30d5e"
+  },
+  "rootAuditedAt": "2026-09-09T03:07:59.725675+00:00"
+}

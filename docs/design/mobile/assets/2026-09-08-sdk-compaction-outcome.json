@@ -1,0 +1,90 @@
+{
+  "schema": "evener.sdk.compaction.outcome.v1",
+  "status": "qualified-scoped-input-retention-output-oracle-unqualified",
+  "verifiedAt": "2026-09-08",
+  "scope": "durable2 isolated scripted-provider real hub; no live model/shared hub",
+  "source": {
+    "authoritativeRevision": "6a0278e36331",
+    "buildDirty": true,
+    "fixtureRoot": "/private/tmp/evener-sdk-compact-durable2.tNOfJS",
+    "driver": {
+      "path": "/tmp/driver-compact-durable2.mjs",
+      "sha256": "989c90738b8dca56e4ec9d15f19be54775cf864aa9ef313a910ee2cae2a71020"
+    },
+    "fixture": {
+      "path": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/fixture.py",
+      "sha256": "47456102b0da6857d5b3c51867846d18f584ac5d0588d5a9f82ae4f3411ef15c"
+    },
+    "sdkRoot": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "rawCapture": {
+      "path": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/run/raw.json",
+      "sha256": "aabdc8611773f9cc955422f5041088ebd9cf0f25042bbdcf3a98c3566ae65855",
+      "mode": "0600"
+    },
+    "result": {
+      "path": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/run/result.json",
+      "sha256": "a3481d839cb2ded3f6588b53ff654690c36b49b9f58bb580b4cdb2f44dfb199f",
+      "mode": "0600"
+    },
+    "binaries": {
+      "evener": {
+        "sha256": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+        "module": "primeradiant.com/evener/cmd/evener",
+        "go": "go1.27.0"
+      },
+      "evener-dev": {
+        "sha256": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65",
+        "module": "primeradiant.com/evener/cmd/evener-dev/bin",
+        "go": "go1.27.0"
+      }
+    },
+    "actualFollowUpRequest": {
+      "index": 25,
+      "path": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/provider-request-25.json",
+      "sha256": "1846b2d804641bee4b131e7cf8d03392422c691ff07aa5f611a98f4987bdb2ae"
+    }
+  },
+  "target": {
+    "ref": "local:034LbxvFbZ1gvjTjbtLjy5",
+    "instanceId": "034LbxvFbZ1gvjTjbtLjy5",
+    "seedCompletedUserTurns": 10,
+    "seedTurnIds": [
+      "turn_m1",
+      "turn_m2",
+      "turn_m3",
+      "turn_m4",
+      "turn_m5",
+      "turn_m6",
+      "turn_m7",
+      "turn_m8",
+      "turn_m9",
+      "turn_m10"
+    ],
+    "environmentExcluded": true
+  },
+  "request": {
+    "method": "thread/compact/start",
+    "ref": "local:034LbxvFbZ1gvjTjbtLjy5"
+  },
+  "readback": {
+    "compactionTurnId": "turn_1",
+    "checkpoint": "Layer: checkpoint\nTurns: 32 -> 7\nEstimated tokens: 1471 -> 814",
+    "summary": "Layer: summarize\nTurns: 7 -> 7\nEstimated tokens: 814 -> 331",
+    "summaryItem": "[CONTEXT SUMMARY]\\nCOMPACTION_ANCHOR_ECHO_005\\n[END SUMMARY]",
+    "anchorInActualNormalProviderInput": true,
+    "anchorOccurrences": 1
+  },
+  "qualification": "thread/compact/start effect and compacted anchor crossing into the actual normal provider request input are qualified-scoped. Output-level answer oracle remains unqualified because the fixture selected a trailing bookkeeping reminder as latest user and emitted generic communicate output.",
+  "historicalFailedAttempts": [
+    "/private/tmp/evener-sdk-compact-hub2.qRUdOB",
+    "/private/tmp/evener-sdk-compact-hub3.GVaZMe",
+    "/private/tmp/evener-sdk-compact-hub4.Ej9mUK"
+  ],
+  "historicalNote": "Earlier attempts are retained as historical pointers only; durable2 is the sole primary evidence.",
+  "cleanup": {
+    "fixtureProcessesStopped": true,
+    "remainingOwnedProcesses": [],
+    "rootLiveHubUntouched": true,
+    "simulatorUntouched": true
+  }
+}

@@ -1,0 +1,146 @@
+{
+  "observedAt": "2026-09-09T01:57:24.906390+00:00",
+  "nativeCodeSource": "bfe632f44",
+  "backendSource": "6a0278e36",
+  "nativeExecutableSha256": "bd4708817c4f19ba18d05ccdbf62adb7dcbacc382245b32a569e2794122d263f",
+  "nativeJavaScriptSha256": "92d79a411ec33486c874d3eb494a690c21216b3badbb4bef85223a9a2dd7e49b",
+  "simulator": "iPhone 17 Pro, iOS26.5",
+  "bundleId": "com.primeradiant.evener.native",
+  "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+  "sessionRef": "local:034LYwEzxfqSAgWQxLrrHP",
+  "sessionInstance": "034LYwEzxfqSAgWQxLrrHP",
+  "fixtureRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn",
+  "schema": "evener.native.uncertain-delivery.v1",
+  "interruption": {
+    "nativePid": 50381,
+    "ref": "local:034LYwEzxfqSAgWQxLrrHP",
+    "marker": "Native process interruption delivery proof",
+    "frozenRecord": {
+      "draft": "",
+      "unconfirmed": "Native process interruption delivery proof"
+    },
+    "processCommand": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/F3F405B7-7947-46F1-A973-AB329BFAD510/Evener.app/Evener",
+    "mechanism": "Suspend only the owned native process after its durable submitted record becomes visible; inspect server state while native confirmation cannot progress.",
+    "frozenProcessState": "Ts",
+    "status": "server-completed-before-local-confirmation",
+    "readback": "uncertainty-frozen-readback-0.json",
+    "turnId": "turn_m2",
+    "exactUserMessageCount": 1,
+    "clientMutationId": "cmid-1788918515932-1",
+    "recordStillUnconfirmed": true,
+    "relaunchExit": 0,
+    "relaunchOutput": "com.primeradiant.evener.native: 43137\n"
+  },
+  "recovery": {
+    "nativeUnconfirmedNoticeVisibleAfterRelaunch": true,
+    "nativeSendDisabledUntilManualRecovery": true,
+    "nativeLatestShowsDeliveredInputAndResponse": true,
+    "nativeCheckDeliveryReturnsToNotice": true,
+    "nativeDismissClearsUnconfirmedState": true,
+    "emptyDraftRowDeletedAsDesigned": true,
+    "noAutomaticResendObserved": true,
+    "nextNativePromptCompleted": "turn_m3",
+    "exactInputCounts": {
+      "Native creation on the current iPhone build": {
+        "turnId": "turn_m1",
+        "count": 1,
+        "status": "completed"
+      },
+      "Native process interruption delivery proof": {
+        "turnId": "turn_m2",
+        "count": 1,
+        "status": "completed"
+      },
+      "Continue after checking delivery": {
+        "turnId": "turn_m3",
+        "count": 1,
+        "status": "completed"
+      }
+    },
+    "separateOwnedDraftNeverSentAndRestored": "Keep this creation draft unsent"
+  },
+  "preservation": {
+    "originalRowsPreserved": true,
+    "tableChanges": {
+      "drafts": {
+        "originalRows": 11,
+        "addedRows": 1
+      },
+      "question_drafts": {
+        "originalRows": 10,
+        "addedRows": 0
+      },
+      "question_positions": {
+        "originalRows": 3,
+        "addedRows": 0
+      },
+      "draft_images": {
+        "originalRows": 0,
+        "addedRows": 0
+      },
+      "draft_image_sets": {
+        "originalRows": 0,
+        "addedRows": 0
+      },
+      "creation_drafts": {
+        "originalRows": 1,
+        "addedRows": 0
+      },
+      "creation_draft_images": {
+        "originalRows": 0,
+        "addedRows": 0
+      }
+    },
+    "location": {
+      "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+      "conversation": {
+        "ref": "local:034LVKwtHytL0Jh8qsVDFb",
+        "title": "Ordinary response"
+      }
+    },
+    "newOwnedDraftRestored": true
+  },
+  "tests": {
+    "source": "5e642fc20308dd3f8948aafe2edabf205507104a",
+    "scope": "native newSession, sessionControls and draftDocument",
+    "filesPassed": 3,
+    "testsPassed": 52,
+    "exit": 0
+  },
+  "files": {
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/interrupt-native-delivery.py": "4a97ff108917cfaeeeeb6fb99094da99221000c984a0ccc02bda9b1c9bc40412",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-before-interrupted-send-ax.json": "f0b32326eb3cd5ac708e5443f1b8e8ea6a544d8d496a9b3b8239852761914599",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-frozen-record.json": "39ec56be3221d58daff13581d0a9d928eef0bcd1da07993b1c9c5cad0fe133f0",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/uncertainty-frozen-readback-0.json": "b583620b54ab8fb7871ecad3627f128f92ac0a75713bf5c3bad16d9ad222f552",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-interruption-result.json": "b7b4d0e6e26a7111b02d9aaf20263d080f09146d85c898f62a87bce5691bded4",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-unconfirmed-relaunch-ax.json": "b77d3d3de67c166f018d9735b348b7b6efff71deec9ee21700b994db5efde376",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-unconfirmed-relaunch.png": "c65639fa383ff1b77cf3a6bdc3265db92cee9748097c3cb75bded1975e174ae4",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-delivery-transcript-checked-ax.json": "36fb5da6bf9577d01d099983c5b46e4e04b9ef78f17c715ba47db4f2f5f5f4db",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-delivery-transcript-checked.png": "44919dd56fabdbb16f4dbfb9caa5c72c92ff29f26f221191967ed8b4aa3fd9c3",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-before-dismiss-ax.json": "dff1e01a554f8a0eec6db2de9ef365ec53ead07e5c572d670b91a8a879c2b900",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-dismissed-ax.json": "5a0e4b5ffc5110879d87d50ae808d44b2fc1f6a01cff05d02fc8b1973507eaad",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-dismissed-record.json": "07f4b0849583db3a9a29ef9ac548df036c7c6abe2329d69c0b86152b6359addd",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/dismiss-current.png": "6575333e918b4b6bf79514294e64cf17d49780c73321a7e9676137126ee630a7",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-recovery-continuation-ready-ax.json": "59326342000018faaa45d4c5211118962c7c59400966cdbf2451a15fc9b6d50a",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/uncertainty-recovered-readback.json": "768d3d7ace6d2496454fd8ca1a1d9c15744aba8aa95642de620b67ac4588de9e",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-recovery-outcomes.json": "96de8bae66f139cc9f733529fd1ef4bca1e930c32315f02173aef5e350557d38",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-recovery-continuation-ax.json": "22ec587c643447205005e05431dbb98f60b3646a98646b92e2e283a14a087d6b",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/uncertainty-provider-matches.json": "b2f7e364e04995efeda34f381d26cfd5ae2b919b79e81837ab61b6230d659394",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/new-draft-restored-after-recovery-ax.json": "ff5a5b59496b0f004ebadddb72263979c8b09c808b195466bce7a83ba0510cfd",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/final-original-restored-ax.json": "1c84542b4810f6734d2d385ffa539646b3a1625d37043f55c3616de67efc9f10",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/final-all-draft-tables.json": "923a2f2ed05f60e19202355c8c2466039f0f1d3626d3af9d176d1dc5c829954d",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/final-preservation-after-interruption.json": "ac5503a865367a053b845f84231e2493e546810638b9fc8bd7e76ba3e56b8911",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/native-focused-tests.json": "b71f2d77884717554c9f682b919ff2ef210d25118961c6c4e79b9530f1c9d383",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-create-current-ei037sbn/read-native.mjs": "6a0f4ff1e22a2c921eea651f6d97249cb1a67261b0e92470c3f2d134076fc0b1",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-51.json": "cef6639ebd6a9dcd491244a4ee6c91f814ac5bd1ae059ceb0492b20867da63a5",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-53.json": "341078a47df70fdee38ee28ef396e81879704a74e2ed429e4d823b301811aa8b",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-49.json": "97e7d9548ea71ff8b49d3c3110802a11075914519dce34edd348a7d33b67b959"
+  },
+  "limitations": [
+    "The owned native process was suspended after its durable submitted record appeared, then terminated after the real hub completed the input. This proves uncertainty before local durable confirmation; no claim that a particular WebSocket reply packet was intercepted or dropped.",
+    "No forwarding proxy or scripted replacement hub was used. The LLM boundary remained the scripted HTTP provider and Evener hub/daemon were real.",
+    "The watch observes a timing window and validates the achieved state; the deterministic unit tests separately establish no replay and stale-binding guards.",
+    "Only the acknowledged-by-server branch and manual dismissal are covered natively here; no native Restore-to-draft or unaccepted-message resend claim.",
+    "No physical-device, full stress matrix, TestFlight, iPad or accessibility acceptance claim."
+  ]
+}

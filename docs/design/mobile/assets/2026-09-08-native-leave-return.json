@@ -1,0 +1,89 @@
+{
+  "schema": "evener.native.leave-return.v1",
+  "observedAt": "2026-09-09T00:45:23.683813+00:00",
+  "codeSource": "bfe632f44",
+  "device": "iPhone17 Pro simulator iOS26.5",
+  "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+  "bundleId": "com.primeradiant.evener.native",
+  "executableSha256": "bd4708817c4f19ba18d05ccdbf62adb7dcbacc382245b32a569e2794122d263f",
+  "javascriptSha256": "92d79a411ec33486c874d3eb494a690c21216b3badbb4bef85223a9a2dd7e49b",
+  "sessionRef": "local:034LVKwtHytL0Jh8qsVDFb",
+  "observations": {
+    "backgroundReturn": {
+      "connectedHub": "iPhone joined journey",
+      "exactOrdinaryDraft": "Retain this separate draft",
+      "visibleEarlierSection": "turn_m3 write-file activity and following response"
+    },
+    "codeCopy": {
+      "nativeAction": "Copy secondary action on the code block",
+      "nativePasteResult": "Retain this separate code block",
+      "explanation": "Native Paste replaced the selected draft word with copied code block. The original ordinary draft was immediately restored and independently checked in SQLite; neither variant was sent."
+    },
+    "linkReturn": {
+      "nativeSafariAddress": "https://example.com/fixture",
+      "returnMethod": "Simulator Device Home, then native Evener icon",
+      "connectedHubRestored": true,
+      "ordinaryDraftRestored": true
+    },
+    "firstDeviceRestart": {
+      "oldNativePid": 34228,
+      "newNativePid": 71000,
+      "oldProcessExitObserved": true,
+      "allDraftTableRowsExactlyPreserved": true,
+      "locationExactlyPreserved": true,
+      "savedReaderAnchorExactlyPreserved": {
+        "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+        "sessionRef": "local:034LVKwtHytL0Jh8qsVDFb",
+        "conversationInstance": "034LVKwtHytL0Jh8qsVDFb",
+        "itemKey": "apptranscript-item-v1:turn_m3:4:2",
+        "itemPosition": {
+          "entry": 4,
+          "item": 2
+        },
+        "withinItemOffset": 25,
+        "touchedAt": 1788912620889
+      },
+      "nativeObservation": "Cold launch connected to the original hub and session, showed the exact ordinary draft and the saved turn_m3 write activity/response section.",
+      "scope": "Saved item and offset retained; no exact before/after pixel-geometry claim."
+    },
+    "secondDeviceRestart": {
+      "oldNativePid": 71000,
+      "newNativePid": 86068,
+      "status": "native-relaunch-observed",
+      "uiMethod": "Jesse-authorized simctl launch of exact native bundle after CUA coordinate failure",
+      "allDraftTableRowsExactlyPreserved": true,
+      "locationExactlyPreserved": true,
+      "savedReaderAnchorExactlyPreserved": {
+        "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+        "sessionRef": "local:034LVKwtHytL0Jh8qsVDFb",
+        "conversationInstance": "034LVKwtHytL0Jh8qsVDFb",
+        "itemKey": "apptranscript-item-v1:turn_m3:4:2",
+        "itemPosition": {
+          "entry": 4,
+          "item": 2
+        },
+        "withinItemOffset": 25,
+        "touchedAt": 1788912620889
+      },
+      "nativeObservation": "Native screenshot and AX show Ordinary response, connected iPhone joined journey, exact Retain this separate draft, and the turn_m3 write-file activity at the top followed by Fixture response, code block and earlier question. Saved item and offset match baseline; no pixel-identical geometry assertion."
+    }
+  },
+  "files": {
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/background-storage.json": "30f4cd48b59fe9c2ab261e7244d3fb10751adb6ed53bcc400c7ef3e688ecc91b",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/before-device-restart-storage.json": "948862c405d2768ad072bb1314e2d89a78c557e2279142bee5279b62ea8d9289",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/before-device-restart-processes.json": "ab9d804ecabc67ba7622dbfecd82ddeb73cbd1fa19e16d63969ca795d8d5677f",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/device-restart-evidence.json": "ae19b6f07e275917dc3158dc90526128f70a508b066b1505a9b92ce2d1f2d187",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/before-second-cold-storage.json": "948862c405d2768ad072bb1314e2d89a78c557e2279142bee5279b62ea8d9289",
+    "/private/tmp/evener-iphone-joined-8MIBV9/native-recovery-link-open-readback.json": "ecc1382da522d3c057f4dd1e7aa289a06fe2c1827d78a0add460667729e8eac9",
+    "/private/tmp/evener-iphone-joined-8MIBV9/native-recovery-cold-installed-readback.json": "ecc1382da522d3c057f4dd1e7aa289a06fe2c1827d78a0add460667729e8eac9",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/second-cold-evidence.json": "4e8d8093d5d510e72abd05e135b2db5002d873b3318ffdd15acded91c313bc12",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/second-cold-native-ax.json": "72d48cd4a313b56bb3a1d9217938873c96ea7052c9af98d9cd9e3b46d971aba6",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/second-cold-native.png": "cc1aed43a80431d48375fe654f970345052b8bcd4a49802ec1563cfca0ad4521"
+  },
+  "limitations": [
+    "Initial UI work used CUA; Jesse then explicitly authorized simulator-specific controls after repeated noWindowsAvailable failures. Exact native bundle launch removed the ambiguous older-app search result.",
+    "Both cold launches retain saved item/offset and show the intended earlier section. No pixel-identical before/after cold-launch geometry claim.",
+    "Streaming/Latest and live hub restart are now recorded separately in 2026-09-08-native-reader-reconnect.json; current-source two-hub overlap and physical-device acceptance remain open.",
+    "No native source change or build was needed for these observations."
+  ]
+}

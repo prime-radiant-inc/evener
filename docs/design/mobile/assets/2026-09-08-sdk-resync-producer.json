@@ -1,0 +1,77 @@
+{
+  "schema": "evener.sdk.resync-producer.receipt.v1",
+  "status": "not-qualified",
+  "date": "2026-09-08",
+  "scope": {
+    "qualified": [],
+    "attempted": [
+      "evener/thread/resync"
+    ],
+    "nativeUI": false,
+    "client": "independently installed @evener/appwire-client AppwireClient"
+  },
+  "fixture": {
+    "root": "/tmp/evener-sdk-resync-current-ycwPdo",
+    "hubPort": 56971,
+    "providerPort": 56961,
+    "sessionRef": "local:034LSDTBwOogq06hq0VRI9",
+    "threadId": "034LSDTBwOogq06hq0VRI9"
+  },
+  "observed": {
+    "setup": "thread/start and thread/resume completed through installed AppwireClient",
+    "attempts": [
+      "same-client subscribed thread/read; interrupted owned daemon pid 58911; turn/start failed with invalidParams expectedInstanceId (recorded SDK WireError)",
+      "same-client subscribed thread/read after public thread/resume; interrupted daemon pid 71011; turn/start completed as turn_m2, but no evener/thread/resync before 30s timeout"
+    ],
+    "event": null,
+    "authoritativeAfterRead": null,
+    "methodErrors": [
+      {
+        "code": -32602,
+        "evenerErrorInfo": "invalidParams",
+        "message": "expectedInstanceId is required"
+      }
+    ]
+  },
+  "sourceEvidence": {
+    "checkoutHead": "b275726cdc46cfdac3bb617ec30e05a266d4ecb4",
+    "relaySession": "cmd/evener-hub/internal/appsource/relay_session.go:429-523",
+    "publicResume": "cmd/evener-hub/app_threadlifecycle.go:275-330",
+    "relayStart": "cmd/evener-hub/app_relay.go:1729-1765",
+    "existingTests": [
+      "TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead",
+      "TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor"
+    ]
+  },
+  "artifacts": {
+    "binary": {
+      "path": "/tmp/evener-sdk-resync-current-ycwPdo/bin/evener",
+      "sha256": "412e59fabe6de546892f2778e8515709345ce4ec9ff9e2ec3fa8927fbd05abc7",
+      "version": "9bb59d643-dirty (2026-09-08T20:32:41Z)"
+    },
+    "devBinary": {
+      "path": "/tmp/evener-sdk-resync-current-ycwPdo/bin/evener-dev",
+      "sha256": "bcc84b4ec1083b316704d10421df0d8208e5344c62c4e803f6277ee5489a2699"
+    },
+    "sdkPackageRoot": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "script": {
+      "path": "/tmp/evener-sdk-resync-current-ycwPdo/resync-current.mjs",
+      "sha256": "7f24fd2d8c922cc1080132b81fec1be248882dd13a801d3b110fa45c9e5cdcff"
+    },
+    "hubLogSha256": "fdcac68efc906c645080dafbabced4287a7ab790ddf2380ae763c4509e0b8632"
+  },
+  "cleanup": {
+    "fixtureProcesses": [],
+    "authTokenPresent": false,
+    "ports": [
+      56961,
+      56971
+    ],
+    "cleanupScript": "/tmp/cleanup_resync_current.py"
+  },
+  "limitations": [
+    "No producer event, resync payload, or authoritative post-reconnect read was observed; this is unqualified evidence, not a failure claim.",
+    "The source seam tests pass, but injected transports do not qualify public SDK lifecycle ordering.",
+    "No native UI, iPad/accessibility, Android, provider credentials, or source edits."
+  ]
+}

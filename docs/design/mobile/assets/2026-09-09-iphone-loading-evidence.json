@@ -1,0 +1,3826 @@
+{
+  "date": "2026-09-09",
+  "status": "bounded measurements and native corrections; Task 14 remains open",
+  "source": {
+    "native": {
+      "source": "af72f7bd48a7b35211a425e5917d29600bf65a2f",
+      "sha256": {
+        "Evener": "3d999330570c4ca3d089b49b8da93062fb061028109751de1d46ef7dd6eb23be",
+        "main.jsbundle": "69eb3f89b9cafc006b90b5b997a657518fb1d28e67f318940ce3b63b1609880d"
+      },
+      "signatureVerified": true,
+      "temporaryTraceIncluded": false
+    },
+    "sdkBackend": "d683abe21e949173f431201cda9ec169a1e9d349",
+    "nativeFixtureBackend": "6a0278e3633190225f5ecb1eb64222dbd1a372c3 (modified build)",
+    "sdkIdentities": {
+      "driver": {
+        "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing.mjs",
+        "sha256": "5b65bc6fb76f416b37144e6d9bd0e8c091cdad5e878863816a49d34f7bb514b0"
+      },
+      "sdk": {
+        "path": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js",
+        "sha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36"
+      },
+      "hub": {
+        "path": "/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener",
+        "sha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4"
+      },
+      "manifest": {
+        "path": "/private/tmp/evener-native-performance-corpus-v8/manifest.json",
+        "sha256": "b981f78273a588b84480d82e67ec47b49ca5f43ae9e4dd63fa7f95162cd1ea2d"
+      }
+    }
+  },
+  "corpus": {
+    "root": "/private/tmp/evener-native-performance-corpus-v8",
+    "manifestSha256": "b981f78273a588b84480d82e67ec47b49ca5f43ae9e4dd63fa7f95162cd1ea2d",
+    "projects": 5,
+    "sessions": 500,
+    "items": 10000,
+    "semanticTurns": 5000,
+    "fencedCodeResponses": 5000,
+    "images": 2,
+    "verifiedFiles": 1001,
+    "validation": {
+      "status": "passed",
+      "scope": "Installed SDK and isolated CLI Hub corpus validation; no latency or native performance conclusion",
+      "endpoint": "ws://127.0.0.1:52515/rpc",
+      "hubPID": 92129,
+      "ref": "local:034LkqgMS0COBFWW4ktnKn",
+      "projects": [
+        {
+          "key": "private-tmp-evener-native-performance-corpus-v8-workspace-02-ygLfdGJTwL",
+          "sessionCount": 100
+        },
+        {
+          "key": "private-tmp-evener-native-performance-corpus-v8-workspace-01-b7kvUsCtf3",
+          "sessionCount": 100
+        },
+        {
+          "key": "private-tmp-evener-native-performance-corpus-v8-workspace-04-bUsuo3quKs",
+          "sessionCount": 100
+        },
+        {
+          "key": "private-tmp-evener-native-performance-corpus-v8-workspace-03-q8gHLiSBAG",
+          "sessionCount": 100
+        },
+        {
+          "key": "private-tmp-evener-native-performance-corpus-v8-workspace-00-QNjTV5gHz3",
+          "sessionCount": 100
+        }
+      ],
+      "sessionCount": 500,
+      "heavyItemCount": 10000,
+      "uniqueItemIds": 10000,
+      "uniquePositions": 10000,
+      "types": {
+        "userMessage": 5000,
+        "agentMessage": 5000
+      },
+      "fencedCodeItems": 5000,
+      "imageCount": 2,
+      "transcriptPages": 250,
+      "pageSizes": [
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40
+      ],
+      "callCount": 286,
+      "hashes": {
+        "sdk": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+        "hub": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+        "manifest": "b981f78273a588b84480d82e67ec47b49ca5f43ae9e4dd63fa7f95162cd1ea2d"
+      },
+      "out": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-validation-1788946776953"
+    },
+    "nativeCopiedProjects": 5,
+    "nativeCatalogTotalSessions": 536,
+    "nativeCatalogTotalProjects": 11
+  },
+  "method": {
+    "clock": "Node performance.now for request awaits; native images/positions are observations, not timing samples",
+    "percentiles": "nearest rank",
+    "machine": {
+      "node": "v26.5.0",
+      "os": "Darwin",
+      "release": "25.6.0",
+      "arch": "arm64",
+      "cpu": "Apple M5 Max"
+    },
+    "processCold": "fresh Hub process, warm OS filesystem cache; startup and connection separate",
+    "excluded": "Earlier invalid corpora, original cold harness without fragment view, mixed resource percentiles, 30 incomplete corrected-directory snapshots"
+  },
+  "warm": [
+    {
+      "result": {
+        "status": "passed",
+        "machine": {
+          "node": "v26.5.0",
+          "os": "Darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max"
+        },
+        "identities": {
+          "driver": {
+            "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing.mjs",
+            "sha256": "5b65bc6fb76f416b37144e6d9bd0e8c091cdad5e878863816a49d34f7bb514b0"
+          },
+          "sdk": {
+            "path": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js",
+            "sha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36"
+          },
+          "hub": {
+            "path": "/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener",
+            "sha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4"
+          },
+          "manifest": {
+            "path": "/private/tmp/evener-native-performance-corpus-v8/manifest.json",
+            "sha256": "b981f78273a588b84480d82e67ec47b49ca5f43ae9e4dd63fa7f95162cd1ea2d"
+          }
+        },
+        "quantile": "nearest rank",
+        "scope": "Loopback installed SDK request timing on a prevalidated warm Hub; not cold-server, native tap-to-content, physical LAN or representative media qualification",
+        "endpoint": "ws://127.0.0.1:52515/rpc",
+        "hubPID": 92129,
+        "ref": "local:034LkqgMS0COBFWW4ktnKn",
+        "corpus": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-validation-1788946776953",
+        "serverWarmedByValidation": true,
+        "subscribe": false,
+        "itemLimit": 40,
+        "samples": 60,
+        "series": {
+          "new-connection-warm-hub": {
+            "connectMs": {
+              "n": 30,
+              "min": 0.4108750000000043,
+              "p50": 0.5062500000000085,
+              "p95": 1.3194170000000014,
+              "max": 3.9499999999999957
+            },
+            "catalogMs": {
+              "n": 30,
+              "min": 0.16254200000000196,
+              "p50": 0.19370900000001257,
+              "p95": 0.2774169999999998,
+              "max": 0.3511670000000038
+            },
+            "projectPageMs": {
+              "n": 30,
+              "min": 0.5691659999999956,
+              "p50": 0.603500000000011,
+              "p95": 0.6875,
+              "max": 1.7178329999999988
+            },
+            "threadReadMs": {
+              "n": 30,
+              "min": 1.744374999999991,
+              "p50": 1.873332999999974,
+              "p95": 2.7384580000000085,
+              "max": 3.1047499999999957
+            }
+          },
+          "same-connection-warm-hub": {
+            "connectMs": null,
+            "catalogMs": {
+              "n": 30,
+              "min": 0.18225000000001046,
+              "p50": 0.20024999999998272,
+              "p95": 0.24491600000001768,
+              "max": 0.25045800000000895
+            },
+            "projectPageMs": {
+              "n": 30,
+              "min": 0.5746670000000051,
+              "p50": 0.5963749999999948,
+              "p95": 0.8419580000000053,
+              "max": 1.181709000000012
+            },
+            "threadReadMs": {
+              "n": 30,
+              "min": 1.771792000000005,
+              "p50": 1.8873330000000124,
+              "p95": 2.618791000000016,
+              "max": 2.757417000000004
+            }
+          }
+        },
+        "payloadBytes": {
+          "catalog": [
+            2721
+          ],
+          "projectPage": [
+            25291
+          ],
+          "transcript": [
+            17947
+          ]
+        },
+        "out": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-1788947364669"
+      },
+      "rawSamples": [
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 0,
+          "connectMs": 3.9499999999999957,
+          "catalogMs": 0.3511670000000038,
+          "projectPageMs": 1.7178329999999988,
+          "threadReadMs": 2.2567499999999967,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 1,
+          "connectMs": 1.3194170000000014,
+          "catalogMs": 0.2774169999999998,
+          "projectPageMs": 0.6875,
+          "threadReadMs": 2.1749170000000007,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 2,
+          "connectMs": 0.6094579999999965,
+          "catalogMs": 0.22129199999999827,
+          "projectPageMs": 0.6169999999999973,
+          "threadReadMs": 2.5569169999999986,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 3,
+          "connectMs": 0.7018750000000011,
+          "catalogMs": 0.21666700000000105,
+          "projectPageMs": 0.6035419999999903,
+          "threadReadMs": 1.9197500000000076,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 4,
+          "connectMs": 0.5827079999999967,
+          "catalogMs": 0.1874169999999964,
+          "projectPageMs": 0.5753750000000082,
+          "threadReadMs": 1.7987919999999917,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 5,
+          "connectMs": 0.5734159999999946,
+          "catalogMs": 0.20895800000000975,
+          "projectPageMs": 0.6184160000000105,
+          "threadReadMs": 2.659499999999994,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 6,
+          "connectMs": 0.6145829999999961,
+          "catalogMs": 0.20095799999999997,
+          "projectPageMs": 0.6071249999999964,
+          "threadReadMs": 1.8789999999999907,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 7,
+          "connectMs": 0.5360840000000024,
+          "catalogMs": 0.19370900000001257,
+          "projectPageMs": 0.5959589999999935,
+          "threadReadMs": 1.8177909999999997,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 8,
+          "connectMs": 0.5955000000000013,
+          "catalogMs": 0.19583299999999326,
+          "projectPageMs": 0.6289170000000013,
+          "threadReadMs": 2.4107910000000032,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 9,
+          "connectMs": 0.6612499999999955,
+          "catalogMs": 0.20670899999998937,
+          "projectPageMs": 0.6116250000000036,
+          "threadReadMs": 1.812041999999991,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 10,
+          "connectMs": 0.5149159999999995,
+          "catalogMs": 0.19724999999999682,
+          "projectPageMs": 0.5890420000000063,
+          "threadReadMs": 1.8336670000000055,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 11,
+          "connectMs": 0.5062500000000085,
+          "catalogMs": 0.18320899999999085,
+          "projectPageMs": 0.6681249999999892,
+          "threadReadMs": 2.2121669999999938,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 12,
+          "connectMs": 0.4108750000000043,
+          "catalogMs": 0.16254200000000196,
+          "projectPageMs": 0.5740000000000123,
+          "threadReadMs": 1.8040840000000031,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 13,
+          "connectMs": 0.4749170000000049,
+          "catalogMs": 0.19566600000000278,
+          "projectPageMs": 0.6071249999999964,
+          "threadReadMs": 1.8213750000000033,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 14,
+          "connectMs": 0.477374999999995,
+          "catalogMs": 0.27054200000000606,
+          "projectPageMs": 0.6013750000000044,
+          "threadReadMs": 2.430000000000007,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 15,
+          "connectMs": 0.4480830000000111,
+          "catalogMs": 0.18550000000000466,
+          "projectPageMs": 0.603500000000011,
+          "threadReadMs": 1.827457999999993,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 16,
+          "connectMs": 0.44454100000000096,
+          "catalogMs": 0.20425000000000182,
+          "projectPageMs": 0.5906670000000105,
+          "threadReadMs": 1.792500000000004,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 17,
+          "connectMs": 0.4300410000000028,
+          "catalogMs": 0.19812499999999034,
+          "projectPageMs": 0.6039159999999981,
+          "threadReadMs": 2.1892079999999936,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 18,
+          "connectMs": 0.518375000000006,
+          "catalogMs": 0.19179100000000915,
+          "projectPageMs": 0.6013750000000044,
+          "threadReadMs": 1.8384580000000028,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 19,
+          "connectMs": 0.45699999999999363,
+          "catalogMs": 0.18054200000000264,
+          "projectPageMs": 0.6034579999999892,
+          "threadReadMs": 1.7887499999999932,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 20,
+          "connectMs": 0.4222910000000013,
+          "catalogMs": 0.19029199999999946,
+          "projectPageMs": 0.6692500000000052,
+          "threadReadMs": 2.547832999999997,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 21,
+          "connectMs": 0.4793329999999969,
+          "catalogMs": 0.17833400000000665,
+          "projectPageMs": 0.6168329999999855,
+          "threadReadMs": 1.816665999999998,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 22,
+          "connectMs": 0.4329579999999851,
+          "catalogMs": 0.17574999999999363,
+          "projectPageMs": 0.5692499999999825,
+          "threadReadMs": 1.787791999999996,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 23,
+          "connectMs": 0.46137500000000387,
+          "catalogMs": 0.16279099999999858,
+          "projectPageMs": 0.5832080000000133,
+          "threadReadMs": 2.7384580000000085,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 24,
+          "connectMs": 0.5146670000000029,
+          "catalogMs": 0.18816699999999287,
+          "projectPageMs": 0.5691659999999956,
+          "threadReadMs": 1.744374999999991,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 25,
+          "connectMs": 0.4679999999999893,
+          "catalogMs": 0.18662499999999227,
+          "projectPageMs": 0.6191670000000045,
+          "threadReadMs": 2.004667000000012,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 26,
+          "connectMs": 0.51237500000002,
+          "catalogMs": 0.2001250000000141,
+          "projectPageMs": 0.5824159999999949,
+          "threadReadMs": 3.1047499999999957,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 27,
+          "connectMs": 0.49500000000000455,
+          "catalogMs": 0.20904200000001083,
+          "projectPageMs": 0.583833999999996,
+          "threadReadMs": 1.8015829999999937,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 28,
+          "connectMs": 0.4484999999999957,
+          "catalogMs": 0.17583300000001145,
+          "projectPageMs": 0.6113339999999994,
+          "threadReadMs": 1.873332999999974,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 29,
+          "connectMs": 0.5977910000000008,
+          "catalogMs": 0.17350000000001842,
+          "projectPageMs": 0.5995829999999955,
+          "threadReadMs": 2.6902919999999995,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 0,
+          "connectMs": null,
+          "catalogMs": 0.18412499999999454,
+          "projectPageMs": 0.5840829999999926,
+          "threadReadMs": 1.8253750000000082,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 1,
+          "connectMs": null,
+          "catalogMs": 0.21170799999998735,
+          "projectPageMs": 0.5746670000000051,
+          "threadReadMs": 1.7817499999999882,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 2,
+          "connectMs": null,
+          "catalogMs": 0.19483400000001438,
+          "projectPageMs": 0.6194580000000087,
+          "threadReadMs": 2.5249999999999773,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 3,
+          "connectMs": null,
+          "catalogMs": 0.20579200000000242,
+          "projectPageMs": 0.5855829999999855,
+          "threadReadMs": 1.9572919999999954,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 4,
+          "connectMs": null,
+          "catalogMs": 0.1997920000000022,
+          "projectPageMs": 0.5905419999999992,
+          "threadReadMs": 1.8985409999999945,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 5,
+          "connectMs": null,
+          "catalogMs": 0.21808300000000713,
+          "projectPageMs": 0.6084170000000029,
+          "threadReadMs": 2.757417000000004,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 6,
+          "connectMs": null,
+          "catalogMs": 0.25045800000000895,
+          "projectPageMs": 0.6145420000000001,
+          "threadReadMs": 1.8195420000000126,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 7,
+          "connectMs": null,
+          "catalogMs": 0.21045900000001438,
+          "projectPageMs": 0.8419580000000053,
+          "threadReadMs": 1.9755830000000003,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 8,
+          "connectMs": null,
+          "catalogMs": 0.2008339999999862,
+          "projectPageMs": 0.6785419999999931,
+          "threadReadMs": 2.5899579999999958,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 9,
+          "connectMs": null,
+          "catalogMs": 0.2190830000000119,
+          "projectPageMs": 0.5909580000000005,
+          "threadReadMs": 1.860083000000003,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 10,
+          "connectMs": null,
+          "catalogMs": 0.19887500000001523,
+          "projectPageMs": 0.590707999999978,
+          "threadReadMs": 1.8873330000000124,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 11,
+          "connectMs": null,
+          "catalogMs": 0.19591600000001108,
+          "projectPageMs": 0.5917090000000087,
+          "threadReadMs": 1.801333999999997,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 12,
+          "connectMs": null,
+          "catalogMs": 0.18225000000001046,
+          "projectPageMs": 1.181709000000012,
+          "threadReadMs": 1.9625000000000057,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 13,
+          "connectMs": null,
+          "catalogMs": 0.20258400000000165,
+          "projectPageMs": 0.5880420000000015,
+          "threadReadMs": 2.2699160000000234,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 14,
+          "connectMs": null,
+          "catalogMs": 0.21416600000000585,
+          "projectPageMs": 0.6175000000000068,
+          "threadReadMs": 2.5817499999999995,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 15,
+          "connectMs": null,
+          "catalogMs": 0.22504200000000196,
+          "projectPageMs": 0.6090000000000089,
+          "threadReadMs": 1.8838750000000175,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 16,
+          "connectMs": null,
+          "catalogMs": 0.18316699999999742,
+          "projectPageMs": 0.608916999999991,
+          "threadReadMs": 1.787083999999993,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 17,
+          "connectMs": null,
+          "catalogMs": 0.18449999999998568,
+          "projectPageMs": 0.5929169999999999,
+          "threadReadMs": 2.618791000000016,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 18,
+          "connectMs": null,
+          "catalogMs": 0.24491600000001768,
+          "projectPageMs": 0.5963749999999948,
+          "threadReadMs": 1.7974999999999852,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 19,
+          "connectMs": null,
+          "catalogMs": 0.18487500000000523,
+          "projectPageMs": 0.592708999999985,
+          "threadReadMs": 1.9568749999999966,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 20,
+          "connectMs": null,
+          "catalogMs": 0.20324999999999704,
+          "projectPageMs": 0.5950829999999883,
+          "threadReadMs": 2.450290999999993,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 21,
+          "connectMs": null,
+          "catalogMs": 0.24324999999998909,
+          "projectPageMs": 0.5927920000000029,
+          "threadReadMs": 1.7897920000000056,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 22,
+          "connectMs": null,
+          "catalogMs": 0.19916699999998855,
+          "projectPageMs": 0.5974579999999889,
+          "threadReadMs": 1.9428330000000074,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 23,
+          "connectMs": null,
+          "catalogMs": 0.1907500000000084,
+          "projectPageMs": 0.596541000000002,
+          "threadReadMs": 2.437624999999997,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 24,
+          "connectMs": null,
+          "catalogMs": 0.20250000000001478,
+          "projectPageMs": 0.5827500000000043,
+          "threadReadMs": 1.8847500000000252,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 25,
+          "connectMs": null,
+          "catalogMs": 0.19158299999998007,
+          "projectPageMs": 0.5968750000000114,
+          "threadReadMs": 1.7805409999999995,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 26,
+          "connectMs": null,
+          "catalogMs": 0.20024999999998272,
+          "projectPageMs": 0.6037500000000477,
+          "threadReadMs": 2.5897090000000276,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 27,
+          "connectMs": null,
+          "catalogMs": 0.23424999999997453,
+          "projectPageMs": 0.5972500000000309,
+          "threadReadMs": 1.8275829999999473,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 28,
+          "connectMs": null,
+          "catalogMs": 0.19266599999997425,
+          "projectPageMs": 0.5950830000000451,
+          "threadReadMs": 1.7845419999999876,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 29,
+          "connectMs": null,
+          "catalogMs": 0.18575000000004138,
+          "projectPageMs": 0.6014590000000339,
+          "threadReadMs": 1.771792000000005,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        }
+      ],
+      "files": [
+        {
+          "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-1788947364669/result.json",
+          "sha256": "c78d2c20f59176f6c92ee1444a8a4bf2f1d00fcff63ed91ed4a6d83df051f77e"
+        },
+        {
+          "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-1788947364669/samples.json",
+          "sha256": "9299a1e428870e2eddb69a5fecdd3ee9495aaacbe4e5d840dee4420f03c23934"
+        },
+        {
+          "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-1788947364669/driver.mjs",
+          "sha256": "5b65bc6fb76f416b37144e6d9bd0e8c091cdad5e878863816a49d34f7bb514b0"
+        }
+      ]
+    },
+    {
+      "result": {
+        "status": "passed",
+        "machine": {
+          "node": "v26.5.0",
+          "os": "Darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "cpu": "Apple M5 Max"
+        },
+        "identities": {
+          "driver": {
+            "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing.mjs",
+            "sha256": "5b65bc6fb76f416b37144e6d9bd0e8c091cdad5e878863816a49d34f7bb514b0"
+          },
+          "sdk": {
+            "path": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js",
+            "sha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36"
+          },
+          "hub": {
+            "path": "/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener",
+            "sha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4"
+          },
+          "manifest": {
+            "path": "/private/tmp/evener-native-performance-corpus-v8/manifest.json",
+            "sha256": "b981f78273a588b84480d82e67ec47b49ca5f43ae9e4dd63fa7f95162cd1ea2d"
+          }
+        },
+        "quantile": "nearest rank",
+        "scope": "Loopback installed SDK request timing on a prevalidated warm Hub; not cold-server, native tap-to-content, physical LAN or representative media qualification",
+        "endpoint": "ws://127.0.0.1:52515/rpc",
+        "hubPID": 92129,
+        "ref": "local:034LkqgMS0COBFWW4ktnKn",
+        "corpus": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-validation-1788946776953",
+        "serverWarmedByValidation": true,
+        "subscribe": true,
+        "itemLimit": 40,
+        "samples": 60,
+        "series": {
+          "new-connection-warm-hub": {
+            "connectMs": {
+              "n": 30,
+              "min": 0.42645900000000836,
+              "p50": 0.5075829999999968,
+              "p95": 1.2344170000000005,
+              "max": 4.141083000000002
+            },
+            "catalogMs": {
+              "n": 30,
+              "min": 0.17491599999999607,
+              "p50": 0.19454100000000096,
+              "p95": 0.2631669999999957,
+              "max": 0.9225840000000005
+            },
+            "projectPageMs": {
+              "n": 30,
+              "min": 0.5621250000000089,
+              "p50": 0.5979580000000055,
+              "p95": 0.6901249999999948,
+              "max": 0.7001249999999999
+            },
+            "threadReadMs": {
+              "n": 30,
+              "min": 1.798209,
+              "p50": 1.9153749999999832,
+              "p95": 3.0307909999999936,
+              "max": 3.052166999999997
+            }
+          },
+          "same-connection-warm-hub": {
+            "connectMs": null,
+            "catalogMs": {
+              "n": 30,
+              "min": 0.17270800000000008,
+              "p50": 0.20887499999997772,
+              "p95": 0.5885000000000105,
+              "max": 0.657291999999984
+            },
+            "projectPageMs": {
+              "n": 30,
+              "min": 0.5611249999999757,
+              "p50": 0.6032500000000027,
+              "p95": 1.1325420000000008,
+              "max": 1.2834589999999935
+            },
+            "threadReadMs": {
+              "n": 30,
+              "min": 1.7622499999999945,
+              "p50": 1.8867079999999987,
+              "p95": 4.845416,
+              "max": 5.635917000000035
+            }
+          }
+        },
+        "payloadBytes": {
+          "catalog": [
+            2721
+          ],
+          "projectPage": [
+            25291
+          ],
+          "transcript": [
+            17947
+          ]
+        },
+        "out": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-subscribed-1788947364956"
+      },
+      "rawSamples": [
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 0,
+          "connectMs": 4.141083000000002,
+          "catalogMs": 0.9225840000000005,
+          "projectPageMs": 0.6901249999999948,
+          "threadReadMs": 2.1291670000000025,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 1,
+          "connectMs": 1.2344170000000005,
+          "catalogMs": 0.2631669999999957,
+          "projectPageMs": 0.7001249999999999,
+          "threadReadMs": 2.129375000000003,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 2,
+          "connectMs": 0.6789580000000015,
+          "catalogMs": 0.2202920000000006,
+          "projectPageMs": 0.617999999999995,
+          "threadReadMs": 2.7188330000000036,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 3,
+          "connectMs": 0.5589159999999964,
+          "catalogMs": 0.17491599999999607,
+          "projectPageMs": 0.5621250000000089,
+          "threadReadMs": 1.93587500000001,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 4,
+          "connectMs": 0.5214169999999996,
+          "catalogMs": 0.19266700000000014,
+          "projectPageMs": 0.576625000000007,
+          "threadReadMs": 1.8790419999999983,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 5,
+          "connectMs": 0.5923329999999964,
+          "catalogMs": 0.20083299999998871,
+          "projectPageMs": 0.6048329999999993,
+          "threadReadMs": 3.0307909999999936,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 6,
+          "connectMs": 0.5865000000000009,
+          "catalogMs": 0.18345800000000168,
+          "projectPageMs": 0.5992499999999978,
+          "threadReadMs": 1.9226249999999965,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 7,
+          "connectMs": 0.5361249999999984,
+          "catalogMs": 0.18441699999999628,
+          "projectPageMs": 0.5925000000000011,
+          "threadReadMs": 1.8300419999999917,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 8,
+          "connectMs": 0.7668330000000054,
+          "catalogMs": 0.22283299999999429,
+          "projectPageMs": 0.6572910000000007,
+          "threadReadMs": 2.6001249999999914,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 9,
+          "connectMs": 0.6360839999999968,
+          "catalogMs": 0.1977499999999992,
+          "projectPageMs": 0.5856670000000008,
+          "threadReadMs": 1.8439589999999981,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 10,
+          "connectMs": 0.5075829999999968,
+          "catalogMs": 0.18908299999999656,
+          "projectPageMs": 0.6054170000000028,
+          "threadReadMs": 1.8404579999999982,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 11,
+          "connectMs": 0.6256249999999994,
+          "catalogMs": 0.19216699999999776,
+          "projectPageMs": 0.5850420000000014,
+          "threadReadMs": 2.597999999999999,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 12,
+          "connectMs": 0.47341700000001197,
+          "catalogMs": 0.2140410000000088,
+          "projectPageMs": 0.5999580000000009,
+          "threadReadMs": 1.8534580000000034,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 13,
+          "connectMs": 0.44008300000000133,
+          "catalogMs": 0.18874999999999886,
+          "projectPageMs": 0.5779169999999993,
+          "threadReadMs": 1.815375000000003,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 14,
+          "connectMs": 0.44895800000000463,
+          "catalogMs": 0.18941700000000594,
+          "projectPageMs": 0.5903750000000088,
+          "threadReadMs": 2.729583000000005,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 15,
+          "connectMs": 0.46033300000000565,
+          "catalogMs": 0.19454100000000096,
+          "projectPageMs": 0.5979580000000055,
+          "threadReadMs": 1.8688339999999926,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 16,
+          "connectMs": 0.42645900000000836,
+          "catalogMs": 0.19654199999999378,
+          "projectPageMs": 0.593291999999991,
+          "threadReadMs": 1.798209,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 17,
+          "connectMs": 0.4520419999999916,
+          "catalogMs": 0.178875000000005,
+          "projectPageMs": 0.5875000000000057,
+          "threadReadMs": 3.0272090000000134,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 18,
+          "connectMs": 0.522666000000001,
+          "catalogMs": 0.18829200000000412,
+          "projectPageMs": 0.593874999999997,
+          "threadReadMs": 1.8945409999999896,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 19,
+          "connectMs": 0.5270839999999737,
+          "catalogMs": 0.2236249999999984,
+          "projectPageMs": 0.6263749999999959,
+          "threadReadMs": 1.9064579999999864,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 20,
+          "connectMs": 0.582540999999992,
+          "catalogMs": 0.2125830000000235,
+          "projectPageMs": 0.6273750000000007,
+          "threadReadMs": 2.59729200000001,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 21,
+          "connectMs": 0.46775000000002365,
+          "catalogMs": 0.21199999999998909,
+          "projectPageMs": 0.6044159999999863,
+          "threadReadMs": 1.8478750000000161,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 22,
+          "connectMs": 0.4692499999999882,
+          "catalogMs": 0.18404100000000767,
+          "projectPageMs": 0.5905410000000018,
+          "threadReadMs": 1.9153749999999832,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 23,
+          "connectMs": 0.42979199999999196,
+          "catalogMs": 0.18149999999999977,
+          "projectPageMs": 0.6102910000000179,
+          "threadReadMs": 3.002207999999996,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 24,
+          "connectMs": 0.5230420000000038,
+          "catalogMs": 0.19545800000000213,
+          "projectPageMs": 0.5855000000000246,
+          "threadReadMs": 1.9567499999999995,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 25,
+          "connectMs": 0.4540420000000154,
+          "catalogMs": 0.20416600000001495,
+          "projectPageMs": 0.5806249999999977,
+          "threadReadMs": 1.81329199999999,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 26,
+          "connectMs": 0.45537500000000364,
+          "catalogMs": 0.17862500000001091,
+          "projectPageMs": 0.5814170000000161,
+          "threadReadMs": 2.767624999999981,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 27,
+          "connectMs": 0.4716250000000173,
+          "catalogMs": 0.20487499999998704,
+          "projectPageMs": 0.6187920000000133,
+          "threadReadMs": 1.8792500000000132,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 28,
+          "connectMs": 0.4819580000000201,
+          "catalogMs": 0.18779200000000174,
+          "projectPageMs": 0.6195830000000058,
+          "threadReadMs": 1.8750410000000102,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "new-connection-warm-hub",
+          "index": 29,
+          "connectMs": 0.4717080000000067,
+          "catalogMs": 0.21112500000000978,
+          "projectPageMs": 0.6012079999999855,
+          "threadReadMs": 3.052166999999997,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 0,
+          "connectMs": null,
+          "catalogMs": 0.21399999999999864,
+          "projectPageMs": 0.5885420000000181,
+          "threadReadMs": 1.8239580000000046,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 1,
+          "connectMs": null,
+          "catalogMs": 0.18966599999998834,
+          "projectPageMs": 0.602041000000014,
+          "threadReadMs": 1.8784589999999923,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 2,
+          "connectMs": null,
+          "catalogMs": 0.19404199999999605,
+          "projectPageMs": 0.6684579999999869,
+          "threadReadMs": 2.9118749999999807,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 3,
+          "connectMs": null,
+          "catalogMs": 0.20929099999997902,
+          "projectPageMs": 0.5767500000000041,
+          "threadReadMs": 1.853999999999985,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 4,
+          "connectMs": null,
+          "catalogMs": 0.18883300000001668,
+          "projectPageMs": 0.5702499999999873,
+          "threadReadMs": 1.7622499999999945,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 5,
+          "connectMs": null,
+          "catalogMs": 0.17270800000000008,
+          "projectPageMs": 0.5625,
+          "threadReadMs": 2.5659590000000208,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 6,
+          "connectMs": null,
+          "catalogMs": 0.21887500000002547,
+          "projectPageMs": 0.5864589999999907,
+          "threadReadMs": 1.9939999999999998,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 7,
+          "connectMs": null,
+          "catalogMs": 0.21220900000000142,
+          "projectPageMs": 0.6128339999999923,
+          "threadReadMs": 1.8580420000000117,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 8,
+          "connectMs": null,
+          "catalogMs": 0.2013330000000053,
+          "projectPageMs": 0.5979580000000055,
+          "threadReadMs": 2.3185829999999896,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 9,
+          "connectMs": null,
+          "catalogMs": 0.2129589999999837,
+          "projectPageMs": 0.5835830000000044,
+          "threadReadMs": 1.84104099999999,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 10,
+          "connectMs": null,
+          "catalogMs": 0.20154200000001765,
+          "projectPageMs": 0.5958750000000066,
+          "threadReadMs": 1.8285000000000196,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 11,
+          "connectMs": null,
+          "catalogMs": 0.17841699999999605,
+          "projectPageMs": 0.5611249999999757,
+          "threadReadMs": 1.770417000000009,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 12,
+          "connectMs": null,
+          "catalogMs": 0.1785419999999931,
+          "projectPageMs": 1.2834589999999935,
+          "threadReadMs": 2.461291999999986,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 13,
+          "connectMs": null,
+          "catalogMs": 0.20887499999997772,
+          "projectPageMs": 0.595249999999993,
+          "threadReadMs": 1.846665999999999,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 14,
+          "connectMs": null,
+          "catalogMs": 0.19683299999999804,
+          "projectPageMs": 0.5854999999999961,
+          "threadReadMs": 1.8003329999999949,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 15,
+          "connectMs": null,
+          "catalogMs": 0.18441699999999628,
+          "projectPageMs": 0.6032500000000027,
+          "threadReadMs": 2.777667000000008,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 16,
+          "connectMs": null,
+          "catalogMs": 0.241375000000005,
+          "projectPageMs": 0.6369580000000212,
+          "threadReadMs": 1.8824170000000038,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 17,
+          "connectMs": null,
+          "catalogMs": 0.1993750000000034,
+          "projectPageMs": 0.5967079999999783,
+          "threadReadMs": 1.878707999999989,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 18,
+          "connectMs": null,
+          "catalogMs": 0.19079200000001606,
+          "projectPageMs": 0.5772919999999999,
+          "threadReadMs": 2.8400000000000034,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 19,
+          "connectMs": null,
+          "catalogMs": 0.21283399999998664,
+          "projectPageMs": 0.6097499999999911,
+          "threadReadMs": 1.8409580000000005,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 20,
+          "connectMs": null,
+          "catalogMs": 0.2033749999999941,
+          "projectPageMs": 0.6106249999999989,
+          "threadReadMs": 1.7938330000000065,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 21,
+          "connectMs": null,
+          "catalogMs": 0.1856249999999875,
+          "projectPageMs": 0.6228749999999934,
+          "threadReadMs": 5.635917000000035,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 22,
+          "connectMs": null,
+          "catalogMs": 0.657291999999984,
+          "projectPageMs": 1.091916000000026,
+          "threadReadMs": 2.7964999999999804,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 23,
+          "connectMs": null,
+          "catalogMs": 0.46562499999998863,
+          "projectPageMs": 0.9967909999999733,
+          "threadReadMs": 2.58299999999997,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 24,
+          "connectMs": null,
+          "catalogMs": 0.4203749999999786,
+          "projectPageMs": 0.8642500000000268,
+          "threadReadMs": 4.845416,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 25,
+          "connectMs": null,
+          "catalogMs": 0.4033329999999751,
+          "projectPageMs": 1.1325420000000008,
+          "threadReadMs": 2.9067080000000374,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 26,
+          "connectMs": null,
+          "catalogMs": 0.5225839999999948,
+          "projectPageMs": 1.0434589999999844,
+          "threadReadMs": 2.546375000000012,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 27,
+          "connectMs": null,
+          "catalogMs": 0.5885000000000105,
+          "projectPageMs": 1.0174579999999764,
+          "threadReadMs": 2.7400410000000193,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 28,
+          "connectMs": null,
+          "catalogMs": 0.2317499999999768,
+          "projectPageMs": 0.6157910000000015,
+          "threadReadMs": 1.8867079999999987,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        },
+        {
+          "scenario": "same-connection-warm-hub",
+          "index": 29,
+          "connectMs": null,
+          "catalogMs": 0.2173750000000041,
+          "projectPageMs": 0.7088750000000346,
+          "threadReadMs": 1.9278329999999642,
+          "catalogBytes": 2721,
+          "projectPageBytes": 25291,
+          "threadReadBytes": 17947,
+          "threadReadSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e"
+        }
+      ],
+      "files": [
+        {
+          "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-subscribed-1788947364956/result.json",
+          "sha256": "d9b1b04df9bce6f3724362caaea663fa36af7324209548654ff5ae1f61c87528"
+        },
+        {
+          "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-subscribed-1788947364956/samples.json",
+          "sha256": "8980b8550ac403d033c36a9c39250516e6e03c471c8007eb6d593c44291f9804"
+        },
+        {
+          "path": "/private/tmp/evener-native-performance-corpus-v8/root-sdk-timing-subscribed-1788947364956/driver.mjs",
+          "sha256": "5b65bc6fb76f416b37144e6d9bd0e8c091cdad5e878863816a49d34f7bb514b0"
+        }
+      ]
+    }
+  ],
+  "processCold": {
+    "perResource": {
+      "catalog": {
+        "n": 30,
+        "min": 0.3055829999998423,
+        "p50": 3.1299589999998716,
+        "p95": 10.860458000000108,
+        "max": 19.288291999999956
+      },
+      "projectPage": {
+        "n": 30,
+        "min": 0.655042000000094,
+        "p50": 0.7513329999999314,
+        "p95": 1.6038340000000062,
+        "max": 1.9757909999998446
+      },
+      "threadRead": {
+        "n": 30,
+        "min": 51.88449999999989,
+        "p50": 54.97083399999997,
+        "p95": 61.436082999999826,
+        "max": 61.730625000000146
+      }
+    },
+    "startup": {
+      "n": 30,
+      "min": 83.55866700000024,
+      "p50": 86.90304199999991,
+      "p95": 93.07679099999996,
+      "max": 106.19991699999991
+    },
+    "connect": {
+      "n": 30,
+      "min": 0.8568340000001626,
+      "p50": 1.0201250000000073,
+      "p95": 4.218582999999995,
+      "max": 5.471624999999904
+    },
+    "sampleSnapshots": [
+      {
+        "sample": 1,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-01-5G55Ae",
+        "pid": 99224,
+        "port": 57159,
+        "startedMs": 49.039542,
+        "readyMs": 133.115208,
+        "startupMs": 84.075666,
+        "connectMs": 4.218582999999995,
+        "requestDurations": [
+          1.723084,
+          0.7820000000000107,
+          54.25787500000001
+        ],
+        "firstReadsMs": [
+          1.723084,
+          0.7820000000000107,
+          54.25787500000001
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 195.479875,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 2,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-02-ivNS4W",
+        "pid": 99244,
+        "port": 57179,
+        "startedMs": 200.036792,
+        "readyMs": 285.8685,
+        "startupMs": 85.83170799999999,
+        "connectMs": 1.178541999999993,
+        "requestDurations": [
+          7.058457999999973,
+          0.8732079999999769,
+          56.664334
+        ],
+        "firstReadsMs": [
+          7.058457999999973,
+          0.8732079999999769,
+          56.664334
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 352.776042,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 3,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-03-wRxTQD",
+        "pid": 99267,
+        "port": 57183,
+        "startedMs": 356.569333,
+        "readyMs": 445.112625,
+        "startupMs": 88.54329200000001,
+        "connectMs": 1.0201250000000073,
+        "requestDurations": [
+          0.315291000000002,
+          0.758707999999956,
+          60.981042
+        ],
+        "firstReadsMs": [
+          0.315291000000002,
+          0.758707999999956,
+          60.981042
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 509.404375,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 4,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-04-eXUmGl",
+        "pid": 99291,
+        "port": 57188,
+        "startedMs": 513.535667,
+        "readyMs": 600.707167,
+        "startupMs": 87.17150000000004,
+        "connectMs": 1.4252500000000055,
+        "requestDurations": [
+          19.288291999999956,
+          0.7811249999999745,
+          53.50350000000003
+        ],
+        "firstReadsMs": [
+          19.288291999999956,
+          0.7811249999999745,
+          53.50350000000003
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 677.152708,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 5,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-05-yjCI2j",
+        "pid": 99313,
+        "port": 57191,
+        "startedMs": 680.632542,
+        "readyMs": 768.271333,
+        "startupMs": 87.63879100000008,
+        "connectMs": 1.410291999999913,
+        "requestDurations": [
+          0.3625000000000682,
+          0.7959589999999253,
+          54.97083399999997
+        ],
+        "firstReadsMs": [
+          0.3625000000000682,
+          0.7959589999999253,
+          54.97083399999997
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 826.945208,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 6,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-06-OMc2Jg",
+        "pid": 99335,
+        "port": 57197,
+        "startedMs": 830.678,
+        "readyMs": 918.689708,
+        "startupMs": 88.011708,
+        "connectMs": 1.2813340000000153,
+        "requestDurations": [
+          0.320041999999944,
+          0.7513329999999314,
+          56.18395899999996
+        ],
+        "firstReadsMs": [
+          0.320041999999944,
+          0.7513329999999314,
+          56.18395899999996
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 978.2805,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 7,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-07-s2O8yC",
+        "pid": 99355,
+        "port": 57201,
+        "startedMs": 982.068333,
+        "readyMs": 1070.550375,
+        "startupMs": 88.48204199999998,
+        "connectMs": 1.0794160000000375,
+        "requestDurations": [
+          9.09699999999998,
+          0.8020840000001499,
+          54.92425000000003
+        ],
+        "firstReadsMs": [
+          9.09699999999998,
+          0.8020840000001499,
+          54.92425000000003
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 1137.498958,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 8,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-08-WjpcMm",
+        "pid": 99376,
+        "port": 57205,
+        "startedMs": 1147.027583,
+        "readyMs": 1233.618375,
+        "startupMs": 86.59079199999996,
+        "connectMs": 1.3403749999999945,
+        "requestDurations": [
+          0.3055829999998423,
+          0.655042000000094,
+          56.635125000000016
+        ],
+        "firstReadsMs": [
+          0.3055829999998423,
+          0.655042000000094,
+          56.635125000000016
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 1293.543,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 9,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-09-mekNwn",
+        "pid": 99397,
+        "port": 57208,
+        "startedMs": 1297.329625,
+        "readyMs": 1385.358292,
+        "startupMs": 88.02866699999981,
+        "connectMs": 1.0720839999999043,
+        "requestDurations": [
+          0.3136250000000018,
+          0.6864579999999023,
+          58.26545800000008
+        ],
+        "firstReadsMs": [
+          0.3136250000000018,
+          0.6864579999999023,
+          58.26545800000008
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 1446.673667,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 10,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-10-6vNaIS",
+        "pid": 99417,
+        "port": 57211,
+        "startedMs": 1450.261958,
+        "readyMs": 1537.964917,
+        "startupMs": 87.70295899999996,
+        "connectMs": 5.471624999999904,
+        "requestDurations": [
+          2.97137500000008,
+          1.519125000000031,
+          51.88449999999989
+        ],
+        "firstReadsMs": [
+          2.97137500000008,
+          1.519125000000031,
+          51.88449999999989
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 1601.062333,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 11,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-11-QUYusk",
+        "pid": 99436,
+        "port": 57217,
+        "startedMs": 1604.59425,
+        "readyMs": 1691.054792,
+        "startupMs": 86.4605419999998,
+        "connectMs": 1.1254169999999704,
+        "requestDurations": [
+          4.951749999999947,
+          0.6986249999999927,
+          52.83354200000008
+        ],
+        "firstReadsMs": [
+          4.951749999999947,
+          0.6986249999999927,
+          52.83354200000008
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 1751.628667,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 12,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-12-0GVZBC",
+        "pid": 99456,
+        "port": 57222,
+        "startedMs": 1755.330458,
+        "readyMs": 1840.766875,
+        "startupMs": 85.43641700000012,
+        "connectMs": 0.8849169999998594,
+        "requestDurations": [
+          1.440375000000131,
+          0.6890000000000782,
+          53.010291999999936
+        ],
+        "firstReadsMs": [
+          1.440375000000131,
+          0.6890000000000782,
+          53.010291999999936
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 1897.825583,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 13,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-13-e2zjYM",
+        "pid": 99476,
+        "port": 57226,
+        "startedMs": 1901.219458,
+        "readyMs": 1989.994083,
+        "startupMs": 88.77462500000001,
+        "connectMs": 0.9818330000000515,
+        "requestDurations": [
+          0.3312090000001717,
+          0.6988329999999223,
+          61.436082999999826
+        ],
+        "firstReadsMs": [
+          0.3312090000001717,
+          0.6988329999999223,
+          61.436082999999826
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 2054.811542,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 14,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-14-IUUQID",
+        "pid": 99497,
+        "port": 57335,
+        "startedMs": 2058.958208,
+        "readyMs": 2144.2415,
+        "startupMs": 85.28329200000007,
+        "connectMs": 1.0085829999998168,
+        "requestDurations": [
+          6.880125000000135,
+          0.7670000000002801,
+          57.247833000000355
+        ],
+        "firstReadsMs": [
+          6.880125000000135,
+          0.7670000000002801,
+          57.247833000000355
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 2211.197042,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 15,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-15-sMGkNt",
+        "pid": 99519,
+        "port": 57339,
+        "startedMs": 2214.927875,
+        "readyMs": 2301.504,
+        "startupMs": 86.57612500000005,
+        "connectMs": 0.8868750000001455,
+        "requestDurations": [
+          10.860458000000108,
+          0.7641669999998157,
+          53.17637500000001
+        ],
+        "firstReadsMs": [
+          10.860458000000108,
+          0.7641669999998157,
+          53.17637500000001
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 2368.361708,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 16,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-16-PLOpce",
+        "pid": 99540,
+        "port": 57344,
+        "startedMs": 2372.146083,
+        "readyMs": 2459.202583,
+        "startupMs": 87.05649999999969,
+        "connectMs": 0.8568340000001626,
+        "requestDurations": [
+          3.1299589999998716,
+          0.701082999999926,
+          53.174125000000004
+        ],
+        "firstReadsMs": [
+          3.1299589999998716,
+          0.701082999999926,
+          53.174125000000004
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 2518.097333,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 17,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-17-wEPF04",
+        "pid": 99561,
+        "port": 57349,
+        "startedMs": 2521.553833,
+        "readyMs": 2609.736333,
+        "startupMs": 88.18249999999989,
+        "connectMs": 0.9514580000000024,
+        "requestDurations": [
+          7.837292000000161,
+          0.7967909999997573,
+          55.15962500000023
+        ],
+        "firstReadsMs": [
+          7.837292000000161,
+          0.7967909999997573,
+          55.15962500000023
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 2675.51375,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 18,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-18-iI8bVv",
+        "pid": 99581,
+        "port": 57356,
+        "startedMs": 2679.1185,
+        "readyMs": 2768.159083,
+        "startupMs": 89.04058299999997,
+        "connectMs": 1.08008400000017,
+        "requestDurations": [
+          0.7046249999998508,
+          0.819332999999915,
+          56.74566700000014
+        ],
+        "firstReadsMs": [
+          0.7046249999998508,
+          0.819332999999915,
+          56.74566700000014
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 2828.569417,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 19,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-19-oqeHCt",
+        "pid": 99602,
+        "port": 57362,
+        "startedMs": 2832.107333,
+        "readyMs": 2918.100833,
+        "startupMs": 85.99350000000004,
+        "connectMs": 0.9175000000000182,
+        "requestDurations": [
+          5.298541999999998,
+          0.7410830000003443,
+          52.86395799999991
+        ],
+        "firstReadsMs": [
+          5.298541999999998,
+          0.7410830000003443,
+          52.86395799999991
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 2978.8925,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 20,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-20-uAv32b",
+        "pid": 99622,
+        "port": 57365,
+        "startedMs": 2982.490542,
+        "readyMs": 3075.567333,
+        "startupMs": 93.07679099999996,
+        "connectMs": 1.0905840000000353,
+        "requestDurations": [
+          0.3590830000002825,
+          1.6038340000000062,
+          53.78308300000026
+        ],
+        "firstReadsMs": [
+          0.3590830000002825,
+          1.6038340000000062,
+          53.78308300000026
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 3133.439417,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 21,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-21-AggtTw",
+        "pid": 99641,
+        "port": 57369,
+        "startedMs": 3137.142,
+        "readyMs": 3222.959083,
+        "startupMs": 85.81708300000037,
+        "connectMs": 0.9475419999998849,
+        "requestDurations": [
+          7.645582999999988,
+          0.7390419999996993,
+          59.17425000000003
+        ],
+        "firstReadsMs": [
+          7.645582999999988,
+          0.7390419999996993,
+          59.17425000000003
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 3292.441042,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 22,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-22-tDjELY",
+        "pid": 99666,
+        "port": 57372,
+        "startedMs": 3296.259208,
+        "readyMs": 3379.817875,
+        "startupMs": 83.55866700000024,
+        "connectMs": 0.94399999999996,
+        "requestDurations": [
+          6.107124999999996,
+          0.74279099999967,
+          55.94029200000023
+        ],
+        "firstReadsMs": [
+          6.107124999999996,
+          0.74279099999967,
+          55.94029200000023
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 3444.515792,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 23,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-23-GhEJag",
+        "pid": 99687,
+        "port": 57375,
+        "startedMs": 3447.865458,
+        "readyMs": 3535.386167,
+        "startupMs": 87.5207089999999,
+        "connectMs": 1.172458000000006,
+        "requestDurations": [
+          0.31475000000000364,
+          0.7452920000000631,
+          61.730625000000146
+        ],
+        "firstReadsMs": [
+          0.31475000000000364,
+          0.7452920000000631,
+          61.730625000000146
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 3600.2955,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 24,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-24-7f8LYB",
+        "pid": 99706,
+        "port": 57379,
+        "startedMs": 3603.773833,
+        "readyMs": 3688.498833,
+        "startupMs": 84.72499999999991,
+        "connectMs": 0.9914169999997284,
+        "requestDurations": [
+          0.3915830000000824,
+          1.9757909999998446,
+          54.86645899999985
+        ],
+        "firstReadsMs": [
+          0.3915830000000824,
+          1.9757909999998446,
+          54.86645899999985
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 3747.780875,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 25,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-25-G2qAsW",
+        "pid": 99725,
+        "port": 57382,
+        "startedMs": 3751.268292,
+        "readyMs": 3836.670125,
+        "startupMs": 85.4018329999999,
+        "connectMs": 0.9002909999999247,
+        "requestDurations": [
+          4.723124999999982,
+          0.7745829999998932,
+          54.5798749999999
+        ],
+        "firstReadsMs": [
+          4.723124999999982,
+          0.7745829999998932,
+          54.5798749999999
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 3898.709458,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 26,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-26-2npC5J",
+        "pid": 99747,
+        "port": 57385,
+        "startedMs": 3902.460375,
+        "readyMs": 3987.198417,
+        "startupMs": 84.73804199999995,
+        "connectMs": 1.2789999999999964,
+        "requestDurations": [
+          7.014874999999847,
+          0.76299999999992,
+          54.618124999999964
+        ],
+        "firstReadsMs": [
+          7.014874999999847,
+          0.76299999999992,
+          54.618124999999964
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 4051.945375,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 27,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-27-Nt5uSJ",
+        "pid": 99768,
+        "port": 57388,
+        "startedMs": 4056.166333,
+        "readyMs": 4142.575375,
+        "startupMs": 86.40904200000023,
+        "connectMs": 0.9184589999995296,
+        "requestDurations": [
+          5.459125000000313,
+          0.7490420000003724,
+          56.89549999999963
+        ],
+        "firstReadsMs": [
+          5.459125000000313,
+          0.7490420000003724,
+          56.89549999999963
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 4207.654667,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 28,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-28-DK71de",
+        "pid": 99789,
+        "port": 57406,
+        "startedMs": 4211.625292,
+        "readyMs": 4298.558708,
+        "startupMs": 86.93341599999985,
+        "connectMs": 0.8779169999997976,
+        "requestDurations": [
+          0.5501670000003287,
+          0.6853750000000218,
+          55.61683399999947
+        ],
+        "firstReadsMs": [
+          0.5501670000003287,
+          0.6853750000000218,
+          55.61683399999947
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 4357.199625,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 29,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-29-paFC00",
+        "pid": 99809,
+        "port": 57410,
+        "startedMs": 4360.779708,
+        "readyMs": 4447.68275,
+        "startupMs": 86.90304199999991,
+        "connectMs": 1.160041999999521,
+        "requestDurations": [
+          7.86095800000021,
+          0.7342920000000959,
+          53.977082999999766
+        ],
+        "firstReadsMs": [
+          7.86095800000021,
+          0.7342920000000959,
+          53.977082999999766
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 4512.434167,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      },
+      {
+        "sample": 30,
+        "dir": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-30-pDGBl8",
+        "pid": 99836,
+        "port": 57414,
+        "startedMs": 4522.399458,
+        "readyMs": 4628.599375,
+        "startupMs": 106.19991699999991,
+        "connectMs": 0.9412079999992784,
+        "requestDurations": [
+          4.5442919999995866,
+          0.7180419999995138,
+          55.84391700000015
+        ],
+        "firstReadsMs": [
+          4.5442919999995866,
+          0.7180419999995138,
+          55.84391700000015
+        ],
+        "catalogProjects": 5,
+        "catalogSessions": 500,
+        "pageRows": 20,
+        "pageRemaining": 80,
+        "heavyRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "threadItems": 40,
+        "threadUniqueIds": 40,
+        "threadResponseSha256": "2a7b6d792fb91f9dbee424059efe73d678c42b4f764eed952a06cbd77495966e",
+        "recordCount": 3,
+        "finishedMs": 4691.77525,
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "listenerAbsent": true
+      }
+    ],
+    "rawFiles": [
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-01-5G55Ae/raw.json",
+        "sha256": "bf3f69c4e492d7d9560a11e71964d77a1e95c2014a1d3cfbba5eee23b6801afb"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-02-ivNS4W/raw.json",
+        "sha256": "faef5c8e920503f5cfe4470a2a86b85416ff06ac4b367e677b80c5d4b716c52b"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-03-wRxTQD/raw.json",
+        "sha256": "7444dc9b2b6ecaba8bd970f82f0e1937ac5546fc33b2bb2fbf948db274620dfc"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-04-eXUmGl/raw.json",
+        "sha256": "6d906e9cc650440259899ec9401129fdde5481dfa279faa1885e712da7155d8c"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-05-yjCI2j/raw.json",
+        "sha256": "9dce25f6478c80aa3fbfff87fda4d4fbb9a485bd36f54609e1e877d044619a10"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-06-OMc2Jg/raw.json",
+        "sha256": "58f6613af76e3d8b37d91e793fdb5ec4e1c8c8676ab2323a625ba6033b1f2ca2"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-07-s2O8yC/raw.json",
+        "sha256": "d9baceba2a65aedcfdce5dbc327675247b42fb87d0e3387a53208b6ffd3ad941"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-08-WjpcMm/raw.json",
+        "sha256": "1ba2c887a0bf38ee8ac485fd4399616a935f2d85241fda397d6c0d342f96e30c"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-09-mekNwn/raw.json",
+        "sha256": "ea5d62437e00efc2da1efe5901ee89de6f1d07031573adfab4bdabc605607b02"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-10-6vNaIS/raw.json",
+        "sha256": "a893ef0616014648f90bd04eb1e3233a4e430e442aa6210042e38af2c41e26f8"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-11-QUYusk/raw.json",
+        "sha256": "898b863324feda9fbd9c3075913aa1f9650f23cbf786b81ee8a7851239f04099"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-12-0GVZBC/raw.json",
+        "sha256": "ddede0af5be9f0c9d3174016879c8350743955c19d324c3b84e847c771c7fe09"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-13-e2zjYM/raw.json",
+        "sha256": "5e5ea8775a599e656faca11f0ba7965703da93c422a4e886cefc18fb9e83b3bb"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-14-IUUQID/raw.json",
+        "sha256": "110ce523e3047f9692e2dbcc5c25fca1fc35d10308ab6bedb0312f3f76aa1493"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-15-sMGkNt/raw.json",
+        "sha256": "edd5cc8d39c75d382478a241273fb6e7b1395d235b40f77dc582b6ec5d5a6f39"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-16-PLOpce/raw.json",
+        "sha256": "94d286624d9f9d31e4f92a80a78672ef6be07823115e44e6222a086d4de8eee9"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-17-wEPF04/raw.json",
+        "sha256": "b9de4b859e63bb561d15de1fe1a49bf92789f5debd8a23311eb25b36492f1faf"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-18-iI8bVv/raw.json",
+        "sha256": "a0bc0dbf1771ca061ae685dff5d65e5dfd0e8b0a6a1d76aa90ff27206d72c9f5"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-19-oqeHCt/raw.json",
+        "sha256": "f6565ed2cf00ddb5abb144b744937d0a3a7c830704bd013e41de4b894cb19985"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-20-uAv32b/raw.json",
+        "sha256": "e837741cc72b7e97905b3036b454a0f6070ffe9e139b0ade457064854c331d5b"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-21-AggtTw/raw.json",
+        "sha256": "80d98d0d089522c024ccd3462d8117c3c66057c2813a2d9b84c4de03db463df1"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-22-tDjELY/raw.json",
+        "sha256": "1c83c37a8ac637f97a1bf3e12de54e736de6663e2d97f2d632498c4111f6069e"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-23-GhEJag/raw.json",
+        "sha256": "2ae4ea6fe5a3db95e63bf85eabbfa9317d11ff2703f0c44e269397b224b88565"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-24-7f8LYB/raw.json",
+        "sha256": "a16690bc96aa09b585c4693dd0f375b4d6b6674c3830ef60e9b34a9c953aab95"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-25-G2qAsW/raw.json",
+        "sha256": "bc1b4f1a50aecb3476c9e5afef760ee8557eb20bbcb2028c2ed7f702ecfe55fb"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-26-2npC5J/raw.json",
+        "sha256": "93fc0078628e7cafc4fd4c046799daeed2d5096071fd5b68142e80d7a2bed125"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-27-Nt5uSJ/raw.json",
+        "sha256": "80e3ee6a4f6ab90d221f5bf2f70a0d37b825374eb7749865e7c5af9a6a9e8114"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-28-DK71de/raw.json",
+        "sha256": "64e9fdb2c994adefdac5eb2267333211f6c78ad67d2c63994d7f730e22ca5863"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-29-paFC00/raw.json",
+        "sha256": "70aec2b15fd8696c5d73d32d4136dc9a2caed515866ca389ad8335c4fbf52aab"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-measure-v8-corrected/sample-30-pDGBl8/raw.json",
+        "sha256": "5a738527c9cd0e9400d7dca6579228070b923425af8f1640e9e670b98eb18b77"
+      }
+    ],
+    "summary": {
+      "path": "/private/tmp/evener-native-performance-measure-v8-corrected/summary.json",
+      "sha256": "37462b3be45d74c731235ba56e8e3ad222d6a1d366f029a4ec5a418089a296d7"
+    },
+    "cleanupAudit": {
+      "path": "/private/tmp/evener-native-performance-measure-v8-corrected/root-cleanup-audit.json",
+      "sha256": "72ec3939824596d4fbc13808a40ae66a3ae4383dcb3dd3381f063959c470ed85"
+    }
+  },
+  "projection": {
+    "status": "passed",
+    "scope": "Pure Node projection only; excludes Hermes, React, native layout, image decoding and device timing. 500-wire-item case is a projection input, not a store cap assertion.",
+    "machine": {
+      "node": "v26.5.0",
+      "os": "Darwin",
+      "release": "25.6.0",
+      "cpu": "Apple M5 Max"
+    },
+    "sources": {
+      "project": {
+        "path": "mobile/src/conversation/project.ts",
+        "sha256": "d2fb4de2161a582fe19b8ac2d2f5c93690c664d6947f0ce06d69e837a3ccdc4c"
+      },
+      "activity": {
+        "path": "mobile/src/services/activity.ts",
+        "sha256": "6ebeddc80ef748858536cb4ca86c9759316ffd75d929581fccac4a341332c745"
+      },
+      "presentation": {
+        "path": "mobile-native/src/transcriptPresentation.ts",
+        "sha256": "c8d42e209e01b758c9e45e7c1b4d44139d52679d4b07ef01252100a7bbbed982"
+      },
+      "timeline": {
+        "path": "mobile-native/src/timeline.ts",
+        "sha256": "2c7175557c65006af6c7b170d34a4af926cbe994cbb5d37ef4c94b33611da58b"
+      },
+      "config": {
+        "path": "cmd/evener-hub/frontend/src/transcriptDisplay/config.ts",
+        "sha256": "6aca8a9dbfeb57f2748da173caa75d4606820802d36a0fa1e97cf316f75c5080"
+      }
+    },
+    "driverSha256": "fc23328cfd0e3a1d2c5c75ad850d00b83e14189d0153b2a51edfe491a0f18254",
+    "quantile": "nearest rank",
+    "summaries": [
+      {
+        "label": "opening40",
+        "inputSha256": "b95af56ebb36b316eb45a67621b380761de432470430b5badac7f281b5430da6",
+        "series": {
+          "projectMs": {
+            "n": 30,
+            "min": 0.009542000000010376,
+            "p50": 0.013707999999979847,
+            "p95": 0.29058299999999804,
+            "max": 0.3968749999999943
+          },
+          "activityMs": {
+            "n": 30,
+            "min": 0.0007500000000106866,
+            "p50": 0.0017499999999870397,
+            "p95": 0.02804100000000176,
+            "max": 0.12504100000001017
+          },
+          "presentationMs": {
+            "n": 30,
+            "min": 0.0028749999999888587,
+            "p50": 0.004165999999997894,
+            "p95": 0.02775000000002592,
+            "max": 0.11533399999999006
+          },
+          "groupMs": {
+            "n": 30,
+            "min": 0.0009999999999763531,
+            "p50": 0.001125000000001819,
+            "p95": 0.017083000000013726,
+            "max": 0.024540999999999258
+          },
+          "totalMs": {
+            "n": 30,
+            "min": 0.014375000000001137,
+            "p50": 0.021750000000025693,
+            "p95": 0.29716600000000426,
+            "max": 0.6617909999999938
+          }
+        }
+      },
+      {
+        "label": "retained500",
+        "inputSha256": "5bf88b5b0eb9e2fcbff55a2c6827820a0459c6d06403ed99d9d6c2a06a6da2fd",
+        "series": {
+          "projectMs": {
+            "n": 30,
+            "min": 0.0574579999999969,
+            "p50": 0.05904099999997925,
+            "p95": 0.24191600000000335,
+            "max": 0.4001670000000104
+          },
+          "activityMs": {
+            "n": 30,
+            "min": 0.0010419999999840002,
+            "p50": 0.001375000000024329,
+            "p95": 0.007540999999974929,
+            "max": 0.18145900000001802
+          },
+          "presentationMs": {
+            "n": 30,
+            "min": 0.011541999999991504,
+            "p50": 0.01195800000002123,
+            "p95": 0.03954100000001404,
+            "max": 0.040584000000023934
+          },
+          "groupMs": {
+            "n": 30,
+            "min": 0.002416000000010854,
+            "p50": 0.0027919999999994616,
+            "p95": 0.006459000000006654,
+            "max": 0.034583999999995285
+          },
+          "totalMs": {
+            "n": 30,
+            "min": 0.07262499999998795,
+            "p50": 0.07533299999997212,
+            "p95": 0.2938750000000141,
+            "max": 0.4253750000000025
+          }
+        }
+      }
+    ],
+    "out": "/private/tmp/evener-native-performance-corpus-v8/root-projection-1788947451727"
+  },
+  "imageHTTP": {
+    "status": "passed",
+    "scope": "Authenticated real Hub HTTP image bytes through Node fetch over loopback; not native download/decode/render or physical network timing",
+    "url": "http://127.0.0.1:52515/s/034LkqgMS0COBFWW4ktnKn/images/053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6",
+    "descriptor": {
+      "type": "input_image",
+      "url": "/s/034LkqgMS0COBFWW4ktnKn/images/053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6",
+      "mediaType": "image/png",
+      "metadata": {
+        "sha": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6",
+        "size": "294233"
+      }
+    },
+    "unauthorizedStatus": 401,
+    "requests": 30,
+    "bodyBytes": 294233,
+    "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6",
+    "summary": {
+      "n": 30,
+      "min": 24.372334000000023,
+      "p50": 25.903500000000008,
+      "p95": 26.557041999999967,
+      "max": 27.438457999999997
+    },
+    "samples": [
+      {
+        "index": 0,
+        "headersMs": 26.948375,
+        "completeMs": 27.438457999999997,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 1,
+        "headersMs": 25.779667000000003,
+        "completeMs": 26.116957999999997,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 2,
+        "headersMs": 25.692583,
+        "completeMs": 25.979833,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 3,
+        "headersMs": 25.508374999999987,
+        "completeMs": 25.757957999999988,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 4,
+        "headersMs": 26.01779099999999,
+        "completeMs": 26.307957999999985,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 5,
+        "headersMs": 25.638124999999974,
+        "completeMs": 25.971165999999982,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 6,
+        "headersMs": 25.63954100000001,
+        "completeMs": 25.903500000000008,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 7,
+        "headersMs": 25.93995799999999,
+        "completeMs": 26.117625000000004,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 8,
+        "headersMs": 26.254624999999976,
+        "completeMs": 26.538542000000007,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 9,
+        "headersMs": 25.445249999999987,
+        "completeMs": 25.637249999999995,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 10,
+        "headersMs": 25.254500000000007,
+        "completeMs": 25.426541999999984,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 11,
+        "headersMs": 26.368124999999964,
+        "completeMs": 26.557041999999967,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 12,
+        "headersMs": 25.18883299999999,
+        "completeMs": 25.37183299999998,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 13,
+        "headersMs": 25.177540999999962,
+        "completeMs": 25.396540999999957,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 14,
+        "headersMs": 24.747333999999967,
+        "completeMs": 24.930999999999983,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 15,
+        "headersMs": 25.606791999999984,
+        "completeMs": 25.820791999999983,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 16,
+        "headersMs": 24.651749999999993,
+        "completeMs": 24.906207999999992,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 17,
+        "headersMs": 25.42870899999997,
+        "completeMs": 25.684624999999983,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 18,
+        "headersMs": 25.846249999999998,
+        "completeMs": 26.185209000000043,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 19,
+        "headersMs": 25.196583000000032,
+        "completeMs": 25.446542000000022,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 20,
+        "headersMs": 25.23508300000003,
+        "completeMs": 25.470000000000027,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 21,
+        "headersMs": 26.15229099999999,
+        "completeMs": 26.334957999999915,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 22,
+        "headersMs": 25.221625000000017,
+        "completeMs": 25.360207999999943,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 23,
+        "headersMs": 25.17537500000003,
+        "completeMs": 25.343000000000075,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 24,
+        "headersMs": 26.06558300000006,
+        "completeMs": 26.31904200000008,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 25,
+        "headersMs": 25.846374999999966,
+        "completeMs": 26.09141599999998,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 26,
+        "headersMs": 25.713374999999928,
+        "completeMs": 25.984749999999963,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 27,
+        "headersMs": 25.826459,
+        "completeMs": 26.07995900000003,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 28,
+        "headersMs": 26.100833999999963,
+        "completeMs": 26.292374999999993,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      },
+      {
+        "index": 29,
+        "headersMs": 24.21983399999999,
+        "completeMs": 24.372334000000023,
+        "bytes": 294233,
+        "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6"
+      }
+    ]
+  },
+  "native": {
+    "fixtureRef": "local:034LkqgMS0COBFWW4ktnKn",
+    "beforeSource": "841220ee2",
+    "firstVisitCorrection": "7feeae950",
+    "readerRangeCorrection": "af72f7bd4",
+    "finalFirstVisit": {
+      "newestResponse": 9999,
+      "imageVisible": true,
+      "noSavedFixtureAnchor": true,
+      "rawAX": {
+        "path": "/private/tmp/evener-native-performance-ui-1788947408/final-first-visit-ax.json",
+        "sha256": "b9af343a420a758e5f8604c73587f22d63287655ea72a7f074c8ed630b0ec81b"
+      }
+    },
+    "readerReturn": {
+      "status": "passed",
+      "cycles": [
+        {
+          "cycle": 1,
+          "target": "You: Corpus request 9992: inspect the current implementation and report the result.",
+          "y": 118.66650390625,
+          "scope": "native settled position, not interaction latency"
+        },
+        {
+          "cycle": 2,
+          "target": "You: Corpus request 9992: inspect the current implementation and report the result.",
+          "y": 118.66650390625,
+          "scope": "native settled position, not interaction latency"
+        },
+        {
+          "cycle": 3,
+          "target": "You: Corpus request 9992: inspect the current implementation and report the result.",
+          "y": 118.66650390625,
+          "scope": "native settled position, not interaction latency"
+        }
+      ],
+      "savedAnchorIdentical": true
+    },
+    "anchor": {
+      "89b1b05e-fdbb-4ef9-8123-bc48ee211e55\u0000local:034LkqgMS0COBFWW4ktnKn": {
+        "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+        "sessionRef": "local:034LkqgMS0COBFWW4ktnKn",
+        "conversationInstance": "034LkqgMS0COBFWW4ktnKn",
+        "itemKey": "apptranscript-item-v1:turn_9993:4996:0",
+        "itemPosition": {
+          "entry": 4996,
+          "item": 0
+        },
+        "withinItemOffset": 11.33349609375,
+        "touchedAt": 1788947909343
+      }
+    },
+    "trace": {
+      "temporaryOnly": true,
+      "removedFromFinalSourceAndDevice": true,
+      "files": [
+        {
+          "path": "/private/tmp/evener-native-performance-ui-1788947408/reader-trace-cold.json",
+          "sha256": "20904eb6845eb19d7417e070f44e3442a37afefab82e4a1287dccc8470e17b51"
+        },
+        {
+          "path": "/private/tmp/evener-native-performance-ui-1788947408/reader-trace-return.json",
+          "sha256": "af3f1516d77038221e2d09f482d75ab2c7b86426e9d6af65752dd24187efab18"
+        },
+        {
+          "path": "/private/tmp/evener-native-performance-ui-1788947408/screens-with-trace.tsx",
+          "sha256": "f3c7b10f9687632444ac99a1c51bc81f3b4876aeec464dddbbbde8b86d9b6f8d"
+        }
+      ],
+      "rootCause": "Exact offset4746 was clamped against content4933.67 minus viewport598; growing content6119.33 left the unchanged row measurement deduplicated. A stale approximate callback could then override positioning."
+    },
+    "readerReturnBeforeSource": "7feeae950"
+  },
+  "checks": {
+    "nativeTests": 704,
+    "nativeTestFiles": 75,
+    "typecheckExit": 0,
+    "biomeExit": 0,
+    "signedReleaseBuildExit": 0,
+    "logs": [
+      {
+        "path": "/private/tmp/evener-native-performance-ui-1788947408/test-reader-correction.log",
+        "sha256": "ea66f07ee5f67089b3cbe8e5cd02862c8ffd7547ed68f65f7a58af24e8e3606f"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-ui-1788947408/build-reader-correction.log",
+        "sha256": "3024e2cf5b061a30a2e8e951337b147c914f4f41ee3d88c0e16657cc43e36856"
+      },
+      {
+        "path": "/private/tmp/evener-native-performance-ui-1788947408/reader-regression-red.log",
+        "sha256": "b9de32935caaa0c3ad9443c3321ab738be8812c5b4d1271aae3e83da6c044b96"
+      }
+    ]
+  },
+  "publicAssets": {
+    "generator.go.txt": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-generator.go.txt",
+      "sha256": "c9b7afc85426ec541deec8ddc33452a080d0dbccd7110a906c5ef94974274af3"
+    },
+    "warm-driver.mjs.txt": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-warm-driver.mjs.txt",
+      "sha256": "5b65bc6fb76f416b37144e6d9bd0e8c091cdad5e878863816a49d34f7bb514b0"
+    },
+    "cold-driver.mjs.txt": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-cold-driver.mjs.txt",
+      "sha256": "45fd09e1c3a2988245587b7b9ef3235f8d68e0166b22a4c41a45cfb2f241b230"
+    },
+    "projection-driver.mts.txt": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-projection-driver.mts.txt",
+      "sha256": "fc23328cfd0e3a1d2c5c75ad850d00b83e14189d0153b2a51edfe491a0f18254"
+    },
+    "before-first.png": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-before-first.png",
+      "sha256": "cb73f310d7f6c5dc5ba604b03f390a4a12acbd5c1db5e9c7a72ea067a240ec7a"
+    },
+    "after-first.png": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-after-first.png",
+      "sha256": "2260a1ef40e047f7befe5df7b4e0c4d7862e88da416cd1775cd7d5580c19293c"
+    },
+    "before-return.png": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-before-return.png",
+      "sha256": "39fbc3a3b06245f6f75b568a67327be29eb4708f111fa8718a36b3447bc9ec79"
+    },
+    "after-return.png": {
+      "path": "docs/design/mobile/assets/2026-09-09-iphone-loading-after-return.png",
+      "sha256": "c617a7ccb50eacb7d45c36744988e9799a5636261a235467ad08333d83ceb799"
+    }
+  },
+  "preservation": {
+    "status": "passed",
+    "draftTables": {
+      "drafts": {
+        "identical": true,
+        "rows": 13
+      },
+      "question_drafts": {
+        "identical": true,
+        "rows": 11
+      },
+      "question_positions": {
+        "identical": true,
+        "rows": 3
+      },
+      "draft_images": {
+        "identical": true,
+        "rows": 0
+      },
+      "draft_image_sets": {
+        "identical": true,
+        "rows": 0
+      },
+      "creation_drafts": {
+        "identical": true,
+        "rows": 1
+      },
+      "creation_draft_images": {
+        "identical": true,
+        "rows": 0
+      }
+    },
+    "originalReaderEntriesIdentical": 9,
+    "otherKVValuesIdentical": 1,
+    "lastLocationRestored": {
+      "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+      "conversation": {
+        "ref": "local:034LVKwtHytL0Jh8qsVDFb",
+        "title": "Ordinary response"
+      }
+    },
+    "traceKeyAbsent": true,
+    "removedOwnedAnchorCount": 1,
+    "originalSessionFilesIdentical": 226,
+    "retainedFixture": "Five copied corpus project directories remain only in the owned native fixture Hub for further performance qualification",
+    "dataContainer": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Data/Application/FA78C5BB-E931-4BF9-BBD0-5A40A7EA916A"
+  },
+  "limits": [
+    "No native tap-to-content timing sample set",
+    "No physical-device or LAN measurement",
+    "No live streaming/typing/frame-rate/memory-cycle qualification",
+    "No full SDK qualification or TestFlight update",
+    "No general reader-layout or whole-app completion claim"
+  ],
+  "cleanup": {
+    "v7": {
+      "pid": 87217,
+      "exitCode": 0
+    },
+    "v8": {
+      "pid": 92129,
+      "exitCode": 0
+    },
+    "nativeFixtureHubRetained": 18403
+  },
+  "independentReview": {
+    "reviewers": "Two Luna-medium UX reviewers; independent raw-data, code and native-image review",
+    "accepted": "v8 corpus integrity, bounded timing methods, first-visit design, range correction, three same-position returns",
+    "qualification": "Only the recorded routes/data/artifacts; full performance/SDK/device work remains open"
+  }
+}

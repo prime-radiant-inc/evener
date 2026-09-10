@@ -1,0 +1,112 @@
+{
+  "schema": "evener.native.two-hub-isolation.v1",
+  "observedAt": "2026-09-09T01:07:26.567866+00:00",
+  "nativeCodeSource": "bfe632f44",
+  "backendSource": "6a0278e36",
+  "nativeExecutableSha256": "bd4708817c4f19ba18d05ccdbf62adb7dcbacc382245b32a569e2794122d263f",
+  "nativeJavaScriptSha256": "92d79a411ec33486c874d3eb494a690c21216b3badbb4bef85223a9a2dd7e49b",
+  "simulator": "iPhone 17 Pro, iOS26.5",
+  "bundleId": "com.primeradiant.evener.native",
+  "sessionRef": "local:034LVKwtHytL0Jh8qsVDFb",
+  "sharedConversationInstance": "034LVKwtHytL0Jh8qsVDFb",
+  "hubs": {
+    "A": {
+      "profile": "iPhone joined journey",
+      "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+      "port": 64940,
+      "draft": "Retain this separate draft"
+    },
+    "B": {
+      "profile": "iPhone isolation B",
+      "hubId": "1c4137b8-2cb0-4b92-a3e6-dea2febb6a23",
+      "port": 61517,
+      "draft": "Second hub draft stays here"
+    }
+  },
+  "isolation": {
+    "distinctCredentialsPrivatelyVerified": true,
+    "separateXdgAndProcesses": true,
+    "homeInherited": true,
+    "onlyOwnedWorkspaceShared": true,
+    "noProxy": true,
+    "copiedHistoryIncludesSameSessionMutationJournal": true
+  },
+  "lateCompletion": {
+    "sameSessionRefAndInstance": "034LVKwtHytL0Jh8qsVDFb",
+    "aNativeInputExactlyOnce": true,
+    "aCompletedTurn": "turn_m16",
+    "bIndependentInputExactlyOnce": true,
+    "crossHubUserInputsAbsent": true,
+    "bNativeTranscriptAndDraftUnchanged": true,
+    "navigationHeaderLabelsExcludedFromContentComparison": [
+      "Second hub same identity",
+      "iPhone isolation B \u00b7 Connected"
+    ],
+    "note": "Initial immediate completion read was in progress; settled read confirms terminal state. Navigation header labels vary during transition and are not transcript rows."
+  },
+  "coldLaunch": {
+    "oldPid": 86068,
+    "newPid": 21193,
+    "sameBLocation": {
+      "hubId": "1c4137b8-2cb0-4b92-a3e6-dea2febb6a23",
+      "conversation": {
+        "ref": "local:034LVKwtHytL0Jh8qsVDFb",
+        "title": "Second hub same identity"
+      }
+    },
+    "sameDraftRows": true,
+    "nativeBDraftAndConnectionVisible": true
+  },
+  "nativeRemoval": {
+    "removedProfile": "iPhone isolation B",
+    "removedHubId": "1c4137b8-2cb0-4b92-a3e6-dea2febb6a23",
+    "nativeRowAbsent": true,
+    "allOriginalDraftTablesExact": true,
+    "originalDraftTableCount": 7
+  },
+  "cleanup": {
+    "BHubExit": 0,
+    "BProviderAndDaemonAbsent": true,
+    "BTokenAbsent": true,
+    "BProfileAbsent": true,
+    "allOriginalDraftRowsPreserved": true,
+    "originalAConversationAndDraftRestored": true,
+    "ALeftRunningForContinuation": true
+  },
+  "files": {
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/fixture.py": "137614fcdc7c9799cd394e8e196eb3894bb15ed866df977039c76bbcf53f0250",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/twin-sdk.mjs": "b64288bd8adef9f150926b2c74e0a7bd1d3f907ae0e46cbe7271b2850b0c31fe",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/copied-history.json": "1297a0f90164c88761c973bb65a6af0ad6df13e72d9e204aefb6d9473a444576",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/seed-b.json": "5ee52b7cfcc90834489529e9f9af602ff0d72e324a3681d910961afef4bb296d",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/before-native-switch.json": "605716d2d71ad88c09ca2bccf8a62304df74ac4d60777a2b1ca2d141aa5395ce",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/a-held.json": "b4cffec7609b88f69f9f55ad2b987fd74a6ad3438d1e5d5052bb2f692ac9fd37",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/after-a-settled.json": "2a9a2edf7f95a9ac1f88d4b817d910739a20223417dcbea9a4ceb768c88188b1",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/a-completes-on-b-evidence.json": "818401d1371b66a9b0a39086de3509ea3c2738a84cb534ee74daace76e419928",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/a-provider-observed.json": "0f0a3cb191854275b1090604609d9dd0fa783e7dcf98c3441b6bb5b13af29cf5",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-a-b-draft-rows.json": "ffae6f99bc161342b28f2b49e252b9402c2db8037fa100e3ce2f5d9b96a2121a",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-b-before-a-release-ax.json": "15bdcddc54b212086c250bb2950b0e71e37c12c2dec22e421a793c201b7d4a07",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-b-after-a-settled-ax.json": "fd17acc9b7f9f548b3dff12506ef27317c03c1d405f1abdcd76035c41a644703",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-b-after-a-release.png": "e733c15042629b0a1baca1f8d0210b1a5a4c51381480e83441ea839f7983b716",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/before-b-cold-storage.json": "ab60ef79c10707c35ccc7411a50a7af4cb2e75f325c6595aee756212fc8d3d81",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/b-cold-evidence.json": "83570d8dcfe0f29d6c374a6b55f2c592b763ec41d0fb9014438d7583fbaf1072",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-b-cold-ax.json": "607067c552d704dbb49625a39ff3f27ec7ed1591dd96a550864b8d3091b4086a",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-b-cold.png": "62ddb0e343092430aa616a4789707b5a610814fc1fff05870a9010d2005abb25",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-removal-evidence.json": "09c64010dc3ecbf6e86bd5716f3fb71c04d61785ad2c67ce5f89c8aa2805edf0",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-b-removed-settled-ax.json": "026802e1daa2de389383e82543bcc1ed0821ae4c1631a39aa66c5827bad972a9",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/original-native-draft-tables.json": "7b01c54f45f7cb19360cfd142ec45282c7174ca49372399324cf2c8ea7fddefa",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/native-final-a-restored-ax.json": "9acb9468db488b0cf2c7be58dfebf4ad8664ca423bd2b3ab316842c51798d3fb",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/shutdown-b.json": "712f18b25348e99afe105af6ca69c60f580bf9641bfbd181dd342f961f8d4997",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/shutdown.json": "5772ac2df886e851f8e0b6963e6b3e1d37708764c80b42f5d8ad17be0c74cf65",
+    "/private/tmp/evener-native-twin-b-complete-xgtkxpkp/process-cleanup.json": "dd0b8851209379448a6a870df08dcdf12071003aab87009a1babaa526986638e"
+  },
+  "excludedAttempt": {
+    "root": "/private/tmp/evener-native-twin-b-v1ozzhgw",
+    "reason": "Initial fixture copied history without its mutation sequence journal, causing B to reuse turn_m1 already in copied history. The clean fixture copies the matching owned journal; no production-code fix or imported-history support is claimed. Initial B fixture was stopped and its token removed."
+  },
+  "limitations": [
+    "A pending scripted model response is not an overlapping native pending RPC, lost reply or uncertain write; those failure scopes remain separate.",
+    "No current two-hub credential rotation, physical-network, physical-device, iPad or accessibility acceptance claim.",
+    "Cold launch is an actual app process termination/relaunch, not a device restart in this batch.",
+    "One native B profile was added and removed; original profiles and seven original draft tables remain intact."
+  ]
+}

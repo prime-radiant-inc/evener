@@ -1,0 +1,337 @@
+# Native mobile acceptance ledger
+
+**9 September v5 baseline:** main `48dcab480` expands the catalog to 96 methods and 37 notifications. The dated v4 recipe/producer counts below remain historical evidence. The new `evener/settings/agentsDoc/changed` producer and the expanded method outcomes require current qualification; see the [v5 integration record](2026-09-09-appwire-v5-rebase.md) and [method outcome index](sdk-outcome-matrix.md).
+
+This is the current, source-backed acceptance ledger for the native Evener
+client. It is deliberately separate from historical implementation notes in
+the coverage spec and backlog. A source or deterministic test proves that a
+path exists; it does not prove that the complete native workflow is accepted.
+Every row therefore records the independent real-daemon, iOS, Android, build,
+and release evidence needed to close it.
+
+## Active v1 platform scope
+
+Jesse selected **iOS-only v1** during takeover continuation. All Android evidence
+and remaining work below is preserved for later delivery and does not block v1.
+On 8 September Jesse paused **iPad and accessibility work** to focus on full
+iPhone functionality. Those requirements remain recorded below but are inactive
+for this milestone. Native iPhone workflows, shared correctness and recovery
+remain active; full SDK qualification and physical-device/performance/signed
+install-update release evidence are tracked separately. Historical Android
+entries are not claims of current acceptance.
+
+Execution now follows [Usable → Useful → Good](../../superpowers/plans/2026-09-08-iphone-usable-useful-good.md). Basic creation, questions/approvals and ordinary interruption recovery belong in Usable; full functional coverage closes Useful. Quality/distribution and complete SDK qualification remain separately reported.
+
+## Current snapshot — 8 September 2026
+
+Use the [project status](status.md) for the current implementation, artifact,
+SDK and gate summary, and the [remaining-work checklist](ios-v1-remaining.md)
+for execution order. Dated checkpoints below retain their original scope and
+counts; later identified evidence supersedes their outstanding-work statements.
+
+The [parallel execution checkpoint](2026-09-08-iphone-execution-checkpoint.md) records `bc519b1c1`: existing-session vision controls, 692 native tests plus TypeScript, host-executed real-hub controller/readback checks, and an identified iPhone simulator install preserving every original draft table. Native vision interaction and the integrated Usable journey remain open; physical installation awaits device unlock.
+
+Earlier native source `7944778e0` passes 685 tests in 74 files plus TypeScript and has
+[repeated largest-text iPhone cold-restoration evidence](iphone-reader-upgrade-evidence.md).
+[Scoped iPad hub removal](ipad-reader-removal-evidence.md) preserves the other
+hub's exact anchor; the same current native artifact has [iPad startup, keyboard
+and largest-text form evidence](ipad-final-artifact-qualification.md).
+Current-artifact iPad reader recovery, landscape and VoiceOver remain open.
+
+The advertised goal/task/activity, plugin and hub-setting operations are wired;
+their remaining status is workflow qualification. Native output lines are
+selectable and iOS path/MCP editors exist. The [SDK close journey](sdk-queue-close-evidence.md)
+now receives exact `thread/closed` with backend `3284d6ac5`; earlier failed
+fixtures used pre-fix binaries. The full release matrix is still open.
+
+The [8 September verification receipt](assets/2026-09-08-status-verification.json)
+records exit 0 for `make merge-approval-gate` and separate `make vet` at compiled
+source `fe403ee3a`: lint/build, all Go modules, frontend, 685 native tests plus
+TypeScript and independent SDK package qualification. Later changes in this
+checkpoint are documentation only; the unrelated Apple diff remains intact.
+
+## Evidence rules
+
+“Historical” means evidence recorded for an earlier source or installed
+artifact. The AppWire v4 migrations are committed through `3356848d4`, followed
+by protocol recovery at `9e6f232d7`. Both Release artifacts were rebuilt and
+installed from `9e6f232d7`; the iOS and Android version-mismatch journeys passed
+against an isolated old v3 hub. The [v4 integration record](v4-integration-evidence.md) now qualifies direct connection, roster/project navigation, native send/stop and cross-device publication on these artifacts; wider v4 acceptance remains open.
+The full native suite reported 359 tests, and the coordinator separately ran
+366 shared service/store tests plus 11 pretests. These checks are scoped
+integration evidence, not final release acceptance. The gate scope and creation
+lifetime regression are committed through `5c9124bca`.
+
+Source anchors below identify the implementation contract to re-check when a
+row is executed: server handlers and generated `MethodTypes` are authoritative
+for available behavior; native screens/services/stores are the client path;
+tests must use deterministic fakes at the provider boundary; daemon scenarios
+must use an isolated current-v4 hub and scripted provider.
+
+## Workflow ledger
+
+| Requirement | Actual web/server source | Native source and status | Deterministic test | Real-daemon scenario | iOS evidence | Android evidence | Source/build identity | Remaining acceptance | Owner |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Hub profiles, secure credentials, switching, reconnect, and hub-scoped drafts | `mobile/src/state/connection.ts`; AppWire initialize/auth in `cmd/evener-hub/frontend/src/protocol/client.ts` | `mobile-native/src/connection.ts`, `ConnectionProvider.tsx`; implemented profile and foreground connection path | `hubSelection.test.ts` (18 deferred-storage cases), connection/removal/draft tests; real HTTP provider lifecycle contracts | Two isolated v4 hubs with identical session ref and instance ID; switch during a held model turn, preserve separate drafts, background/cold-launch B and restart A | [Current direct two-hub journey](multiple-hubs.md#two-direct-hubs-with-identical-session-identities--7-september-2026): distinct credentials, A/B transcript and draft isolation, late A completion, B cold launch, A process restart, scoped profile removal, independent SDK readback and cleanup; [deferred operations](multiple-hubs.md#delayed-saved-hub-operations--7-september-2026) retains deterministic timing evidence | Historical Android observations retained; release qualification deferred beyond iOS-only v1 | Rebuilt iPhone Release source `4bd05e280`; hub binaries `700873dc9`; bundle, binary, SDK and evidence hashes in linked receipt | Credential rotation/editor failure, actionable version mismatch, physical-phone LAN/pairing, overlapping pending RPCs, lost replies/uncertain writes, complete iPad/accessibility and physical-device/signing/update qualification | Coordinator |
+| Browse roster, search, current/recent/archived sessions, and project tiers | `cmd/evener-hub/web_api_tree.go`; `cmd/evener-hub/app_navigation.go`; generated navigation methods in `types.gen.ts` | `mobile-native/src/rosterSearch.ts`, `ProjectsScreen.tsx`, `navigationPages.ts`; v2 implementation reviewed | `mobile-native/src/rosterSearch.test.ts`, `navigationPages.test.ts`; navigation commit `4eafc70a8` focused 35/35 pass | Isolated hub search, paging, archived/current transitions, invalidation and sequence gap, then open a selected session | Historical project-browsing and roster-search evidence; first-pass v4 build not final reviewed source | Historical continuation/refresh evidence; first-pass v4 build not final reviewed source | Current source includes reviewed navigation commit; transcript integration reviewed at `3356848d4` | Production-scale latency, subagent lifecycle, final-head integrated build and daemon acceptance | Coordinator |
+| Read a conversation with item paging, fragments, live merge, reconnect, and rich content | Server transcript handlers and generated `thread/read` types; `mobile/src/services/conversation.ts` | Shared service/store and native timeline; stable identity and caller-owned cursor recovery fixes are integrated | 392 service/store tests at `66e55d887`; native gate 685 tests/74 files plus TypeScript at `7944778e0` | Long transcript with overlapping fragments, stale cursor, reconnect during live item replacement, image replacement, and page/live deduplication | [iPad reader recovery](ipad-reader-recovery-evidence.md) retains retry and Latest evidence; [scoped hub removal](ipad-reader-removal-evidence.md) verifies A removal preserves B; [iPhone reader upgrade](iphone-reader-upgrade-evidence.md) verifies rich copy/link behavior, largest-text saved-anchor recovery across repeated cold launches, and draft preservation | Historical Markdown/table/large-text evidence; first-pass v4 build not final reviewed source | Per-journey identities remain in receipts: iPad removal `517f70ae3`; iPhone cold restoration `7944778e0`; [same-artifact iPad launch](ipad-final-artifact-qualification.md) is a startup check | Rich-media/live-tail combinations, authenticated images, VoiceOver, large-content performance, current-artifact iPad reader restoration, physical iOS and final release gates | Transcript worker + coordinator |
+| Compose send, steer, queue, stop, and durable uncertain-delivery recovery | Server session/message/queue methods in generated `MethodTypes`; `mobile/src/services/conversation.ts` | `mobile/src/state/conversation.ts`, composer screens; implemented with no-blind-replay guards | Conversation store tests and queue tests; deterministic receipt/lost-reply cases | Scripted provider holds a turn; send/steer/queue/cancel/promote/drain/stop across reconnect and authoritative readback | Historical queue and composer settings evidence; pre-v4 build | Historical queue and composer settings evidence; pre-v4 build | Historical integrated 358 native tests predates transcript edits; current iOS artifact recheck remains open | Re-run current tests, final-head daemon delivery, conflict/reconnect cases, keyboard/accessibility and long-stream performance | Coordinator |
+| Create a session with project, harness, model, reasoning, directory, plugins, images, trust, and failure recovery | `cmd/evener-hub/app_rpc.go` and generated creation/catalog methods | `mobile-native/src/newSession.ts`, creation screens, SQLite draft state; implemented in slices | Creation/store tests and shared AppWire fixture tests | Isolated disposable hub: valid/invalid path, large catalog, trust approval/rejection, image attachment, uncertain create, process restart, authoritative session check | [iPad image creation evidence](ipad-image-creation-evidence.md) qualifies image-only native creation; broader creation evidence remains historical and the final iOS artifact is still open | Historical standalone creation evidence; first-pass v4 build not final reviewed source | Current source; first-pass v4 Release artifacts are historical and not final reviewed artifacts | Final-head iOS creation, failure copy, large text/keyboard/a11y, storage failure and performance; Android remains deferred beyond v1 | Creation worker + coordinator |
+| Manage a session: rename, clear/compaction, fork, remove, stop, and lifecycle transitions | `cmd/evener-hub/app_session_*.go`; generated session methods | `mobile-native/src/sessionControls.ts`, `forkActions.ts`, `ForkScreen.tsx`, `SessionDeletionScreen.tsx`; ordinary fork and deletion/recovery routes are implemented alongside rename/compaction/stop/clear | `session-controls-evidence.md`, `forkActions.test.ts`, `sessionDeletion.test.ts`, `sessionDeletionNavigation.test.ts` and conversation state tests | Daemon rename, compaction, clear replacement, fork/remove, stop during reconnect, confirm authoritative state and no replay | [Ordinary fork evidence](fork-evidence.md) records a dated v4 iPhone preview/create/draft/return journey; rename/compaction/stop/clear evidence remains dated | Historical evidence retained; Android release qualification deferred | Current source; prior 59-test/build evidence is historical | Current-artifact fork/remove and disconnected/uncertain actions; native compaction effects, final-head builds, a11y and physical devices | Coordinator |
+| Model, reasoning, and launch-layer settings preserve server-derived capabilities | `cmd/evener-hub/app_models.go`, launch/config handlers, generated catalog/settings methods | `mobile-native/src/hubModels.ts`, composer controls, launch/settings screens; core selection exists | `composer-settings-evidence.md`, provider/launch controller tests | Change model/reasoning, reconnect, catalog scope change, invalid effort, launch-layer effective/inherited values, preserve unrelated fields | [iPad project settings](ipad-launch-settings-evidence.md) records validated path/MCP/env/fallback save, real stale-client rejection, inheritance and single conflict notice; broader settings matrix remains open | Historical model/reasoning/launch evidence retained; Android qualification deferred beyond v1 | iPad journey source `d20229b75`; repeated conflict fix `2e37bca74`, artifact hashes in linked receipt | Vision choices, schema/trust completeness, faults, accessibility, final-head validation | Creation/settings owners |
+| Goals, tasks, activity, queue output, and delegate navigation remain readable and resumable | Generated goal/task/activity/queue methods; server projections in `cmd/evener-hub` | `mobile-native/src/goalCommand.ts`, `taskList.ts`, `activityList.ts`, goal/task/activity sheets and queue controls; listed operations, branch paging and delegate navigation are wired | `docs/design/mobile/goal-controls.md`, `task-list.md`, `activity.md` test evidence | Real delegate/subagent creates work; page branches/output, background/reconnect, resolve from another device, stale actions | Historical goal/task/activity evidence; first-pass v4 build not final reviewed source | Historical goal/task/activity evidence; first-pass v4 build not final reviewed source | Current source; first-pass v4 Release evidence is historical; current iOS artifact rebuild/review remains open | Real daemon lifecycle, nested delegates and paged output, reconnect/faults, cross-hub identity, native output selection, accessibility and scale | Workflow owner |
+| Approvals pause and resume real execution with stale-request protection | Server approval handlers and sandbox execution in generated methods | Native approval sheet/controller; implemented with controlled-wire coverage | `approval-evidence.md` and approval state tests | Scripted harness pauses on approval; allow/deny resumes or rejects actual work; stale approval after hub/session switch | Historical controlled-wire and harness evidence; tested builds differ | Historical controlled-wire and harness evidence; tested builds differ | Current source; evidence is not same final v4 build | Multi-approval races, fault/reconnect, real sandbox execution, keyboard/a11y, final-head devices | Decisions owner |
+| Questions present exact definitions, preserve answers, and resume work | Server question methods and question projection; current web parity audit | Native question sheet/controller; implemented partial | `question-evidence.md`, web parity tests | Harness asks multiple questions; answer/reconnect/switch hub; stale question and authoritative readback | [Direct v4 question evidence](real-question-harness-evidence.md#direct-v4-questions-restart-and-keyboard-qualification) records real iOS questions, restart and keyboard qualification; accessibility and final artifact gates remain open | Historical harness question evidence; Android release qualification deferred beyond iOS-only v1 | Dated v4 question artifacts are identified in the linked evidence; the final iOS release matrix remains open | Multi-question/race/fault, a11y and other decision surfaces | Decisions owner |
+| Organize projects/sessions: favorite, archive, remove, pin/unpin, pin-section create/rename/delete, and browse pins | `cmd/evener-hub/app_favorite.go`, `app_archive.go`, `app_pin_section.go`, `app_navigation.go` | `mobile-native/src/navigationActions.ts`, `ProjectsScreen.tsx`, `PinAssignmentScreen.tsx`, `PinSectionsScreen.tsx`, `pinNavigation.ts`, `organizationNavigation.ts`; favorite/archive, session assignment, section lifecycle and pinned browsing routes are implemented | `organization-evidence.md`, `navigationPages.test.ts`, `pinNavigation.test.ts`, `pinNavigationRecovery.test.ts`, `organizationNavigation.test.ts`; server delete/pin tests under `cmd/evener-hub` | Mutate each operation on isolated hub, receive notification, refresh exact revision, test stale owner and deleted target | Historical archive/favorite/project pin checks; pre-v4 build | Historical archive/favorite/project pin checks; pre-v4 build | Current server v4 source; native final build absent | Current-artifact pin/section/removal journeys, disconnected recovery, cross-hub invalidation and a11y | Navigation owner |
+| Provider instances, API keys, credential JSON, endpoint reset, and sign-in/device flow | `cmd/evener-hub/app_credentials.go`, `app_auth.go`, provider handlers; generated `evener/auth/credentialJson/set` | `mobile-native/src/providerForm.ts`, `providerInstances.ts`, `ProvidersScreen.tsx`, `ProviderSignIn`; v4 migration implemented | `providerForm.test.ts`, `providerInstances.test.ts`, `hubOverview.test.ts`; 35 focused sign-in checks and 663 native tests/73 files plus TypeScript passed for the OAuth integration | Fresh real auth handlers/registry/storage with scripted external OAuth; hold exchange, close actual native connection by backgrounding, release, foreground and read credential status; cancel then switch | [Interrupted device/browser recovery](providers-evidence.md#ios-interrupted-oauth-recovery--7-september): same-process foreground, separate restart, retained device attempt, configured status read, cancel/switch and native credential cleanup | Historical Android provider evidence retained; release qualification deferred beyond iOS-only v1 | Rebuilt iPhone Release source `759e7b10f`; native bundle and fixture identities in the linked receipt | Current-artifact key/JSON/editor and endpoint-reset matrix, real account denial/revocation, bearer isolation, iPad/physical-device/a11y/signing qualification | Provider owner |
+| Plugins and marketplaces support browse, install, upgrade, remove, enable/disable, and automatic upgrade | Server plugin/marketplace handlers and generated plugin methods | `mobile-native/src/marketplaces.ts`, `installedPlugins.ts`, `MarketplaceBrowser.tsx`, `PluginsScreen.tsx`; listed browse and mutation operations are wired | `plugins-evidence.md` controller tests | Owned fixture marketplace lifecycle, Git failure, upgrade/remove and reconnect/readback | Historical owned-marketplace iOS evidence; pre-v4 build | Historical owned-marketplace Android evidence; pre-v4 build | Current source; no final v4 build | Current-artifact owned-marketplace lifecycle, failure/reconnect/readback, large catalogs, accessibility and physical-device qualification | Admin owner |
+| Hub information, environment/fallback/MCP/path/launch settings preserve precedence and validate on hub | `cmd/evener-hub/app_rpc_settings_overview.go` and launch/config handlers; generated settings methods | `mobile-native/src/HubSettingsScreen.tsx`, `LaunchSettingsScreen.tsx`, `LaunchFieldEditor.tsx`, `LaunchResourceEditor.tsx`, `launchPaths.ts` and `launchMcp.ts`; listed editors, hub validation and conflict/readback paths are wired | `hubOverview.test.ts` and settings evidence; provider report covers omitted fields | Two hubs with inherited/effective/explicit values, invalid paths, stale open sheet, removal/readback, MCP command validation | [iPad launch settings](ipad-launch-settings-evidence.md) records path/MCP/environment/fallback edits and conflict handling; a current-artifact full matrix remains open | Historical Android path/MCP evidence; pre-v4 | Dated iPad journey `d20229b75` with conflict fix `2e37bca74`; final-release workflow qualification remains open | Two-hub inherited/effective/explicit values, invalid paths, stale editor/reconnect, schema completeness, accessibility and large catalogs on current artifact | Admin owner |
+| Transcript preferences and keybindings expose current optional capabilities | Server keybinding/transcript handlers and generated capability/settings contracts | `mobile-native/src/NativePreferencesProvider.tsx`, `TranscriptPreferencesScreen.tsx`, `KeybindingPreferencesScreen.tsx`; screens, hub-scoped drafts, uncertainty journals and conflict review are implemented and wired through Hub Settings | [Keybinding evidence](keybinding-evidence.md) records 581 native tests/69 files plus TypeScript; [transcript evidence](transcript-preferences-evidence.md) records 436/54 plus TypeScript, including storage, conflict and recovery contracts; these are dated runs | Cited owned-v4 journeys checked revisioned readback, conflict/rebase, acknowledged cleanup and restoration; no real lost-reply injection is claimed | Dated keybinding pattern/unbind/restore/form journey on `d65d234f5`; transcript conflict/save/reader journey associated with `8bbff54c5`, not repeated on its final rebuild; details and limits in linked evidence | Historical Android work is retained; no Android acceptance claimed here, deferred beyond iOS-only v1 | Current screens exist; cited simulator artifacts and hashes remain dated feature evidence rather than a current release matrix | Current-artifact full journey, VoiceOver, hardware keyboard, iPad/landscape, largest text, reader combinations, overlapping hubs, lost-reply/process-death, physical device and signing/update qualification | Coordinator |
+| Hub upgrade reports target, progress/result, disconnect recovery, and never replays mutation | Current `evener/upgrade` handler and real `selfupdate.Upgrade` | Native Hub update section and durable attempt/review controller implemented | 16 focused native tests; fixture archive/cancellation/repeated-hold race tests | Actual disposable-prefix download failure, canceled held download, deliberate retry, installation and installed-binary hub restart | [Current iPhone journey](hub-upgrade-evidence.md#actual-ios-installation-and-recovery--7-september-2026), cold-launch checkpoint and independent running-commit readback | Deferred beyond iOS-only v1 | Native `4f630af16`; backend `bb044658d-dirty`; hashes in receipt | Lost successful-install reply, overlapping hubs, public release service, iPad, physical-device/a11y and signed app update qualification | Coordinator |
+| Reader position, navigation stack, drafts, and process lifecycle restore the right place | `mobile/src/state/navigation.ts`; conversation read/open contracts | `mobile-native/src/location.ts`, `nativeLocation.ts`, `readerPosition.ts`, `nativeReaderPosition.ts`, `screens.tsx` and SQLite draft state; route/draft and semantic item/offset restoration are implemented | Location/draft tests and 23 reader-position tests, including advancing virtualized windows, bounded stalled retries and scoped removal; native gate 685 tests plus TypeScript | Kill/background/restart during paging/streaming and hub switch; restore exact session, item identity/offset and newer draft | [Reader continuity](reader-continuity-evidence.md), [iPad scoped removal](ipad-reader-removal-evidence.md), and [iPhone repeated cold restoration](iphone-reader-upgrade-evidence.md) record exact saved anchors, removal and preserved drafts; broader lifecycle combinations remain open | Historical cold-start/back/font-recreation evidence; first-pass v4 build not final reviewed source | Per-artifact source and hashes in linked receipts; `7944778e0` qualifies the reproduced iPhone largest-text cold-launch failure; the same artifact is installed on iPad with launch-only evidence | Rich image/reflow and streaming combinations, form drafts, rotation, VoiceOver, current-artifact iPad reader recovery, physical devices and final release matrix | Coordinator |
+| Physical accessibility, typography, gestures, light/dark, reduced motion, rotation, and performance meet release bar | Web UI source/style guide plus native platform contracts; server responsiveness measured in `docs/design/mobile/roster-performance.md` | Native UI is present; release qualification remains open (MOB-010/MOB-017) | Existing deterministic UI/controller tests; no complete physical/performance harness | Representative data streaming load, measured scroll/input latency, memory/leak checks, background/foreground and network recovery | [iPad largest-text heading and setting-value semantics](ipad-accessibility-evidence.md), [reader endpoints](ipad-reader-recovery-evidence.md); simulator only, VoiceOver speech/focus and physical-device qualification open | Emulator observations only; ANR/font-scale root cause unresolved; no physical device/signing or final reviewed source build | Dated feature artifacts remain identified in receipts; Release `7944778e0` has scoped iPhone reader and iPad startup evidence, while the broader release matrix stays open | Physical iOS device, signing/distribution, large text/screen reader, reduced motion, dark/light, landscape, performance and final repository gates; Android qualification remains deferred beyond v1 | Coordinator |
+| Independently usable AppWire library and complete protocol recipes cover every supported method/notification | `cmd/evener-hub/frontend/src/protocol/types.gen.ts`, protocol README and server handlers | `cmd/evener-hub/frontend/src/protocol` package and docs; standalone package boundary exists | External tarball installation, ESM/CommonJS imports, declarations and packaged contract files passed; 13 queue contracts passed after RED/GREEN integration. [Protocol inventory](protocol-coverage.md) records 34 recipes, 90/91 catalog methods and all 36 notification names; 49 new observer contracts and 321 installed-package tests passed at `58d1b079f`. Presence is separate from qualified outcomes | [SDK management evidence](sdk-management-evidence.md) records the independent consumer and controlled owned-v4 workflows; the [protocol README](../../../cmd/evener-hub/frontend/src/protocol/README.md) is the runnable package guide | No native-specific evidence required; package acceptance is independent of native qualification | No native-specific evidence required; package acceptance is independent of native qualification | Notification recipes `58d1b079f`; earlier lineage, setup, saved-item and upgrade recipes have dated receipts identifying independently tested tarballs and scope | Complete catalog-derived outcome matrix and failures/disconnects; reserved rejection has an owned-hub receipt; publication remains separate from local tests; this inventory does not claim complete method/notification outcome coverage | Protocol owner |
+
+## Required release record
+
+Close a row only after recording the exact source commit (and dirty diff if
+applicable), native artifact hashes/build configuration, deterministic command
+and result, isolated hub/provider fixture identity without secrets, iOS
+device/build observations, and the remaining acceptance decision. Android
+qualification is deferred beyond the approved iOS-only v1 scope. The final
+release record must include `make lint`, `make vet`, `make test`, the
+frontend/browser gates, native tests/typecheck, the current-source iOS Release
+build, and the physical-device/signing/performance evidence from the last
+three rows. Historical screenshots and earlier green tests remain useful
+context but cannot substitute for that record.
+
+## Integration gates — 7 September 2026, b9e1b8926
+
+Bot ran `make merge-approval-gate` to successful process exit at source
+`b9e1b8926`: lint, build, full root/module/web tests, 639 native tests across
+72 files, native TypeScript and outside-checkout package qualification all
+passed. `make vet` also exited successfully. The five browser guards passed at
+`e18c50c3e`; subsequent compiled changes were confined to native hub selection.
+The two pre-existing Apple project/plist edits remained unchanged and unstaged.
+The ledger clarification written during this run is documentation only.
+
+The current iPhone Release bundle and actual save/connect/remove check are
+recorded in [multiple-hub evidence](multiple-hubs.md#delayed-saved-hub-operations--7-september-2026).
+The original owned hub, original conversation and seven retained drafts were
+preserved. These gates and this scoped native journey do not close the remaining
+distinct-hub fault/uncertain-operation, iPad, physical-device, accessibility,
+performance, signing/distribution or full SDK workflow requirements.
+
+
+## Credential integration gates — 7 September 2026, 700873dc9
+
+`make merge-approval-gate` exited zero for the credential recipe integration:
+lint, build, complete Go root/module tests, web, 639 native tests/72 files,
+native TypeScript and external SDK package qualification passed. `make vet`
+exited zero separately. The separately installed tarball passed 169 contracts
+and the [owned-hub credential workflow](sdk-management-evidence.md#packaged-stored-credentials--7-september).
+Only acceptance documentation changed while the gate ran; compiled source
+remained at the stated commit. The unrelated Apple patch is unchanged.
+
+The preference row now distinguishes implemented screens and dated observations
+from missing current-artifact release evidence. Other historical rows still need
+requirement-by-requirement refresh. Distinct-hub uncertain operations, OAuth and
+remaining SDK workflows, full streaming/lifecycle, iPad, physical-device,
+accessibility, performance and signing/distribution remain open for iOS v1.
+
+## OAuth recovery and steering checkpoint — 7 September 2026
+
+The [iOS OAuth recovery receipt](assets/ios-oauth-recovery-receipt.json)
+qualifies interrupted device/browser completion, same-process foreground,
+read-only credential status and cancel-then-switch against real auth handlers
+with a scripted external OAuth service. Native Release source is
+`759e7b10f`. The [SDK steering receipt](assets/sdk-steer-receipt.json)
+records direct real-hub steering and drain composer input through a scripted
+model boundary for SDK code integrated at `5429db421`.
+
+The canonical `make merge-approval-gate` and separate `make vet` exited zero
+over that integrated code: lint, build, Go root/modules, web, 663 native tests
+across 73 files, strict native TypeScript and outside-checkout SDK package
+qualification. The SDK code was committed during the run without changing its
+bytes; subsequent edits are acceptance documentation. This is an exit-zero
+canonical run, unlike the interrupted earlier OAuth gate.
+
+The five real-browser guards in `make test-web-browser` and the final
+`make secret-scan` also exited zero. Independent Luna evidence review found
+no remaining scope, provenance or secret-exposure issue.
+
+Both new runtime fixtures were shut down and their credential files removed.
+The original hub/conversation, seven drafts and unrelated Apple changes were
+preserved. The full iOS release matrix and complete method/notification recipe
+coverage remain open; these scoped checks do not close the project.
+
+## Upgrade and SDK coverage checkpoint — 7 September 2026
+
+Native source `4f630af16` passed the actual disposable-hub upgrade journey,
+including failure, durable recovery after cold launch, a deliberate later
+attempt, installed-file verification and independent running identity after hub
+replacement. The original hub/conversation, seven drafts and unrelated Apple
+patch remain preserved. The canonical integration gate and separate vet run
+exited zero with 671 native tests/73 files plus TypeScript and package checks.
+See [upgrade evidence](hub-upgrade-evidence.md#actual-ios-installation-and-recovery--7-september-2026)
+for artifact identities and limitations.
+
+The new session-lineage and maintenance recipes bring the cookbook inventory to
+83/91 cataloged methods across 26 recipes. Twenty-five focused contracts,
+external installed-package qualification and the frontend gate passed. The
+canonical integration gate and separate vet then exited zero at `ccdde59b9`,
+including all Go modules, web, 671 native tests/73 files, native TypeScript and
+the final package qualification. These recipe tests do not establish real
+fork/resume/provider/plugin outcomes.
+Seven supported methods still lack recipes, plus one reserved unsupported
+method. Notification cookbook coverage remains 3/36.
+
+Root's inspection of the compaction API log disproved a worker's attribution of
+session-name generation to compaction summarization. The corrected
+[SDK evidence](sdk-management-evidence.md#sdk-discovery-and-compaction-command-receipts--7-september)
+records command acknowledgment and limited projection observations; completed
+compaction was still unqualified at that checkpoint. Current owned-hub discovery reads have separate
+root-observed evidence in the upgrade receipt. The iOS release matrix and the
+full SDK method/event acceptance goal remain open.
+
+
+## SDK runtime follow-through — 7 September 2026
+
+[New scoped runtime evidence](sdk-management-evidence.md#packaged-compaction-effects-lineage-setup-and-maintenance--7-september)
+now establishes persisted compaction effects and next-model summary visibility,
+regular/aside fork and ended-parent resume with independent readback, private
+pairing generation and directory creation, plus ping and bounded maintenance
+checks. Those receipts identify exact installed tarballs and backend executables;
+they do not substitute for native device acceptance. The formerly missing fork,
+pin and reader implementations in the ledger are corrected to current source,
+with dated native evidence and remaining qualification stated separately.
+
+The SDK remains short of complete notification/outcome acceptance. Broader pairing fault/device coverage, full streaming recovery, cross-device/lifecycle combinations, iPad,
+physical-device, VoiceOver, performance and signed install/update remain open.
+The previous canonical gate is identified above; no final release is claimed.
+
+## Pairing, navigation and deletion checkpoint — 7 September 2026
+
+Native source `8d2297116` adds reviewed pairing-link import. The
+[iPhone LAN journey](pairing-evidence.md) qualifies generated-link paste, masked
+review, deliberate import, authenticated connection and cold-launch reconnect.
+The test profile was removed afterward; the original hub/session, seven drafts
+and unrelated Apple patch remain preserved. Camera scanning, OS deep-link
+routing, iPad and physical-device/failure qualification remain open.
+
+The [SDK saved-item run](sdk-management-evidence.md#packaged-saved-item-outcomes--7-september-2026)
+qualifies favorite/archive toggles and exact-target deletion with independent
+readback. It exposed the nil-list project deletion response fixed at `132fffc26`.
+The [navigation recipe](sdk-management-evidence.md#packaged-navigation-invalidation--7-september-2026)
+at `16ae1576f` adds bounded manifest observation and current snapshot readback;
+it does not implement a continuous navigation store or reconcile other resources.
+
+The first canonical gate failed a machine-sensitive transcript timing assertion
+(2.9x against a 3x floor). Commit `5fd66a6f0` retains the large transcript's full
+structured correctness check and moves timing to explicit benchmarks. The full
+apptranscript package passed under the race detector. The final `make merge-approval-gate` passed at `16ae1576f`: lint/build, all Go
+modules and web, 675 native tests across 74 files, native TypeScript, and SDK
+qualification outside the repository. Separate `make vet` and the evidence
+secret scan passed. Logs are `/tmp/evener-pairing-navigation-delete-final-canonical.log`,
+`/tmp/evener-pairing-navigation-delete-final-vet.log`, and
+`/tmp/evener-pairing-navigation-evidence-secrets.log`. These gates cover the
+compiled source at that commit; the device and release gaps above remain open.
+
+## Notification cookbook and gate checkpoint — 7 September 2026
+
+The current notification qualification adds the session, work, streaming and
+hub observers. The cookbook now contains 34 recipes covering 90 of 91 cataloged
+methods and all 36 cataloged notification names. The one remaining method is
+reserved and unsupported; these counts describe recipe presence rather than
+complete producer or release acceptance. The five notification names exercised
+against the owned real hub are recorded in [notification evidence](sdk-notifications-evidence.md).
+
+At source `58d1b079f`, the canonical integration gate exited zero (run `11473`)
+and the separate vet run exited zero (run `66642`). Logs are `/tmp/evener-all-notifications-canonical.log`
+and `/tmp/evener-all-notifications-vet.log`. After residue cleanup,
+`make test-api-package` exited zero at `30906`, recorded in
+`/tmp/evener-notifications-after-residue-package.log`.
+
+The notification receipt records the installed SDK tarball, isolated scripted
+provider and owned hub, private result modes and hashes, and credential/log
+cleanup. The real-hub scope covers the five named notifications and bounded
+observer/CLI behavior. Task and tool producer outcomes, full streaming and
+lifecycle recovery, reconnect/replay, native iPad and physical-device,
+accessibility, performance, and signing/update acceptance remain open.
+
+## Real notification lifecycle and iPad follow-through
+
+The [notification evidence](sdk-notifications-evidence.md) now includes twelve
+actual notification names across separate session/settings, task/tool, shell
+job and stable-delegate fixtures. Each uses the installed `58d1b079f` SDK;
+the task/job/delegate runs use backend `d2d5eedf9`. The task run exposed and then
+verified the producer fix for absent steering images. Real outcomes remain
+bounded to the recorded cases; no complete lifecycle/reconnect matrix is claimed.
+
+At backend source `d2d5eedf9`, the canonical integration gate exited zero
+(run `79691`, `/tmp/evener-steering-images-canonical.log`) and vet exited zero
+(run `94896`, `/tmp/evener-steering-images-vet.log`). Native-only follow-up
+`1e0533ce1` changes iOS hub-form keyboard avoidance after the iPad landscape
+check could not reach Save with the software keyboard open. All 675 native
+tests and TypeScript passed (run `92883`, `/tmp/evener-ipad-keyboard-native.log`),
+and its Release artifact built. Root then found a simulator coordinate error:
+the original app also scrolls correctly with the transformed landscape gesture.
+Commit `401eddc95` reverts the unnecessary candidate. The final compiled sources
+match the source qualified by the `d2d5eedf9` canonical gate.
+[Actual iPad form evidence](ipad-form-evidence.md) qualifies the original Release
+form in portrait/landscape with the software keyboard; broader iPad and physical
+device acceptance remains open.
+
+## Current iPad lifecycle and SDK streaming evidence
+
+Release source `8afaeacba` removes the native screen's guessed hub configuration
+path. Root's touched-file Biome and native TypeScript checks passed, and the
+iPad Release build succeeded (build cell `3097`). Its installed bundle and
+source identity are recorded in the [iPad lifecycle receipt](assets/ipad-lifecycle-receipt.json).
+
+The [connected iPad journey](ipad-lifecycle-evidence.md) passed two-hub
+authentication, held-turn switching and transcript/draft isolation, cold launch,
+same-process foreground, hub offline/restart/reconnect and scoped profile
+removal. Root independently verified the final SDK reads, every retained draft
+checkpoint, closed fixture processes/listeners, original seven iPhone drafts
+and the byte-identical unrelated Apple patch. This is scoped simulator evidence;
+the broader accessibility, physical-device and release matrix remains open.
+
+The [SDK notification evidence](sdk-notifications-evidence.md) now includes
+actual provider retry and reasoning-summary deltas through the packaged client,
+with raw event identities matched to completed turns and retained HTTP response
+evidence. Fourteen distinct notification names have scoped producer/readback
+evidence in that document; cookbook presence remains 36 names. Warning and other
+producer/outcome combinations, continuous reconnect/replay, image and large-data
+recovery, VoiceOver, performance and distribution signing/update remain open.
+
+The final evidence secret scan passed in 31 seconds (run `66807`,
+`/tmp/evener-ipad-streaming-final-secrets.log`). The existing canonical gate and
+vet evidence at `d2d5eedf9` remain the backend baseline; this batch adds the
+scoped native copy check, current Release build and actual journeys above.
+
+## Native image creation and encoded limits
+
+The [iPad image journey](ipad-image-creation-evidence.md) adds image-only native
+creation, byte-identical creation-image recovery after cold launch, a live
+gallery while the opening turn is held, and completed SDK/API readback with the
+same image hash. Temporary native state was removed and original photos and
+seven iPhone drafts were preserved.
+
+Commit `d20229b75` rejects converted PNGs above the decoded 8 MiB server limit
+before saving them as attachments. The native gate passed 678 tests in 74 files
+and TypeScript; its Release build installed and launched successfully. The
+native oversized-picker case and broader image/release matrix remain open;
+the receipt distinguishes the earlier journey artifact from this new build.
+
+## Reader recovery and current native build
+
+The [reader evidence](ipad-reader-recovery-evidence.md) adds real provider retry,
+historical paging recovery, cold-launch and largest-text endpoints, plus a
+separate native Latest fix. The [accessibility evidence](ipad-accessibility-evidence.md)
+qualifies Hubs heading layout and settings values. Source `517f70ae3` passes
+682 native tests and TypeScript and builds/starts in Release; the newly fixed
+hub reader-anchor removal still needs a fresh native journey. SDK notification
+producer evidence is now 21/36 in the scoped series. Physical devices, broader
+workflow/accessibility/performance coverage, signing/update and final release
+gates remain open for iOS-only v1.

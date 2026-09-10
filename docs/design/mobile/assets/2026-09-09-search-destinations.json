@@ -1,0 +1,195 @@
+{
+  "schema": "evener.native.search-destinations.v1",
+  "verifiedAt": "2026-09-09T10:50:11.367762+00:00",
+  "source": {
+    "before": "af72f7bd48a7b35211a425e5917d29600bf65a2f",
+    "after": "f866b2a80294d7354b6879e85a6f9d2d441fa545",
+    "simulator": {
+      "source": "f866b2a80294d7354b6879e85a6f9d2d441fa545",
+      "sha256": {
+        "Evener": "f3e8d2c32060e1aed9d58b9dead458cefdb3acf339364e89122c89f555033dbc",
+        "main.jsbundle": "0679ab47216d2725de50bb57de7bc3a54896e964f5125fca64a0623cae7305b4",
+        "Info.plist": "4fda4a2d405e6d6d471a79c341f3fd7690873ab3647304a9ac985ec86b34414b"
+      }
+    },
+    "nativeHubBuild": {
+      "revision": "6a0278e3633190225f5ecb1eb64222dbd1a372c3",
+      "modified": true,
+      "binarySha256": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8"
+    },
+    "seedSdkPackageSource": "d683abe21e949173f431201cda9ec169a1e9d349"
+  },
+  "device": {
+    "model": "iPhone 17 Pro simulator",
+    "os": "iOS 26.5",
+    "configuration": "Release"
+  },
+  "fixture": {
+    "createdProjects": 3,
+    "createdSessions": 5,
+    "collidingProjectBasenames": 2,
+    "sessionsPerCollidingProject": 2,
+    "providerTurnsRequested": 0,
+    "mutations": "Created and named only new sessions in the owned native test Hub. No turn or setting mutation targeted a preexisting session."
+  },
+  "observed": {
+    "independentVisualReview": "passed in light and dark",
+    "distinctLabels": [
+      "client-a / app",
+      "client-b / app"
+    ],
+    "ordinaryLabel": "notes",
+    "open": {
+      "expected": {
+        "ref": "local:034LmNzPCZYHVXVRHfuvjO",
+        "cwd": "/private/tmp/evener-testflight-build3-current/workspace/client-a/app",
+        "name": "Destination review 2"
+      },
+      "actualLocation": {
+        "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+        "conversation": {
+          "ref": "local:034LmNzPCZYHVXVRHfuvjO",
+          "title": "Destination review 2"
+        }
+      },
+      "correctTarget": true
+    },
+    "return": {
+      "retainedQuery": "destination review",
+      "rows": 5,
+      "sameSessionContexts": true,
+      "maxRowDriftPoints": 0.0
+    },
+    "preservation": {
+      "dataContainer": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Data/Application/9DBAA9CB-EA49-4E45-9B3A-054B20E1AA10",
+      "draftTables": {
+        "drafts": {
+          "beforeRows": 13,
+          "afterRows": 13,
+          "identical": true
+        },
+        "question_drafts": {
+          "beforeRows": 11,
+          "afterRows": 11,
+          "identical": true
+        },
+        "question_positions": {
+          "beforeRows": 3,
+          "afterRows": 3,
+          "identical": true
+        },
+        "draft_images": {
+          "beforeRows": 0,
+          "afterRows": 0,
+          "identical": true
+        },
+        "draft_image_sets": {
+          "beforeRows": 0,
+          "afterRows": 0,
+          "identical": true
+        },
+        "creation_drafts": {
+          "beforeRows": 1,
+          "afterRows": 1,
+          "identical": true
+        },
+        "creation_draft_images": {
+          "beforeRows": 0,
+          "afterRows": 0,
+          "identical": true
+        }
+      },
+      "readerPositions": {
+        "originalEntries": 9,
+        "originalEntriesIdentical": true,
+        "addedKeys": []
+      },
+      "otherStorage": {
+        "evener:hub-upgrade:fff2733f-f2d6-499c-93ff-1c05cc422702": true,
+        "evener.last-location": true
+      }
+    }
+  },
+  "validation": {
+    "nativeTests": 710,
+    "nativeTestFiles": 75,
+    "nativeTypeScript": "passed",
+    "apiPackageQualification": "passed",
+    "touchedBiome": "passed",
+    "signedSimulatorBuild": "passed"
+  },
+  "images": {
+    "before-dark": {
+      "path": "2026-09-09-search-destinations-before-dark.png",
+      "sha256": "18cce5ffda8a9035926ae4539a7d1d9f44938b0d53fcb0dd27adb99590bb38c9"
+    },
+    "after-dark": {
+      "path": "2026-09-09-search-destinations-after-dark.png",
+      "sha256": "8b3993db7757284a68fcdc493482637683e568f79f9b14edfa543117e454abf0"
+    },
+    "after-light": {
+      "path": "2026-09-09-search-destinations-after-light.png",
+      "sha256": "2cf8dbe08d115cf6c4d249f08de1226ff36e235e4d8461a49759586c5d19039c"
+    }
+  },
+  "privateEvidence": {
+    "simulator-artifact.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/simulator-artifact.json",
+      "sha256": "94550aec4961783ccd0aeadefd8a85f61ee738b0065895894e4c800d1a9de854"
+    },
+    "search-created.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/search-created.json",
+      "sha256": "9a633abe2e6c8268ab1a52d47114523405ef0e4d284d6ab3c1a9d8acc167858c"
+    },
+    "search-readback.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/search-readback.json",
+      "sha256": "312d6d7e7619c499ddd8320d07bea4af88fdfcd390241fed2ac2103495b7fb08"
+    },
+    "search-open-result.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/search-open-result.json",
+      "sha256": "08c66b7df37eba8e517b7f6eed553f806a861d970877e6bbd01aabdc14e96606"
+    },
+    "search-return-result.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/search-return-result.json",
+      "sha256": "e9f3c0dce02f978364ab334544fdea5a2310b54bba766b296a3e2a2aa470c5e1"
+    },
+    "native-preservation.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/native-preservation.json",
+      "sha256": "f77027f2bf03e059ef64adeb3861626015956c5bce137e0e6c83b422dece4157"
+    },
+    "source-gates.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/source-gates.log",
+      "sha256": "d5723e544ba46e8df47f043ed3e17a1d2ecb16d8b6b5671bff39cc66ca2dbaed"
+    },
+    "simulator-build.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/simulator-build.log",
+      "sha256": "6a093ee567d6cceff79e619de16dd99bcb2326187aa3c7966d6b7dbb7f979cc7"
+    },
+    "before-search-results.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/before-search-results.json",
+      "sha256": "209561ab13d419315b9328ab54b6ced638bb4f90e7149ca1275b522078eae60e"
+    },
+    "after-search-results.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/after-search-results.json",
+      "sha256": "59018a5f2304015fe537785f7d44efde9b45411c3269e312a469a875522758b0"
+    },
+    "after-search-light.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/after-search-light.json",
+      "sha256": "17e45b1d0b5819b5de716de43ce8be3ef7faf5150ee12f3bece82ed406c8160e"
+    },
+    "after-search-open-confirmed.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/after-search-open-confirmed.json",
+      "sha256": "1818bea57df0115c005a053454fb01033783dd346a99c73ae1082326e2df0e52"
+    },
+    "after-search-return.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/after-search-return.json",
+      "sha256": "2cd8c2010a542da407b109f6cf816111dab7ac78ba3553e82bc0638655aaf083"
+    }
+  },
+  "limits": [
+    "This confirms the five-session search specimen, not representative scale or physical-device performance.",
+    "The first open automation expected the nonempty composer label and timed out on the empty composer label; the corrected observation independently confirms the actual selected session without repeating the tap.",
+    "The original separate draft, nine saved reader entries, all seven draft tables, saved navigation and other stored values are unchanged.",
+    "iPad, accessibility, full iPhone v1 and SDK qualification remain open."
+  ]
+}

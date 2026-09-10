@@ -1,0 +1,45 @@
+{
+  "schema": "evener.sdk.thread-started.confirmation.v1",
+  "status": "qualified-scoped-producer",
+  "date": "2026-09-08",
+  "fixtureRoot": "/private/tmp/evener-sdk-thread-started-confirmed-WjXla3",
+  "threadRef": "local:034LTRcGfooYIavIFO8PNG",
+  "threadId": "034LTRcGfooYIavIFO8PNG",
+  "instanceId": "034LTRcGfooYIavIFO8PNG",
+  "threadStartedCount": 1,
+  "postStartBarrier": "evener/thread/name/set -> evener/thread/name/changed",
+  "authoritativeSubscribedRead": true,
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "distIndexSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "tarball": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+    "sourceRevision": "58d1b079f"
+  },
+  "binaries": {
+    "evenerSha256": "584ace92c3bcce4d8aea08cb73edb177f982d334d27e966ac8fd85f43994ed2b",
+    "evenerDevSha256": "5846bcb3d0e0296e0394f4aa2907865df8cbb8beac4e9208acd85b102328f788",
+    "version": "8a1b1826b-dirty",
+    "builtAt": "2026-09-08T21:44:43Z",
+    "compiledSourceSha256": {
+      "cmd/evener-hub/app_relay.go": "87520544da3757ea5d5e9f793a0d9a4a80cfa77ee2bbb994afb0fc9c711d3e13",
+      "cmd/evener-hub/app_relay_startup.go": "a4adfaa8c2c62da46610d6dd8b379e832b743a9863510f3022886bdc90eddb42",
+      "cmd/evener-hub/app_rpc.go": "20d8f6111265130c914e9ef20912b5f1b58e70a12a0ac083dd233de954ce214e"
+    },
+    "sourceNote": "Compiled candidate before the naming-only copy-to-retained lint fix; native artifact identity is separate."
+  },
+  "driver": {
+    "path": "/private/tmp/evener-sdk-thread-started-confirmed-WjXla3/confirm.mjs",
+    "sha256": "f0a126d66ee5ab5c28e6c01df4f04a309cf23aad9ebb2d1073d17c2cce4c04d2",
+    "resultSha256": "a4744541f6d3ed092d3e5832048e7a8b612519d180ca6b4a11bc74454e264761",
+    "resultPath": "/private/tmp/evener-sdk-thread-started-confirmed-WjXla3/confirmed-result.json"
+  },
+  "cleanup": {
+    "fixtureProcessesStopped": true,
+    "listenersAbsent": true,
+    "bearerRemoved": true
+  },
+  "scope": "One real installed-SDK thread/started from public creation, matching returned identity, plus subscribed read and real rename notification/readback. Exactly one startup through the rename barrier. Real copied Hub and detached daemon processes; scripted external HTTP provider. Does not qualify all creation failures or native creation.",
+  "cleanupEvidence": "Controller exited first and left detached daemon PID 17738; that exact fixture-root command was then terminated and rechecked absent, with no fixture-root listener or auth-token remaining."
+}
