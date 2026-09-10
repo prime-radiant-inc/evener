@@ -517,10 +517,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	}
 	commit := &foldCommit{}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {
-		if len(pendingCompactionTurns) > 0 {
-			if removed {
-				s.resetEnvContextTrackerLocked()
-			}
+		if removed && len(pendingCompactionTurns) > 0 {
+			s.resetEnvContextTrackerLocked()
 		}
 	}
 	flush := func() {
