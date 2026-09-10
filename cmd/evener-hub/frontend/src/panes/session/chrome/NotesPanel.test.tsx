@@ -283,6 +283,78 @@ test("remove dispatches urls/remove", async () => {
 
 // --- save coalescing -------------------------------------------------------------
 
+test("reverting to the stored text during an in-flight save still persists the revert", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    if (first) {
+      first = false;
+      return gate.then(() => ({ note: (params as { note: string }).note }));
+    }
+    return { note: (params as { note: string }).note };
+  });
+
+  const model = testModel({ humanNote: "stored A" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  openPanel(model);
+  // A save of B is in flight...
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "draft B");
+  await user.tab();
+  await waitFor(() => expect(seen).toHaveLength(1));
+  // ...and the user reverts to the currently-stored A before B lands. The
+  // revert equals the store mid-flight, but dropping it would leave B
+  // persisted instead: the queue must hold it and the drain must persist it.
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "stored A");
+  await user.tab();
+  release();
+  await waitFor(() => expect(seen).toHaveLength(2));
+  expect(seen[1]).toMatchObject({ ref: model.ref, note: "stored A" });
+  expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("stored A");
+});
+
+test("a multiline draft reports Saved once the collapsed store converges", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("notes/human/set", (params) => {
+    calls += 1;
+    // The daemon collapses whitespace: mirror the collapse in the fake's
+    // local commit so the store converges the way the real one does.
+    const note = (params as { note: string }).note;
+    const collapsed = note.replace(/\s+/g, " ").trim();
+    const threads = threadsStore.getState().threads;
+    const model = threads.get("local:033uaztQj6XPP6eF7pS0OW");
+    if (model) threadsStore.setState({ threads: new Map(threads).set(model.ref, { ...model, humanNote: collapsed }) });
+    return { note: collapsed };
+  });
+
+  const model = testModel({ humanNote: "" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  openPanel(model);
+  await user.click(editor());
+  await user.type(editor(), "line one\nline two");
+  await user.tab();
+  // Saved paints against the collapsed store value...
+  await screen.findByTestId("shared-notes-saved");
+  expect(calls).toBe(1);
+  // ...and a further blur with no edits issues no redundant RPC.
+  await user.click(editor());
+  await user.tab();
+  await waitFor(() => expect(screen.queryByTestId("shared-notes-saving")).toBeNull());
+  expect(calls).toBe(1);
+});
+
 test("a second blur while a save is in flight replays the latest draft instead of dropping it", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

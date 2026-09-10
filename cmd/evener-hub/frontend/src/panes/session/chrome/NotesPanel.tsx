@@ -49,6 +49,18 @@ function isFileHref(href: string): boolean {
   return /^file:\/\//.test(href);
 }
 
+// normalizeNote mirrors the daemon's normalizeNote (agent/session_notes.go):
+// every whitespace run (including newlines) collapses to one space, trimmed,
+// clamped to the same 1000-rune budget (spread counts Unicode code points
+// like Go's []rune slice). Comparisons (save dedup, the Saved guard) run on
+// normalized text, because a raw multiline draft never equals its collapsed
+// stored value — without this Saved would never paint and every blur would
+// re-issue a redundant RPC. The textarea keeps the raw draft; only the wire
+// payload and the comparisons use the normalized form.
+function normalizeNote(note: string): string {
+  return [...note.replace(/\s+/g, " ").trim()].slice(0, 1000).join("");
+}
+
 export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
@@ -207,28 +219,37 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   // setHumanNote commits locally on success and pushes update the store, so
   // the store is the freshest committed value - and it stays correct for an
   // outgoing session after a switch, when the render-scope model moved on.
+  // Both maps are read (like trackedThreadModel): for a watched thread the
+  // entry lives in watchedThreads, and reading threads alone would return
+  // undefined, causing spurious saves with Saved never appearing.
   function storedNote(ref: string): string | undefined {
-    return threadsStore.getState().threads.get(ref)?.humanNote;
+    const state = threadsStore.getState();
+    return state.threads.get(ref)?.humanNote ?? state.watchedThreads.get(ref)?.humanNote;
   }
 
-  // requestSave persists note for ref unless it already matches the latest
-  // stored text, coalescing with an in-flight save: a second request while
-  // one is running parks its draft in the per-session queue, and the loop
-  // drains every queued session before settling - focus-blur-focus-blur on
-  // a slow RPC converges on the latest text instead of losing the newer
-  // keystrokes, and a B-save behind an in-flight A-save persists in turn
-  // rather than overwriting A's draft. Sequential setHumanNote calls
-  // serialize per-thread in the store, so cross-session drains land in
-  // queue order.
+  // requestSave persists note for ref unless its NORMALIZED form already
+  // matches the latest stored text, coalescing with an in-flight save: a
+  // second request while one is running parks its draft in the per-session
+  // queue, and the loop drains every queued session before settling -
+  // focus-blur-focus-blur on a slow RPC converges on the latest text instead
+  // of losing the newer keystrokes, and a B-save behind an in-flight A-save
+  // persists in turn rather than overwriting A's draft. Sequential
+  // setHumanNote calls serialize per-thread in the store, so cross-session
+  // drains land in queue order. The wire payload is normalized (not the raw
+  // textarea text), matching what the daemon stores; comparisons run on the
+  // same normalized form so a settled draft reads back equal.
   function requestSave(ref: string, note: string) {
-    // Matching the store means nothing to persist; drop any stale queued
-    // entry for the session (e.g. a kept failure the store has since
-    // converged with via push) so it can never block the Saved guard.
-    if (note === storedNote(ref)) {
-      dirtyRef.current.delete(ref);
+    const normalized = normalizeNote(note);
+    // Matching the store means nothing to persist — but only when no save
+    // loop is running. While a loop is active the draft is queued even when
+    // it equals the CURRENT store value: the store may still be converging
+    // on an in-flight save (stored A, B pending, user reverts to A), and
+    // dropping the A intent would leave B persisted instead.
+    if (normalized === normalizeNote(storedNote(ref) ?? "")) {
+      if (saveLoop.current === null) dirtyRef.current.delete(ref);
       return;
     }
-    dirtyRef.current.set(ref, note);
+    dirtyRef.current.set(ref, normalized);
     if (saveLoop.current !== null) return;
     if (uiRef.current === ref) {
       setSaving(true);
@@ -251,7 +272,12 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
         if (next.done) break;
         const [nextRef, nextNote] = next.value;
         dirtyRef.current.delete(nextRef);
-        if (nextNote === storedNote(nextRef)) continue;
+        // The equality check runs ONLY at drain time, on the queued entry —
+        // never at queue time (requestSave parks even a currently-equal draft
+        // while a loop is active, so a revert during an in-flight save is not
+        // lost). Queued payloads are already normalized; the stored side
+        // normalizes here so both sides compare post-collapse.
+        if (nextNote === normalizeNote(storedNote(nextRef) ?? "")) continue;
         try {
           await threadsStore.getState().setHumanNote(nextRef, nextNote);
         } catch (err) {
@@ -269,12 +295,18 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
       saveLoop.current = null;
       // saving is global to the panel (one loop at a time), so it always
       // clears on settle; Saved and error paint only for the session still on
-      // screen, from that session's own latest outcome.
+      // screen, from that session's own latest outcome. The Saved comparison
+      // normalizes the live draft: the store holds the collapsed form, so a
+      // raw multiline draft would never read back equal.
       setSaving(false);
       const ui = uiRef.current;
       const uiFailure = failedMessages.get(ui);
       if (uiFailure !== undefined) setError(uiFailure);
-      if (savedRefs.has(ui) && uiFailure === undefined && draftRef.current === storedNote(ui)) {
+      if (
+        savedRefs.has(ui) &&
+        uiFailure === undefined &&
+        normalizeNote(draftRef.current) === normalizeNote(storedNote(ui) ?? "")
+      ) {
         setSaved(true);
       }
     })();
