@@ -311,9 +311,13 @@ func LiveWaits(waits []GoalWaitSnapshot) []GoalWaitSnapshot {
 }
 
 // NearestWait resolves the chip summary over live waits (spec §6): earliest
-// deadline wins, ties break on the smallest wait_id. Reports false when no
-// live wait stands. Returns by value: the winner is copied out of the
-// filtered live set, so callers can never mutate through it into a temporary.
+// deadline wins, ties break on numeric registration order (RegisteredAt,
+// then the numeric wait_N suffix). The old smallest-wait_id string compare
+// misordered wait_10 < wait_2 lexicographically; registration order is what
+// the tie means (the earliest-registered waiter is nearest). Reports false
+// when no live wait stands. Returns by value: the winner is copied out of
+// the filtered live set, so callers can never mutate through it into a
+// temporary.
 func NearestWait(waits []GoalWaitSnapshot) (GoalWaitSnapshot, bool) {
 	live := LiveWaits(waits)
 	var best GoalWaitSnapshot
@@ -321,12 +325,44 @@ func NearestWait(waits []GoalWaitSnapshot) (GoalWaitSnapshot, bool) {
 	for i := range live {
 		w := live[i]
 		if !found || w.Deadline.Before(best.Deadline) ||
-			(w.Deadline.Equal(best.Deadline) && w.WaitID < best.WaitID) {
+			(w.Deadline.Equal(best.Deadline) && waitOrderLess(w, best)) {
 			best = w
 			found = true
 		}
 	}
 	return best, found
+}
+
+// waitOrderLess orders two equal-deadline waits by registration order:
+// RegisteredAt first (both set), then the numeric wait_N suffix, then the
+// raw id string for nonconforming ids (the synthetic "deadline" entry and
+// any future scheme). Deterministic on every input: equal on all three
+// compares false both ways, so input order wins (stable scan).
+func waitOrderLess(a, b GoalWaitSnapshot) bool {
+	if !a.RegisteredAt.IsZero() && !b.RegisteredAt.IsZero() && !a.RegisteredAt.Equal(b.RegisteredAt) {
+		return a.RegisteredAt.Before(b.RegisteredAt)
+	}
+	if as, bs := parseWaitSeq(a.WaitID), parseWaitSeq(b.WaitID); as >= 0 && bs >= 0 && as != bs {
+		return as < bs
+	}
+	return a.WaitID < b.WaitID
+}
+
+// parseWaitSeq parses the registry sequence of a "wait_N" id (-1 for
+// nonconforming ids, which fall back to string compare in waitOrderLess).
+func parseWaitSeq(id string) int {
+	rest, ok := strings.CutPrefix(id, "wait_")
+	if !ok || rest == "" {
+		return -1
+	}
+	n := 0
+	for i := 0; i < len(rest); i++ {
+		if rest[i] < '0' || rest[i] > '9' {
+			return -1
+		}
+		n = n*10 + int(rest[i]-'0')
+	}
+	return n
 }
 
 // GoalBudgetsSnapshot is the persisted spend-budget triple (spec section 5).

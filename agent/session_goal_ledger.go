@@ -125,8 +125,11 @@ func flattenGoalArgs(raw string) []goalFlatArg {
 func goalArgScalar(v any) string {
 	s := fmt.Sprint(v)
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > 512 {
-		s = s[:512]
+	// Truncate on runes, not bytes: a byte slice can split a multi-byte
+	// UTF-8 sequence and emit invalid UTF-8 (replacement chars downstream,
+	// unstable fingerprints).
+	if r := []rune(s); len(r) > 512 {
+		s = string(r[:512])
 	}
 	return s
 }

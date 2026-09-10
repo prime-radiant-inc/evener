@@ -55,8 +55,18 @@ type goalWatchdogState struct {
 	// ceiling (at most 4 per 24h across stretches).
 	sentTimes []time.Time
 	// goalKey identifies the goal the state belongs to (the objective at
-	// stretch start): a retarget/clear resets the stretch.
+	// stretch start, plus the creation instant): a retarget/clear resets the
+	// stretch — including a same-text retarget, which store.Set stamps as a
+	// new goal (fresh CreatedAt) with cleared waits/ledger. The reset covers
+	// the stretch, the per-stretch notice count, AND the per-goal 24h
+	// sentTimes ceiling: the ceiling is per-goal per its field comment, so a
+	// new goal restarts it (no sentTimes carry-over).
 	goalKey string
+	// goalCreated anchors the key above: SetGoal stamps CreatedAt=now on
+	// every Set, so (goalKey, goalCreated) distinguishes a same-text new
+	// goal from the old one the watchdog reader otherwise cannot tell
+	// apart (the store snapshot carries no generation counter).
+	goalCreated time.Time
 }
 
 // goalWatchdogQuietThreshold aliases the single-source watchdog floor
@@ -93,11 +103,16 @@ func (s *Session) checkGoalWatchdog(now time.Time) {
 	}
 	s.mu.Lock()
 	ws := s.goalWatchdog
-	if ws.goalKey != "" && ws.goalKey != full.Objective {
+	// New goal (retarget — including same-text — or clear+set) resets the
+	// whole state: stretch, per-stretch notices, and the per-goal 24h
+	// ceiling. CreatedAt distinguishes the same-text case (Set stamps it
+	// fresh on every Set).
+	if ws.goalKey != "" && (ws.goalKey != full.Objective || !ws.goalCreated.Equal(full.CreatedAt)) {
 		ws = goalWatchdogState{}
 	}
 	if ws.goalKey == "" {
 		ws.goalKey = full.Objective
+		ws.goalCreated = full.CreatedAt
 	}
 	// New stretch on kind change, anchor change (re-park on a new deadline),
 	// or first track. The anchor deadline is registration-relative (it

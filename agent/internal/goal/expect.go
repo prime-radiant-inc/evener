@@ -40,6 +40,11 @@ type ExpectRequest struct {
 // condition kind/subtype (fix-1/4 I1). ok=false means registrable.
 func expectKindRejected(pred WaitKind) (reason string, rejected bool) {
 	switch pred.Kind {
+	case WaitUntilJob, WaitUntilDelegate:
+		// Registrable condition kinds (cf. RegisterExpect's registrable
+		// gate): verifiable in v1, never rejected. Explicit so the two
+		// registrable kinds cannot fall through to "unknown condition kind".
+		return "", false
 	case WaitUntilApproval:
 		return fmt.Sprintf("condition kind %q is not verifiable in v1: approval-answer records are out of scope (register a file, job, or delegate condition)", pred.Kind), true
 	case WaitUntilChild:

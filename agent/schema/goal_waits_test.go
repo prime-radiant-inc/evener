@@ -54,3 +54,41 @@ func TestNearestWaitEarliestDeadlineTieBreaksOnWaitID(t *testing.T) {
 		t.Fatal("NearestWait(all fired) = ok, want false")
 	}
 }
+
+// TestFixWave15_NearestWaitNumericTieBreak pins the round-15 LOW: the
+// deadline tie-break is numeric registration order, not lexicographic
+// wait_id order — wait_2 (registered 2nd) beats wait_10 (registered 10th)
+// on equal deadlines. Lexicographic compare misorders "wait_10" < "wait_2".
+func TestFixWave15_NearestWaitNumericTieBreak(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	waits := []GoalWaitSnapshot{
+		{WaitID: "wait_10", Label: "tenth", Deadline: now, RegisteredAt: now.Add(-time.Minute)},
+		{WaitID: "wait_2", Label: "second", Deadline: now, RegisteredAt: now.Add(-time.Hour)},
+	}
+	nearest, ok := NearestWait(waits)
+	if !ok || nearest.WaitID != "wait_2" {
+		t.Fatalf("NearestWait = %+v ok=%v, want wait_2 (numeric registration order, not lexicographic)", nearest, ok)
+	}
+	// Without RegisteredAt the numeric id suffix still decides.
+	bare := []GoalWaitSnapshot{
+		{WaitID: "wait_10", Label: "tenth", Deadline: now},
+		{WaitID: "wait_2", Label: "second", Deadline: now},
+	}
+	if nearest, ok := NearestWait(bare); !ok || nearest.WaitID != "wait_2" {
+		t.Fatalf("NearestWait = %+v ok=%v, want wait_2 (numeric suffix fallback)", nearest, ok)
+	}
+	// Nonconforming ids fall back to string compare, deterministically.
+	odd := []GoalWaitSnapshot{
+		{WaitID: "deadline", Label: "synthetic", Deadline: now},
+		{WaitID: "wait_2", Label: "second", Deadline: now},
+	}
+	first, ok := NearestWait(odd)
+	if !ok {
+		t.Fatal("NearestWait(mixed ids) must still resolve")
+	}
+	second, ok := NearestWait([]GoalWaitSnapshot{odd[1], odd[0]})
+	if !ok || second.WaitID != first.WaitID {
+		t.Fatalf("NearestWait order-dependent: %q vs %q (want input-order independent)", second.WaitID, first.WaitID)
+	}
+}

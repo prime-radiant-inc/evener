@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2060,4 +2061,210 @@ func TestGoalWaitApprovalKeyPairContract(t *testing.T) {
 			t.Fatalf("status = %q, want waiting on the live ask", snap.Status)
 		}
 	})
+}
+
+// TestFixWave15_SettleRestoredBacklogWakeParity pins the round-15 HIGH fix
+// (settleGoalOnIdle lock inversion): a restored-but-never-kicked backlog
+// settles to a kick whose prompt is the full wake prompt — same wait ids,
+// same trailer — as the claim path. The restored-backlog wake re-read must
+// run OUTSIDE the s.mu section (the established goalUpdateMu-then-s.mu order,
+// cf. SetGoal), so the s.mu section only consumes the pre-read wakeIDs /
+// wakePrompt locals and never takes goalUpdateMu.
+func TestFixWave15_SettleRestoredBacklogWakeParity(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	src := newWaitGateSession(t, clk)
+	defer src.Close()
+	wireKickAndNotify(src)
+
+	store := src.getOrCreateGoalStore()
+	store.Set("crash mid-wake", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "crash-timer", Timeout: time.Minute, Label: "crash-timer"}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: crash-timer", clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	// The expected wake prompt is whatever the claim path renders for the
+	// same backlog: the settle must produce it identically.
+	wantFull, ok := store.GoalSnapshot()
+	if !ok || len(wantFull.PendingWake) != 1 {
+		t.Fatalf("precondition: backlog = %+v ok=%v, want 1 pending wake", wantFull, ok)
+	}
+	wantPrompt := src.renderGoalWakePrompt(wantFull)
+
+	meta := src.Meta()
+	clk2 := agenttest.NewFakeClockAt(clk.Now())
+	meta.ID = "fixwave15-settle-parity"
+	restored := restoreGoalTestSession(t, clk2, meta)
+	defer restored.Close()
+	var prompts []string
+	restored.SetKickFunc(func(p string) { prompts = append(prompts, p) })
+	// Drain the wiring-time flush so the assert below pins the SETTLE path,
+	// not SetKickFunc's own flush: clear the delivered mark and re-arm the
+	// backlog as never-kicked, then settle directly.
+	restored.mu.Lock()
+	restored.goalWakeDelivered = nil
+	restored.mu.Unlock()
+	drainGoalEvents(restored)
+	if !restored.settleGoalOnIdle() {
+		t.Fatal("settle must kick a restored-but-never-kicked backlog")
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("prompts = %d, want 2 (wiring flush + settle kick)", len(prompts))
+	}
+	if prompts[1] != wantPrompt {
+		t.Fatalf("settle wake prompt mismatch:\n got: %.300q\nwant: %.300q", prompts[1], wantPrompt)
+	}
+	if !strings.Contains(prompts[1], w.Lease.WaitID) {
+		t.Fatalf("settle wake prompt must carry wait %q:\n%.300q...", w.Lease.WaitID, prompts[1])
+	}
+	if !strings.Contains(prompts[1], goalWaitWakeTrailerPrefix) {
+		t.Fatalf("settle wake prompt missing trailer %q\nprompt:\n%s", goalWaitWakeTrailerPrefix, prompts[1])
+	}
+}
+
+// TestFixWave15_SettleRestoredBacklogSettleOnly pins the same HIGH from the
+// no-flush side: with no kick wired at wiring time, the first settle drives
+// the restored backlog itself (not just SetKickFunc's flush) with the
+// identical wake prompt.
+func TestFixWave15_SettleRestoredBacklogSettleOnly(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	src := newWaitGateSession(t, clk)
+	defer src.Close()
+	wireKickAndNotify(src)
+
+	store := src.getOrCreateGoalStore()
+	store.Set("crash mid-wake", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "crash-timer", Timeout: time.Minute, Label: "crash-timer"}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: crash-timer", clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	wantFull, _ := store.GoalSnapshot()
+	wantPrompt := src.renderGoalWakePrompt(wantFull)
+
+	meta := src.Meta()
+	clk2 := agenttest.NewFakeClockAt(clk.Now())
+	meta.ID = "fixwave15-settle-only"
+	restored := restoreGoalTestSession(t, clk2, meta)
+	defer restored.Close()
+	// No kick at wiring: the settle below owns the backlog kick.
+	var prompts []string
+	restored.mu.Lock()
+	restored.kickFunc = func(p string) { prompts = append(prompts, p) }
+	restored.mu.Unlock()
+	drainGoalEvents(restored)
+	if !restored.settleGoalOnIdle() {
+		t.Fatal("settle must kick a restored-but-never-kicked backlog with no wiring flush")
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("prompts = %d, want exactly 1 (the settle kick)", len(prompts))
+	}
+	if prompts[0] != wantPrompt {
+		t.Fatalf("settle wake prompt mismatch:\n got: %.300q\nwant: %.300q", prompts[0], wantPrompt)
+	}
+}
+
+// TestFixWave15_SetKickFuncFlushCopySemantics pins the round-15 MEDIUM
+// (SetKickFunc map race): the flush decision reads the delivered set under
+// s.mu and iterates a copy, so a concurrent markGoalWakesDelivered racing
+// the flush cannot panic (concurrent map read+write) and cannot flip the
+// decision mid-iteration. Under -race this test fails on the old code (the
+// live-map read races the writer); the copy-semantics half also asserts
+// determinism serially: marking delivered between the store read and the
+// flush loop must not change what the flush decided.
+func TestFixWave15_SetKickFuncFlushCopySemantics(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("copy semantics", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "copy-timer", Timeout: time.Minute, Label: "copy-timer"}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: copy-timer", clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	// Snapshot the delivered set the way the fixed flush does (under s.mu),
+	// then mutate the live map: the copy must be unaffected.
+	sess.mu.Lock()
+	deliveredHere := make(map[string]bool, len(sess.goalWakeDelivered))
+	for id := range sess.goalWakeDelivered {
+		deliveredHere[id] = true
+	}
+	sess.mu.Unlock()
+	sess.markGoalWakesDelivered([]string{w.Lease.WaitID})
+	if deliveredHere[w.Lease.WaitID] {
+		t.Fatal("flush copy must predate the concurrent mark (copy semantics, not the live map)")
+	}
+	sess.mu.Lock()
+	liveMarked := sess.goalWakeDelivered[w.Lease.WaitID]
+	sess.mu.Unlock()
+	if !liveMarked {
+		t.Fatal("precondition: live delivered set must carry the mark")
+	}
+}
+
+// TestFixWave15_SetKickFuncFlushVsMarkRace hammers the round-15 MEDIUM race
+// directly: concurrent SetKickFunc flushes vs markGoalWakesDelivered must
+// complete without a concurrent-map panic. The -race detector is the real
+// assertion (old code reads the live map while the writer mutates it);
+// reaching the end is the signal.
+func TestFixWave15_SetKickFuncFlushVsMarkRace(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("race-detector stress test; run with -race")
+	}
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	sess.SetNotifyFunc(func() {})
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("flush race", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "race-timer", Timeout: time.Minute, Label: "race-timer"}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: race-timer", clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	stop := make(chan struct{})
+	var drivers sync.WaitGroup
+	drivers.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			sess.SetKickFunc(func(string) {})
+		}
+	})
+	drivers.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			sess.markGoalWakesDelivered([]string{w.Lease.WaitID})
+		}
+	})
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	drivers.Wait()
 }

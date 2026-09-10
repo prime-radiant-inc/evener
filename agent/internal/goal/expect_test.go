@@ -249,3 +249,20 @@ func TestRegisterExpectKindRestriction(t *testing.T) {
 		}
 	}
 }
+
+// TestFixWave15_ExpectKindRejectedRegistrableKinds pins the round-15 LOW:
+// WaitUntilJob and WaitUntilDelegate are REGISTRABLE condition kinds, so
+// expectKindRejected must report them not-rejected. Before the fix both fell
+// through to "unknown condition kind" — correct today only because
+// RegisterExpect gates registrable first, but the fallthrough misnames the
+// kind on every direct caller.
+func TestFixWave15_ExpectKindRejectedRegistrableKinds(t *testing.T) {
+	for _, kind := range []WaitKind{
+		{Kind: WaitUntilJob, Target: "job_1"},
+		{Kind: WaitUntilDelegate, Target: "dlg_1"},
+	} {
+		if reason, rejected := expectKindRejected(kind); rejected {
+			t.Fatalf("expectKindRejected(%q) = (%q, true), want not-rejected (registrable kind)", kind.Kind, reason)
+		}
+	}
+}

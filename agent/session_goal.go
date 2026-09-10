@@ -37,8 +37,15 @@ func (s *Session) SetKickFunc(f func(prompt string)) {
 	if !ok || len(full.PendingWake) == 0 {
 		return
 	}
+	// Delivered-set copy under s.mu (same shape as the backlogPending split
+	// in settleGoalOnIdle): markGoalWakesDelivered mutates the live map under
+	// s.mu, so iterating the live map after Unlock races the writer
+	// (concurrent-map panic). The copy freezes the flush decision.
 	s.mu.Lock()
-	delivered := s.goalWakeDelivered
+	delivered := make(map[string]bool, len(s.goalWakeDelivered))
+	for id := range s.goalWakeDelivered {
+		delivered[id] = true
+	}
 	s.mu.Unlock()
 	for _, p := range full.PendingWake {
 		if !delivered[p.WaitID] {
@@ -1982,6 +1989,8 @@ func (s *Session) settleGoalOnIdle() bool {
 		}
 		s.mu.Unlock()
 		s.goalUpdateMu.Lock()
+		var restoredFull goal.GoalSnapshot
+		restoredOK := false
 		if full, ok := s.getOrCreateGoalStore().GoalSnapshot(); ok && len(full.PendingWake) > 0 {
 			backlogPending = true
 			for _, p := range full.PendingWake {
@@ -1992,9 +2001,21 @@ func (s *Session) settleGoalOnIdle() bool {
 			}
 			if restoredBacklog {
 				backlogPending = false
+				restoredFull, restoredOK = full, true
 			}
 		}
 		s.goalUpdateMu.Unlock()
+		// Wake re-read for the restored backlog, still BEFORE the s.mu
+		// section below (never nested inside it): the established order is
+		// goalUpdateMu-then-s.mu (SetGoal), so the s.mu section must only
+		// consume these locals. Rendered outside the lock — pure over full.
+		if restoredOK {
+			wakeFull = restoredFull
+			for _, p := range restoredFull.PendingWake {
+				wakeIDs = append(wakeIDs, p.WaitID)
+			}
+			wakePrompt = s.renderGoalWakePrompt(restoredFull)
+		}
 	}
 	s.mu.Lock()
 	s.goalInTurn = false
@@ -2020,17 +2041,9 @@ func (s *Session) settleGoalOnIdle() bool {
 	if kick != nil && !pendingAsk && !suppressHold && !backlogPending && (!preParked || len(claimed) > 0 || restoredBacklog) {
 		if preHasGoal && (preSnap.Status == goal.StatusActive || (preSnap.Status == goal.StatusWaiting && (len(claimed) > 0 || restoredBacklog))) {
 			if len(claimed) > 0 || restoredBacklog {
-				if restoredBacklog {
-					s.goalUpdateMu.Lock()
-					wakeFull, wakeOK = s.getOrCreateGoalStore().GoalSnapshot()
-					s.goalUpdateMu.Unlock()
-					if wakeOK {
-						for _, p := range wakeFull.PendingWake {
-							wakeIDs = append(wakeIDs, p.WaitID)
-						}
-						wakePrompt = s.renderGoalWakePrompt(wakeFull)
-					}
-				}
+				// Both wake branches (claimed above, restored backlog in the
+				// pre-s.mu split) feed the same wakePrompt/wakeIDs locals:
+				// this section holds s.mu alone and never takes goalUpdateMu.
 				prompt = wakePrompt
 			} else {
 				prompt = goal.Render(preSnap.Objective)
