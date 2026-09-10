@@ -1,10 +1,9 @@
-export type { AnyNotification } from "./client";
-export type { AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
+export type { AskAnswerItem, AskResolution } from "./askAnswers";
+export { composeAskAnswers } from "./askAnswers";
+export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-export type { AskAnswerItem, AskResolution } from "./askAnswers";
-export { composeAskAnswers } from "./askAnswers";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
