@@ -704,6 +704,9 @@ func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing
 		t.Fatal(err)
 	}
 	before := countEnvironmentTurns(s)
+	if before != 1 {
+		t.Fatalf("compaction retained %d environment turns, want 1", before)
+	}
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
@@ -729,6 +732,10 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
+	changedID := s.history[len(s.history)-1].StableTurnID
+	if countEnvironmentTurns(s) != 2 || changedID == "" || changedID == oldID {
+		t.Fatal("changed observation did not append a distinct environment turn")
+	}
 	s.contextMgr.PreserveRecentTurns = 2
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatal(err)
@@ -736,8 +743,14 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 	if oldID == "" {
 		t.Fatal("missing original environment identity")
 	}
-	if countEnvironmentTurns(s) != 1 {
-		t.Fatalf("changed environment was not retained before compaction: %d", countEnvironmentTurns(s))
+	var retainedIDs []string
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			retainedIDs = append(retainedIDs, turn.StableTurnID)
+		}
+	}
+	if len(retainedIDs) != 1 || retainedIDs[0] != changedID {
+		t.Fatalf("retained environment IDs = %v, want only changed turn %s (old %s)", retainedIDs, changedID, oldID)
 	}
 	before := countEnvironmentTurns(s)
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
@@ -752,11 +765,14 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
+	var releaseOnce sync.Once
+	releaseProvider := func() { releaseOnce.Do(func() { close(release) }) }
 	s := newScriptedSummaryCompactSession(t, "env-merge-tail", func(llm.Request) llm.Response {
 		once.Do(func() { close(started) })
 		<-release
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
+	t.Cleanup(releaseProvider)
 	seedNumberedSessionHistory(t, s, 12)
 	s.contextMgr.PreserveRecentTurns = 1
 	done := make(chan error, 1)
@@ -769,11 +785,14 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
-	close(release)
+	releaseProvider()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	before := countEnvironmentTurns(s)
+	if before != 1 {
+		t.Fatalf("compaction retained %d merged environment turns, want 1", before)
+	}
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
