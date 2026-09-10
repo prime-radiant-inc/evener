@@ -1,6 +1,7 @@
 package contextmgr
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,10 +14,19 @@ func TestRoundTimingsAreTransparentToContextAccountingAndElicitRender(t *testing
 	timing := schema.NewTurn(schema.TurnRoundTimings, llm.System(strings.Repeat("timing marker ", 200)))
 	withTiming := append(append([]schema.Turn{}, base...), timing)
 	if got, want := estimateTokens(withTiming), estimateTokens(base); got != want {
-		t.Fatalf("timing marker changed estimated tokens: got %d, want %d", got, want)
+		t.Errorf("timing marker changed estimated tokens: got %d, want %d", got, want)
 	}
-	if got, want := attentionTransparentTurnCount(withTiming), attentionTransparentTurnCount(base); got != want {
-		t.Fatalf("timing marker changed recent turn count: got %d, want %d", got, want)
+	if got, want := contextTurnCount(withTiming), contextTurnCount(base); got != want {
+		t.Errorf("timing marker changed recent turn count: got %d, want %d", got, want)
+	}
+	if got := recentContextCutoff(withTiming, 1); got != 0 {
+		t.Errorf("recent cutoff = %d, want original user input at 0", got)
+	}
+	if got := contextHistory(withTiming); !reflect.DeepEqual(got, base) {
+		t.Errorf("context history retains timing metadata: %#v", got)
+	}
+	if got := checkpoint(withTiming, 1, nil, "communicate"); !reflect.DeepEqual(got, withTiming) {
+		t.Errorf("timing metadata triggered compaction of preserved input: %#v", got)
 	}
 	if got := renderTurnForElicit(timing); got != "" {
 		t.Fatalf("timing marker rendered into elicit context: %q", got)

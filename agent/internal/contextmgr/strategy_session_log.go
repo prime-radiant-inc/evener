@@ -177,11 +177,11 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 }
 
 func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn, preserveRecent int, meta *CompactionMeta) []schema.Turn {
-	if attentionTransparentTurnCount(history) <= preserveRecent {
+	if contextTurnCount(history) <= preserveRecent {
 		return history
 	}
 
-	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	cutoff := safeCutoff(history, recentContextCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history
 	}
@@ -258,7 +258,7 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.T
 	if s.session == nil || s.session.Profile() == nil {
 		return nil
 	}
-	history = attentionTransparentHistory(history)
+	history = contextHistory(history)
 	// Pass only the last ~10 turns so the cheap model summarizes
 	// what just happened rather than processing the entire session.
 	recent := history

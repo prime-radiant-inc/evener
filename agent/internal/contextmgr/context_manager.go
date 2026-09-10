@@ -441,7 +441,7 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 func estimateTokens(turns []schema.Turn) int {
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
-		if t.Kind == schema.TurnAttentionResolution {
+		if t.Kind == schema.TurnAttentionResolution || t.Kind == schema.TurnRoundTimings {
 			continue
 		}
 		messages = append(messages, t.Message)
@@ -449,36 +449,36 @@ func estimateTokens(turns []schema.Turn) int {
 	return llm.EstimateMessagesInputTokens(messages).Tokens
 }
 
-func attentionTransparentTurnCount(history []schema.Turn) int {
+func contextTurnCount(history []schema.Turn) int {
 	count := 0
 	for _, turn := range history {
-		if turn.Kind != schema.TurnAttentionResolution {
+		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings {
 			count++
 		}
 	}
 	return count
 }
 
-func attentionTransparentHistory(history []schema.Turn) []schema.Turn {
-	if attentionTransparentTurnCount(history) == len(history) {
+func contextHistory(history []schema.Turn) []schema.Turn {
+	if contextTurnCount(history) == len(history) {
 		return history
 	}
 	visible := make([]schema.Turn, 0, len(history))
 	for _, turn := range history {
-		if turn.Kind != schema.TurnAttentionResolution {
+		if turn.Kind != schema.TurnAttentionResolution && turn.Kind != schema.TurnRoundTimings {
 			visible = append(visible, turn)
 		}
 	}
 	return visible
 }
 
-func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int) int {
+func recentContextCutoff(history []schema.Turn, preserveRecent int) int {
 	if preserveRecent <= 0 {
 		return len(history)
 	}
 	seen := 0
 	for i, turn := range slices.Backward(history) {
-		if turn.Kind == schema.TurnAttentionResolution {
+		if turn.Kind == schema.TurnAttentionResolution || turn.Kind == schema.TurnRoundTimings {
 			continue
 		}
 		seen++
@@ -617,8 +617,8 @@ func (cm *Manager) ForceCompact(
 		before = estimateTokens(*history)
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
-		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
-			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
+		canSummarize := contextTurnCount(*history) > cm.PreserveRecentTurns &&
+			safeCutoff(*history, recentContextCutoff(*history, cm.PreserveRecentTurns)) >= 0
 		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
@@ -659,7 +659,7 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 		return
 	}
 
-	cutoff := attentionTransparentRecentCutoff(history, preserveRecent)
+	cutoff := recentContextCutoff(history, preserveRecent)
 	if cutoff <= 0 {
 		return
 	}
@@ -887,7 +887,7 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 		return
 	}
 
-	cutoff := attentionTransparentRecentCutoff(history, preserveRecent)
+	cutoff := recentContextCutoff(history, preserveRecent)
 	if cutoff <= 0 {
 		return
 	}
@@ -940,11 +940,11 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 // User messages and agent responses are stored as an interleaved Markdown
 // conversation for readable round-tripping across repeated compactions.
 func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []schema.Turn {
-	if attentionTransparentTurnCount(history) <= preserveRecent {
+	if contextTurnCount(history) <= preserveRecent {
 		return history
 	}
 
-	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	cutoff := safeCutoff(history, recentContextCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history
 	}
@@ -1455,7 +1455,7 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 // arguments and tool-result content — the parts that carry the exact values the
 // elicitor must preserve. Returns "" for turns with no textual content.
 func renderTurnForElicit(t schema.Turn) string {
-	if t.Kind == schema.TurnAttentionResolution {
+	if t.Kind == schema.TurnAttentionResolution || t.Kind == schema.TurnRoundTimings {
 		return ""
 	}
 	var b strings.Builder
@@ -1501,10 +1501,10 @@ func (cm *Manager) summarizeWithLLM(ctx context.Context, history []schema.Turn, 
 // summarizeWithLLMSteered is like summarizeWithLLM but accepts optional caller
 // instructions that replace the default mandatory-sections prompt when non-empty.
 func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string) ([]schema.Turn, error) {
-	if attentionTransparentTurnCount(history) <= preserveRecent {
+	if contextTurnCount(history) <= preserveRecent {
 		return history, nil
 	}
-	cutoff := safeCutoff(history, attentionTransparentRecentCutoff(history, preserveRecent))
+	cutoff := safeCutoff(history, recentContextCutoff(history, preserveRecent))
 	if cutoff < 0 {
 		return history, nil
 	}
@@ -1614,7 +1614,7 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 	crossedSteering := false
 	for i := cutoff; i < len(history); i++ {
 		k := history[i].Kind
-		if k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution {
+		if k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution || k == schema.TurnRoundTimings {
 			continue
 		}
 		if k == schema.TurnSteering {
@@ -1632,7 +1632,7 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 			cutoff--
 			continue
 		}
-		if k == schema.TurnSteering || ((k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution) && (tracingToolResult || crossedSteering)) {
+		if k == schema.TurnSteering || ((k == schema.TurnHookCompleted || k == schema.TurnAttentionResolution || k == schema.TurnRoundTimings) && (tracingToolResult || crossedSteering)) {
 			cutoff--
 			continue
 		}
