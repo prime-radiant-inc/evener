@@ -160,7 +160,10 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		Candidates: []LaunchPluginCandidate{}, SelectedDirs: []string{},
 		Diagnostics: []LaunchPluginDiagnostic{}, SelectionErrors: []PluginSelectionError{},
 	}
-	seen := make(map[string]bool)
+	// competing maps each manifest name to the paths of every candidate that
+	// offered it, winner first, so a duplicate's diagnostic can name every
+	// competing copy rather than only the one it is rejecting.
+	competing := make(map[string][]string)
 
 	// An inventory is something a caller acts on: the hub validates plugins
 	// and then detaches from the request context to finish the spawn, so an
@@ -214,11 +217,13 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		}
 
 		name := instance.Manifest.Name
-		if seen[name] {
+		if prior := competing[name]; len(prior) > 0 {
+			paths := append(slices.Clone(prior), path)
+			competing[name] = paths
 			resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
 				Name:    name,
 				Path:    path,
-				Message: fmt.Sprintf("duplicate plugin name %q; keeping the first", name),
+				Message: fmt.Sprintf("duplicate plugin name %q; keeping the first of: %s", name, strings.Join(paths, ", ")),
 				Source:  source,
 			})
 			return
@@ -228,7 +233,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		// requested by its embedded directory name, and
 		// TestBundledPluginsAreNamedAfterTheirDirectory pins that the two are
 		// the same string for every plugin this ships.
-		seen[name] = true
+		competing[name] = append(competing[name], path)
 
 		version := instance.Manifest.Version
 		if source == LaunchPluginSourceInstalled && registryVersion != "" {
@@ -284,7 +289,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 				})
 				continue
 			}
-			if !seen[name] && rootErr == nil {
+			if len(competing[name]) == 0 && rootErr == nil {
 				// Bundled plugins join the inventory only by request, so an
 				// unremarkable launch never picks them up. The lookup is by
 				// embedded directory name while add keys the inventory by
@@ -316,7 +321,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 					})
 				}
 			}
-			if !seen[name] {
+			if len(competing[name]) == 0 {
 				resolution.SelectionErrors = append(resolution.SelectionErrors, PluginSelectionError{
 					Name: name, Reason: "no valid plugin candidate",
 				})

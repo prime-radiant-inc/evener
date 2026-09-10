@@ -148,6 +148,11 @@ func (b *navigationDocumentBuilder) addSessions(owner, slot string, sessions hub
 	b.container(containerKey, ownerValue, children)
 }
 func (b *navigationDocumentBuilder) finish() (hubapi.NavigationSnapshot, error) {
+	// History and applied deltas use an empty array. Keep projected empty
+	// resources in that same form so reconstruction checks compare equal graphs.
+	if b.entities == nil {
+		b.entities = []hubapi.NavigationEntityRecord{}
+	}
 	snapshot := hubapi.NavigationSnapshot{Metadata: b.metadata, Entities: b.entities, Containers: b.containers}
 	hubapi.SortNavigationSnapshot(&snapshot)
 	if err := validateNavigationResourceSnapshot(b.key, b.generation, b.revision, snapshot); err != nil {
