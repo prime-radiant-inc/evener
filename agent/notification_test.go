@@ -198,6 +198,8 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	}
 	select {
 	case <-steerAccepted:
+		// TRIPWIRE: scripted provider execution should accept steering promptly;
+		// this bound prevents a broken notification turn from hanging the suite.
 	case <-time.After(5 * time.Second):
 		t.Fatal("notification provider call did not accept client steering")
 	}
@@ -206,7 +208,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
 	owner := starts[0].TurnID
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
+	data, err := readTranscriptFull(sess.TranscriptPath())
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -222,6 +224,48 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	}
 	if reminderOwner == "" || steeringOwner == "" || reminderOwner != steeringOwner || reminderOwner != owner {
 		t.Fatalf("durable owners reminder=%q steering=%q EventTurnStarted=%q", reminderOwner, steeringOwner, owner)
+	}
+}
+
+// TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn pins the
+// notification-only steering boundary. A daemon steer drained by a named
+// EntryNotification turn must carry that turn's owner into the durable
+// transcript, or cold projection folds it into the preceding user turn.
+func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("warmup") },
+			func(req llm.Request) llm.Response { return finalResponse("notification handled") },
+		},
+	}
+	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{NoProjectPrompts: true, StateDir: dir}))
+	if _, err := sess.ProcessInput(context.Background(), "completed user turn", nil); err != nil {
+		t.Fatalf("warmup ProcessInput: %v", err)
+	}
+	recorder := serveAndRecord(t, sess)
+	sess.SteerKind("daemon steering", events.SteeringKindLoopDetected)
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+	_, starts := recorder.snapshot()
+	if len(starts) != 1 || starts[0].TurnID == "" {
+		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
+	}
+	data, err := readTranscriptFull(sess.TranscriptPath())
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	var steeringOwner string
+	for _, entry := range data.Entries {
+		if entry.Turn.SteeringKind == events.SteeringKindLoopDetected {
+			steeringOwner = entry.Turn.OwningTurnID
+		}
+	}
+	if steeringOwner != starts[0].TurnID {
+		t.Fatalf("daemon steering owner=%q, want notification turn %q", steeringOwner, starts[0].TurnID)
 	}
 }
 
