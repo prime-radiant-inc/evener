@@ -409,6 +409,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			return nil
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
+		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != ""
 		stableTurnID := eventStableTurnID(event)
 		if stableTurnID != "" && stableTurnID == s.appPendingStableTurnID {
 			s.appProjector.ReserveStableTurnID(stableTurnID)
@@ -437,6 +438,13 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
 		for _, item := range projected {
+			// A queued terminal event can finish the old projector turn after a
+			// new stable turn has been admitted. Preserve its turn/item terminal
+			// notifications, but do not publish the old thread status or close
+			// frame over the newer durable active identity.
+			if supersededSessionEnd && (item.Method == appwire.NotifyThreadStatusChanged || item.Method == appwire.NotifyThreadClosed) {
+				continue
+			}
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
 				startSeed := start.CurrentWork

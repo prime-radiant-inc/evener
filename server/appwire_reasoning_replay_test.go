@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -77,6 +78,35 @@ func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T)
 	if got := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"}).Thread.Evener.ActiveTurnID; got != "turn_new" {
 		t.Fatalf("durable active turn after queued turn end = %q, want turn_new", got)
 	}
+	queuedSessionEndCursor := srv.appNotifier.CurrentSequence()
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_reasoning_boundary", Data: events.SessionEndData{State: "idle"}}, nil)
+	queuedSessionEndNotifications := srv.AppNotificationsAfter(queuedSessionEndCursor, "th_reasoning_boundary")
+	var sawOldTurnCompleted, sawOldItemCompleted, sawStaleThreadStatus, sawStaleThreadClosed bool
+	for _, notification := range queuedSessionEndNotifications {
+		switch notification.Notification.Method {
+		case appwire.NotifyTurnCompleted:
+			sawOldTurnCompleted = true
+		case appwire.NotifyItemCompleted:
+			sawOldItemCompleted = true
+		case appwire.NotifyThreadStatusChanged:
+			sawStaleThreadStatus = true
+		case appwire.NotifyThreadClosed:
+			sawStaleThreadClosed = true
+		}
+	}
+	if !sawOldTurnCompleted || !sawOldItemCompleted {
+		t.Fatalf("queued session end notifications=%+v, want old turn/item completion", queuedSessionEndNotifications)
+	}
+	if sawStaleThreadStatus || sawStaleThreadClosed {
+		t.Fatalf("queued session end published stale thread state: %+v", queuedSessionEndNotifications)
+	}
+	queuedSessionEndRead := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"})
+	if got := queuedSessionEndRead.Thread.Evener.ActiveTurnID; got != "turn_new" {
+		t.Fatalf("durable active turn after queued session end = %q, want turn_new", got)
+	}
+	if got := queuedSessionEndRead.Thread.Status.Type; got != appwire.ThreadStatusActive {
+		t.Fatalf("status after queued session end = %q, want active", got)
+	}
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(time.Millisecond), Data: events.GoalContinuationData{Text: "new question", StableTurnID: "turn_new"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(time.Second)})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(2 * time.Second), Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "new reasoning"}})
@@ -117,8 +147,31 @@ func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T)
 	if current.ID != "turn_new" || current.Status != appwire.TurnStatusInProgress {
 		t.Fatalf("current turn=(id %q, status %q), want in-progress turn_new", current.ID, current.Status)
 	}
+	if got := read.Thread.Status.Type; got != appwire.ThreadStatusActive {
+		t.Fatalf("status after stable carrier = %q, want active", got)
+	}
 	if len(current.Items) != 2 || current.Items[1].Type != "reasoning" || current.Items[1].Text != "new reasoning" || current.Items[1].TurnID != "turn_new" {
 		t.Fatalf("current items=%+v, want new reasoning on turn_new", current.Items)
+	}
+	completedCursor := srv.appNotifier.CurrentSequence()
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_reasoning_boundary", Data: events.SessionEndData{State: "idle"}}, nil)
+	completedNotifications := srv.AppNotificationsAfter(completedCursor, "th_reasoning_boundary")
+	var sawCompletedStatus bool
+	for _, notification := range completedNotifications {
+		if notification.Notification.Method != appwire.NotifyThreadStatusChanged {
+			continue
+		}
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err == nil && params.Status.Type == appwire.ThreadStatusIdle {
+			sawCompletedStatus = true
+		}
+	}
+	if !sawCompletedStatus {
+		t.Fatalf("new completion notifications=%+v, want idle thread status", completedNotifications)
+	}
+	completedRead := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"})
+	if completedRead.Thread.Status.Type != appwire.ThreadStatusIdle || completedRead.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("completed new state=(%q, %q), want idle/empty", completedRead.Thread.Status.Type, completedRead.Thread.Evener.ActiveTurnID)
 	}
 }
 
@@ -190,5 +243,47 @@ func TestServerAppWireNonstableGoalUpdatesActiveIdentity(t *testing.T) {
 	srv.mu.RUnlock()
 	if active == "turn_old" || active == "" {
 		t.Fatalf("nonstable goal active turn=%q, want a new identity", active)
+	}
+}
+
+func TestServerAppWireFailedClaimSessionEndClearsState(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_failed_claim")
+	srv.SetProcessingTurn("turn_unclaimed")
+	srv.SetProcessing(false)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_failed_claim", Data: events.SessionEndData{State: "idle"}}, nil)
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_failed_claim"})
+	if read.Thread.Status.Type != appwire.ThreadStatusIdle || read.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("failed claim state=(%q, %q), want idle/empty", read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID)
+	}
+}
+
+func TestServerAppWireQueuedClosedSessionEndOmitsStaleThreadFrames(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_closed_boundary")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_closed_boundary", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_closed_boundary", Data: events.ReasoningSummaryDeltaData{Delta: "old reasoning"}})
+	srv.SetProcessingTurn("turn_new")
+	cursor := srv.appNotifier.CurrentSequence()
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_closed_boundary", Data: events.SessionEndData{State: "closed"}}, nil)
+	notifications := srv.AppNotificationsAfter(cursor, "th_closed_boundary")
+	var sawTurnCompleted, sawItemCompleted, sawThreadStatus, sawThreadClosed bool
+	for _, notification := range notifications {
+		switch notification.Notification.Method {
+		case appwire.NotifyTurnCompleted:
+			sawTurnCompleted = true
+		case appwire.NotifyItemCompleted:
+			sawItemCompleted = true
+		case appwire.NotifyThreadStatusChanged:
+			sawThreadStatus = true
+		case appwire.NotifyThreadClosed:
+			sawThreadClosed = true
+		}
+	}
+	if !sawTurnCompleted || !sawItemCompleted {
+		t.Fatalf("closed queued notifications=%+v, want turn/item completion", notifications)
+	}
+	if sawThreadStatus || sawThreadClosed {
+		t.Fatalf("closed queued notifications=%+v, want no stale thread frames", notifications)
 	}
 }

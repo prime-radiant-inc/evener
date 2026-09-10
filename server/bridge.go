@@ -165,6 +165,12 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	if !s.acceptsSessionEventLocked(ev.SessionID) {
 		return
 	}
+	// A prior turn's terminal event may still be queued when a durable turn is
+	// published. Its projector event must drain before the new stable carrier;
+	// do not let its status side effect clear the pending identity first.
+	if ev.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" {
+		return
+	}
 	effect(s)
 }
 
