@@ -5706,6 +5706,33 @@ describe("ConversationStore", () => {
   });
 
   describe("I2: generation/identity-stale loadOlder performs ZERO set calls", () => {
+    it("does not rehydrate a stale cursor through the replacement binding", async () => {
+      const serviceA = new FakeConversationService();
+      const serviceB = new FakeConversationService();
+      const store = createConversationStore();
+      serviceA.readProjectionResult = makeReadProjectionResult(makeThread({ id: "thread-A" }));
+      serviceB.readProjectionResult = makeReadProjectionResult(makeThread({ id: "thread-B" }));
+      await store.getState().openProjected(serviceA, createFakeSink(), "ref-A");
+      store.setState({ olderCursor: "cursor-A" });
+      const readsBeforeLoad = serviceA.readProjectionCalls.length;
+
+      let rejectA!: (error: Error) => void;
+      serviceA.olderItems = new Promise<never>((_resolve, reject) => {
+        rejectA = reject;
+      }) as never;
+      const loadA = store.getState().loadOlder(serviceA);
+      await store.getState().openProjected(serviceB, createFakeSink(), "ref-B");
+
+      rejectA(new WireError("stale transcript cursor", -32020, {
+        evenerErrorInfo: "transcriptItemCursorStale",
+      }));
+      await expect(loadA).resolves.toEqual({ status: "ignored" });
+
+      expect(serviceA.readProjectionCalls).toHaveLength(readsBeforeLoad);
+      expect(store.getState().conversation?.id).toBe("thread-B");
+      expect(store.getState().ref).toBe("ref-B");
+    });
+
     it("barrier: A pending, open/reset B, start B page, resolve A → subscriber sees zero stale writes", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
