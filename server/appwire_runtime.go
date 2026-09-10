@@ -295,7 +295,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
 		s.appPendingStableTurnID = ""
-		s.appLateStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
 		s.appReservedTurnID = ""
 		s.appProcessingReservedTurnID = ""
@@ -412,37 +411,24 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			return nil
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
-		if event.Kind == events.EventSessionEnd && s.appPendingStableTurnID == "" {
-			// Processing cleanup already retired this claim. A terminal event
-			// arriving afterward settles the abandoned turn and consumes the
-			// one-shot late-carrier hint.
-			s.appLateStableTurnID = ""
-		}
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != ""
 		stableTurnID := eventStableTurnID(event)
 		pendingCarrier := stableTurnID != "" && stableTurnID == s.appPendingStableTurnID
-		lateCarrier := stableTurnID != "" && stableTurnID == s.appLateStableTurnID
-		if stableTurnID != "" && (pendingCarrier || lateCarrier) {
+		if pendingCarrier {
 			s.appProjector.ReserveStableTurnID(stableTurnID)
-			if pendingCarrier {
-				s.appPendingStableTurnID = ""
-				s.appLateStableTurnID = ""
-			}
-			if lateCarrier {
-				s.appLateStableTurnID = ""
-			}
-			if lateCarrier && !pendingCarrier && s.appPendingStableTurnID == "" {
-				// Cleanup published the deferred terminal state before this
-				// carrier arrived. Reconcile the pull state with the active
-				// status notification emitted by the carrier.
-				s.status.State = appwire.ThreadStatusActive
-			}
+			s.appPendingStableTurnID = ""
 			// The carrier owns the new turn, so a terminal event from the
 			// previous turn must not be replayed after this boundary.
 			s.appDeferredTerminalNotifications = nil
 		}
 		projected := s.appProjector.Project(event)
 		projectedTurnID := s.appProjector.ActiveTurnID()
+		if isAppTurnCarrier(event) && projectedTurnID != "" && s.appPendingStableTurnID == "" {
+			// A carrier can arrive after processing cleanup and a queued
+			// terminal event. Reconcile the pull state before publishing the
+			// carrier's active notification so thread/read agrees with it.
+			s.status.State = appwire.ThreadStatusActive
+		}
 		if s.appPendingStableTurnID == "" {
 			s.appActiveTurnID = projectedTurnID
 		}
@@ -628,6 +614,15 @@ func eventStableTurnID(event events.SessionEvent) string {
 		return data.TurnID
 	default:
 		return ""
+	}
+}
+
+func isAppTurnCarrier(event events.SessionEvent) bool {
+	switch event.Kind {
+	case events.EventTurnStarted, events.EventUserInput, events.EventGoalContinuation:
+		return true
+	default:
+		return false
 	}
 }
 
