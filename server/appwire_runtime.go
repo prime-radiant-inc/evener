@@ -295,6 +295,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
 		s.appPendingStableTurnID = ""
+		s.appDeferredTerminalNotifications = nil
 		s.appReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
@@ -533,6 +534,14 @@ func (s *Server) flushDeferredTerminalNotifications() {
 		}
 		pending := s.appDeferredTerminalNotifications
 		s.appDeferredTerminalNotifications = nil
+		currentThreadID, currentRef, currentTurns := s.appThreadID, s.appRef, s.appTurns
+		retained := pending[:0]
+		for _, item := range pending {
+			if item.threadID == currentThreadID && item.ref == currentRef && item.snapshot == currentTurns {
+				retained = append(retained, item)
+			}
+		}
+		pending = retained
 		for _, item := range pending {
 			if item.method != appwire.NotifyThreadStatusChanged {
 				continue
