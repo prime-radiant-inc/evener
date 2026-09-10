@@ -377,19 +377,21 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // picker to open. null = not loaded or the load failed - the select stays on
   // the fallback ladder.
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
-  // The scope the pane catalog was fetched for ("harness + cwd", the
-  // model/list key loadCatalog uses). The catalog merges snapshots across
-  // scopes for picker display continuity, but /model pre-start validation
-  // must only read a snapshot fetched for the CURRENT scope: during the
-  // settle window after a cwd/harness change, modelCatalog still holds the
-  // previous scope, and a value valid only there must not validate.
-  const [modelCatalogScope, setModelCatalogScope] = useState("");
-  // The catalog pre-start /model validation may read: the pane catalog only
-  // when its stamp matches the current scope, null otherwise. Display
-  // surfaces (pickers, effort ladder) keep the merged catalog for
-  // continuity; validation fail-closes through the mismatch window instead
-  // of accepting a value the new scope never offered.
-  const scopedModelCatalog = modelCatalogScope === `${harness}\0${cwd}` ? modelCatalog : null;
+  // Validity stamp for the pane catalog: the scope ("harness + cwd") the
+  // committed snapshot was fetched for, plus the loader identity that
+  // fetched it. The catalog merges snapshots across scopes for picker
+  // display continuity, but /model pre-start validation must only read a
+  // snapshot fetched for the CURRENT scope by the CURRENT loader: during
+  // the settle window after a cwd/harness change — or while a credential
+  // change-triggered refresh is pending — modelCatalog still holds the
+  // previous snapshot, and a value valid only there must not validate.
+  // null means never successfully loaded (or the last refresh failed):
+  // validation fail-closes through that window instead of accepting a
+  // value the current scope never offered.
+  const [modelCatalogStamp, setModelCatalogStamp] = useState<{
+    scope: string;
+    loader: () => Promise<ModelCatalog>;
+  } | null>(null);
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
   const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
@@ -774,17 +776,26 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     let active = true;
     // The scope this request fetches for, stamped on commit below. A scope
     // change re-runs the effect and retires the previous run via active, so
-    // only the latest scope's response commits its stamp.
+    // only the latest scope's response commits its stamp. loadCatalog's own
+    // identity is the full refresh-trigger key (client, harness, cwd,
+    // instances, generation), so stamping it invalidates the snapshot across
+    // credential/client refreshes too — not just scope changes.
     const requestScope = `${harness}\0${cwd}`;
+    const requestLoader = loadCatalog;
     const settle = setTimeout(() => {
       loadCatalog().then(
         (catalog) => {
           if (active) {
             setModelCatalog((previous) => mergeCatalogSnapshot(previous, catalog));
-            setModelCatalogScope(requestScope);
+            setModelCatalogStamp({ scope: requestScope, loader: requestLoader });
           }
         },
-        () => {},
+        () => {
+          // Fail the stamp closed on refresh failure: the merged catalog
+          // keeps serving display, but validation must not accept values
+          // against a snapshot a failed refresh may have left behind.
+          if (active) setModelCatalogStamp(null);
+        },
       );
     }, CATALOG_SETTLE_MS);
     return () => {
@@ -792,6 +803,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       clearTimeout(settle);
     };
   }, [loadCatalog]);
+  // The catalog pre-start /model validation may read: the pane catalog only
+  // when its stamp matches the current scope AND the current loader, null
+  // otherwise. Display surfaces (pickers, effort ladder) keep the merged
+  // catalog for continuity; validation fail-closes through the mismatch
+  // window instead of accepting a value the new scope never offered.
+  const scopedModelCatalog =
+    modelCatalogStamp !== null &&
+    modelCatalogStamp.scope === `${harness}\0${cwd}` &&
+    modelCatalogStamp.loader === loadCatalog
+      ? modelCatalog
+      : null;
 
   // Branch HEAD resolution (floor §1.7): the readout is read-only, so HEAD is
   // its ONLY source - re-resolved on every working-dir change with no
@@ -1112,10 +1134,23 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       if (builtinMatch.command.id === "model" && value === "") {
         // Fall through to the ordinary start below with no model override.
       } else {
+        // Effort validation reads the scope-stamped catalog, not the merged
+        // display ladder: same staleness hole as /model (a value valid only
+        // in the previous scope must not validate). No stamp yet (never
+        // loaded or last refresh failed) falls back to the fallback ladder —
+        // the pre-load status quo — while a stamp for ANOTHER scope
+        // fail-closes to no levels.
+        const scopedEffortEntry =
+          effortModel === ""
+            ? undefined
+            : scopedModelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel);
+        const scopedKnownEffortLevels = catalogEffortLevels(scopedEffortEntry);
+        const scopedEffortLevels =
+          scopedKnownEffortLevels ?? (modelCatalogStamp === null ? FALLBACK_EFFORT_LEVELS : []);
         const items =
           builtinMatch.command.id === "model"
             ? resolveSpawnModelItems(scopedModelCatalog)
-            : resolveSpawnEffortItems(effortLevels, reasoningEffort);
+            : resolveSpawnEffortItems(scopedEffortLevels, reasoningEffort);
         // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
         // resolveSpawnEffortItems (the "(default)" entry) must not count as
         // known here, so an empty effort value toasts

@@ -259,3 +259,28 @@ func TestHubSpawnSlashCatalog_EmptyCWDScansConfiguredSkillsDirs(t *testing.T) {
 		t.Errorf("configured skill %q missing from empty-cwd catalog: %v", "extras", slashCatalogSkillNames(resp))
 	}
 }
+
+func TestHubSpawnSlashCatalog_MissingCWDFallsBackToUserLevelInventory(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "not-yet-created")
+	pluginDir := t.TempDir()
+	writeSlashCatalogPlugin(t, pluginDir, "greeter", "greet")
+
+	// The spawn flow creates a missing directory via preflightDir ("Create &
+	// start"), so the catalog must not fail for it: with no project on disk
+	// yet, the honest inventory is the user level (global + explicit plugin
+	// dirs), not an error.
+	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+		CWD:             missing,
+		LaunchOverrides: &appwire.LaunchConfigLayer{PluginDirs: []string{pluginDir}},
+	})
+	if err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v, want user-level fallthrough for a not-yet-created cwd", err)
+	}
+	greet := slashCatalogCommandByName(t, resp, "greet")
+	if greet.Source != "plugin" {
+		t.Errorf("greet Source = %q, want %q", greet.Source, "plugin")
+	}
+}

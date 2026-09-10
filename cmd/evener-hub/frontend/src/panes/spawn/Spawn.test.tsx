@@ -3114,6 +3114,47 @@ test("a /model value from the previous cwd does not validate after switching dir
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
 });
 
+test("a /reasoning-effort value from the previous cwd does not validate after switching directories", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+    // Delay the new scope's catalog past the submit below so validation
+    // runs in the stale window deterministically.
+    f.on("model/list", async (params) => {
+      if ((params as { cwd?: string }).cwd === "/tmp/other") {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+      return {
+        data: [
+          { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+          { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+        ],
+      };
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  // Switch directories: the merged effort ladder still holds the old scope
+  // until the new scoped load lands. "high" validates against the stale
+  // ladder but must fail closed.
+  await setWorkingDir(user, "/tmp/other");
+
+  await user.type(promptField(), "/reasoning-effort high");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "high"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
 test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
   const user = userEvent.setup();
   const fake = readyClient();

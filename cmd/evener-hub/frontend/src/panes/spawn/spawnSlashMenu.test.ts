@@ -75,6 +75,12 @@ describe("resolveSpawnEffortItems", () => {
     const items = resolveSpawnEffortItems(levels, "");
     expect(items.filter((item) => item.id === "none")).toHaveLength(1);
   });
+
+  test("does not duplicate none when current is none on a none-less ladder", () => {
+    const levels = ["low", "high"];
+    const items = resolveSpawnEffortItems(levels, "none");
+    expect(items.filter((item) => item.id === "none")).toHaveLength(1);
+  });
 });
 
 describe("runSpawnBuiltinAfterStart", () => {

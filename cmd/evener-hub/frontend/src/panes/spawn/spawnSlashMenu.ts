@@ -48,10 +48,11 @@ export function resolveSpawnEffortItems(levels: string[], current: string): Comm
   // entry. A fresh form whose ladder excludes "none" still offers it, and the
   // backend accepts it — so slash pre-start validation must too, or
   // "/reasoning-effort none" fail-closes a value the selector happily sends.
-  return [
-    ...effortOptionLevels(levels, current).map((l) => ({ id: l, label: effortLabel(l, levels) })),
-    ...(!levels.includes("none") ? [{ id: "none", label: effortLabel("none", levels) }] : []),
-  ];
+  // The presence check runs against the resolved list (not just the ladder):
+  // effortOptionLevels already appends `current`, so a current value of
+  // "none" on a none-less ladder must not produce two identical entries.
+  const base = effortOptionLevels(levels, current).map((l) => ({ id: l, label: effortLabel(l, levels) }));
+  return base.some((item) => item.id === "none") ? base : [...base, { id: "none", label: effortLabel("none", levels) }];
 }
 
 export async function runSpawnBuiltinAfterStart(

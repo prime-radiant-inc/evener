@@ -48,14 +48,27 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 	} else {
 		canonical, err := hubCanonicalizeDir(params.CWD)
 		if err != nil {
-			return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + err.Error())
+			// A not-yet-created directory is a normal spawn-flow state
+			// (preflightDir's "Create & start"): with no project on disk
+			// yet there is nothing project-scoped to offer, so fall back
+			// to the user-level inventory rather than failing. Any other
+			// canonicalization error stays InvalidParams.
+			if !errors.Is(err, os.ErrNotExist) {
+				return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + err.Error())
+			}
+			userResolved, userErr := launchconfig.ResolveUserOnly(hubLaunchConfigRoot(cfg), overrides)
+			if userErr != nil {
+				return appwire.SpawnSlashCatalogResponse{}, userErr
+			}
+			resolved = userResolved
+		} else {
+			canonicalCWD = canonical
+			fullResolved, err := hubResolveLaunch(hubLaunchConfigRoot(cfg), canonical, overrides)
+			if err != nil {
+				return appwire.SpawnSlashCatalogResponse{}, err
+			}
+			resolved = fullResolved
 		}
-		canonicalCWD = canonical
-		fullResolved, err := hubResolveLaunch(hubLaunchConfigRoot(cfg), canonical, overrides)
-		if err != nil {
-			return appwire.SpawnSlashCatalogResponse{}, err
-		}
-		resolved = fullResolved
 	}
 	// thread/start launches with spawnResolved.Effective.PluginDirs carried on
 	// the Resolved value (the resolver's own SelectedDirs never reach the
