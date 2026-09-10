@@ -61,6 +61,65 @@ func TestAdoptedIntentSpendPersistsDurably(t *testing.T) {
 	}
 }
 
+// TestAdoptedSpendFailureRetriesFinishSpend verifies the idempotent
+// accepted-steer/intent-spend transition: when the durable spend fails after
+// the adopter's steer accepted, the adopter's record links the adopted intent
+// to the accepted steer. A same-ID retry of the adopter finishes the marker
+// clear and the spend (no second steer) and journals its applied result,
+// instead of re-accepting the steer or losing the delivery.
+func TestAdoptedSpendFailureRetriesFinishSpend(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	injected := errors.New("injected journal fault between meta save and delivery-pending mark")
+	s.cfg.testOnly.notesJournalFault = func() error { return injected }
+	if _, err := s.SetHumanNote("outer-adopt-link-a", "adopted value"); !errors.Is(err, injected) {
+		t.Fatalf("save A err = %v, want injected journal fault", err)
+	}
+	s.cfg.testOnly.notesJournalFault = nil
+	// The adopter faults on the durable spend AFTER its steer accepted: fail
+	// every metadata save from here until the link is journaled, then let the
+	// spend itself fail once.
+	autosave := errors.New("injected autosave fault on adopted spend")
+	s.cfg.testOnly.notesAutoSaveFault = func() error { return autosave }
+	if _, err := s.SetHumanNote("outer-adopt-link-b", "adopted value"); !errors.Is(err, autosave) {
+		t.Fatalf("adopting save err = %v, want injected autosave fault", err)
+	}
+	s.cfg.testOnly.notesAutoSaveFault = nil
+	// The steer landed exactly once, and the adopted intent still stands for
+	// the retry to finish spending.
+	s.mu.Lock()
+	n := len(s.steeringQueue)
+	s.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("steering queue length = %d, want 1 (spend failure must not duplicate the steer)", n)
+	}
+	if _, _, ok := s.pendingNotesHumanIntent("outer-adopt-link-a"); !ok {
+		t.Fatal("adopted intent missing after spend failure, want it pending for the retry")
+	}
+	// Same-ID retry of the adopter finishes the spend without re-steering and
+	// journals its applied result.
+	if _, err := s.SetHumanNote("outer-adopt-link-b", "adopted value"); err != nil {
+		t.Fatalf("retry adopter: %v", err)
+	}
+	s.mu.Lock()
+	n = len(s.steeringQueue)
+	s.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("steering queue length = %d, want still 1 (retry finishes the spend, not the steer)", n)
+	}
+	if _, _, ok := s.pendingNotesHumanIntent("outer-adopt-link-a"); ok {
+		t.Fatal("adopted intent still pending after retry, want it spent")
+	}
+	if rec := s.clientMutations.snapshot().Journal["outer-adopt-link-b"]; rec.OperationState != clientMutationOperationApplied {
+		t.Fatalf("adopter record state = %q, want applied", rec.OperationState)
+	}
+	nextNotesEvent(t, s, events.EventNotesUpdated)
+}
+
 // TestAdoptedIntentSurvivesRefusedSteer verifies the retry-loss half of the
 // adopted-delivery path: when the adopter's steer is refused (interrupt
 // fence), the adopted intent is NOT consumed — nothing was delivered, so the

@@ -190,6 +190,7 @@ type clientMutationStoreRecord struct {
 	NotesStoredValue     string                        `json:"notes_stored_value"`
 	NotesStoredValueSet  bool                          `json:"notes_stored_value_set"`
 	NotesInnerSteerID    string                        `json:"notes_inner_steer_id"`
+	NotesAdoptedIntent   string                        `json:"notes_adopted_intent"`
 }
 
 type clientMutationStoreRejection struct {

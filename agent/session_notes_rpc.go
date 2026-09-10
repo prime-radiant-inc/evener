@@ -130,6 +130,24 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	// value wins over the caller's (possibly older) input, so an
 	// intervening save is never clobbered.
 	if generation > 1 {
+		// An adopter retry whose accepted steer already linked the adopted
+		// intent finishes the outstanding transition instead of re-accepting
+		// the steer: the steer landed, only the marker-clear/spend may still
+		// be open. Each step re-checks its own marker, so an already-finished
+		// step is a silent no-op and the retry converges on the applied
+		// result without duplicating delivery.
+		if adoptedID, ok := s.adoptedIntentLink(outerID); ok {
+			if err := s.clearNotesDeliveryPending(adoptedID, note); err != nil {
+				lease.Release()
+				return "", NormalizeClientMutationError(outerID, err)
+			}
+			if err := s.consumePendingNotesHumanDurable(adoptedID); err != nil {
+				lease.Release()
+				return "", err
+			}
+			live, _ := s.notesSnapshot()
+			return s.applyNotesHumanSetResult(lease, outerID, live)
+		}
 		if stored, changed, ok := s.pendingNotesHumanIntent(outerID); ok {
 			if !changed {
 				return s.applyNotesHumanSetResult(lease, outerID, stored)
@@ -386,14 +404,30 @@ func (s *Session) deliverAdoptedNotesSteer(lease *clientMutationLease, outerID s
 	}
 	s.setSteeringKindOnRecord(steerID, events.SteeringKindHumanNote)
 	s.annotateSteeringKind(steerID, events.SteeringKindHumanNote)
-	s.clearNotesDeliveryPending(adopted.outerID, adopted.stored)
-	// The adopted delivery finished via this attempt's steer: spend a
-	// journal-fault adoption's metadata-committed intent now, durably, so a
-	// later retry cannot deliver the same value twice. (A journal-marker
-	// adoption has no intent under its own ID and this is a no-op.) The
-	// spend runs AFTER the steer accepted, so a refusal above never consumes
-	// the intent a retry needs; its own durability (same-save absence)
-	// covers the crash window the spend itself opens.
+	// The adopted delivery finished via this attempt's steer: link the
+	// adopted intent to the accepted steer BEFORE spending it, so a spend
+	// failure leaves a retry able to finish the spend (same outer id resumes
+	// above) instead of re-accepting the steer or losing the delivery. Then
+	// clear the adopted journal marker and spend the linked intent, durably,
+	// so a later retry cannot deliver the same value twice. (A journal-marker
+	// adoption has no intent under its own ID and the spend is a no-op.) The
+	// link-then-spend runs AFTER the steer accepted, so a refusal above never
+	// consumes the intent a retry needs.
+	if adopted.outerID != strings.TrimSpace(outerID) {
+		if err := s.linkAdoptedIntentToSteer(outerID, adopted.outerID, steerID); err != nil {
+			lease.Release()
+			return adopted.stored, NormalizeClientMutationError(outerID, err)
+		}
+	}
+	// clearNotesDeliveryPending's failure is NOT ignorable: silently
+	// completing would strand the adopted record still-pending for a later
+	// retry to redeliver. The link above is already journaled, so the retry
+	// (same outer id resumes at the link branch) finishes the marker clear
+	// instead of re-accepting the steer.
+	if err := s.clearNotesDeliveryPending(adopted.outerID, adopted.stored); err != nil {
+		lease.Release()
+		return adopted.stored, NormalizeClientMutationError(outerID, err)
+	}
 	if adopted.outerID != strings.TrimSpace(outerID) {
 		if err := s.consumePendingNotesHumanDurable(adopted.outerID); err != nil {
 			lease.Release()
@@ -489,8 +523,46 @@ func (s *Session) lookupSteerID(outerID, innerID string, lease *clientMutationLe
 	return innerID
 }
 
+// linkAdoptedIntentToSteer records, beside the adopter's reservation, that
+// the adopted intent's delivery now rides the adopter's accepted steer. It
+// runs inside the store serializer via mutate, so it cannot interleave with
+// a concurrent reserve of the same record; the adopter lease stays open for
+// the final applied update (mutate, unlike update, settles no ownership).
+// The link makes the accepted-steer/intent-spend transition idempotent: a
+// retry of the adopter (same outer id) sees the link and finishes the spend
+// instead of re-accepting the steer, and a retry of the adopted id finds the
+// tombstone the spend left instead of redelivering.
+func (s *Session) linkAdoptedIntentToSteer(outerID, adoptedID, steerID string) error {
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		record, ok := snapshot.Journal[outerID]
+		if !ok || record.Method != clientMutationMethodNotesHumanSet ||
+			record.OperationState != clientMutationOperationInFlight {
+			return errClientMutationOwner
+		}
+		record.NotesInnerSteerID = steerID
+		record.NotesAdoptedIntent = adoptedID
+		snapshot.Journal[outerID] = record
+		return nil
+	})
+}
+
+// adoptedIntentLink reports the adopted intent id linked to the adopter's
+// accepted steer, if any.
+func (s *Session) adoptedIntentLink(outerID string) (string, bool) {
+	if s.clientMutations == nil {
+		return "", false
+	}
+	record, exists := s.clientMutations.snapshot().Journal[outerID]
+	if !exists || record.Method != clientMutationMethodNotesHumanSet {
+		return "", false
+	}
+	if record.NotesAdoptedIntent == "" {
+		return "", false
+	}
+	return record.NotesAdoptedIntent, true
+}
+
 // acceptNotesSteer drives the derived inner steer under steerID.
-func (s *Session) acceptNotesSteer(steerID, text string) (string, error) {
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: steerID,
 		Input:            clientMutationInput(text, nil),
@@ -539,12 +611,17 @@ func (s *Session) markNotesDeliveryPending(outerID, stored string) error {
 // match: an intervening same-ID reservation advance (a same-ID retry that
 // took the record over first) leaves the marker for its owner. The write runs
 // inside the store serializer via mutate; the adopting attempt's own owner
-// lease stays open for its final applied update.
-func (s *Session) clearNotesDeliveryPending(outerID, stored string) {
+// lease stays open for its final applied update. The error reports whether
+// the marker cleared: a journal failure leaves the adopted record pending,
+// and the adopter must NOT complete (its applied result would strand the
+// still-pending record for a later retry to redeliver) — it routes through
+// the durable recovery path, which records the adopter's accepted steer and
+// tombstones the adopted marker before any retry may proceed.
+func (s *Session) clearNotesDeliveryPending(outerID, stored string) error {
 	if s.clientMutations == nil {
-		return
+		return nil
 	}
-	_ = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		record, ok := snapshot.Journal[outerID]
 		if !ok || record.Method != clientMutationMethodNotesHumanSet ||
 			record.OperationState != clientMutationOperationInFlight {

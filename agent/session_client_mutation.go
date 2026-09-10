@@ -135,6 +135,13 @@ type clientMutationRecord struct {
 	// success cannot accept a second steer. Empty until the first inner
 	// acceptance. Never part of the dedupe payload.
 	NotesInnerSteerID string `json:"notes_inner_steer_id,omitempty"`
+	// NotesAdoptedIntent names another outer id's metadata-committed intent
+	// this attempt's accepted steer delivers. A retry of this outer id sees
+	// the link and finishes the adopted intent's spend instead of
+	// re-accepting the steer, so the accepted-steer/intent-spend transition
+	// is idempotent across a spend failure. Empty unless this attempt
+	// adopted a journal-fault intent. Never part of the dedupe payload.
+	NotesAdoptedIntent string `json:"notes_adopted_intent,omitempty"`
 }
 
 type clientMutationFailure struct {
