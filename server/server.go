@@ -814,17 +814,20 @@ func (s *Server) SetProcessing(processing bool) {
 // SetProcessingTurn atomically publishes a durable turn's stable identity as
 // the active AppWire turn until its ordered stable carrier is projected.
 func (s *Server) SetProcessingTurn(turnID string) {
-	s.mu.Lock()
-	s.processing = true
-	s.ensureAppProjectorLocked("")
-	s.appProcessingReservedTurnID = s.appProjector.ReservedTurnID()
-	// The projector reservation is consumed by the ordered event stream. The
-	// callback can run ahead of that consumer, so mutating the projector here
-	// would let queued events from the previous turn use the new identity.
-	s.appActiveTurnID = turnID
-	s.appPendingStableTurnID = turnID
-	s.appReservedTurnID = ""
-	s.mu.Unlock()
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		s.processing = true
+		s.ensureAppProjectorLocked("")
+		s.appProcessingReservedTurnID = s.appProjector.ReservedTurnID()
+		// The projector reservation is consumed by the ordered event stream. The
+		// callback can run ahead of that consumer, so mutating the projector here
+		// would let queued events from the previous turn use the new identity.
+		s.appActiveTurnID = turnID
+		s.appPendingStableTurnID = turnID
+		s.appReservedTurnID = ""
+		s.mu.Unlock()
+		return nil
+	})
 }
 
 func (s *Server) setProcessingLocked(processing bool) {
