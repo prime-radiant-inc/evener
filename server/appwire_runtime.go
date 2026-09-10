@@ -413,7 +413,8 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		s.ensureAppProjectorLocked(event.SessionID)
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != ""
 		stableTurnID := eventStableTurnID(event)
-		if stableTurnID != "" && stableTurnID == s.appPendingStableTurnID {
+		pendingCarrier := stableTurnID != "" && stableTurnID == s.appPendingStableTurnID
+		if pendingCarrier {
 			s.appProjector.ReserveStableTurnID(stableTurnID)
 			s.appPendingStableTurnID = ""
 			// The carrier owns the new turn, so a terminal event from the
@@ -422,6 +423,12 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		projected := s.appProjector.Project(event)
 		projectedTurnID := s.appProjector.ActiveTurnID()
+		if isAppTurnCarrier(event) && projectedTurnID != "" && s.appPendingStableTurnID == "" {
+			// A carrier can arrive after processing cleanup and a queued
+			// terminal event. Reconcile the pull state before publishing the
+			// carrier's active notification so thread/read agrees with it.
+			s.status.State = appwire.ThreadStatusActive
+		}
 		if s.appPendingStableTurnID == "" {
 			s.appActiveTurnID = projectedTurnID
 		}
@@ -607,6 +614,15 @@ func eventStableTurnID(event events.SessionEvent) string {
 		return data.TurnID
 	default:
 		return ""
+	}
+}
+
+func isAppTurnCarrier(event events.SessionEvent) bool {
+	switch event.Kind {
+	case events.EventTurnStarted, events.EventUserInput, events.EventGoalContinuation:
+		return true
+	default:
+		return false
 	}
 }
 
