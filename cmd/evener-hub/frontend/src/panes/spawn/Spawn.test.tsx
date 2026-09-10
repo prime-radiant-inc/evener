@@ -28,6 +28,7 @@ import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
+import { resetSpawnDraftsForTests } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -232,12 +233,298 @@ async function settled(): Promise<void> {
   await screen.findByRole("button", { name: "Advanced options" });
 }
 
+async function visitSpawnURL(url: string): Promise<void> {
+  await act(async () => {
+    window.history.pushState({}, "", url);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+}
+
+test("draft survives unmount and bare /new return before any successful start", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const client = readyClient();
+  const mounted = renderSpawn(client);
+  await settled();
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-a-sentinel");
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  mounted.unmount();
+  await visitSpawnURL("/settings");
+  await visitSpawnURL("/new");
+  renderSpawn(client);
+  await settled();
+  expectWorkingDir("/tmp/draft-a");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
+});
+
+test("project navigation isolates drafts and ignores non-new URL prefill", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  renderSpawn(readyClient());
+  await settled();
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-a-sentinel");
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  await visitSpawnURL("/settings?dir=/tmp/foreign&prompt=foreign");
+  expectWorkingDir("/tmp/draft-a");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("");
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-b-sentinel");
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+test("directory picker assigns the unscoped draft and restores each project's launch settings", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  const fake = readyClient();
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "unscoped-sentinel");
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  mounted.unmount();
+  renderSpawn(fake);
+  expect(promptField().value).toBe("unscoped-sentinel");
+  await setWorkingDir(user, "/tmp/draft-a");
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
+  await user.selectOptions(screen.getByLabelText("Harness"), "evener");
+  await setWorkingDir(user, "/tmp/draft-b");
+  expect(promptField().value).toBe("");
+  expect((effortControl() as HTMLSelectElement).value).toBe("");
+  await user.type(promptField(), "draft-b-sentinel");
+  await setWorkingDir(user, "/tmp/draft-a");
+  expect(promptField().value).toBe("unscoped-sentinel");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("read-only");
+  expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("evener");
+  await setWorkingDir(user, "/tmp/draft-b");
+  expect(promptField().value).toBe("draft-b-sentinel");
+});
+
+test("URL prefill is applied to its project but not replayed over edits on remount", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a&prompt=seed");
+  const fake = readyClient();
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "-edited");
+  mounted.unmount();
+  renderSpawn(fake);
+  expect(promptField().value).toBe("seed-edited");
+  await visitSpawnURL("/new?dir=/tmp/draft-b&prompt=other-seed");
+  expect(promptField().value).toBe("other-seed");
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect(promptField().value).toBe("seed-edited");
+  await visitSpawnURL("/new?prompt=replacement");
+  expect(promptField().value).toBe("replacement");
+});
+
+test("unchanged URL directory prefill does not replace a picker-selected draft on remount", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+  const fake = readyClient();
+  const mounted = renderSpawn(fake);
+  await setWorkingDir(user, "/tmp/review-b");
+  await user.type(promptField(), "picker-draft");
+  mounted.unmount();
+  renderSpawn(fake);
+  expectWorkingDir("/tmp/review-b");
+  expect(promptField().value).toBe("picker-draft");
+  await visitSpawnURL("/new?dir=/tmp/review-a");
+  expectWorkingDir("/tmp/review-a");
+  expect(promptField().value).toBe("");
+});
+
+test.each(["unrelated field", "newer same field", "other project"])(
+  "late advanced path validation preserves %s edits after remount",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+    const validation = deferred<{ path: string; valid: boolean }>();
+    const fake = readyClient((f) => {
+      f.on("evener/launch/schema", () => ({
+        options: [
+          {
+            field: "agent",
+            wireField: "agent",
+            label: "Agent",
+            kind: "text",
+            group: "general",
+            pathKind: "command",
+            perLaunch: true,
+          },
+          {
+            field: "maxRounds",
+            wireField: "maxRounds",
+            label: "Max rounds",
+            kind: "integer",
+            group: "general",
+            perLaunch: true,
+          },
+        ],
+      }));
+      f.on("evener/path/validate", ({ path }) =>
+        path === "review-agent" ? validation.promise : { path, valid: true },
+      );
+    });
+    const mounted = renderSpawn(fake);
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+    mounted.unmount();
+    renderSpawn(fake);
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    fireEvent.change(screen.getByLabelText("Max rounds"), { target: { value: "7" } });
+    if (scenario === "newer same field") {
+      fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-new" } });
+    }
+    if (scenario === "other project") {
+      await visitSpawnURL("/new?dir=/tmp/review-b");
+      fireEvent.change(screen.getByLabelText("Max rounds"), { target: { value: "9" } });
+    }
+    await act(async () => validation.resolve({ path: "review-agent", valid: scenario !== "newer same field" }));
+    if (scenario === "other project") {
+      expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("9");
+      expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("");
+      await visitSpawnURL("/new?dir=/tmp/review-a");
+    }
+    expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("7");
+    const agent = scenario === "newer same field" ? "review-new" : "review-agent";
+    expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe(agent);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+    expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+      cwd: "/tmp/review-a",
+      launchOverrides: { agent, maxRounds: 7 },
+    });
+  },
+);
+
+test("successful creation preserves edits made while directory preflight was pending", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const validation = deferred<{ path: string; valid: boolean }>();
+  const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-sentinel");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
+  await user.type(promptField(), "-newer");
+  await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: true }));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    input: [{ type: "text", text: "submitted-sentinel" }],
+  });
+  expect(promptField().value).toBe("submitted-sentinel-newer");
+});
+
+test("late missing-directory preflight keeps Create and start with its originating draft", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const validation = deferred<{ path: string; valid: boolean }>();
+  const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "draft-a-sentinel");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  await user.type(promptField(), "draft-b-sentinel");
+  await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: false }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.find((call) => call.method === "evener/dirs/create")?.params).toEqual({ path: "/tmp/draft-a" });
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    cwd: "/tmp/draft-a",
+    input: [{ type: "text", text: "draft-a-sentinel" }],
+  });
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  expect(promptField().value).toBe("draft-b-sentinel");
+});
+
+test("late successful creation clears only the originating draft across remount and project navigation", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "submitted-sentinel");
+  act(() => pastePngInto(promptField(), "submitted.png"));
+  await screen.findByRole("button", { name: "View submitted.png" });
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  mounted.unmount();
+  renderSpawn(fake);
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  await user.type(promptField(), "other-project-sentinel");
+  act(() => pastePngInto(promptField(), "other.png"));
+  await screen.findByRole("button", { name: "View other.png" });
+  await act(async () => started.resolve(startResponse("local:abc123")));
+  expect(promptField().value).toBe("other-project-sentinel[image 1]");
+  expect(screen.getByRole("button", { name: "View other.png" })).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect(promptField().value).toBe("");
+  expect(screen.queryByTestId("attachment-tile")).toBeNull();
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBe("/tmp/draft-a");
+});
+
+test("restoring a project's effort never clamps it against the previous project's catalog", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const fake = readyClient((f) => {
+    f.on("model/list", ({ cwd }) => ({
+      data: [
+        {
+          provider: "anthropic",
+          model: "claude-sonnet-4-5",
+          displayName: "anthropic/claude-sonnet-4-5",
+          reasoningEffortLevels: cwd === "/tmp/draft-b" ? ["low"] : ["high"],
+        },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "high", "none"]));
+  await user.selectOptions(effortControl(), "high");
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "none"]));
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "high", "none"]));
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+});
+
 beforeAll(() => {
   globalThis.localStorage = new MemoryStorage() as unknown as Storage;
 });
 
 beforeEach(() => {
   localStorage.clear();
+  resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
   modelListOverride = null;
 });
@@ -255,7 +542,7 @@ test("missing credentials surface setup in the composer without opening a dialog
   await setWorkingDir(user, "/tmp/my-project");
   expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => {
-    await user.click(connect);
+    fireEvent.click(connect);
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
@@ -336,8 +623,11 @@ test("successful keyless testing refreshes availability without an auth notifica
   const connectProvider = await screen.findByRole("button", { name: "Connect provider" });
   // Finish the lazy dialog's mount and catalog refresh before retaining a button
   // reference: the refresh replaces the initially cached instance rows.
+  // Keep the native click inside this awaited act. userEvent's async wrapper
+  // temporarily disables the act environment and cannot nest inside this scope
+  // when the shared lazy chunk is already hot from an earlier test.
   await act(async () => {
-    await user.click(connectProvider);
+    fireEvent.click(connectProvider);
     await vi.dynamicImportSettled();
   });
   const testConnection = await screen.findByRole("button", { name: "Test connection" });
@@ -2240,6 +2530,162 @@ function installCanvasStubs(): void {
   URL.createObjectURL = () => "blob:fake";
   URL.revokeObjectURL = () => {};
 }
+
+test("failed creation retains images and advanced/plugin settings through remount", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "maxRounds",
+          wireField: "maxRounds",
+          label: "Max rounds",
+          group: "general",
+          kind: "integer",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+    f.on("thread/start", () => {
+      throw new WireError("draft-start-failure", -32000);
+    });
+  });
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "retained-sentinel");
+  act(() => pastePngInto(promptField(), "retained.png"));
+  await screen.findByRole("button", { name: "View retained.png" });
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "7");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+  await screen.findByText(/draft-start-failure/);
+  mounted.unmount();
+  renderSpawn(fake);
+  expect(promptField().value).toBe("retained-sentinel[image 1]");
+  expect(screen.getByRole("button", { name: "View retained.png" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("7");
+  await openDesktopPluginSelection(user);
+  expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false");
+  // In-memory retention must not serialize the image or prompt into defaults.
+  const stored = Array.from({ length: localStorage.length }, (_, index) =>
+    localStorage.getItem(localStorage.key(index) ?? ""),
+  );
+  expect(stored.join("\n")).not.toContain("retained-sentinel");
+  expect(stored.join("\n")).not.toContain(btoa(String.fromCharCode(9, 9, 9)));
+  fake.on("thread/start", () => startResponse("local:abc123"));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const submissions = fake.calls.filter((call) => call.method === "thread/start");
+  expect(submissions).toHaveLength(2);
+  expect(submissions[1]?.params).toEqual(submissions[0]?.params);
+  expect(submissions[1]?.params).toMatchObject({ launchOverrides: { maxRounds: 7, enabledPlugins: ["alpha"] } });
+});
+
+test("successful submitted snapshot clears only its images and preserves newer edits after remount", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "submitted-sentinel");
+  act(() => pastePngInto(promptField(), "submitted.png"));
+  await screen.findByRole("button", { name: "View submitted.png" });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  mounted.unmount();
+  renderSpawn(fake);
+  await user.type(promptField(), "-newer");
+  act(() => pastePngInto(promptField(), "newer.png"));
+  await screen.findByRole("button", { name: "View newer.png" });
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  await act(async () => started.resolve(startResponse("local:abc123")));
+  expect(promptField().value).toBe("submitted-sentinel-newer[image 2]");
+  expect(screen.queryByRole("button", { name: "View submitted.png" })).toBeNull();
+  expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  expect(screen.queryByTestId("attachment-tile")).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
+});
+
+test.each([
+  { outcome: "success", remount: false },
+  { outcome: "failure", remount: false },
+  { outcome: "success", remount: true },
+  { outcome: "failure", remount: true },
+])(
+  "pending image encode $outcome stays with its project across navigation (remount: $remount)",
+  async ({ outcome, remount }) => {
+    installCanvasStubs();
+    const images: { onload: (() => void) | null; onerror: (() => void) | null }[] = [];
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        width = 4;
+        height = 4;
+        set src(_value: string) {
+          images.push(this);
+        }
+      },
+    );
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+    const fake = readyClient();
+    const mounted = renderSpawn(fake);
+    await user.type(promptField(), "draft-a-sentinel");
+    act(() => pastePngInto(promptField(), "a.png"));
+    expect(screen.getByRole("img", { name: "a.png (still processing)" })).toBeTruthy();
+    if (remount) {
+      mounted.unmount();
+      renderSpawn(fake);
+    }
+    expect(screen.getByRole("img", { name: "a.png (still processing)" })).toBeTruthy();
+    await user.click(screen.getByTestId("spawn-submit"));
+    expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+    await user.type(promptField(), "-newer");
+    await visitSpawnURL("/new?dir=/tmp/draft-b");
+    await user.type(promptField(), "draft-b-sentinel");
+    act(() => pastePngInto(promptField(), "b.png"));
+    expect(images).toHaveLength(2);
+    promptField().setSelectionRange(promptField().value.length, promptField().value.length);
+    await act(async () => {
+      if (outcome === "success") images[0]?.onload?.();
+      else images[0]?.onerror?.();
+    });
+    expect(promptField().value).toBe("draft-b-sentinel[image 1]");
+    expect(screen.getByRole("img", { name: "b.png (still processing)" })).toBeTruthy();
+    if (outcome === "failure") {
+      act(() => pastePngInto(promptField(), "b2.png"));
+      expect(promptField().value).toBe("draft-b-sentinel[image 1][image 2]");
+    }
+    await visitSpawnURL("/new?dir=/tmp/draft-a");
+    if (outcome === "success") {
+      await screen.findByRole("button", { name: "View a.png" });
+      expect(promptField().value).toBe("draft-a-sentinel[image 1]-newer");
+    } else {
+      expect(screen.queryByTestId("attachment-tile")).toBeNull();
+      expect(promptField().value).toBe("draft-a-sentinel-newer");
+    }
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => images[1]?.onload?.());
+    if (outcome === "failure") await act(async () => images[2]?.onload?.());
+    await visitSpawnURL("/new?dir=/tmp/draft-b");
+    await screen.findByRole("button", { name: "View b.png" });
+  },
+);
 
 test("resets the prompt and attachments after a successful spawn, but keeps sticky defaults (floor §1.14 L186)", async () => {
   installCanvasStubs();

@@ -12,6 +12,7 @@ import { resetToastStoreForTests } from "../../widgets/toast/store";
 import * as connectDialogChunk from "./connectDialogChunk";
 import { resetConnectDialogLoaderForTests } from "./connectDialogChunk";
 import Spawn, { resetConnectDialogChunkForTests } from "./Spawn";
+import { resetSpawnDraftsForTests } from "./spawnDrafts";
 
 // The connect-provider dialog chunk is a separate network request from
 // index.html, so a hub restarting mid-load, a slow link, or a deploy that
@@ -127,6 +128,7 @@ beforeEach(() => {
     realConsoleError(...args);
   });
   localStorage.clear();
+  resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
   loadConnectDialog.mockReset();
   loadConnectDialog.mockImplementation(realLoadConnectDialog);
@@ -255,8 +257,10 @@ class DialogTestOuterBoundary extends Component<{ children: ReactNode }, { failu
 }
 
 test("a logic bug in the resolved dialog keeps unwinding past the dialog boundary", async () => {
+  const expectedError = new Error("ConnectProviderDialog render logic bug");
+  const caughtErrors: unknown[] = [];
   function BuggyDialog() {
-    throw new Error("ConnectProviderDialog render logic bug");
+    throw expectedError;
   }
   vi.mocked(loadConnectDialog).mockResolvedValue({ ConnectProviderDialog: BuggyDialog } as never);
   const user = userEvent.setup();
@@ -269,10 +273,12 @@ test("a logic bug in the resolved dialog keeps unwinding past the dialog boundar
       </DialogTestOuterBoundary>
       <Toast />
     </ClientProvider>,
+    { onCaughtError: (error) => caughtErrors.push(error) },
   );
 
   await openConnectDialog(user);
 
   expect(await screen.findByText("outer boundary caught: ConnectProviderDialog render logic bug")).toBeTruthy();
+  expect(caughtErrors).toEqual([expectedError]);
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
 });

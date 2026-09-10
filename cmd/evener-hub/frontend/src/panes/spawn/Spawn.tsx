@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useStore } from "zustand";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type {
   HarnessDescriptor,
@@ -89,13 +90,8 @@ import {
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
-import {
-  getGlobalLastWorkingDir,
-  resolveInitialDefaults,
-  saveDefaults,
-  setGlobalLastWorkingDir,
-  sweepStaleModels,
-} from "./spawnDefaults";
+import { getGlobalLastWorkingDir, saveDefaults, setGlobalLastWorkingDir, sweepStaleModels } from "./spawnDefaults";
+import { applySpawnURL, type SpawnDraft, selectSpawnDirectory, spawnDraftsStore, useDraftField } from "./spawnDrafts";
 import {
   PRE_SESSION_BUILTIN_IDS,
   resolveSpawnEffortItems,
@@ -104,7 +100,6 @@ import {
   spawnBuiltinCommands,
 } from "./spawnSlashMenu";
 import { startThread } from "./startThread";
-import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
 import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
@@ -316,6 +311,22 @@ const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: 
 });
 
 export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
+  const draft = useStore(spawnDraftsStore, (state) => state.current);
+  const prefillRevision = useStore(spawnDraftsStore, (state) => state.prefillRevision);
+  useLayoutEffect(() => {
+    applySpawnURL();
+    function onPopState(): void {
+      if (window.location.pathname === "/new") applySpawnURL(true);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  return draft ? <SpawnForm draft={draft} prefillRevision={prefillRevision} /> : null;
+}
+
+// Keep the singleton's controls mounted while changing their backing draft.
+// Store-bound setters and image continuations retain their originating scope.
+function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevision: number }) {
   const client = useClient();
   const toasts = useToasts();
   const providerSetup = useProviderSetup();
@@ -344,30 +355,33 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setProviderDialog(() => nextDialog);
   }, []);
 
-  const [prompt, setPrompt] = useState("");
-  const [harness, setHarness] = useState("");
-  const [model, setModel] = useState(""); // qualified "provider/model", or "" for the harness default
-  const [reasoningEffort, setReasoningEffort] = useState("");
-  const [cwd, setCwd] = useState("");
+  const [prompt, setPrompt] = useDraftField(draft, "prompt");
+  const [harness, setHarness] = useDraftField(draft, "harness");
+  const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
+  const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
+  const cwd = draft.cwd;
+  const setCwd = selectSpawnDirectory;
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [branch, setBranch] = useState(""); // display-only (floor §1.7)
-  const [accessMode, setAccessMode] = useState("");
+  const [accessMode, setAccessMode] = useDraftField(draft, "accessMode");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
-  const [advancedOverrides, setAdvancedOverrides] = useState<LaunchConfigLayer>({});
-  const [pluginSelection, setPluginSelection] = useState<PluginSelectionState>({ mode: "default" });
+  const [advancedOverrides, setAdvancedOverrides] = useDraftField(draft, "advancedOverrides");
+  const [advancedValues, setAdvancedValues] = useDraftField(draft, "advancedValues");
+  const readAdvancedValues = useCallback(() => draft.fields.getState().advancedValues, [draft]);
+  const [pluginSelection, setPluginSelection] = useDraftField(draft, "pluginSelection");
   const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
   const pluginSelectionRef = useRef(pluginSelection);
   pluginSelectionRef.current = pluginSelection;
   const [staleNotice, setStaleNotice] = useState<string | null>(null);
-  const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [createDialogPath, setCreateDialogPath] = useDraftField(draft, "createDialogPath");
+  const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
   // caller owns the clock. busyStartedAt is stamped once, at the submit that
   // flips busy true; StartingLoader below owns the 1s tick and mounts only
   // while busy, so no interval runs with nothing on screen reading it.
-  const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
+  const [busyStartedAt, setBusyStartedAt] = useDraftField(draft, "busyStartedAt");
   // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
@@ -420,8 +434,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // changes (new match, or the query narrowed/widened) rather than
   // persisted across it - an index into a list that just changed shape is
   // not a meaningful position to keep.
-  const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
+  const [slashToken, setSlashToken] = useState<SlashToken | null>(() => parseSlashToken(prompt, prompt.length));
   const [slashHighlighted, setSlashHighlighted] = useState(0);
+  // URL writes bypass the keystroke path, including a prefill for the current
+  // project. A restored draft should offer the same completion as typed text.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
+  useEffect(() => {
+    const text = draft.fields.getState().prompt;
+    setSlashToken(parseSlashToken(text, text.length));
+    setKnownSelectionIssues([]);
+    cursorRef.current = null;
+  }, [draft, prefillRevision]);
   // The backend already resolved the selection for this cwd plus overrides
   // (evener/spawn/slashCatalog), so no plugin filtering applies here the
   // way Composer's visibleCatalogCommands filters its global catalog by
@@ -504,6 +527,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // React controlled-input rationale). textRef mirrors `prompt` synchronously
   // so a late decode-failure callback never reverts newer typing.
   const textRef = useRef(prompt);
+  textRef.current = prompt;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
@@ -516,18 +540,22 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // `busy` state stays: it still drives the disabled attribute/"Starting…"
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
-  const busyRef = useRef(false);
+  const busyRef = draft.busyRef;
   // Mirrors `model` for the default-provider-credential effect below: that
   // effect must read whether Model is CURRENTLY untouched without itself
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
-  const initialModelRef = useRef("");
+  const initialModelRef = useRef(model);
   const modelRef = useRef(model);
   modelRef.current = model;
 
+  function isCurrentDraft(): boolean {
+    return spawnDraftsStore.getState().current?.fields === draft.fields;
+  }
+
   function updatePrompt(next: string): void {
-    textRef.current = next;
+    if (isCurrentDraft()) textRef.current = next;
     setPrompt(next);
   }
 
@@ -540,15 +568,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   const textEditor: TextEditor = {
     read: () => ({
-      text: textRef.current,
-      cursor: cursorRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
+      text: draft.fields.getState().prompt,
+      cursor: isCurrentDraft()
+        ? (cursorRef.current ?? textareaRef.current?.selectionStart ?? draft.fields.getState().prompt.length)
+        : draft.fields.getState().prompt.length,
     }),
     write: (next, cursor) => {
       updatePrompt(next);
-      cursorRef.current = cursor;
+      if (isCurrentDraft()) cursorRef.current = cursor;
     },
   };
-  const attachments = useAttachments(textEditor);
+  const attachments = useAttachments(textEditor, draft.attachments);
 
   // commitSlashCompletion is Tab/plain-Enter's (handlePromptKeyDown below)
   // and a mouse click's (SlashCompletionMenu's own onSelect) shared "the
@@ -687,7 +717,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setKnownSelectionIssues(pluginSelectionIssues(nextSelection, state.response));
     // A selection change clears the cached issues until its new preview settles.
     // Re-running this effect for that selection change would restore old issues.
-  }, [pluginPreview.state, pluginSelectionSupported]);
+  }, [pluginPreview.state, pluginSelectionSupported, setPluginSelection]);
 
   // A refresh triggered by a selection toggle keeps the previous response on
   // the loading state (see usePluginPreview), so the disclosure and its list
@@ -701,26 +731,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const pluginSelectionBlocked =
     explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
-  // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
-  // (harnesses, advanced schema).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initialization; the closures it calls are stable for the first paint
+  // Draft defaults and URL prefill are owned above the form's lifetime.
+  // Mount only the asynchronous catalogs and focus the current prompt.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only catalog loading
   useEffect(() => {
-    const urlPrefill = readUrlPrefill(window.location.search);
-    const defaults = resolveInitialDefaults({ serverPrefillDir: urlPrefill.dir });
-    if (urlPrefill.prompt) {
-      updatePrompt(urlPrefill.prompt);
-      // Programmatic writes bypass the keystroke path's token recompute, so
-      // parse here with the caret at end-of-text (where focus lands below):
-      // a prefilled "/..." token opens its menu immediately instead of
-      // waiting for the next keystroke.
-      setSlashToken(parseSlashToken(urlPrefill.prompt, urlPrefill.prompt.length));
-    }
-    if (defaults.harness) setHarness(defaults.harness);
-    initialModelRef.current = defaults.model ?? "";
-    if (defaults.model) setModel(defaults.model);
-    if (defaults.workingDir) setCwd(defaults.workingDir);
-    if (defaults.accessMode) setAccessMode(defaults.accessMode);
-    if (defaults.reasoningEffort) setReasoningEffort(defaults.reasoningEffort);
     // Writing the prompt is what starting an agent IS, so the caret starts
     // there rather than on whichever field happens to be first in the DOM.
     textareaRef.current?.focus();
@@ -764,33 +778,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       active = false;
     };
   }, [client, providerSetup.instances]);
-
-  // kata 11ee: the spawn pane is a dockview singleton (index.tsx) - a second
-  // /new?dir=/?prompt= navigation while this pane is already open refocuses
-  // this SAME mounted instance instead of remounting it, so the mount-only
-  // effect above (deps []) never reruns and the new prefill is silently
-  // dropped. A popstate listener re-applies whatever of readUrlPrefill IS
-  // present on every subsequent in-app navigation - routing.ts's navigate()
-  // dispatches popstate on every push, the same signal AppShell's own
-  // routing glue and settings/sections/project.tsx's useQueryCwd both key
-  // off - without touching the sticky-defaults layering above, which is
-  // mount-only initialization, not a navigation param. A URL with neither
-  // param present (e.g. an unrelated navigation elsewhere and back) yields
-  // no entries from readUrlPrefill and so leaves both fields untouched,
-  // matching that function's own "absent param -> no entry" contract.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: install once - setCwd is a stable setter and updatePrompt closes only over the stable textRef, so the mount-time closure stays correct for every later popstate
-  useEffect(() => {
-    function onPopState(): void {
-      const urlPrefill = readUrlPrefill(window.location.search);
-      if (urlPrefill.dir) setCwd(urlPrefill.dir);
-      if (urlPrefill.prompt) {
-        updatePrompt(urlPrefill.prompt);
-        setSlashToken(parseSlashToken(urlPrefill.prompt, urlPrefill.prompt.length));
-      }
-    }
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the
@@ -930,7 +917,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, advancedOverrides, resolveConfig, loadModels]);
+  }, [cwd, advancedOverrides, resolveConfig, loadModels, setModel]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's
@@ -984,11 +971,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // a guess, and clobbering a sticky default on a guess would lose the user's
   // setting (the daemon clamps a level the model doesn't accept).
   useEffect(() => {
-    if (knownEffortLevels === null) return;
+    if (knownEffortLevels === null || scopedModelCatalog === null) return;
     if (reasoningEffort !== "" && reasoningEffort !== "none" && !knownEffortLevels.includes(reasoningEffort)) {
       setReasoningEffort("");
     }
-  }, [knownEffortLevels, reasoningEffort]);
+  }, [knownEffortLevels, reasoningEffort, setReasoningEffort, scopedModelCatalog]);
 
   function handlePluginSelectionChange(next: PluginSelectionState): void {
     setKnownSelectionIssues((issues) => {
@@ -1127,7 +1114,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         })()
       : null;
 
-  async function doSpawn(): Promise<void> {
+  async function doSpawn(submittedPromptRevision: number): Promise<void> {
     if (pluginSelectionBlocked) {
       busyRef.current = false;
       setBusy(false);
@@ -1304,9 +1291,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
-    updatePrompt("");
+    if (draft.fields.getState().promptRevision === submittedPromptRevision) updatePrompt("");
     attachments.clearSubmitted(submittedMarkers);
-    handlePluginSelectionChange({ mode: "default" });
+    if (draft.fields.getState().pluginSelection === pluginSelection) {
+      handlePluginSelectionChange({ mode: "default" });
+    }
     // The menu is token-driven, not text-driven: clearing the prompt does not
     // recompute the token, so without this the stale menu stays open over the
     // empty prompt on the still-mounted pane (and Enter would commit the
@@ -1344,6 +1333,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     busyRef.current = true;
     setBusy(true);
     setBusyStartedAt(Date.now());
+    const submittedPromptRevision = draft.fields.getState().promptRevision;
     try {
       const outcome = await preflightDir(client, cwd);
       if (outcome.kind === "abort") {
@@ -1360,7 +1350,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         setBusyStartedAt(null);
         return;
       }
-      await doSpawn();
+      await doSpawn(submittedPromptRevision);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -1383,9 +1373,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     busyRef.current = true;
     setBusy(true);
     setBusyStartedAt(Date.now());
+    const submittedPromptRevision = draft.fields.getState().promptRevision;
     try {
       await createDir(client, path);
-      await doSpawn();
+      await doSpawn(submittedPromptRevision);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -1775,6 +1766,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           createDirectory={createDirectory}
           options={schemaOptions}
           onOverridesChange={setAdvancedOverrides}
+          values={advancedValues}
+          onValuesChange={setAdvancedValues}
+          readValues={readAdvancedValues}
           validatePath={validatePath}
           resolveConfig={resolveConfig}
           loadCatalog={loadCatalog}

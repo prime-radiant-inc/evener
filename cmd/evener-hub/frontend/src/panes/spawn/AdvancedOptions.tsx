@@ -13,7 +13,7 @@
 // remember and type exactly. Every browsable path-valued field (the path and
 // pathList kinds) renders the shared PathField the same way, for the same
 // reason.
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
 import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -46,6 +46,11 @@ export interface AdvancedOptionsProps {
   /** Already filtered to perLaunch evener options (schema.perLaunchEvenerOptions). */
   options: LaunchOption[];
   onOverridesChange: (overrides: LaunchConfigLayer) => void;
+  /** Optional draft-owned raw fields, including incomplete/invalid edits. */
+  values?: AdvancedValues;
+  onValuesChange?: (values: AdvancedValues) => void;
+  /** Reads the originating draft after an asynchronous validation or remount. */
+  readValues?: () => AdvancedValues;
   /** evener/path/validate. Both the scalar path fields' live validation and the
    * pathList add rows go through it; `path` (the server-canonicalized spelling)
    * is used by an add when the caller's closure forwards it. */
@@ -72,6 +77,9 @@ export interface AdvancedOptionsProps {
 export function AdvancedOptions({
   options,
   onOverridesChange,
+  values: draftValues,
+  onValuesChange,
+  readValues,
   validatePath,
   createDirectory,
   resolveConfig,
@@ -81,30 +89,49 @@ export function AdvancedOptions({
   resolvedDefaults,
 }: AdvancedOptionsProps) {
   const [open, setOpen] = useState(false);
-  const [values, setValues] = useState<AdvancedValues>({});
+  const [localValues, setLocalValues] = useState<AdvancedValues>({});
+  const values = draftValues ?? localValues;
+  const setValues = onValuesChange ?? setLocalValues;
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+  const activeReader = useRef(readValues);
+  activeReader.current = readValues;
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [resolved, setResolved] = useState<string | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
   const panelId = useId();
 
+  function currentValues(): AdvancedValues {
+    return readValues ? readValues() : valuesRef.current;
+  }
+
   function update(wireField: string, field: AdvancedFieldValue): void {
-    const next = { ...values, [wireField]: field };
+    const next = { ...currentValues(), [wireField]: field };
+    if (!readValues) valuesRef.current = next;
     setValues(next);
     onOverridesChange(collectAdvancedOverrides(options, next));
   }
 
   function updateScalar(opt: LaunchOption, value: string): void {
-    update(opt.wireField, { value });
+    const field = { value };
+    update(opt.wireField, field);
     if (opt.pathKind && value.trim() !== "") {
       validatePath(value, schemaPathKind(opt.pathKind)).then(
         (result) => {
-          setErrors((prev) => ({ ...prev, [opt.wireField]: result.valid ? "" : (result.error ?? "invalid path") }));
+          // A later edit owns this field now, even if it returned to the same
+          // text. Other fields may have changed too: update merges live state.
+          if (currentValues()[opt.wireField] !== field) return;
+          if (activeReader.current === readValues) {
+            setErrors((prev) => ({ ...prev, [opt.wireField]: result.valid ? "" : (result.error ?? "invalid path") }));
+          }
           // Re-mark the stored value invalid so collect drops it (floor §1.11).
           update(opt.wireField, { value, invalid: !result.valid });
         },
         () => {
           // A failing validator never blocks (fail-open), matching preflight.
-          setErrors((prev) => ({ ...prev, [opt.wireField]: "" }));
+          if (currentValues()[opt.wireField] === field && activeReader.current === readValues) {
+            setErrors((prev) => ({ ...prev, [opt.wireField]: "" }));
+          }
         },
       );
     } else if (opt.pathKind) {
