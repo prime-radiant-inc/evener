@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 
-	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
@@ -494,12 +493,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if len(pendingCompactionTurns) == 0 {
 			return
 		}
-		if s.envTracker == nil {
-			return
-		}
-		s.envTracker = envctx.NewTracker(envctx.State{})
-		state := envctx.State{}
-		s.envContextState = &state
+		s.resetEnvContextTrackerLocked()
 	}
 	flush := func() {
 		// Deferred last-write-wins effects (compaction naming, task-list

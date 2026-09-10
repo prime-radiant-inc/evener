@@ -1678,13 +1678,21 @@ func (s *Session) resetEnvContextTrackerAfterCompaction() {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	s.mu.Lock()
+	changed := s.resetEnvContextTrackerLocked()
+	s.mu.Unlock()
+	if changed {
+		s.maybeAutoSave()
+	}
+}
+
+func (s *Session) resetEnvContextTrackerLocked() bool {
 	if s.envTracker == nil {
-		s.mu.Unlock()
-		return
+		return false
 	}
 	s.envTracker = envctx.NewTracker(envctx.State{})
-	s.mu.Unlock()
-	s.setEnvContextState(envctx.State{})
+	state := envctx.State{}
+	s.envContextState = &state
+	return true
 }
 
 // appendTurnWithTranscriptMessage keeps the live model context and the durable
