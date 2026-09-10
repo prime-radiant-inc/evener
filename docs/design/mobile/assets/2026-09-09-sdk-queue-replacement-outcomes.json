@@ -1,0 +1,240 @@
+{
+  "date": "2026-09-09",
+  "status": "accepted bounded",
+  "scope": "Synchronized clear replacement then stale queue rejection and current queue execution; not an arbitrary interleaving race",
+  "sourceCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+  "installedArtifactSha256": {
+    "sdk": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "hub": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+    "daemon": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a"
+  },
+  "installedSdkTarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+  "fixture": {
+    "root": "/private/tmp/evener-sdk-native-write-5uYKV0",
+    "endpoint": "ws://127.0.0.1:59913/rpc",
+    "owned": true,
+    "provider": "scripted external OpenAI-chat boundary at 127.0.0.1:59912",
+    "twoIndependentSdkClients": true,
+    "hardNetworkIsolation": false
+  },
+  "identity": {
+    "ref": "local:034LjrUr4iESXYq53cZLUB",
+    "oldInstance": "034LjrUr4iESXYq53cZLUB",
+    "instance": "034LkD2wzFjFmZeKHvASBl"
+  },
+  "staleQueue": {
+    "params": {
+      "ref": "local:034LjrUr4iESXYq53cZLUB",
+      "expectedInstanceId": "034LjrUr4iESXYq53cZLUB",
+      "clientMutationId": "queue-replacement-stale-queue-c3a4ac6c-32e0-4a1a-9e67-a2f9d790f65c",
+      "input": [
+        {
+          "type": "text",
+          "text": "queue-replacement-must-never-run-f337a61b-e42b-49f9-a6b7-0cda34146fb3"
+        }
+      ]
+    },
+    "error": {
+      "name": "WireError",
+      "message": "appwire turn/queue: thread instance is stale",
+      "code": -32013,
+      "data": {
+        "clientMutationId": "queue-replacement-stale-queue-c3a4ac6c-32e0-4a1a-9e67-a2f9d790f65c",
+        "evenerErrorInfo": "conflict",
+        "mutationOutcome": "notAccepted",
+        "retryDisposition": "none"
+      }
+    },
+    "queueUnchanged": true,
+    "providerRequestCountUnchanged": true,
+    "staleTextAbsentFromAllProviderUserInputs": true
+  },
+  "currentQueue": {
+    "params": {
+      "ref": "local:034LjrUr4iESXYq53cZLUB",
+      "expectedInstanceId": "034LkD2wzFjFmZeKHvASBl",
+      "clientMutationId": "queue-replacement-current-queue-647f0969-0775-498e-ad7d-2364b3f52362",
+      "input": [
+        {
+          "type": "text",
+          "text": "queue-replacement-current-input-0cb974c4-ddb1-4fc6-aa71-1edac790a87a"
+        }
+      ]
+    },
+    "receipt": {
+      "clientMutationId": "queue-replacement-current-queue-647f0969-0775-498e-ad7d-2364b3f52362",
+      "disposition": "applied",
+      "threadId": "034LkD2wzFjFmZeKHvASBl",
+      "instanceId": "034LkD2wzFjFmZeKHvASBl",
+      "queueEntryIds": [
+        "queue_1"
+      ],
+      "projectionState": "pending"
+    },
+    "exactQueueTextAndMutationReadback": true,
+    "providerConsumedText": true,
+    "completedTurnReadback": true,
+    "finalQueueDepth": 0
+  },
+  "result": {
+    "status": "passed",
+    "scope": "Synchronized clear replacement then stale queue rejection and current queue execution; not an arbitrary interleaving race",
+    "ref": "local:034LjrUr4iESXYq53cZLUB",
+    "oldInstance": "034LjrUr4iESXYq53cZLUB",
+    "instance": "034LkD2wzFjFmZeKHvASBl",
+    "staleMutation": "queue-replacement-stale-queue-c3a4ac6c-32e0-4a1a-9e67-a2f9d790f65c",
+    "currentMutation": "queue-replacement-current-queue-647f0969-0775-498e-ad7d-2364b3f52362",
+    "queueEntryIds": [
+      "queue_1"
+    ],
+    "providerRequestCount": 4,
+    "hashes": {
+      "sdk": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+      "hub": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+      "daemon": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a"
+    },
+    "out": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676"
+  },
+  "driver": {
+    "path": "docs/design/mobile/assets/2026-09-09-sdk-queue-replacement-driver.mjs.txt",
+    "sha256": "809c8c4a9a0a9e890bb825e2f66905472a9187abd141f2503635a20f11f75a07"
+  },
+  "rawArtifacts": {
+    "clear.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/clear.json",
+      "sha256": "fda1e27ae9142c5e3a47785af6ce01472cde0ee8deb23ef8fb112561ce3520ee"
+    },
+    "completed-readback.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/completed-readback.json",
+      "sha256": "7f34cc29f25d0c3003c9310f6646d334811766fc4cad5d7c3759476c6878a80d"
+    },
+    "events.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/events.json",
+      "sha256": "ced427e9b7a81b556a10943981c05ce7dec076b1c15ba5759711584d52acb032"
+    },
+    "initial.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/initial.json",
+      "sha256": "bb3da7e65ca10edafe2e6b370e11bdb99cefeb1499638cbc66a8212022401ffe"
+    },
+    "provider-after-reject.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/provider-after-reject.json",
+      "sha256": "533bed0cb6ce32de20f16c9fa5c8e7508a9cfdcc22d4549aa772a7f0271ecfd3"
+    },
+    "provider-after.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/provider-after.json",
+      "sha256": "2ad5aa2c2523cfbd6679aa4b066a962edde8c8e40f0c64c5de9ed5b0720f5928"
+    },
+    "provider-before.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/provider-before.json",
+      "sha256": "b9bf64cd7a5ed42dca1d7e2663747628c027c622556509a579259d2d8dcbbc07"
+    },
+    "provider-held.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/provider-held.json",
+      "sha256": "533bed0cb6ce32de20f16c9fa5c8e7508a9cfdcc22d4549aa772a7f0271ecfd3"
+    },
+    "queue-accepted.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/queue-accepted.json",
+      "sha256": "63315da765e937c36ab3902649321a4d6bfdc03c931b4b2b12bee531888984e1"
+    },
+    "queue-readback.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/queue-readback.json",
+      "sha256": "190fc3e4586a20263ef68fbe9def9e27087d1d8e75de53fdbda4f11b35df07a5"
+    },
+    "replacement-identity.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/replacement-identity.json",
+      "sha256": "92f7fbb0bdfaecdb4a3e95d19faf96121376fbaa08e4f17ca532fb52ab0dd13a"
+    },
+    "result.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/result.json",
+      "sha256": "f34ef99c468b60553c44aec72792522ae31629389d8149c29ce5186e4cdf582a"
+    },
+    "sentinels.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/sentinels.json",
+      "sha256": "ee4cbf5967c3d954283d109b93b9c7d5d04369c219eaed017fafb197d49c7756"
+    },
+    "stale-readback.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/stale-readback.json",
+      "sha256": "cf467243284375b13a4d0313b12a0b0439c185d05751034d751518531583c710"
+    },
+    "start.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/start.json",
+      "sha256": "2e33074c7d549baca2283ffded017b69d49cf3a0e024e3d1dfe345f541bf9e67"
+    },
+    "trace.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788945032676/trace.json",
+      "sha256": "000db64028ac3cc20f0ad7e2ebceecc3ab4ddf4e0f1a46cc7ae774792b98cf06"
+    },
+    "provider/provider-request-1.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-provider/provider-request-1.json",
+      "sha256": "596a0db169f3b5378159cee3a2e06c7edc2cdc8b1fbb03583e0191276b265fe6"
+    },
+    "provider/provider-request-2.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-provider/provider-request-2.json",
+      "sha256": "48c14769d3c9e42d25b7210155db264b2f694cc4fd4b7addcf1f58a67593b8c3"
+    },
+    "provider/provider-request-3.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-provider/provider-request-3.json",
+      "sha256": "dbf1cd5f9b157f873cb74f9210bad0c51137790c4f9c5ace6e86c7dd873180ee"
+    },
+    "provider/provider-request-4.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-provider/provider-request-4.json",
+      "sha256": "47500dcdb62f6e0d78ff3eaf03fb5f185fe70a02afa5fd35267a2b946ce8547a"
+    },
+    "root-cleanup-rpc.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-cleanup-rpc.json",
+      "sha256": "74efa9084bdb6f1defefc2024cf35dd38c38152a5104dc7e4efb2e970fff6e63"
+    },
+    "root-cleanup-processes.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-cleanup-processes.json",
+      "sha256": "5324dd8cbba478e46ffffa9ef1fc93f7dc8a6169174672c0684e746f9ec1a9f9"
+    },
+    "model-correction.json": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-provider/model-correction.json",
+      "sha256": "2d171ce1b44304bf87bfb3f1b581f67f4652b59bd446551982d181ef9f10c1ff"
+    },
+    "provider.py": {
+      "path": "/private/tmp/evener-sdk-native-write-5uYKV0/root-provider/provider.py",
+      "sha256": "d333497e722f0cf6b380ebe43b427c1508a29b7b06443213e9198086afb3d1b1"
+    },
+    "independent-review": {
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/.superpowers/sdd/2026-09-08-iphone-usable-useful-good/sdk-queue-replacement-root-review.md",
+      "sha256": "f4de1d80716712e66fd210b7ac445dd8b9b41fcd384c99210e7bc62c377b8755"
+    }
+  },
+  "priorAttempt": {
+    "path": "/private/tmp/evener-sdk-native-write-5uYKV0/run/root-queue-replacement-1788944973769",
+    "excluded": "Copied provider advertised study-model while persisted SDK session uses fixture-model; clear returned terminal notAccepted; independent readback retained old instance. Provider fixture model corrected before successful run."
+  },
+  "cleanup": {
+    "date": 1788945280.696755,
+    "fixture": "/private/tmp/evener-sdk-native-write-5uYKV0",
+    "initialCleanupAttempt": "Daemon absent verified; Hub84969 terminated; provider command validation failed before provider termination because Python interpreter is an absolute path.",
+    "daemonAbsentAfterRPCShutdown": 85110,
+    "hubAbsentAfterSIGTERM": 84969,
+    "providerCommand": "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python root-provider/provider.py",
+    "providerSIGTERM": 98515,
+    "finalAbsentPIDs": [
+      85110,
+      84969,
+      98515
+    ],
+    "finalClosedPorts": [
+      59912,
+      59913
+    ]
+  },
+  "independentReview": {
+    "verdict": "Approved bounded",
+    "reviewer": "Luna medium independent evidence reviewer",
+    "report": {
+      "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/.superpowers/sdd/2026-09-08-iphone-usable-useful-good/sdk-queue-replacement-root-review.md",
+      "sha256": "f4de1d80716712e66fd210b7ac445dd8b9b41fcd384c99210e7bc62c377b8755"
+    }
+  },
+  "limits": [
+    "Synchronized replacement before stale/current queue calls; no arbitrary concurrent clear/queue interleaving",
+    "One queue entry; no duplicate IDs, replay, lost acknowledgement, restart or multiple-entry qualification",
+    "Installed SDK and real CLI Hub/daemon; no native UI or physical-device evidence",
+    "Catalog already has success evidence for turn/queue; this adds one stale-binding cell only"
+  ]
+}

@@ -1,0 +1,145 @@
+{
+  "schema": "evener.sdk.plugin-execution.v2",
+  "status": "accepted-bounded",
+  "date": "2026-09-09",
+  "sourceCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+  "backend": {
+    "evenerSha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+    "evenerDevSha256": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a",
+    "buildIdentitySha256": "e0a713978cf60b33707a636d26d69afdb3da416ff223e1f87a8755c3fce74237"
+  },
+  "sdk": {
+    "path": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js",
+    "runtimeSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "declarationSha256": "86fdd3430b173901983b9e5022d490932e382553bcbeb894b74ad9a9a1c2c3a8",
+    "tarSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+  },
+  "environment": {
+    "fixtureRoot": "/private/tmp/evener-sdk-plugin-execution-fixture/round4b",
+    "ownedHomeAndXdg": true,
+    "environmentWasExplicitlyScrubbed": true,
+    "implicitOllamaWasRedirectedToOwnedLoopback": true,
+    "realProvidersOrCredentials": false,
+    "externalRepositories": false,
+    "forwardingOrFaultInjectionProxy": false,
+    "sharedHubOrSimulator": false
+  },
+  "helpers": {
+    "sdk-plugin-execution-provider.py.txt": "e8b30d804d065a8f30a0059205439c6ee4ba827e61d0e4984af7c27aa2ed28f9",
+    "sdk-plugin-execution-driver.cjs.txt": "1d7d15df012dd009a4b5baf06497a5cef26792aa1003f16d2377c335ee0e42be"
+  },
+  "rawEvidence": {
+    "path": "/private/tmp/evener-sdk-plugin-execution-fixture/round4b/sdk-plugin-execution-raw-round4.json",
+    "sha256": "aa05904d21c96da16bc6b9997b89a85121dae871094d8a298e451d1f0fd546ce",
+    "providerObservationsSha256": "57b4eda6ddc11aaf706022fa22afe1355cec1cb19b96c371df742159ce075228",
+    "requestCount": 33,
+    "notificationCount": 106,
+    "providerRequestCount": 13,
+    "containsCredentials": false
+  },
+  "priorEvidence": {
+    "status": "failed-executable-qualification",
+    "rawMovedFromPublicAssetsTo": "/private/tmp/evener-sdk-plugin-execution-fixture/sdk-plugin-execution-raw-prior-public.json",
+    "rawSha256": "cf08e84bc371a6c189beb02ef2ef32367a6aa3d4ae5d16b2545312c535a26c0a",
+    "reason": "The catalog lifecycle passed, but the provider emitted the requested shell call into title generation and the streamed model turn did not execute a shell effect."
+  },
+  "upstreamCommits": {
+    "marketplaceV1": "6d68159c37119ba0bc061a15994ac146b248b23f",
+    "marketplaceV2": "b76e3d9e9c6eef3e3e9d161222c0d881012da829",
+    "pluginV1": "71176312b2dcf534ce69fb44c0ea9c0e49493e92",
+    "pluginV2": "bc439cb8e254e59765c3e18ad5f1a311de74e50e",
+    "pluginV3": "f0286e0c3db89d18829f7f8f48fc8b6e46f8d059"
+  },
+  "effects": [
+    {
+      "state": "enabled-v1",
+      "sessionRef": "local:034Lg2xHUHdVpIk97W8xBh",
+      "transcriptSha256": "541992d960a3fe4545492a14ae029fd9fa7a6119c61453a36c85a7e3f2c7b205",
+      "shellToolResult": "exit 0",
+      "marker": "sdk-plugin-effect-v1",
+      "daemonStopped": true
+    },
+    {
+      "state": "disabled-v1",
+      "sessionRef": "local:034Lg2yB33vCUzzSHQNHiG",
+      "transcriptSha256": "f859cc6e56bf3fad57ac77b0d75aec5a63adca155ac940c9b3df086a3decad4f",
+      "shellToolResult": null,
+      "marker": null,
+      "daemonStopped": true
+    },
+    {
+      "state": "explicit-upgrade-v2",
+      "sessionRef": "local:034Lg2z9BzWVQgpSzYF1Ok",
+      "transcriptSha256": "4617fbdca219a48f4b7960f75e1f58249b6b4f5722031d989ecf1a1f1606ba8f",
+      "shellToolResult": "exit 0",
+      "marker": "sdk-plugin-effect-v2",
+      "daemonStopped": true
+    },
+    {
+      "state": "auto-upgrade-checkNow-v3",
+      "sessionRef": "local:034Lg30J2Fw39BBLosumIC",
+      "transcriptSha256": "f9660e8f0b4e477ed156f8aeb11db04198afb0fc93409c302b4a4e095917e688",
+      "shellToolResult": "exit 0",
+      "marker": "sdk-plugin-effect-v3",
+      "daemonStopped": true
+    },
+    {
+      "state": "removed-v3",
+      "sessionRef": "local:034Lg31BotOXYqUPjWQ2Os",
+      "transcriptSha256": "98b0fb3b74a817fac0941266717b783dff72c7811b76d804f291a08605527898",
+      "shellToolResult": null,
+      "marker": null,
+      "daemonStopped": true
+    }
+  ],
+  "methods": {
+    "evener/plugin/preview": {
+      "success": "selected installed v1 candidate with commandCount 1",
+      "invalid": "relative cwd rejected with -32602",
+      "stale": "missing enabled plugin returned selectionErrors",
+      "effect": "read-only empty, populated, and stale-selection readbacks",
+      "lifecycle": "populated after install and empty before install"
+    },
+    "evener/marketplace/refresh": {
+      "success": "local Git-backed marketplace description changed from v1 to v2 after refresh",
+      "invalid": "missing marketplace rejected with -32603",
+      "stale": "name is resolved at execution; no revision parameter exists",
+      "effect": "browse read back marketplace-description-v2",
+      "lifecycle": "add, changed-source refresh, browse, and remove completed"
+    },
+    "evener/plugin/upgrade": {
+      "success": "git commit and installed version moved from v1 to v2",
+      "invalid": "upgrade after removal rejected with -32603",
+      "stale": "plugin and marketplace are resolved at execution; no revision parameter exists",
+      "effect": "real slash command marker changed from sdk-plugin-effect-v1 to sdk-plugin-effect-v2",
+      "lifecycle": "enabled v2 session completed and its daemon stopped"
+    },
+    "evener/plugin/checkNow": {
+      "success": "opted autoUpgrade plugin reported effect-fixture@sdk-plugin-execution-owned",
+      "invalid": "EmptyParams has no field-level invalid-input branch; per-marketplace/plugin failures are returned in errors",
+      "stale": "eligibility and Git SHA are rechecked under the manager lock",
+      "effect": "installed version moved from v2 to v3 and slash command marker changed to sdk-plugin-effect-v3",
+      "lifecycle": "enabled auto-upgrade session completed and its daemon stopped"
+    },
+    "plugin lifecycle": {
+      "installEnable": "v1 command executed with shell exit 0 and exact marker",
+      "disable": "completed session had no shell result and no marker",
+      "remove": "completed session had no shell result and no marker"
+    }
+  },
+  "errorContractReview": {
+    "capabilityAndPermission": "The owned authenticated SDK client exercised the recorded handler paths. Unauthorized clients and broader capability/permission outcomes remain untested; absence of a request parameter does not make them inapplicable.",
+    "conflict": "The four methods expose no expected revision or mutation binding. Preview reports stale selection structurally; upgrade and refresh resolve their named targets at execution; checkNow rechecks eligibility under lock.",
+    "disconnect": "Explicitly untested for these plugin mutations. A disconnect after dispatch can leave acknowledgement uncertain; no method-specific idempotency key is exposed. No injection mechanism is assumed to be required. Authoritative list, browse and effect readback remain the observed-state checks, without a qualified lost-acknowledgement recovery claim.",
+    "lifecycle": "All five spawned effect sessions reached an idle completed turn, were shut down through thread/shutdown, and their owned daemon PIDs exited."
+  },
+  "cleanup": {
+    "ownedHubStopped": true,
+    "ownedProviderStopped": true,
+    "ownedSessionDaemonsStopped": true,
+    "ownedMarketplaceRemoved": true,
+    "ownedPluginRemoved": true,
+    "publicRawCapturePresent": false,
+    "credentialsPrinted": false
+  }
+}

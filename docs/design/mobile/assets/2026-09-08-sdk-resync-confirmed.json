@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "status": "qualified-scoped-producer",
+  "fixtureRoot": "/tmp/evener-sdk-resync-confirmed-1788903810-e",
+  "session": {
+    "ref": "local:034LTM94PizJUbwrxvTrym",
+    "threadId": "034LTM94PizJUbwrxvTrym",
+    "beforeInstance": "034LTM94PizJUbwrxvTrym",
+    "resumedInstance": "034LTM94PizJUbwrxvTrym",
+    "afterInstance": "034LTM94PizJUbwrxvTrym"
+  },
+  "event": {
+    "method": "evener/thread/resync",
+    "params": {
+      "threadId": "034LTM94PizJUbwrxvTrym",
+      "ref": "local:034LTM94PizJUbwrxvTrym"
+    }
+  },
+  "daemon": {
+    "beforePid": 85606,
+    "afterPid": 85815,
+    "beforeCommand": "85606 82517 /tmp/evener-sdk-resync-confirmed-1788903810-e/bin/evener serve --addr 127.0.0.1:0 --dir /private/tmp/evener-sdk-resync-confirmed-1788903810-e/workspace --state-dir /private/tmp/evener-sdk-resync-confirmed-1788903810-e/state/evener/projects/private-tmp-evener-sdk-resync-confirmed-1788903810-e-workspace-JKaTzlWgxa --run-dir /private/tmp/evener-sdk-resync-confirmed-1788903810-e/state/evener/run --plugin-root /private/tmp/evener-sdk-resync-confirmed-1788903810-e/config/evener/plugins --model fixture/fixture-model --max-rounds 8 --no-project-prompts",
+    "afterCommand": "85815 82517 /tmp/evener-sdk-resync-confirmed-1788903810-e/bin/evener serve --addr 127.0.0.1:0 --resume 034LTM94PizJUbwrxvTrym --dir /private/tmp/evener-sdk-resync-confirmed-1788903810-e/workspace --state-dir /private/tmp/evener-sdk-resync-confirmed-1788903810-e/state/evener/projects/private-tmp-evener-sdk-resync-confirmed-1788903810-e-workspace-JKaTzlWgxa --run-dir /private/tmp/evener-sdk-resync-confirmed-1788903810-e/state/evener/run",
+    "evenerSha256": "412e59fabe6de546892f2778e8515709345ce4ec9ff9e2ec3fa8927fbd05abc7",
+    "evenerDevSha256": "bcc84b4ec1083b316704d10421df0d8208e5344c62c4e803f6277ee5489a2699"
+  },
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+    "distIndexSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "tarball": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "sourceRevision": "58d1b079f"
+  },
+  "capture": {
+    "driver": "/tmp/evener-sdk-resync-confirmed-1788903810-e/probe2.mjs",
+    "driverSha256": "539ddcc3a6d17f5beb5c6db960e37f3bd9aaafd83d5c8146d5708c11b35160ff",
+    "raw": "/tmp/evener-sdk-resync-confirmed-1788903810-e/raw-capture.json",
+    "rawSha256": "7a2f3116b65663a8bcc3d875aedfdb70b1a9738a5186712faeafe99b5e5493cc",
+    "receipt": "/tmp/evener-sdk-resync-confirmed-1788903810-e/receipt.json",
+    "receiptSha256": "bcdd73c1730e9f07032d579a0c3480f359c9104650404627c1c80381e42d123f"
+  },
+  "cleanup": {
+    "tokenPresent": false,
+    "ownedProcessCount": 0,
+    "ownedListenerCount": 0
+  },
+  "sourceVersion": "9bb59d643-dirty (2026-09-08T20:32:41Z)",
+  "scope": "One real installed-SDK resync notification after owned daemon termination, public resume and subscribed authoritative read. Session identity retained. This does not qualify every reconnect outcome or native lifecycle."
+}

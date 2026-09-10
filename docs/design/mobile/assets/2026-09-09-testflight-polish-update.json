@@ -1,0 +1,174 @@
+{
+  "schema": "evener.native.testflight-polish.v1",
+  "verifiedAt": "2026-09-09T11:09:14.861136+00:00",
+  "status": "available-for-internal-testing",
+  "source": {
+    "source": "f866b2a80294d7354b6879e85a6f9d2d441fa545",
+    "build": "3",
+    "startedAt": 1788950515.6716118,
+    "archiveExit": 0,
+    "exportExit": 0,
+    "ipaSha256": "35d0a0cdfcbeeadcf75c16d3b9419291dd4bea769c2bd36e6a801ce0c5419111",
+    "exportManagesBuildNumber": false,
+    "keychainsRestored": true,
+    "defaultUnchanged": true,
+    "generatedFilesRestored": true,
+    "finishedAt": 1788950681.627063
+  },
+  "artifactValidation": {
+    "ipa": {
+      "identity": {
+        "CFBundleIdentifier": "com.primeradiant.evener.native",
+        "CFBundleShortVersionString": "0.1.0",
+        "CFBundleVersion": "3",
+        "UIDeviceFamily": [
+          1
+        ],
+        "DTPlatformName": "iphoneos"
+      },
+      "bundleSha256": "032ff48f8d283643e208b776991d8fdd8ac1704d5ecef8675ac98ca9244026bd",
+      "executableSha256": "86a267607e021f67fad8593a62fc6b8513333f603b57c16810e9061b0ac4f77e"
+    },
+    "archive": {
+      "identity": {
+        "CFBundleIdentifier": "com.primeradiant.evener.native",
+        "CFBundleShortVersionString": "0.1.0",
+        "CFBundleVersion": "3",
+        "UIDeviceFamily": [
+          1
+        ],
+        "DTPlatformName": "iphoneos"
+      },
+      "bundleSha256": "032ff48f8d283643e208b776991d8fdd8ac1704d5ecef8675ac98ca9244026bd",
+      "executableSha256": "7eb8741919883144b3bef546b2e9133edab9e61b7cd49bf4a704c140de7c09f3"
+    },
+    "archiveAndExportBundleMatch": true
+  },
+  "apple": {
+    "appId": "6809994028",
+    "buildId": "927f2581-8e15-4adf-ba50-a824fceea595",
+    "marketingVersion": "0.1.0",
+    "buildNumber": "3",
+    "processingState": "VALID",
+    "internalBuildState": "IN_BETA_TESTING",
+    "externalBuildState": "READY_FOR_BETA_SUBMISSION",
+    "usesNonExemptEncryption": false,
+    "groupName": "Evener Internal",
+    "groupId": "7ea9cf9b-bb33-46ca-a975-208903052b56",
+    "automaticBuildAccess": true,
+    "exactBuildInGroup": true
+  },
+  "upload": {
+    "exitCode": 1,
+    "build": "3",
+    "startedAt": 1788950826.038239,
+    "finishedAt": 1788951019.749525
+  },
+  "observedFailure": "Upload and initial processing succeeded. The lane failed its single immediate readiness check after Fastlane set export compliance. Independent GETs 37 seconds later confirm VALID, IN_BETA_TESTING and exact automatic group membership. No duplicate upload was attempted.",
+  "privateEvidence": {
+    "build3-first-get.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/build3-first-get.json",
+      "sha256": "991abbde774623f8aecf82148dcc7014684d7af1cc9abc5fb6e31607e3f2e11b"
+    },
+    "internal-after-first-get.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/internal-after-first-get.json",
+      "sha256": "6e9689e261f5d595dde580d651763991c2dedf7a73b43bd27c00a6f772773e98"
+    },
+    "archive-result.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/archive-result.json",
+      "sha256": "e58c49860fb9423c8e935732c2249b779fd62b529a4d8ec01d67e4fb5e95fdd3"
+    },
+    "artifact-validation.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/artifact-validation.json",
+      "sha256": "d00a60f77fb4228db993a6b3abe51839885ec4d5acd3790e10d4b852b30151b7"
+    },
+    "upload-result.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/upload-result.json",
+      "sha256": "65fe6cf399439c5e31523170f2cad22a245ec761399e9fc0c2aa0e7419a7d095"
+    },
+    "upload.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/upload.log",
+      "sha256": "83afa916553d91459a8e5e2febaf7efe65b90722207cc0622096c079da2a3d68"
+    },
+    "xcodebuild-archive.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/xcodebuild-archive.log",
+      "sha256": "b5d317f3256f75c58f71bf3124f32e047ec2f806ffc05a4fd73596d954940598"
+    },
+    "xcodebuild-export.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/xcodebuild-export.log",
+      "sha256": "a79275127630f3712d7480f76ae131b0890a9701688b1058210c71ce3cb2a9bf"
+    },
+    "verify-existing.py": {
+      "path": "/private/tmp/evener-testflight-build3-current/verify-existing.py",
+      "sha256": "8a79cf668468cae926636a7af38f52ace163bdafa3aebea89f3b73c8481ebfc8"
+    },
+    "verify-existing-result.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/verify-existing-result.json",
+      "sha256": "77d90014b46364083845529880a7db9ab8ec5a89e0a7cc75fc2ed3013873c4ab"
+    },
+    "verify-existing.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/verify-existing.log",
+      "sha256": "8a61851827011f58ceec55e26efb5f701a2a3b8034703d4ecfb77e1632bb6d02"
+    },
+    "testflight-receipt.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/testflight-receipt.json",
+      "sha256": "98c9691ad3ea3a2e1f119b551d9072269a7e5186705865313b2276e55ecb1aef"
+    },
+    "distribution-regression.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/distribution-regression.json",
+      "sha256": "6b875869902a93f411403c6ffb62e9d847ea0fa3d03193d3821ab0a2dd140725"
+    },
+    "distribution-old-lane-regression.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/distribution-old-lane-regression.log",
+      "sha256": "4ec6707cc4be9e87f215130e4df7ba5afc69109f2e7e1d7aec1e0a9141cbe1b4"
+    },
+    "distribution-root-final-check.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/distribution-root-final-check.log",
+      "sha256": "7821ae03a9eda8ed582da3272d4ac6517332846d8e6e859447f00cb0096cec65"
+    }
+  },
+  "limits": [
+    "Local signed upload used Xcode 26.6. CI remains separate and has not run the TestFlight workflow.",
+    "Physical TestFlight installation/update and full device smoke are unverified.",
+    "External testing for Drew remains READY_FOR_BETA_SUBMISSION with no installable external build or sent invitation.",
+    "The app includes browser/reader, running/recovery, media caption and search fixes through f866b2a80. Whole-app and SDK acceptance remain open.",
+    "The corrected readiness logic passed the deterministic transition test and a live verify-only run on existing build 3. A fresh upload using the corrected lane and the first CI upload remain unverified."
+  ],
+  "verification": {
+    "lane": "ios verify_testflight",
+    "startedAt": "2026-09-09T11:09:12.170322+00:00",
+    "automationRevision": "378d5b20e2ebc732edeb375f25825c90aa03f285",
+    "sourceFiles": {
+      "mobile-native/fastlane/Fastfile": "c530191452f210051226aaf40972570db4b978a80b1595f7f30298767a57cf45",
+      "mobile-native/fastlane/testflight_readiness.rb": "f6fcf6de0b3b1532faf01b491d72f37998675f921f6f7531894d1c4a20ced83c",
+      "mobile-native/scripts/test-ios-distribution.rb": "de8174b2d5cfec3aadd0e819fd8bd1aaa38f24b51e2b0bd473215b709ccba4d6"
+    },
+    "exitCode": 0,
+    "finishedAt": "2026-09-09T11:09:14.861136+00:00",
+    "expectedReceiptMatches": true,
+    "receiptSha256": "98c9691ad3ea3a2e1f119b551d9072269a7e5186705865313b2276e55ecb1aef",
+    "receipt": {
+      "bundle_identifier": "com.primeradiant.evener.native",
+      "marketing_version": "0.1.0",
+      "build_number": "3",
+      "internal_group": "Evener Internal",
+      "internal_group_id": "7ea9cf9b-bb33-46ca-a975-208903052b56",
+      "processing_state": "VALID",
+      "internal_build_state": "IN_BETA_TESTING",
+      "build_id": "927f2581-8e15-4adf-ba50-a824fceea595",
+      "ipa_sha256": "35d0a0cdfcbeeadcf75c16d3b9419291dd4bea769c2bd36e6a801ce0c5419111"
+    },
+    "uploads": 0,
+    "review": "Independent Luna final review approved source and deterministic behavior tests; coordinator executed the pinned suite and real verify-only lane.",
+    "regression": {
+      "oldLaneRevision": "a97082d89",
+      "oldLaneExitCode": 1,
+      "oldLaneSha256": "5bd7aec023acefb9707994b2f4a1fb83018d69a89d4723af90da2cf64871ba74",
+      "regressionDirectory": "/private/tmp/evener-testflight-build3-current/readiness-regression-kxcxjp6r",
+      "observedFailure": "single immediate readiness check rejects processing-to-group transition",
+      "currentSuiteExitCode": 0,
+      "currentSuiteLog": "/private/tmp/evener-testflight-build3-current/distribution-root-check.log",
+      "finalSuiteLog": "/private/tmp/evener-testflight-build3-current/distribution-root-final-check.log"
+    }
+  }
+}

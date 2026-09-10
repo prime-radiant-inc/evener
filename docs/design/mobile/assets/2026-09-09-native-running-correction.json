@@ -1,0 +1,532 @@
+{
+  "date": "2026-09-09",
+  "status": "bounded native running and recovery correction confirmed; full Task 15 remains open",
+  "currentNative": {
+    "source": "c5fb198a92520c4f807999a3102c1ce473af6332",
+    "installedApp": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/A044138B-F036-41E5-9CEC-C7C982BC2375/Evener.app",
+    "artifactSha256": {
+      "Evener": "1fdd166a251d84011f4f43a80a0f51f0e14d100506a223753c095abde149e6c2",
+      "main.jsbundle": "adfb85488603713fd6f9d89fbe304b72518949830a496aef6710a2fea034294a"
+    },
+    "launch": "com.primeradiant.evener.native: 20210"
+  },
+  "runningRecoveryNative": {
+    "source": "5c253d512435fd80fee3407284ede5a54eef786d",
+    "installedApp": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/6F935143-6AB7-40B0-A138-6E6C43383780/Evener.app",
+    "artifactSha256": {
+      "Evener": "c34589a7d6f4170519d5290e9067d8b2aac87283f1f1eb2e4978c2980b1977d8",
+      "main.jsbundle": "954a7600159c976361e8e5f03ba37ecdf1932509bccff6a7af2a5c84cf129244"
+    },
+    "launch": "com.primeradiant.evener.native: 31814"
+  },
+  "device": {
+    "name": "iPhone 17 Pro simulator",
+    "os": "iOS 26.5",
+    "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0"
+  },
+  "build": {
+    "command": [
+      "xcodebuild",
+      "-workspace",
+      "mobile-native/ios/Evener.xcworkspace",
+      "-scheme",
+      "Evener",
+      "-configuration",
+      "Release",
+      "-sdk",
+      "iphonesimulator",
+      "-destination",
+      "id=F9170898-2B92-4420-BD12-9B54B3FC4AE0,arch=arm64",
+      "-derivedDataPath",
+      "mobile-native/ios/build",
+      "-jobs",
+      "2",
+      "ONLY_ACTIVE_ARCH=YES",
+      "build"
+    ],
+    "head": "c5fb198a92520c4f807999a3102c1ce473af6332",
+    "exitCode": 0,
+    "durationSeconds": 16.604,
+    "logPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/build-correction.log",
+    "appPath": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build/Build/Products/Release-iphonesimulator/Evener.app",
+    "artifactSha256": {
+      "Evener": "1fdd166a251d84011f4f43a80a0f51f0e14d100506a223753c095abde149e6c2",
+      "main.jsbundle": "adfb85488603713fd6f9d89fbe304b72518949830a496aef6710a2fea034294a"
+    },
+    "signatureVerifyExitCode": 0
+  },
+  "fixture": {
+    "privateRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi",
+    "hubRoot": "/private/tmp/evener-iphone-joined-8MIBV9",
+    "hubRpc": "ws://127.0.0.1:64940/rpc",
+    "provider": "owned scripted OpenAI chat loopback at 127.0.0.1:55450",
+    "providerInstance": "ios-review-obase0wi",
+    "session": {
+      "ref": "local:034LhBa0oCQKUVf6qsFQRl",
+      "instanceId": "034LhBa0oCQKUVf6qsFQRl",
+      "providerName": "ios-review-obase0wi"
+    },
+    "externalProviderScripted": true,
+    "noProductionSessionMutated": true,
+    "retainedForConfirmation": true
+  },
+  "running": {
+    "turn": "turn_m8",
+    "queuedTurn": "turn_m9",
+    "queueId": "queue_3",
+    "goal": "Make offline draft recovery dependable.",
+    "softwareKeyboard": true,
+    "geometry": {
+      "1 queued": {
+        "x": 21,
+        "width": 82,
+        "height": 44,
+        "y": 334
+      },
+      "Goal \u00b7 active": {
+        "width": 105.33332824707031,
+        "x": 107,
+        "y": 334,
+        "height": 44
+      },
+      "Message": {
+        "height": 44,
+        "y": 382,
+        "x": 21,
+        "width": 360
+      },
+      "Model: study-model. Change model": {
+        "y": 430,
+        "x": 21,
+        "height": 44,
+        "width": 88.33333587646484
+      },
+      "Reasoning effort: (default). Change reasoning effort": {
+        "x": 117.33333587646484,
+        "width": 63.333335876464844,
+        "height": 44,
+        "y": 430
+      },
+      "Vision model: session model. Change vision model": {
+        "width": 48.33332824707031,
+        "y": 430,
+        "x": 188.6666717529297,
+        "height": 44
+      },
+      "Steer": {
+        "width": 77,
+        "height": 44,
+        "y": 478,
+        "x": 182
+      },
+      "Stop": {
+        "y": 478,
+        "width": 50,
+        "height": 44,
+        "x": 263
+      },
+      "Queue": {
+        "x": 317,
+        "height": 44,
+        "y": 478,
+        "width": 64
+      }
+    },
+    "queueOpenedAndClosed": true,
+    "queuedText": "Also verify that a newer unsent draft stays separate from the original request.",
+    "bothTurnsCompletedAfterRelease": true,
+    "goalCleared": true,
+    "queueRevisionAfter": 6
+  },
+  "recovery": {
+    "pid": 18403,
+    "operation": "temporarily suspend owned hub process, tap native Reconnect, then resume same process",
+    "providerRequestsBefore": 9,
+    "draftBefore": "keep this draft local until delivery is confirmed.",
+    "anchorBefore": {
+      "y": 267.33331298828125,
+      "x": 54,
+      "width": 266,
+      "height": 75
+    },
+    "anchorLabel": "You: Check the reconnect path and summarize what still needs a decision.",
+    "localReconnectObservedAfterSeconds": 28.421,
+    "anchorOnDisconnectNotification": {
+      "height": 75,
+      "y": 267.33331298828125,
+      "width": 266,
+      "x": 54
+    },
+    "anchorDisconnectedSettled": {
+      "height": 75,
+      "y": 267.33331298828125,
+      "width": 266,
+      "x": 54
+    },
+    "anchorAfterTap": {
+      "height": 75,
+      "width": 266,
+      "y": 267.33331298828125,
+      "x": 54
+    },
+    "localActionDidNotMoveReader": true,
+    "resumedSameProcess": true,
+    "anchorAfterRecovery": {
+      "y": 267.33331298828125,
+      "x": 54,
+      "width": 266,
+      "height": 75
+    },
+    "draftAfter": "keep this draft local until delivery is confirmed.",
+    "providerRequestsAfter": 9,
+    "providerRequestsUnchanged": true,
+    "hubProcessStateAfter": "Ss",
+    "listenerPIDAfter": 18403
+  },
+  "project": {
+    "source": "c5fb198a92520c4f807999a3102c1ce473af6332",
+    "operation": "Rename owned session via SDK, inspect cached native list, tap Refresh, restore name and refresh again",
+    "oneProjectStaleNotice": true,
+    "oneProjectRefresh": true,
+    "noFalseRetryRows": true,
+    "cachedSessionPreserved": true,
+    "changedNameObservedAfterRefresh": true,
+    "originalStudyNameRestoredAfterSecondRefresh": true
+  },
+  "preservation": {
+    "evener-drafts.db": [
+      {
+        "table": "drafts",
+        "beforeRows": 12,
+        "afterRows": 13,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "question_drafts",
+        "beforeRows": 10,
+        "afterRows": 11,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "question_positions",
+        "beforeRows": 3,
+        "afterRows": 3,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "draft_images",
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "draft_image_sets",
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "creation_drafts",
+        "beforeRows": 1,
+        "afterRows": 1,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "creation_draft_images",
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true
+      }
+    ],
+    "ExpoSQLiteStorage": {
+      "originalEntries": 3,
+      "allOriginalReaderEntriesUnchanged": true,
+      "newOwnedReaderEntries": 1,
+      "otherValuesExactlyEqual": true,
+      "originalLastLocationRestored": true
+    },
+    "visibleOriginalDraft": "Retain this separate draft",
+    "appearance": "dark",
+    "protectedAppleDiffSha256": "f7613605cc9a6c37f6ba048f17c0f90951b8798ccd799ed86cf7dd5490a4fcba"
+  },
+  "checks": [
+    {
+      "receipt": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/reader-height-gates.json",
+        "sha256": "4c4063a802b6ecf131079276a812973ee829746768c9eb99e5aaf4f4f5e70ffc"
+      },
+      "checks": [
+        {
+          "command": [
+            "npx",
+            "biome",
+            "check",
+            "--write",
+            "src/screens.tsx"
+          ],
+          "exitCode": 0,
+          "log": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/reader-height-gate-0.log",
+          "logSha256": "babbd83ea179fca1e2d8ed123076e1bcd3e313378ba6318b2324fdbf5c71b633"
+        },
+        {
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ],
+          "exitCode": 0,
+          "log": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/reader-height-gate-1.log",
+          "logSha256": "c35ed92f456ff5a5f4e3af19eda04da9952fc435663d01f8703ce0eaf256b735"
+        },
+        {
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "log": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/reader-height-gate-2.log",
+          "logSha256": "4b7e00c6e32208a52a3542fa4647bb84409b328784102ba09c6f8c65bcff8993"
+        }
+      ]
+    },
+    {
+      "receipt": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/project-stale-gates.json",
+        "sha256": "0bc5942d33fb39a026363ad2a3f2f49b84c0e912f3910f19afe4107092489925"
+      },
+      "checks": [
+        {
+          "command": [
+            "npx",
+            "biome",
+            "check",
+            "--write",
+            "src/ProjectSessionsList.tsx"
+          ],
+          "exitCode": 0,
+          "log": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/project-stale-gate-0.log",
+          "logSha256": "0778736016cdc8a5bc08bfa4ce8428f56368f916d0f2075d48b2d54a120c0d33"
+        },
+        {
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ],
+          "exitCode": 0,
+          "log": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/project-stale-gate-1.log",
+          "logSha256": "c35ed92f456ff5a5f4e3af19eda04da9952fc435663d01f8703ce0eaf256b735"
+        },
+        {
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "log": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/project-stale-gate-2.log",
+          "logSha256": "ac4b27017389aeb3de9f275299a39b757c841587b9a4416ad244d4906c09b38f"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "2026-09-09-corrected-running-keyboard-dark.png",
+      "sha256": "053fc31da8c58cc20e865abfce5fff497f1c9fb4e2d10f32a52ad4ebae9ea9a6",
+      "nativeSource": "5c253d512",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/running-keyboard-dark.ax.json",
+        "sha256": "d26a725c900813570be2b3a034bfb92a18ac1bf344c21c395b9f2b9f10ea0f66"
+      }
+    },
+    {
+      "path": "2026-09-09-corrected-running-keyboard-light.png",
+      "sha256": "379547618c2b2b72fe3a7664471eee39fb65067449742cf1f6c2f30f41d7f767",
+      "nativeSource": "5c253d512",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/running-keyboard-light.ax.json",
+        "sha256": "cd595acba0b7414cc948a43d5d8fa723aa05e0c3fccd09d53dcc02d5057be010"
+      }
+    },
+    {
+      "path": "2026-09-09-corrected-queue-light.png",
+      "sha256": "0a39d48bf7e1f40e72ac8d09a29cb5947957c95d5a0bbb829983546bc8e0894e",
+      "nativeSource": "5c253d512",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/queue-light.ax.json",
+        "sha256": "3b23c89a6e0e006930a2f6d6fcc94acbcdf3f5b889799b00a9004bd56d60727e"
+      }
+    },
+    {
+      "path": "2026-09-09-corrected-recovery-light.png",
+      "sha256": "b4750943ac18bd511b8ced516b6422c34e925de12abdd5b5280048f44537d384",
+      "nativeSource": "5c253d512",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/recovery-pass/recovery-light.ax.json",
+        "sha256": "d24ca1ff94d281cd2f5afa7d6ed9d90d32fa8403a0b3e5593d46925ae30583ef"
+      }
+    },
+    {
+      "path": "2026-09-09-corrected-recovery-dark.png",
+      "sha256": "d0cab4c94e3cadc2a454e2bc2f356981dc284f93b7fe055ef31f8a268a8ff6e4",
+      "nativeSource": "5c253d512",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/recovery-pass/recovery-dark.ax.json",
+        "sha256": "32790cd4943a25d8e630c034f849b1d4a05afeec9b02d25416f1e330fff36661"
+      }
+    },
+    {
+      "path": "2026-09-09-corrected-recovered-dark.png",
+      "sha256": "b52424b6ba04b985cb94979b18ec661b4480227637bbadc30843e8e8dde099a9",
+      "nativeSource": "5c253d512",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/recovery-pass/recovered-dark.ax.json",
+        "sha256": "6d59b96011fc4b2f27fdf25d0b8778ecb23a8a1941d0a2dfd91e951c417c2281"
+      }
+    },
+    {
+      "path": "2026-09-09-corrected-project-stale-dark.png",
+      "sha256": "8439a5984d70014c28b6d713ddb74b34cf7270a30427c5ce8b606dadde3706a0",
+      "nativeSource": "c5fb198a9",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/project-stale-dark.ax.json",
+        "sha256": "b00e0621915323c9931c2cc05bc03528e674fc91aaeb362ffa13ab6b322ba919"
+      }
+    },
+    {
+      "path": "2026-09-09-corrected-project-stale-light.png",
+      "sha256": "057c5170f7e806a6db72f9b53512e11fab8212e54a2a803381d8ab70ba7cffa5",
+      "nativeSource": "c5fb198a9",
+      "ax": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/project-stale-light.ax.json",
+        "sha256": "6941d0cd72f1dcecc1f26ec3bdd0b1a57300ecbe7131f96bc94c11f808a28033"
+      }
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/99196785c-build-correction-result.json",
+      "sha256": "db89bfd4cf0161d092030f9d75eabb9c29d2e4939f915ffdec2415a29e6dea3f"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/5c253d512-build-correction-result.json",
+      "sha256": "e2c612e2bc72dc5e4d638a3937f3645e3c2fa6e328e8ec5eef7e7fb36e592402"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/5c253d512-build-correction.log",
+      "sha256": "af4ecf4888f4798efaddc7d33d1dd71a4e29d9b48ef7cd2873687bd4cc996bde"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/build-correction-result.json",
+      "sha256": "2c3dd10a823fdb57209c3842deb5ef3424fa32345b1f5d571d7ee3f7974baf60"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/build-correction.log",
+      "sha256": "a0325ba234fc4b64ab51747f3035eec4b1725a5b19c568666456821ef65bc782"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation/recovery-progress.json",
+      "sha256": "e05c8b4f08ff7540830a608e3dfefd42645cb00061196f38387c8434dded9a3f"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/install.json",
+      "sha256": "ca7293b4c84b88dfbdbbe3d45b1dc08b3613a4041f40ad8d998379e4eab7c48a"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/recovery-progress.json",
+      "sha256": "8894ae09ac8ab62672dda0d386e4017d22c1cdeb5cabfc781913cb50a1718f13"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/recovery.py",
+      "sha256": "ff28239d81e742cff3bfdac90dfd8351ecd2751bfa8bbe3783044d001a094162"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/recovery-pass/recovery.py",
+      "sha256": "2583aa6ac0d5a18344e4c0d852495d68d1cd47f3cd00378bbfb8412ebf3bf270"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/recovery-pass/recovery-result.json",
+      "sha256": "2d1db30812fad6a0787d2e3a6670dab1c352039f92772410b459b7020fa42fd3"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/running-layout.json",
+      "sha256": "83dc750f4e0993a99d73d64ead543dc47a6dae6ebeb31f76f3bb97c61eea6de7"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/held-readback.json",
+      "sha256": "bacd90571dd8889f04bae2e7d9a8e313f554229f98e90d89568b304a31b0dff3"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/study.mjs",
+      "sha256": "8d6d26d8a68721ae6da328cdd73534c1cafe47a2980dc9b38e970197f895bc56"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/install.json",
+      "sha256": "e9cec7dd52391b0d402b59fa027521a262ade5109e45b3541bd748dbc5cd2446"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/study.mjs",
+      "sha256": "8d6d26d8a68721ae6da328cdd73534c1cafe47a2980dc9b38e970197f895bc56"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/project-result.json",
+      "sha256": "1d6a7933146f062a83239374b82d6d516f51eea8016c054b4d894f4d8dae8231"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/preservation.json",
+      "sha256": "407fd5e5b86eab09886b9e006c7f13029975433ac4e4f81f93988f295eb44ae3"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/original-restored-dark.ax.json",
+      "sha256": "a780baae480a098bec09b20cc93d90fbb159b1a3cd27f57287fb58d4feb21a70"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/held-capture-1788942656712.json",
+      "sha256": "2d5a9cc3807962812a83019775b1d08c6af763602f92596719c898dcaa2d6397"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/read-capture-1788942762294.json",
+      "sha256": "4c3aafed344588c7b938a7dbd8cc28adcf01b3a5f618aad39b190a3e1f276a7d"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/release-capture-1788942752005.json",
+      "sha256": "42d8ee730d801b2754d27fece8ff9d9533ceeff40a5ea2e11896f102ca0d9090"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/rename-capture-1788942787296.json",
+      "sha256": "a980a727a06fbd3ec1c03857282ba7998daa886cac6c36b536d44606da0f1745"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/rename-capture-1788942807450.json",
+      "sha256": "c9c28dca86c120b5d676951db522858684c860208904e7dfda752dc4e8ee45a7"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-final/readback-1788942762293.json",
+      "sha256": "06569c695d57eea6612639eea78cee02f82376bc9ac819bec6a1f59d3b5e232a"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/rename-capture-1788943057744.json",
+      "sha256": "a980a727a06fbd3ec1c03857282ba7998daa886cac6c36b536d44606da0f1745"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/confirmation-project/rename-capture-1788943083329.json",
+      "sha256": "c9c28dca86c120b5d676951db522858684c860208904e7dfda752dc4e8ee45a7"
+    }
+  ],
+  "sourceReview": {
+    "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/.superpowers/sdd/2026-09-08-iphone-usable-useful-good/native-running-code-review.md",
+    "sha256": "a60a2e51c0381cd956f7beddcd66a44573801cd2ce10275e9d5336a75d0486c7"
+  },
+  "limits": [
+    "Running, queue and recovery runtime were checked at 5c253d512. The final c5fb198a9 artifact changes only the project-list stale/error predicate and has separate native rename/refresh confirmation. Those screenshots are not relabeled as the final binary.",
+    "An idle unsent draft was present during the connection fault. This does not qualify submitted-message lost acknowledgement or the new unconfirmed-delivery details sheet.",
+    "The 99196785c attempt exposed a stable 25-point reader shift. The first 5c253d512 attempt passed the disconnect anchor assertion but failed in idb decimal-coordinate parsing; the integer-coordinate repeat completed the actual tap and recovery. Both failed attempts are retained.",
+    "A normal rename at 5c253d512 exposed false Retry rows because stale state also carries informational error text. The c5fb198a9 predicate correction preserves non-stale error handling and confirms one Refresh per expanded project. The independent project-catalog notice remains separate.",
+    "No speed, representative-scale, physical-device or new TestFlight acceptance is claimed. Image-containing and overlapping-hub Task 15 specimens remain incomplete. iPad and dedicated accessibility remain paused."
+  ],
+  "independentConfirmation": {
+    "path": "2026-09-09-native-running-confirmation-review.md",
+    "sha256": "8b8d3cf809175c203dbdd39887c336e30e8176f971d415db31922133a67299b3",
+    "reviewer": "Luna medium independent workflow and source reviewer"
+  }
+}

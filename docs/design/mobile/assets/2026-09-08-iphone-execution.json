@@ -1,0 +1,177 @@
+{
+  "schema": "evener.iphone.execution.v1",
+  "recordedAt": "2026-09-08T19:03:05.723317+00:00",
+  "sourceCommit": "bc519b1c13e19cc702ae6e2bc1b9c57b0459da57",
+  "sourceHashes": {
+    "mobile-native/src/ComposerSettings.tsx": "ed7553c94d9be55ea555f13fdca624d3b99a3e753fe809cdd79e4a4cd1e0d654",
+    "mobile-native/src/ComposerSettingsSheet.tsx": "58632099923d7f1e338bacf96d245a22537482303e03dfc22941e5937c9e44ad",
+    "mobile-native/src/ModelPicker.tsx": "0d5ad3b7672bab7a85c219b46dfebe26edd2a386ed85aa8a1d6423be6e3967ff",
+    "mobile-native/src/screens.tsx": "cd603fad6010d0011da2d42018cbf84e94abb22c8613f8977d51be110be51ce1",
+    "mobile-native/src/sessionControls.ts": "e13c5d2d45179f9e911fd114b93bc9c70363ce28dba4db5e44d6f709ef13e0b7",
+    "mobile/src/conversation/model.ts": "0e48c34c63414c68b77db873a9c9ebed782097e422317205edb4d6646451cd69",
+    "mobile/src/conversation/project.ts": "d2fb4de2161a582fe19b8ac2d2f5c93690c664d6947f0ce06d69e837a3ccdc4c",
+    "mobile/src/services/conversation.ts": "00b0d4d7baee359b0625913053701d485f26ca14087a50fc9452c742f3877236",
+    "mobile/src/state/conversation.ts": "79e14663d90e2186d67458f0fa99356a691e6767d5b123e21a07c1093d250f4d"
+  },
+  "checks": [
+    {
+      "name": "native",
+      "command": "make test-native",
+      "exitCode": 0,
+      "logPath": "/tmp/evener-vision-root-native-final.log",
+      "logSha256": "40bc0b49337e39c43b1bfd7ff5ba74c4edb0e6d6ef6f7fb232c6d6888136f1bc",
+      "tests": 692,
+      "files": 74
+    },
+    {
+      "name": "shared",
+      "command": "npm --prefix mobile test -- src/services/conversation.test.ts src/state/conversation.test.ts src/conversation/project.test.ts",
+      "exitCode": 0,
+      "logPath": "/tmp/evener-vision-root-shared.log",
+      "logSha256": "4f336d600a9adab73ec711a46cdcf33826c0e8e60c8fac7ff081dbeec2c01b46",
+      "tests": 494,
+      "files": 3
+    },
+    {
+      "name": "shared-check",
+      "command": "npm --prefix mobile run check",
+      "exitCode": 0,
+      "logPath": "/tmp/evener-vision-root-mobile-check-final.log",
+      "logSha256": "273dae20636d36d007d87a73c2c4e3d0fe3d29efc8d1ebdb854e3137e0229348"
+    },
+    {
+      "name": "simulator-build",
+      "command": "xcodebuild Release iOS Simulator",
+      "exitCode": 0,
+      "logPath": "/tmp/evener-vision-root-xcodebuild-final.log",
+      "logSha256": "98c298c3448a7381483de3f6fbb50ad84b334d182f5d4b7a11325adf41aa8c3c"
+    },
+    {
+      "name": "real-controller",
+      "command": "tsx session-controls-qual.ts",
+      "exitCode": 0,
+      "logPath": "/tmp/evener-iphone-usable-fixture-LMjtPV/root-session-controls.log",
+      "logSha256": "614d99c4353a54b02a05d4379b946e0108476b3c69a3090a8f18baf46f32ea74"
+    }
+  ],
+  "simulator": {
+    "model": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "deviceId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "installedHashes": {
+      "Evener": "b0266f0654924c04e4f4473beb390a395ed64ab745a027c419ca040a081fda5c",
+      "main.jsbundle": "934a2359e3ab1dd4a7cd54bdb584a28c9212c99d12cbe4a3dbdceb49a9e3b9c1"
+    },
+    "installExitCode": 0,
+    "launchExitCode": 0,
+    "savedConversationAndDraftObserved": true,
+    "originalDraftTables": {
+      "creation_draft_images": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "equal": true
+      },
+      "creation_drafts": {
+        "beforeRows": 1,
+        "afterRows": 1,
+        "equal": true
+      },
+      "draft_image_sets": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "equal": true
+      },
+      "draft_images": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "equal": true
+      },
+      "drafts": {
+        "beforeRows": 9,
+        "afterRows": 9,
+        "equal": true
+      },
+      "question_drafts": {
+        "beforeRows": 8,
+        "afterRows": 8,
+        "equal": true
+      },
+      "question_positions": {
+        "beforeRows": 3,
+        "afterRows": 3,
+        "equal": true
+      }
+    },
+    "nativeVisionInteractionQualified": false
+  },
+  "realController": {
+    "scope": "Host-executed native SessionControls with real shared stores, authenticated hub and scripted external provider; not native UI",
+    "scriptPath": "/tmp/evener-iphone-usable-fixture-LMjtPV/session-controls-qual.ts",
+    "scriptSha256": "26ca58f276c1c388999c30e960a11fce99d960057d5f82a6ef339aa082e8323b",
+    "receiptPath": "/tmp/evener-iphone-usable-fixture-LMjtPV/session-controls-qualification.json",
+    "receiptSha256": "fa569513ef9d1ae22a12264cf0c21e62125b110f2fb219e220dda966663be380",
+    "assertions": {
+      "status": "passed",
+      "ref": "local:034LP22WzTDN5bWLsOdxAe",
+      "threadId": "034LP22WzTDN5bWLsOdxAe",
+      "offResult": true,
+      "modelResult": true,
+      "restoreResult": true,
+      "offStore": "off",
+      "modelStore": "fixture/fixture-model",
+      "secondClientModel": "fixture/fixture-model",
+      "secondClientResult": {},
+      "secondStore": "off",
+      "offEvent": {
+        "method": "thread/vision-model/changed",
+        "params": {
+          "threadId": "034LP22WzTDN5bWLsOdxAe",
+          "ref": "local:034LP22WzTDN5bWLsOdxAe",
+          "visionModel": "off"
+        }
+      },
+      "secondEvent": {
+        "method": "thread/vision-model/changed",
+        "params": {
+          "threadId": "034LP22WzTDN5bWLsOdxAe",
+          "ref": "local:034LP22WzTDN5bWLsOdxAe",
+          "visionModel": "off"
+        }
+      },
+      "finalWire": null
+    },
+    "backendSha256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+    "sdkTarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+  },
+  "preservedUnrelatedAppleDiff": true,
+  "physicalDevice": {
+    "model": "iPhone 16 Pro",
+    "identifier": "6A5C05AA-0987-5ECC-9937-7E3073636F1D",
+    "status": "pending-unlock",
+    "error": "kAMDMobileImageMounterDeviceLocked",
+    "installed": false
+  },
+  "open": [
+    "Integrated Tasks 1-4 native journey",
+    "Vision control native interaction and reconnect",
+    "Full iPhone functionality",
+    "Physical install/update and network/keychain qualification",
+    "Complete SDK outcome matrix",
+    "Performance and release readiness"
+  ],
+  "excludedClaims": [
+    "Full repository gate at this commit",
+    "Browser geometry and race qualification",
+    "iPad/accessibility completion"
+  ],
+  "fixtureCleanup": {
+    "hubExit": 0,
+    "credentialRemoved": true,
+    "recordedAt": "2026-09-08T19:10:48.160409+00:00",
+    "ownedProcessesAbsent": true,
+    "detachedDaemonsStoppedSeparately": 4,
+    "allThreeFixtureCredentialsRemoved": true,
+    "originalProfilesUntouched": true,
+    "privateEvidenceRetained": true
+  }
+}

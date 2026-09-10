@@ -1,0 +1,138 @@
+{
+  "schema": "evener.sdk.provider-pairing.outcomes.v1",
+  "status": "accepted-bounded",
+  "date": "2026-09-09",
+  "source": {
+    "commit": "d683abe21e949173f431201cda9ec169a1e9d349",
+    "backendIdentity": {
+      "sourceCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+      "buildCommand": "make build build-dev",
+      "exitCode": 0,
+      "binaries": {
+        "evener-dev": {
+          "path": "/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener-dev",
+          "sha256": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a"
+        },
+        "evener": {
+          "path": "/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener",
+          "sha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4"
+        }
+      }
+    },
+    "packageTarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "installedSdk": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client",
+    "nodeTransport": "ws@8.21.3 installed offline as documented"
+  },
+  "scope": "Owned real hub; installed SDK; deterministic model-list HTTP fixture. No real provider account, model turn or native UI.",
+  "artifacts": {
+    "driver.mjs": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/driver.mjs",
+      "sha256": "4f3454d2ea5b6f237768a61824829154d446e857f2161e79103d5c592874049c"
+    },
+    "fixture.py": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/fixture.py",
+      "sha256": "293cd420688e03e63551c33ffef8398436b080035224fa0303b6a895353e05c4"
+    },
+    "raw.json": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/raw.json",
+      "sha256": "8e91368112a4f0de717d89b4f91a04e157594ca0a2459b0823009527052c593f"
+    },
+    "result.json": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/result.json",
+      "sha256": "92be77d7aebc6276d9fcef921ed9fd1f16744f153754d6bbae6916c58df7aeae"
+    },
+    "observations.json": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/observations.json",
+      "sha256": "03ebc8222efb913bbff341b12147b03c5511dac71b7500bbc7c776c6baf84fe1"
+    },
+    "cleanup.json": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/cleanup.json",
+      "sha256": "9899a18879b4e6d92f4271700f4482ab3cde55872ca212d9ca0079f28f3a244a"
+    },
+    "build-identity.json": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/build-identity.json",
+      "sha256": "e0a713978cf60b33707a636d26d69afdb3da416ff223e1f87a8755c3fce74237"
+    },
+    "verify-pairing-error.py": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/verify-pairing-error.py",
+      "sha256": "9bc4cec916f553aeca177652718b78db8c788461a60d178f9014409695f2d9d0"
+    },
+    "pairing-error-validation.json": {
+      "path": "/private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture/pairing-error-validation.json",
+      "sha256": "6f82891cd601c2b9decce41ce001fe4b2bd140514c4b93254cafbbbefb5bff32"
+    }
+  },
+  "executedChecks": [
+    "custom endpoint is authoritative",
+    "optional-auth instance executes real model endpoint probe",
+    "edited endpoint actually received the probe",
+    "clearing endpoint restores inherited provider endpoint",
+    "exact selected provider is sole default",
+    "model list includes exact configured provider/model",
+    "unknown model harness is unavailable",
+    "evener/instance/edit: rejection -32602 leaves exact instance list unchanged",
+    "evener/instance/edit: rejection -32602 leaves exact instance list unchanged",
+    "evener/instance/create: rejection -32013 leaves exact instance list unchanged",
+    "evener/instance/setDefault: rejection -32603 leaves exact instance list unchanged",
+    "unknown credential-test instance is configuration failure",
+    "missing required key is reported",
+    "missing key does not probe endpoint",
+    "provider 401 classified as auth rejection",
+    "pairing embeds exact owned token under the requested safe origin",
+    "loopback pairing origin rejected without credential disclosure",
+    "closing SDK rejects the in-flight probe",
+    "reconnected client reads retained provider configuration",
+    "all provider entries and default restored exactly"
+  ],
+  "requestCount": 41,
+  "methods": {
+    "evener/instance/edit": {
+      "success": "Custom endpoint readback matches observer; actual auth probe reaches edited endpoint; clearBaseUrl restores inherited URL. Endpoint restored to owned URL before model enumeration.",
+      "invalid": "Unknown instance and invalid protocol return -32602; exact instance list preserved.",
+      "disconnect": "Configuration remains readable through a new SDK client after explicit connection close. Lost mutation acknowledgment remains open.",
+      "lifecycle": "Edited optional-auth provider serves the SDK model probe; all original entries/default restored."
+    },
+    "evener/instance/setDefault": {
+      "success": "Exact selected provider is sole default in both writer response and independent observer.",
+      "invalid": "Missing instance returns -32603/internal; exact instance list unchanged.",
+      "lifecycle": "Original default restored before fixture cleanup."
+    },
+    "model/list": {
+      "success": "Actual configured sdk-provider/fixture-model returned through evener harness from owned model endpoints.",
+      "invalid": "Missing harness returns -32014/actionUnavailable."
+    },
+    "evener/auth/test": {
+      "success": "Real model endpoint receives probe and SDK receives success for an optional-auth provider.",
+      "invalid": "Unknown instance returns configuration_failure; missing required key returns missing without an endpoint probe.",
+      "permission": "Owned HTTP endpoint returning 401 produces auth_rejected. This is provider authentication, not Hub bearer denial.",
+      "disconnect": "Provider request observed at hold boundary before SDK close; pending request rejects, explicit new connection succeeds and reads retained configuration."
+    },
+    "evener/mobile/pairing": {
+      "success": "Generated URL origin and decoded credential equal requested safe origin and private fixture token; token omitted from captures.",
+      "invalid": "Loopback origin returns -32013/conflict without token disclosure.",
+      "lifecycle": "URL generation only; phone import/reachability remains open."
+    },
+    "evener/instance/create": {
+      "invalid": "Duplicate instance name returns -32013/conflict; exact instance list preserved."
+    }
+  },
+  "limits": [
+    "Permission/capability, concurrent mutation and restart/lost-acknowledgment cases are not closed by this receipt.",
+    "Explicit SDK close is tested at an observed read-only probe boundary; no native interception or uncertain mutation result is claimed.",
+    "Two preliminary fixture attempts were retained: an invalid authored-instance base and an incorrect expected unavailable code; final source-backed driver passed after exact fixture restoration.",
+    "Pairing URL generation does not establish physical LAN connectivity.",
+    "Current full SDK and iPhone v1 remain incomplete."
+  ],
+  "cleanup": {
+    "providerEntriesAndDefaultRestoredExactly": true,
+    "ownedProcessesStopped": true,
+    "hubExitCode": 0,
+    "tokenRemoved": true,
+    "processAbsenceIndependentlyChecked": true
+  },
+  "supplementalValidation": {
+    "command": "python3 verify-pairing-error.py /private/tmp/evener-sdk-completion-ahdo59zq/provider-fixture",
+    "exitCode": 0,
+    "claim": "Original executed driver checked the actual private token is absent from the rejection message. Supplemental verification of unchanged raw bytes checks that error.data contains only the conflict classifier and no other data."
+  }
+}

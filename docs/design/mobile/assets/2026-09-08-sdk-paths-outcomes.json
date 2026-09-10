@@ -1,0 +1,76 @@
+{
+  "schema": "evener.sdk.paths.outcomes.v1",
+  "status": "scoped-outcomes-observed",
+  "reviewedAt": "2026-09-08T23:49:15.504122+00:00",
+  "fixtureRoot": "/private/tmp/evener-sdk-paths.rza0Ix",
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "distSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "binaries": {
+    "evener": {
+      "sha256": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8"
+    },
+    "evener-dev": {
+      "sha256": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+    }
+  },
+  "outcomes": {
+    "evener/paths/complete": {
+      "ownedPrefix": "/private/tmp/evener-sdk-paths.rza0Ix/workspace/",
+      "includeFiles": true,
+      "exactResults": [
+        "/private/tmp/evener-sdk-paths.rza0Ix/workspace/real-project/",
+        "/private/tmp/evener-sdk-paths.rza0Ix/workspace/visible.txt"
+      ],
+      "emptyPrefixResultCount": 5
+    },
+    "evener/dirs/create": {
+      "created": {
+        "path": "/private/tmp/evener-sdk-paths.rza0Ix/created/nested",
+        "created": true
+      },
+      "existing": {
+        "path": "/private/tmp/evener-sdk-paths.rza0Ix/created/nested",
+        "created": false
+      },
+      "conflictingFileErrorCode": -32013,
+      "conflictingFileContentsPreserved": true
+    },
+    "evener/projects/recent": {
+      "limit": 15,
+      "data": [],
+      "scope": "Successful read on an empty owned hub; populated recent-project ordering is unqualified."
+    }
+  },
+  "files": {
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-dirs-existing-result.json": "2f53282edfa467216bbb9dd09c6d2e13e875ab19fd3e4420a9987c9c1bee200d",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-projects-recent-request.json": "ae2e927b61143415e99fb1e80a150b9ec73a69deed807b93812d576c0f7f8bda",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-paths-empty-request.json": "1dec629d5ef3a3f83d3b2e13e93fc329599547049fc9bded71b64f25b8ab9e4a",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-dirs-create-result.json": "a3ff312731c21ac5869a9abac7678565b4e23794b94743b9d14fcef7930a5628",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-dirs-existing-request.json": "6c7cac542a52b39f7b8f6f784b617ad96047e5073f3d2e50a881a1b14da7c64c",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-projects-recent-result.json": "759410a66130f701fc02b79eb76470bc94ea2b144a61036f12b82323876ab8b4",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-dirs-conflict-request.json": "d2f6a066f3687c8fe76f507c79b19b16761e89c0199199f5c7f6f5214487bdae",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-dirs-conflict-result.json": "a556bd1a12e4fa333d494d938b0f666a2f2c976325d18d2e2e1173be4953e0a5",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-paths-result.json": "e19b0036331e60168e745b5d25177960cc9cfeed7f4a3065da5ede344690c482",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-paths-empty-result.json": "b1e8922763d996b505472afa798423fd79c9d7cad0b4c7a7f8728a390499c787",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-paths-request.json": "7ebe4ad9596963d61dfb9cd5e385e348483376d87f88c9caadfa3ce2a9bcb4f7",
+    "/private/tmp/evener-sdk-paths.rza0Ix/raw-dirs-create-request.json": "6c7cac542a52b39f7b8f6f784b617ad96047e5073f3d2e50a881a1b14da7c64c",
+    "/private/tmp/evener-sdk-paths.rza0Ix/sdk-paths-readback.json": "8290d800dfe640a0a57efba0ee9e32ca482e01f8cb26f65ff5421ac6102eac10",
+    "/private/tmp/evener-sdk-paths.rza0Ix/runtime.json": "67f2e28039a8dfc3d710330b5e1b96ac16d5023797ffd6e7ee0b425f5077f6a7",
+    "/private/tmp/evener-sdk-paths.rza0Ix/process-cleanup.json": "91a80cb96110ca8aa485d4da757fe82aa9851b996c17a749d0e06f0b4d2fc38a",
+    "/private/tmp/evener-sdk-paths.rza0Ix/shutdown.json": "5772ac2df886e851f8e0b6963e6b3e1d37708764c80b42f5d8ad17be0c74cf65",
+    "/private/tmp/evener-sdk-paths.rza0Ix/fixture.py": "b0417ebd84967b1b9873821f8595778287cc1c97724771dbc974b9c7624f0bf9",
+    "/private/tmp/evener-sdk-paths-driver.mjs": "4c45fc5bda932ca8912523e8e572b1dece5e4518d6d47ae9d0d61935f409207c"
+  },
+  "cleanup": {
+    "ownedBinaryProcessesAbsent": true,
+    "tokenRemoved": true
+  },
+  "limitations": [
+    "Empty prefix completion uses the platform default path and is only a response-shape observation; exact owned-prefix completion is the deterministic effect assertion.",
+    "Request/result digests inside the raw driver receipt hash compact structured values. This receipt separately hashes the exact retained file bytes.",
+    "No native UI, invalid-prefix, permission, stale-target, uncertainty, reconnect or full method-matrix qualification."
+  ]
+}

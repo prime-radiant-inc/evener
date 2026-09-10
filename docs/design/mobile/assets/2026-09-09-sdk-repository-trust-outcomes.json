@@ -1,0 +1,337 @@
+{
+  "status": "passed",
+  "qualification": {
+    "driverSnapshot": "docs/design/mobile/assets/sdk-repository-trust-driver.mjs.txt",
+    "driverSnapshotSHA256": "32e273709acaef59ac4793346f41237b3b41b657e47ab7724e76a151233d5f5a",
+    "ownedRunRoot": "/private/tmp/sdk-trust-r2.Y1JC7l",
+    "hubURL": "ws://127.0.0.1:51937/rpc",
+    "environment": {
+      "EVENER_OFFLINE": "1",
+      "providerConfig": "isolated deterministic fixture pointing at unused loopback port",
+      "credentials": "unset"
+    },
+    "rawArtifacts": {
+      "driverStdout": {
+        "path": "/private/tmp/sdk-trust-r2.Y1JC7l/driver.stdout",
+        "sha256": "f4725d4b4eec62a92064ebf97c0063caf94228b37746dd361a4068c0051dd1fd"
+      },
+      "driverStderr": {
+        "path": "/private/tmp/sdk-trust-r2.Y1JC7l/driver.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "hubLog": {
+        "path": "/private/tmp/sdk-trust-r2.Y1JC7l/hub.log",
+        "sha256": "5e0dcc132abc86dd1c113e52404d103aa41296078d778ac871c63c2ff61a0bde"
+      },
+      "driverResultJSON": {
+        "path": "/private/tmp/sdk-trust-r2.Y1JC7l/driver-result.json",
+        "sha256": "e8bfb0b3b38b91738116fb55fb46ec3aab35d483b9a0801e4982131d622b4078"
+      }
+    },
+    "commands": [
+      {
+        "command": "evener hub --config /private/tmp/sdk-trust-r2.Y1JC7l/config/evener/hub.toml --evener /private/tmp/evener-sdk-completion-ahdo59zq/bin/evener",
+        "exitCode": 0
+      },
+      {
+        "command": "env -i ... node --input-type=module < docs/design/mobile/assets/sdk-repository-trust-driver.mjs.txt > /private/tmp/sdk-trust-r2.Y1JC7l/driver.stdout 2> /private/tmp/sdk-trust-r2.Y1JC7l/driver.stderr",
+        "exitCode": 0,
+        "stdout": "{\"status\":\"passed\",\"recordCount\":6,\"cwd\":\"/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP\",\"hash\":\"sha256:e16eed517428841a450b242654df495e59f9c892f6ec7fae840c7555ed144e6b\"}"
+      }
+    ],
+    "cleanup": {
+      "hubCtrlCExitCode": 0,
+      "ownedListener51937": false,
+      "ownedHubProcess": false,
+      "fixtureRemoved": true
+    },
+    "sourceCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+    "installedSdkRoot": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client",
+    "installedSdkTarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "binaries": {
+      "evener": {
+        "path": "/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener",
+        "sha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4"
+      },
+      "evener-dev": {
+        "path": "/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener-dev",
+        "sha256": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a"
+      }
+    }
+  },
+  "sameFixtureAcrossClients": true,
+  "sameTrustedHashAcrossClients": true,
+  "staleHashRejected": true,
+  "freshHashTrusted": true,
+  "effectiveMaxRounds": 12,
+  "fixture": {
+    "cwd": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP",
+    "file": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP/.evener/launch.toml",
+    "removedAfterCapture": true
+  },
+  "records": [
+    {
+      "method": "evener/launch/resolve",
+      "params": {
+        "cwd": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP"
+      },
+      "result": {
+        "effective": {
+          "agent": "default",
+          "contextStrategy": "compact",
+          "openAIResponsesContinuation": "off",
+          "sandbox": "off",
+          "sandboxNet": true,
+          "maxRounds": -1,
+          "maxSubagentDepth": 2,
+          "maxConcurrentDelegateTurns": 50,
+          "maxRetainedTerminal": 2048,
+          "noProjectPrompts": false,
+          "appReplaySize": 1000,
+          "verbose": false,
+          "exportATIFProviderHandles": "redacted"
+        },
+        "layers": {},
+        "provenance": {
+          "agent": "builtin",
+          "app_replay_size": "builtin",
+          "context_strategy": "builtin",
+          "export_atif_provider_handles": "builtin",
+          "max_concurrent_delegate_turns": "builtin",
+          "max_retained_terminal": "builtin",
+          "max_rounds": "builtin",
+          "max_subagent_depth": "builtin",
+          "no_project_prompts": "builtin",
+          "openai_responses_continuation": "builtin",
+          "sandbox": "builtin",
+          "sandbox_net": "builtin",
+          "verbose": "builtin"
+        },
+        "repo": {
+          "path": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP/.evener/launch.toml",
+          "hash": "sha256:f1e7a00982a81f4f6f62f9401663cd1edd21bdd0787097d75775ec4c7414018a",
+          "trust": "untrusted",
+          "preview": "max_rounds = 11\n"
+        }
+      }
+    },
+    {
+      "method": "evener/launch/trustRepo",
+      "params": {
+        "cwd": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP",
+        "hash": "sha256:f1e7a00982a81f4f6f62f9401663cd1edd21bdd0787097d75775ec4c7414018a"
+      },
+      "error": {
+        "name": "WireError",
+        "code": -32009,
+        "message": "file changed since review"
+      }
+    },
+    {
+      "method": "evener/launch/resolve",
+      "params": {
+        "cwd": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP"
+      },
+      "result": {
+        "effective": {
+          "agent": "default",
+          "contextStrategy": "compact",
+          "openAIResponsesContinuation": "off",
+          "sandbox": "off",
+          "sandboxNet": true,
+          "maxRounds": -1,
+          "maxSubagentDepth": 2,
+          "maxConcurrentDelegateTurns": 50,
+          "maxRetainedTerminal": 2048,
+          "noProjectPrompts": false,
+          "appReplaySize": 1000,
+          "verbose": false,
+          "exportATIFProviderHandles": "redacted"
+        },
+        "layers": {},
+        "provenance": {
+          "agent": "builtin",
+          "app_replay_size": "builtin",
+          "context_strategy": "builtin",
+          "export_atif_provider_handles": "builtin",
+          "max_concurrent_delegate_turns": "builtin",
+          "max_retained_terminal": "builtin",
+          "max_rounds": "builtin",
+          "max_subagent_depth": "builtin",
+          "no_project_prompts": "builtin",
+          "openai_responses_continuation": "builtin",
+          "sandbox": "builtin",
+          "sandbox_net": "builtin",
+          "verbose": "builtin"
+        },
+        "repo": {
+          "path": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP/.evener/launch.toml",
+          "hash": "sha256:e16eed517428841a450b242654df495e59f9c892f6ec7fae840c7555ed144e6b",
+          "trust": "untrusted",
+          "preview": "max_rounds = 12\n"
+        }
+      }
+    },
+    {
+      "method": "evener/launch/trustRepo",
+      "params": {
+        "cwd": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP",
+        "hash": "sha256:e16eed517428841a450b242654df495e59f9c892f6ec7fae840c7555ed144e6b"
+      },
+      "result": {
+        "effective": {
+          "agent": "default",
+          "contextStrategy": "compact",
+          "openAIResponsesContinuation": "off",
+          "sandbox": "off",
+          "sandboxNet": true,
+          "maxRounds": 12,
+          "maxSubagentDepth": 2,
+          "maxConcurrentDelegateTurns": 50,
+          "maxRetainedTerminal": 2048,
+          "noProjectPrompts": false,
+          "appReplaySize": 1000,
+          "verbose": false,
+          "exportATIFProviderHandles": "redacted"
+        },
+        "layers": {
+          "repo": {
+            "maxRounds": 12
+          }
+        },
+        "provenance": {
+          "agent": "builtin",
+          "app_replay_size": "builtin",
+          "context_strategy": "builtin",
+          "export_atif_provider_handles": "builtin",
+          "max_concurrent_delegate_turns": "builtin",
+          "max_retained_terminal": "builtin",
+          "max_rounds": "repo",
+          "max_subagent_depth": "builtin",
+          "no_project_prompts": "builtin",
+          "openai_responses_continuation": "builtin",
+          "sandbox": "builtin",
+          "sandbox_net": "builtin",
+          "verbose": "builtin"
+        },
+        "repo": {
+          "path": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP/.evener/launch.toml",
+          "hash": "sha256:e16eed517428841a450b242654df495e59f9c892f6ec7fae840c7555ed144e6b",
+          "trust": "trusted"
+        }
+      }
+    },
+    {
+      "method": "evener/launch/resolve",
+      "params": {
+        "cwd": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP"
+      },
+      "result": {
+        "effective": {
+          "agent": "default",
+          "contextStrategy": "compact",
+          "openAIResponsesContinuation": "off",
+          "sandbox": "off",
+          "sandboxNet": true,
+          "maxRounds": 12,
+          "maxSubagentDepth": 2,
+          "maxConcurrentDelegateTurns": 50,
+          "maxRetainedTerminal": 2048,
+          "noProjectPrompts": false,
+          "appReplaySize": 1000,
+          "verbose": false,
+          "exportATIFProviderHandles": "redacted"
+        },
+        "layers": {
+          "repo": {
+            "maxRounds": 12
+          }
+        },
+        "provenance": {
+          "agent": "builtin",
+          "app_replay_size": "builtin",
+          "context_strategy": "builtin",
+          "export_atif_provider_handles": "builtin",
+          "max_concurrent_delegate_turns": "builtin",
+          "max_retained_terminal": "builtin",
+          "max_rounds": "repo",
+          "max_subagent_depth": "builtin",
+          "no_project_prompts": "builtin",
+          "openai_responses_continuation": "builtin",
+          "sandbox": "builtin",
+          "sandbox_net": "builtin",
+          "verbose": "builtin"
+        },
+        "repo": {
+          "path": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/sdk-trust-same-fixture-pY3MUP/.evener/launch.toml",
+          "hash": "sha256:e16eed517428841a450b242654df495e59f9c892f6ec7fae840c7555ed144e6b",
+          "trust": "trusted"
+        }
+      }
+    },
+    {
+      "method": "evener/launch/resolve",
+      "params": {
+        "cwd": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/no-config"
+      },
+      "result": {
+        "effective": {
+          "agent": "default",
+          "contextStrategy": "compact",
+          "openAIResponsesContinuation": "off",
+          "sandbox": "off",
+          "sandboxNet": true,
+          "maxRounds": -1,
+          "maxSubagentDepth": 2,
+          "maxConcurrentDelegateTurns": 50,
+          "maxRetainedTerminal": 2048,
+          "noProjectPrompts": false,
+          "appReplaySize": 1000,
+          "verbose": false,
+          "exportATIFProviderHandles": "redacted"
+        },
+        "layers": {},
+        "provenance": {
+          "agent": "builtin",
+          "app_replay_size": "builtin",
+          "context_strategy": "builtin",
+          "export_atif_provider_handles": "builtin",
+          "max_concurrent_delegate_turns": "builtin",
+          "max_retained_terminal": "builtin",
+          "max_rounds": "builtin",
+          "max_subagent_depth": "builtin",
+          "no_project_prompts": "builtin",
+          "openai_responses_continuation": "builtin",
+          "sandbox": "builtin",
+          "sandbox_net": "builtin",
+          "verbose": "builtin"
+        },
+        "repo": {
+          "path": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/no-config/.evener/launch.toml",
+          "trust": "absent"
+        }
+      }
+    }
+  ],
+  "noConfig": {
+    "repo": {
+      "path": "/private/tmp/sdk-trust-r2.Y1JC7l/workspace/no-config/.evener/launch.toml",
+      "trust": "absent"
+    },
+    "effectiveMaxRounds": -1
+  },
+  "independentReview": {
+    "status": "accepted-bounded",
+    "reviewer": "Luna medium, sdk_current_evidence_review",
+    "coordinatorChecks": [
+      "Four retained raw artifact hashes verified",
+      "Six public request records exactly equal raw driver-result records",
+      "Persisted project metadata matches exact fixture cwd and trusted fresh hash",
+      "Owned fixture directory and listener absent after cleanup"
+    ],
+    "limits": [
+      "Permission/capability, concurrent clients, disconnect/restart persistence and revoke behavior remain open",
+      "Original historical invalid-directory observation is not included in the current six records"
+    ]
+  }
+}

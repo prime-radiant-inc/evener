@@ -1,0 +1,280 @@
+{
+  "schema": "evener.sdk.saved-items.outcomes.v1",
+  "status": "scoped-outcomes-observed",
+  "reviewedAt": "2026-09-08T23:57:21.398221+00:00",
+  "fixtureRoot": "/private/tmp/evener-sdk-saved-items-current7-nDfF8O",
+  "target": {
+    "projectKey": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+    "ref": "local:034LWT4CBAesNfZF4HLK7n",
+    "workingDir": "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/workspace"
+  },
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "distSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "binaries": {
+    "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+    "evener-dev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+  },
+  "initial": {
+    "favorite": false,
+    "archived": false,
+    "membership": "projects",
+    "catalogs": [
+      {
+        "name": "projects",
+        "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+        "revision": 2
+      },
+      {
+        "name": "archived_projects",
+        "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+        "revision": 1
+      }
+    ],
+    "sessionCount": 1
+  },
+  "steps": [
+    {
+      "method": "evener/favorite/set",
+      "params": {
+        "kind": "project",
+        "id": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+        "favorited": true
+      },
+      "navigation": {
+        "generation_id": "ca93a92958407f8e3ce3ad03f7e14dc8",
+        "targets": [
+          {
+            "kind": "catalog",
+            "catalog": "projects",
+            "revision": 3
+          },
+          {
+            "kind": "project",
+            "projectKey": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+            "revision": 2
+          },
+          {
+            "kind": "all_loaded_projects"
+          }
+        ]
+      },
+      "readback": {
+        "favorite": true,
+        "archived": false,
+        "membership": "projects",
+        "catalogs": [
+          {
+            "name": "projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 3
+          },
+          {
+            "name": "archived_projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 1
+          }
+        ],
+        "sessionCount": 1
+      }
+    },
+    {
+      "method": "evener/favorite/set",
+      "params": {
+        "kind": "project",
+        "id": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+        "favorited": false
+      },
+      "navigation": {
+        "generation_id": "ca93a92958407f8e3ce3ad03f7e14dc8",
+        "targets": [
+          {
+            "kind": "catalog",
+            "catalog": "projects",
+            "revision": 4
+          },
+          {
+            "kind": "project",
+            "projectKey": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+            "revision": 3
+          },
+          {
+            "kind": "all_loaded_projects"
+          }
+        ]
+      },
+      "readback": {
+        "favorite": false,
+        "archived": false,
+        "membership": "projects",
+        "catalogs": [
+          {
+            "name": "projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 4
+          },
+          {
+            "name": "archived_projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 1
+          }
+        ],
+        "sessionCount": 1
+      }
+    },
+    {
+      "method": "evener/archive/set",
+      "params": {
+        "kind": "project",
+        "id": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+        "workingDir": "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/workspace",
+        "archived": true
+      },
+      "navigation": {
+        "generation_id": "ca93a92958407f8e3ce3ad03f7e14dc8",
+        "targets": [
+          {
+            "kind": "catalog",
+            "catalog": "archived_projects",
+            "revision": 2
+          },
+          {
+            "kind": "catalog",
+            "catalog": "projects",
+            "revision": 5
+          },
+          {
+            "kind": "manifest",
+            "revision": 3
+          },
+          {
+            "kind": "project",
+            "projectKey": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+            "revision": 4
+          },
+          {
+            "kind": "section",
+            "section": "live",
+            "revision": 3
+          },
+          {
+            "kind": "all_loaded_projects"
+          }
+        ]
+      },
+      "readback": {
+        "favorite": false,
+        "archived": true,
+        "membership": "archived_projects",
+        "catalogs": [
+          {
+            "name": "projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 5
+          },
+          {
+            "name": "archived_projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 2
+          }
+        ],
+        "sessionCount": 1
+      }
+    },
+    {
+      "method": "evener/archive/set",
+      "params": {
+        "kind": "project",
+        "id": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+        "workingDir": "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/workspace",
+        "archived": false
+      },
+      "navigation": {
+        "generation_id": "ca93a92958407f8e3ce3ad03f7e14dc8",
+        "targets": [
+          {
+            "kind": "catalog",
+            "catalog": "archived_projects",
+            "revision": 3
+          },
+          {
+            "kind": "catalog",
+            "catalog": "projects",
+            "revision": 6
+          },
+          {
+            "kind": "manifest",
+            "revision": 4
+          },
+          {
+            "kind": "project",
+            "projectKey": "private-tmp-evener-sdk-saved-items-current7-nDfF8O-workspace-vpEyyRkACk",
+            "revision": 5
+          },
+          {
+            "kind": "section",
+            "section": "live",
+            "revision": 4
+          },
+          {
+            "kind": "all_loaded_projects"
+          }
+        ]
+      },
+      "readback": {
+        "favorite": false,
+        "archived": false,
+        "membership": "projects",
+        "catalogs": [
+          {
+            "name": "projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 6
+          },
+          {
+            "name": "archived_projects",
+            "generationId": "ca93a92958407f8e3ce3ad03f7e14dc8",
+            "revision": 3
+          }
+        ],
+        "sessionCount": 1
+      }
+    }
+  ],
+  "files": {
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/01-thread-start-response.json": "6ee2924cfa09dc0411e94901e79f09315852fda8727e0aac53a121a506a07852",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/02-initial-projects.json": "1dd7ee0c0073f581d993e388baa1af567cc4c5de95ac5aef4e1ee5c03049516b",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/03-initial-archived-projects.json": "ad448da5179436a8111a89b65bf3a45fc945c8e7b55e16f4ed51e53be07ff0cc",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/04-favorite-true-request.json": "7fabf105a267885ca46e1c32a30bec658563c6fa8c5822aae81015527f4d2a9e",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/05-favorite-true-response.json": "26d9c0904834036120674105bcb10e5d750bd9dd89512dcedce36e0167618d9d",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/06-favorite-true-projects.json": "9cc0028b81b760c5c432c56ad600d38ee17d509e3bc4eab161e23fa06ae0ed78",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/07-favorite-true-archived-projects.json": "ad448da5179436a8111a89b65bf3a45fc945c8e7b55e16f4ed51e53be07ff0cc",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/08-favorite-false-request.json": "2c394d27bd447faadcb4cfb47efd2162d17fb9c95181e98b0555e4763f2e233c",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/09-favorite-false-response.json": "5d02cd28e1c1ae4dbd51f2f7876753fd1777ba4037c280ab10f2dad301934a1d",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/10-favorite-false-projects.json": "a3cf4ec07b76fe690412a2486bd1463cd360ed26fe35189b55ed7685121e7f82",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/11-favorite-false-archived-projects.json": "ad448da5179436a8111a89b65bf3a45fc945c8e7b55e16f4ed51e53be07ff0cc",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/12-archive-true-request.json": "27c6f05d6369ebafe122310c6ff89c0baa0c733c5cfa15712704d0841f75d49c",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/13-archive-true-response.json": "58940d284ee37c0ea63d3577e4f1a490256a1c03b97e6ff4900d4a3b7e0a41c9",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/14-archive-true-projects.json": "7d20b0d5dc6663a15aa044ba1046c26ad052645e4bd0c98fa3312e7e8230437b",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/15-archive-true-archived-projects.json": "2c8dfd91930c9dafa04266e13cc0f71d6310d0508e918149f38f3903d482992d",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/16-archive-false-restoration-request.json": "48991626cc8870b99d4487169842dc1a727db0747b28382be248205cda494b0d",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/17-archive-false-restoration-response.json": "85d9bcf3e4a837fb7255454fd61309aeb8849bf5d69742354f191e9f27e72335",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/18-archive-false-restoration-projects.json": "6f69acb498d6042cf7d8c64233c7066043f6b0aa91ef17ec31336de8e059b959",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/19-archive-false-restoration-archived-projects.json": "296cc59a9a3e9059fa990b27a16d005ca967b63c24f3390d78790bf8eaed7a11",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/20-thread-read-final.json": "5953578fd86890fd35e39dde63845bfd83bcefa12f4c52381b668a3a484b0762",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/candidate.json": "1f781e534265da824df567452820e03f033902b1864fa6b863748a8312e8cb44",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/fixture-driver.mjs": "0cbc63cbda82d8369e43f4c05c348e69246fecd7a6fbac9d15caab36834417e1",
+    "/private/tmp/evener-sdk-saved-items-current7-nDfF8O/exit.log": "8f1d5fdcc76dfb37b4e59053a685a2104b78897c4dc08014033ded91f83d625b"
+  },
+  "cleanup": {
+    "ownedBinaryProcessesAbsent": true
+  },
+  "limitations": [
+    "Project favorite and archive only; session variants and native UI are not qualified.",
+    "Start omitted input; no provider process was launched. No model response or transport-attempt count is claimed.",
+    "Raw navigation metadata is authoritative. Candidate state.catalogs and state.project.revision were read from incorrect property locations and are excluded; this receipt extracts and asserts the actual fields.",
+    "Invalid input, permissions, stale binding, uncertainty and reconnect remain unqualified."
+  ]
+}

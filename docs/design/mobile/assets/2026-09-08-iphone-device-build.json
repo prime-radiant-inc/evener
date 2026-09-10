@@ -1,0 +1,65 @@
+{
+  "schema": "evener.iphone.device-build.v1",
+  "recordedAt": "2026-09-08T20:15:22.423130+00:00",
+  "sourceCommit": "5307e8515104be9a038b7ab6689137d6131af7a3",
+  "sourceHashes": {
+    "mobile-native/app.json": "baf6d291b162814936284f069fb193c10f3677ce282d0052f69288a600ded00f",
+    "mobile-native/package-lock.json": "cb772685685b67bfe0dc02af918e0f733958b69cffd7444f31236018b7daeeda",
+    "mobile-native/ios/Evener.xcodeproj/project.pbxproj": "1df07feb3a16333214c9b700c8ed34a9546f067979772f2bfbd2032bd0d11414",
+    "mobile-native/ios/Podfile.lock": "f6d9220b73c52d14c91cfc764ea28a3b1f0c6b743551c093131dd4c3d6e4c4d6"
+  },
+  "build": {
+    "configuration": "Release",
+    "destination": "generic/platform=iOS",
+    "team": "87WJ58S66M",
+    "exitCode": 0,
+    "logPath": "/tmp/evener-iphone-signed-build.log",
+    "logSha256": "beec1a3d659d00e75e519c554c8d556d64901dbb8cf3c66932294c0f70f8db27",
+    "outputPath": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build-device/Build/Products/Release-iphoneos/Evener.app"
+  },
+  "artifacts": {
+    "Evener": "2d9dbcab38a76efa425179a22633999a7dcdadd19d438871bf74b4a5e0df0ac9",
+    "main.jsbundle": "b0e72ef5cf23658fa74d30ed8b08268e29a035b2644b4d0832627c6047adda89",
+    "Info.plist": "0490aacb35e8a965a501d6e10ad38a3d5223ea0762b4683bd26e1d20d9c2cbbb",
+    "embedded.mobileprovision": "018a52f633a7cf504bddc248cf3a49aaed1945392a5e667707fd222981256ecc"
+  },
+  "bundle": {
+    "CFBundleIdentifier": "com.primeradiant.evener.native",
+    "CFBundleShortVersionString": "0.1.0",
+    "CFBundleVersion": "1",
+    "DTPlatformName": "iphoneos",
+    "DTSDKName": "iphoneos26.5",
+    "MinimumOSVersion": "16.4",
+    "UIDeviceFamily": [
+      1,
+      2
+    ]
+  },
+  "signing": {
+    "verificationExitCode": 0,
+    "verificationOutput": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build-device/Build/Products/Release-iphoneos/Evener.app: valid on disk\n/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build-device/Build/Products/Release-iphoneos/Evener.app: satisfies its Designated Requirement",
+    "kind": "Apple Development",
+    "team": [
+      "87WJ58S66M"
+    ],
+    "profileName": "iOS Team Provisioning Profile: *",
+    "profileUUID": "9e93be5d-e06f-4e76-8236-d18c27d90473",
+    "profileExpiresAt": "2027-08-22T05:17:42Z",
+    "entitlements": {
+      "application-identifier": "87WJ58S66M.com.primeradiant.evener.native",
+      "com.apple.developer.team-identifier": "87WJ58S66M",
+      "get-task-allow": true
+    }
+  },
+  "acceptance": {
+    "physicalInstall": false,
+    "physicalLaunch": false,
+    "TestFlightUpload": false,
+    "distributionSigning": false
+  },
+  "limitations": [
+    "Build and signature verified only. Physical install and launch remain unqualified because the paired phone reports device locked.",
+    "Development certificate and wildcard device profile do not establish App Store distribution or TestFlight readiness.",
+    "Generated native project declares iPhone and iPad device families. iPad qualification is paused; iPhone-only distribution configuration remains to be finalized."
+  ]
+}

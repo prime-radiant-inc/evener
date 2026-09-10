@@ -1,0 +1,213 @@
+{
+  "recordedAt": "2026-09-08T23:26:42.422001+00:00",
+  "status": "scoped-native-outcomes-observed",
+  "scope": "Native iPhone simulator interactions against an owned authenticated real hub and daemon, with a scripted external provider. Not full Usable or release qualification.",
+  "device": {
+    "id": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "model": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "physical": false
+  },
+  "artifact": {
+    "bundleId": "com.primeradiant.evener.native",
+    "appPath": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/FE6084BA-1A16-40B0-A2D8-19E6339422F3/Evener.app",
+    "executableSha256": "b466bb73defbf2bfed923615f6390c220a4e42627b77015f4df1903e40e4bb9a",
+    "jsBundleSha256": "5cfe4d2b06aa3afdfccc75d9fa7d5e7138dc1e84cc504e1ab04d4cf3184ae796",
+    "codeSource": "6a0278e36",
+    "buildConfigurationCommit": "090865a59",
+    "buildReceipt": "2026-09-08-ios-pod-lock-portability.json",
+    "installed": true,
+    "nativeLaunchObserved": true,
+    "includesWriteActionSummaryFix": false
+  },
+  "runtime": {
+    "fixtureRoot": "/private/tmp/evener-iphone-joined-8MIBV9",
+    "hubOrigin": "http://127.0.0.1:64940",
+    "profile": "iPhone joined journey",
+    "ref": "local:034LVKwtHytL0Jh8qsVDFb",
+    "sessionCreatedBy": "independently installed SDK; opened by native UI",
+    "binaryHashes": {
+      "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+      "evener-dev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+    },
+    "binaryVersion": "6a0278e36-dirty"
+  },
+  "nativeObservations": {
+    "ordinary": {
+      "turnId": "turn_m1",
+      "nativeSend": true,
+      "entirePromptEnteredWithSoftwareKeyboardTaps": true,
+      "markdownHeadingInlineCodeLinkAndCodeBlockVisible": true
+    },
+    "reasoning": {
+      "itemId": "item_reasoning_24",
+      "completedStatusAndExactSentinelRetainedInReadback": true,
+      "noLingeringRunningReasoningIndicatorObserved": true,
+      "completedReasoningTextExpandedInNativeUI": false
+    },
+    "approvals": [
+      {
+        "decision": "allow",
+        "turnId": "turn_m2",
+        "escalationId": "esc_1_7cf9d740f98ae7e1bfd4e5f6",
+        "target": "/private/tmp/evener-iphone-joined-8MIBV9/requests/request-16.txt",
+        "toolItemId": "item_tool_29",
+        "toolStatus": "completed",
+        "nativeDecisionObserved": true,
+        "targetAbsentBeforeDecisionObserved": true,
+        "targetPresentAfterCompletedTurn": true,
+        "contentSha256": "ff65d833cd2774879333a52484b41feb39897a0dc9739f5adcd893a87a855063"
+      },
+      {
+        "decision": "deny",
+        "turnId": "turn_m3",
+        "escalationId": "esc_2_5e0e46274c34d76f8e77c022",
+        "target": "/private/tmp/evener-iphone-joined-8MIBV9/requests/request-19.txt",
+        "toolItemId": "item_tool_36",
+        "toolStatus": "failed",
+        "nativeDecisionObserved": true,
+        "targetAbsentBeforeDecisionObserved": true,
+        "targetPresentAfterCompletedTurn": false,
+        "contentSha256": null
+      }
+    ],
+    "question": {
+      "questionTurnId": "turn_m4",
+      "answerTurnId": "turn_m5",
+      "answerItemId": "item_user_45",
+      "selectedOption": "Keep current",
+      "note": "Native joined answer note",
+      "nativeSendAnswersObserved": true,
+      "sendAnswersAboveVisibleSoftwareKeyboard": true,
+      "askPendingCleared": true,
+      "separateOrdinaryDraftCoexistenceTested": false
+    },
+    "stop": {
+      "turnId": "turn_m6",
+      "nativeStopObserved": true,
+      "nativeInterruptedNoticeObserved": true,
+      "authoritativeStatus": "interrupted",
+      "providerCancellationQualified": false,
+      "limitation": "The provider controller was found absent after the stop, its terminal handle was unavailable and its final request record lacks client-cancellation confirmation. Process exit cause and timing are unknown. No same-artifact post-stop response is claimed."
+    }
+  },
+  "drafts": {
+    "drafts": {
+      "rowsBefore": 10,
+      "rowsAfter": 10,
+      "everyOriginalRowPreserved": true
+    },
+    "question_drafts": {
+      "rowsBefore": 9,
+      "rowsAfter": 10,
+      "everyOriginalRowPreserved": true
+    },
+    "question_positions": {
+      "rowsBefore": 3,
+      "rowsAfter": 3,
+      "everyOriginalRowPreserved": true
+    },
+    "draft_images": {
+      "rowsBefore": 0,
+      "rowsAfter": 0,
+      "everyOriginalRowPreserved": true
+    },
+    "draft_image_sets": {
+      "rowsBefore": 0,
+      "rowsAfter": 0,
+      "everyOriginalRowPreserved": true
+    },
+    "creation_drafts": {
+      "rowsBefore": 1,
+      "rowsAfter": 1,
+      "everyOriginalRowPreserved": true
+    },
+    "creation_draft_images": {
+      "rowsBefore": 0,
+      "rowsAfter": 0,
+      "everyOriginalRowPreserved": true
+    }
+  },
+  "files": {
+    "fixture.py": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/fixture.py",
+      "sha256": "b0417ebd84967b1b9873821f8595778287cc1c97724771dbc974b9c7624f0bf9"
+    },
+    "native-readback.mjs": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-readback.mjs",
+      "sha256": "101aa80d43bac4bbadc8f1d350d849f02331dd1a88ad0e57c5dff64379fa163c"
+    },
+    "record-native-journey.py": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/record-native-journey.py",
+      "sha256": "f20ed477c351c3eb8527fb12c3a85cc192d43c6a75cc3a8ba2e8bc378806a98f"
+    },
+    "prelaunch.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/prelaunch.json",
+      "sha256": "f74c6b41120f5740ee7e092efd973f30cc4eb96e05f56b82c6337e906bde07a2"
+    },
+    "runtime.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/runtime.json",
+      "sha256": "994e89a9fcb3fbf79bb4bfe33d9ea3cf57354634fc1a681c2177d93c512994e8"
+    },
+    "provider-requests.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/provider-requests.json",
+      "sha256": "f2d1f35d490f792ea68e98da00e5218c047b227c529c6864f984352dd256e527"
+    },
+    "drafts-after-joined-journey.db": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/drafts-after-joined-journey.db",
+      "sha256": "297e7a7ac6c8277b1d6b29063b0dab3e1d913a5446132aa23b764e0d04ff24e9"
+    },
+    "native-seed-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-seed-readback.json",
+      "sha256": "eefdbd3f14bf0b7d66c9680cfb9d14de8826c46e4ac5207511e74a6e566ded06"
+    },
+    "native-ordinary-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-ordinary-readback.json",
+      "sha256": "6c4638975599dbc200705f27359efba3f14969938418066a98be3aaff6207b1e"
+    },
+    "native-allow-pending-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-allow-pending-readback.json",
+      "sha256": "b5d1edd01557524a270acb003d795f75221bd6e1e49eb561a29f910ba0174f53"
+    },
+    "native-allow-completed-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-allow-completed-readback.json",
+      "sha256": "099f01b55276f5ae164bddef2520438546031a972a6d9c7973d458cea9c53fcc"
+    },
+    "native-deny-pending-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-deny-pending-readback.json",
+      "sha256": "c055ae12a46bf22b7acbe9638fca00dba2488d542d894940bd1482adc5e3719b"
+    },
+    "native-deny-completed-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-deny-completed-readback.json",
+      "sha256": "386f60d39d3284e803c14029cdff0e0e310576b9ecb39c1d8346b55c1543ac39"
+    },
+    "native-question-completed-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-question-completed-readback.json",
+      "sha256": "7e929545f920f126e76d82408240f08201b3199fa7ed1d4cc58d39baced159e2"
+    },
+    "native-stop-pending-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-stop-pending-readback.json",
+      "sha256": "271929dde021fb8d2f7229c0b642beab5a906698911f093b45841cd9d5892330"
+    },
+    "native-stop-completed-readback.json": {
+      "path": "/private/tmp/evener-iphone-joined-8MIBV9/native-stop-completed-readback.json",
+      "sha256": "f2e4337810c3bdf86c3d812a310c05d26994d204938c1e2913bd47cbcd579710"
+    }
+  },
+  "remaining": [
+    "Code copy and link return",
+    "Separate ordinary draft while answering a question",
+    "Second-client stale decision",
+    "Non-tail reader anchor and cold launch",
+    "Network reconnect and two-hub isolation",
+    "Same-artifact post-stop continuation with provider cancellation evidence",
+    "Rebuilt native verification of Write action summary",
+    "Physical iPhone and TestFlight install/update"
+  ],
+  "fixtureLifecycle": {
+    "hubStillRunningWhenChecked": true,
+    "providerControllerAbsentWhenChecked": true,
+    "ownedCleanupComplete": false,
+    "providerRestarted": false
+  }
+}
