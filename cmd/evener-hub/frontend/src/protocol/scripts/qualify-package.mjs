@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
@@ -101,7 +102,6 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
     "package/examples/discovery.mjs",
     "package/examples/discovery-cli.mjs",
     "package/examples/discovery-logic.mjs",
-    "package/examples/discovery.contract.mjs",
     "package/examples/private-output.mjs",
   ])
     assert(listing.includes(`${expected}\n`), `missing ${expected}`);
@@ -131,7 +131,18 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
   const discoveryResponses = new Map([
     ["evener/paths/complete", { params: {}, result: { data: ["/fixture/project"] } }],
   ]);
+  let discoveryMode = { action: "paths", response: { data: [fixtureCwd] } };
   const observedMethods = [];
+  const discoveryMethod = (action) =>
+    ({
+      paths: "evener/paths/complete",
+      projects: "evener/projects/recent",
+      validatePath: "evener/path/validate",
+      gitHead: "evener/git/head",
+      search: "evener/search",
+      harnesses: "evener/harnesses/list",
+      settings: "evener/settings/overview",
+    })[action];
   const controller = new AbortController();
   let serverError;
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -164,6 +175,12 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
               auth: false,
             },
           };
+        } else if (request.method.startsWith("evener/") && discoveryMethod(discoveryMode.action) === request.method) {
+          if (discoveryMode.close) {
+            socket.close();
+            return;
+          }
+          result = discoveryMode.malformed ? { invalid: true } : discoveryMode.response;
         } else {
           const response = responses.get(request.method) ?? discoveryResponses.get(request.method);
           assert(response, `unexpected method ${request.method}`);
@@ -209,28 +226,15 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       diagnostics: 0,
     });
 
-    observedMethods.length = 0;
-    const discoveryOutput = join(consumerDir, "discovery-readback.json");
-    const { stdout: discoveryStdout } = await promisify(execFile)(
-      process.execPath,
-      [join(consumerDir, "node_modules/@evener/appwire-client/examples/discovery.mjs")],
-      {
-        cwd: consumerDir,
-        env: {
-          ...process.env,
-          EVENER_RPC_URL: `ws://127.0.0.1:${address.port}/rpc`,
-          EVENER_CWD: fixtureCwd,
-          EVENER_DISCOVERY_ACTION: "paths",
-          EVENER_DISCOVERY_OUTPUT_FILE: discoveryOutput,
-        },
-        signal: controller.signal,
-        timeout: 15000,
-        encoding: "utf8",
+    await runInstalledDiscoveryContracts({
+      consumerDir,
+      rpcURL: `ws://127.0.0.1:${address.port}/rpc`,
+      fixtureCwd,
+      observedMethods,
+      setMode: (mode) => {
+        discoveryMode = mode;
       },
-    );
-    assert.deepEqual(observedMethods, ["initialize", "evener/paths/complete"]);
-    assert.deepEqual(JSON.parse(discoveryStdout), { outcome: "read", action: "paths", count: 1 });
-    assert.deepEqual(JSON.parse(readFileSync(discoveryOutput, "utf8")), { data: [fixtureCwd] });
+    });
   } catch (error) {
     throw serverError ?? error;
   } finally {
