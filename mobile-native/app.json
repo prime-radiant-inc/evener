@@ -15,7 +15,8 @@
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         },
-        "NSPhotoLibraryAddUsageDescription": "Save images from your Evener conversations to your photo library."
+        "NSPhotoLibraryAddUsageDescription": "Save images from your Evener conversations to your photo library.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {

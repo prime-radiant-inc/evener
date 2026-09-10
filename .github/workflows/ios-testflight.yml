@@ -116,8 +116,8 @@ jobs:
           profile="$RUNNER_TEMP/evener.mobileprovision"
           security list-keychains -d user > "$RUNNER_TEMP/evener-keychains.txt"
           security default-keychain -d user > "$RUNNER_TEMP/evener-default-keychain.txt"
-          echo "$IOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$cert"
-          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
+          echo "$IOS_CERTIFICATE_P12_BASE64" | base64 -D > "$cert"
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 -D > "$profile"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
@@ -149,7 +149,13 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" ios/Evener/Info.plist
           xcodebuild -workspace ios/Evener.xcworkspace -scheme Evener -configuration Release -sdk iphoneos -destination generic/platform=iOS archive -archivePath "$PWD/build/Evener.xcarchive" | tee build/xcodebuild-archive.log
           xcodebuild -exportArchive -archivePath "$PWD/build/Evener.xcarchive" -exportOptionsPlist build/ExportOptions.plist -exportPath build/export | tee build/xcodebuild-export.log
-          mv build/export/*.ipa build/Evener.ipa
+          shopt -s nullglob
+          exported_ipas=(build/export/*.ipa)
+          if (( ${#exported_ipas[@]} != 1 )); then
+            echo "Expected one exported IPA; found ${#exported_ipas[@]}" >&2
+            exit 1
+          fi
+          mv "${exported_ipas[0]}" build/Evener.ipa
       - name: Record artifact identity
         working-directory: mobile-native
         run: |
