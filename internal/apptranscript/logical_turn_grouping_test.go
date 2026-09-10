@@ -56,7 +56,9 @@ func TestItemReadersGroupContinuationEntries(t *testing.T) {
 	}
 	path := writeEntries(t, entries...)
 
-	fromFile := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	fromFile := requireItemTurnsFromFile(t, path, testMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return ProjectTurn(turnID, turnIndex, turn, nil, nil, nil)
+	})
 	fromEntries, err := ItemTurnsFromEntries(transcript.Header{}, entries, sequentialTestProjector())
 	if err != nil {
 		t.Fatalf("ItemTurnsFromEntries: %v", err)
@@ -86,10 +88,17 @@ func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 			Message:      llm.User("interrupted"),
 			SteeringKind: events.SteeringKindInterrupted,
 		}},
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{
+			Kind:    schema.TurnFailure,
+			Message: llm.System("provider failed"),
+			Error:   &schema.TurnFailureInfo{Message: "provider failed"},
+		}},
 	}
 	path := writeEntries(t, entries...)
 	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-	page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, boundedTestProjector)
+	page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+		return ProjectTurn(turnID, turnIndex, turn, toolNames, nil, nil)
+	})
 	for name, turns := range map[string][]appwire.Turn{
 		"full":    full,
 		"indexed": page.Turns,
@@ -97,8 +106,17 @@ func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 		if len(turns) != 1 {
 			t.Fatalf("%s grouped turns = %d, want one interrupted logical turn", name, len(turns))
 		}
-		if turns[0].Status != appwire.TurnStatusInterrupted {
-			t.Fatalf("%s grouped turn status = %q, want interrupted", name, turns[0].Status)
+		if turns[0].Status != appwire.TurnStatusFailed {
+			t.Fatalf("%s grouped turn status = %q, want failure to take precedence", name, turns[0].Status)
+		}
+		interrupted := false
+		for _, item := range turns[0].Items {
+			if item.SteeringKind == events.SteeringKindInterrupted {
+				interrupted = true
+			}
+		}
+		if !interrupted {
+			t.Fatalf("%s grouped items lost interrupted steering metadata: %+v", name, turns[0].Items)
 		}
 	}
 }
