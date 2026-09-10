@@ -271,6 +271,10 @@ test("running stable delegate ignores stale failure outcome", () => {
 
   entry.delegate.terminal = true;
   expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failure" });
+
+  entry.delegate.terminal = false;
+  entry.delegate.status = "error";
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: true, failed: true, status: "error" });
 });
 
 test("empty turn-container rows use their own active and failure state", () => {
