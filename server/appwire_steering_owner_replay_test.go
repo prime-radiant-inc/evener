@@ -18,13 +18,13 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestLiveSteeringOwnerIdentityReplays exercises the real session event bridge
-// for both steering delivery sites. The warmup turn is persisted before the
-// server is installed, so environment setup and cold hydration cannot hide a
-// missing owner on a live steering append. This regression compares the
-// steering carrier itself; full multi-round diagnostic parity has a separate
-// failure because live round timings currently consume unsaved item ordinals.
-func TestLiveSteeringOwnerIdentityReplays(t *testing.T) {
+// TestLiveSteeringOwnerIdentityReplaysFullTranscriptParity exercises the real
+// session event bridge for both steering delivery sites. The warmup turn is
+// persisted before the server is installed, so environment setup and cold
+// hydration cannot hide a missing owner on a live steering append. Every
+// projected item is compared across the live and cold paths, including round
+// timings and answers after the steering carrier.
+func TestLiveSteeringOwnerIdentityReplaysFullTranscriptParity(t *testing.T) {
 	for _, delayed := range []bool{false, true} {
 		name := "inline"
 		if delayed {
@@ -108,12 +108,17 @@ func TestLiveSteeringOwnerIdentityReplays(t *testing.T) {
 			if got := len(steeringReplayIdentities(full)); got != 1 {
 				t.Fatalf("projected steering items = %d, want one accepted mutation", got)
 			}
+			if !delayed {
+				assertInlineTimingAndLaterAnswer(t, full)
+			}
 			read, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sess.ID(), IncludeTurns: true})
 			if err != nil {
 				t.Fatalf("live read: %v", err)
 			}
-			if !reflect.DeepEqual(steeringReplayIdentities(read.Thread.Turns), steeringReplayIdentities(full)) {
-				t.Fatalf("live projection identities differ from cold projection:\nlive=%#v\ncold=%#v", steeringReplayIdentities(read.Thread.Turns), steeringReplayIdentities(full))
+			liveIdentities := replayItemIdentities(read.Thread.Turns)
+			coldIdentities := replayItemIdentities(full)
+			if !reflect.DeepEqual(liveIdentities, coldIdentities) {
+				t.Fatalf("live projection identities differ from cold projection:\nlive=%#v\ncold=%#v", liveIdentities, coldIdentities)
 			}
 
 			initial, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sess.ID(), IncludeTurns: true, ItemLimit: 1})
@@ -130,8 +135,9 @@ func TestLiveSteeringOwnerIdentityReplays(t *testing.T) {
 				paged = append(page.Data, paged...)
 				cursor = page.NextCursor
 			}
-			if !reflect.DeepEqual(steeringReplayIdentities(paged), steeringReplayIdentities(full)) {
-				t.Fatalf("tiny page identities differ from cold projection:\npaged=%#v\ncold=%#v", steeringReplayIdentities(paged), steeringReplayIdentities(full))
+			pagedIdentities := replayItemIdentities(paged)
+			if !reflect.DeepEqual(pagedIdentities, coldIdentities) {
+				t.Fatalf("tiny page identities differ from cold projection:\npaged=%#v\ncold=%#v", pagedIdentities, coldIdentities)
 			}
 		})
 	}
@@ -234,4 +240,73 @@ func steeringReplayIdentities(turns []appwire.Turn) []steeringReplayIdentity {
 		}
 	}
 	return result
+}
+
+type replayItemIdentity struct {
+	TurnID, Type, Key string
+	Position          appwire.ThreadItemPosition
+	Text, Description string
+	EventKind         appwire.ThreadItemEventKind
+	Status            string
+	Raw               any
+}
+
+func replayItemIdentities(turns []appwire.Turn) []replayItemIdentity {
+	var result []replayItemIdentity
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			position := appwire.ThreadItemPosition{}
+			if item.Position != nil {
+				position = *item.Position
+			}
+			result = append(result, replayItemIdentity{
+				TurnID: turn.ID, Type: item.Type, Key: item.TranscriptKey, Position: position,
+				Text: item.Text, Description: item.Description, EventKind: item.EventKind,
+				Status: item.Status, Raw: semanticReplayJSON(item.Raw),
+			})
+		}
+	}
+	return result
+}
+
+func semanticReplayJSON(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return string(raw)
+	}
+	return value
+}
+
+func assertInlineTimingAndLaterAnswer(t *testing.T, turns []appwire.Turn) {
+	t.Helper()
+	items := replayItemIdentities(turns)
+	steeringIndex := -1
+	for i, item := range items {
+		if item.Type == "steering" {
+			steeringIndex = i
+			break
+		}
+	}
+	if steeringIndex < 1 {
+		t.Fatalf("inline replay has no preceding items before steering: %#v", items)
+	}
+	timingIndex := -1
+	for i, item := range items[steeringIndex+1:] {
+		if item.EventKind == appwire.ThreadItemEventKindRoundTimings {
+			timingIndex = steeringIndex + 1 + i
+			break
+		}
+	}
+	if timingIndex < 0 {
+		t.Fatalf("inline replay has no intermediate round timings after steering: %#v", items)
+	}
+	for _, item := range items[timingIndex+1:] {
+		if item.Type == "agentMessage" && item.Text == "done" {
+			return
+		}
+	}
+	t.Fatalf("inline replay has no later answer after steering: %#v", items)
 }

@@ -61,6 +61,10 @@ const (
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.
 	TurnAttentionResolution TurnKind = "ATTENTION_RESOLUTION"
+	// TurnRoundTimings records the completed round's presentational timing
+	// breakdown. It is retained in semantic history for transcript parity but
+	// excluded from provider history.
+	TurnRoundTimings TurnKind = "ROUND_TIMINGS"
 )
 
 // AttentionResolutionInfo identifies one durable attention item and its
@@ -70,6 +74,29 @@ type AttentionResolutionInfo struct {
 	AttentionID      string `json:"attention_id"`
 	Disposition      string `json:"disposition"`
 	ResumeGeneration uint64 `json:"resume_generation,omitempty"`
+}
+
+// RoundTimings is the persisted counterpart of the live round timing
+// event. Durations remain nanoseconds in JSON, matching time.Duration's
+// existing event representation.
+type RoundTimings struct {
+	Round         int           `json:"round"`
+	SystemPrompt  time.Duration `json:"system_prompt_ns"`
+	ContextMgmt   time.Duration `json:"context_mgmt_ns"`
+	HistoryExpand time.Duration `json:"history_expand_ns"`
+	ToolDefs      time.Duration `json:"tool_defs_ns"`
+	LLMCall       time.Duration `json:"llm_call_ns"`
+	ToolExec      time.Duration `json:"tool_exec_ns"`
+	Persistence   time.Duration `json:"persistence_ns"`
+	AfterAction   time.Duration `json:"after_action_ns"`
+	LoopOverhead  time.Duration `json:"loop_overhead_ns"`
+	TotalRound    time.Duration `json:"total_round_ns"`
+}
+
+// Announcement is the stable presentational text shared by live and cold
+// projections.
+func (t RoundTimings) Announcement() string {
+	return fmt.Sprintf("Round %d total=%s llm=%s context=%s tools=%s prompt=%s history=%s tool_defs=%s persistence=%s after_action=%s overhead=%s", t.Round, t.TotalRound, t.LLMCall, t.ContextMgmt, t.ToolExec, t.SystemPrompt, t.HistoryExpand, t.ToolDefs, t.Persistence, t.AfterAction, t.LoopOverhead)
 }
 
 // DelegateDeliveryCommit records which exact tool call durably received one
@@ -206,6 +233,8 @@ type Turn struct {
 	Hook *HookInfo `json:"hook,omitempty"`
 	// ModelSwitch carries resolved identities on TurnModelSwitch turns.
 	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
+	// RoundTimings carries the detail of one completed presentational round.
+	RoundTimings *RoundTimings `json:"round_timings,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`
