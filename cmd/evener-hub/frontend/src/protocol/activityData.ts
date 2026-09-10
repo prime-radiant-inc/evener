@@ -181,7 +181,7 @@ function readBoolean(object: Record<string, unknown>, key: string): boolean | nu
 
 function readInteger(object: Record<string, unknown>, key: string): number | null {
   const value = object[key];
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
 function readNonNegativeInteger(object: Record<string, unknown>, key: string): number | null {
@@ -222,8 +222,8 @@ function parseCounts(raw: unknown): ActivityCounts | null {
 function parseUsage(raw: unknown): ActivityUsage | null | undefined {
   if (typeof raw === "undefined") return undefined;
   if (!isPlainObject(raw)) return null;
-  const inputTokens = readNonNegativeInteger(raw, "inputTokens");
-  const outputTokens = readNonNegativeInteger(raw, "outputTokens");
+  const inputTokens = typeof raw.inputTokens === "undefined" ? 0 : readNonNegativeInteger(raw, "inputTokens");
+  const outputTokens = typeof raw.outputTokens === "undefined" ? 0 : readNonNegativeInteger(raw, "outputTokens");
   if (inputTokens === null || outputTokens === null) return null;
   const usage: ActivityUsage = { inputTokens, outputTokens };
   const cacheReadTokens = readNonNegativeInteger(raw, "cacheReadTokens");
@@ -279,7 +279,7 @@ function copyOptionalInteger(
     target[key] = null;
     return true;
   }
-  if (typeof value !== "number" || !Number.isInteger(value)) return false;
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) return false;
   target[key] = value;
   return true;
 }
@@ -342,7 +342,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   if (typeof raw.reason !== "undefined" && typeof raw.reason !== "string") return null;
   if (typeof raw.endedAt !== "undefined" && typeof raw.endedAt !== "string") return null;
   if (typeof raw.lastOutputAt !== "undefined" && typeof raw.lastOutputAt !== "string") return null;
-  if (typeof exitCode !== "undefined" && !Number.isInteger(exitCode)) return null;
+  if (typeof exitCode !== "undefined" && !Number.isSafeInteger(exitCode)) return null;
   if (outcome) job.outcome = outcome;
   if (transcriptRef) job.transcriptRef = transcriptRef;
   if (parentDelegateId) job.parentDelegateId = parentDelegateId;

@@ -5,7 +5,6 @@
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
 
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import {
   type ActivityDelegate,
   type ActivityEntry,
@@ -13,7 +12,8 @@ import {
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
-} from "./activityData";
+} from "../../../protocol/activityData";
+import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import { isFailedStatus } from "./activityFormat";
 
 export interface ActivityRowBase {
