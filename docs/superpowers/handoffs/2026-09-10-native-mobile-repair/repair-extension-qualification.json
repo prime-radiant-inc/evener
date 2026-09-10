@@ -1,0 +1,80 @@
+{
+  "capturedAt": "2026-09-10T21:01:55.385779+00:00",
+  "receipts": [
+    {
+      "scope": "empty-navigation premerge",
+      "head": "cd36992ad915bdff296dbd1172ea7a1f62a5c942",
+      "evidence": "All current CI and actual clean RoboRev. Local complete module pass log; original wrapper did not retain numeric exit trailer."
+    },
+    {
+      "scope": "empty-navigation postmerge canonical",
+      "head": "29d6c124a098aaba3727217f4c572395055621f8",
+      "exit": 0,
+      "log": "/tmp/evener-main-1127-postmerge-gate.log"
+    },
+    {
+      "scope": "bounded-roster canonical",
+      "head": "647d44311697442af98c6ec8625546490b541063",
+      "exit": 0,
+      "log": "/tmp/evener-1128-main-refresh-merge-gate.log",
+      "review": "All current CI and actual clean RoboRev at merge."
+    },
+    {
+      "scope": "native lifecycle canonical",
+      "head": "de48b94d5e63970b5e43844d6646ab76be2ec825",
+      "exit": 0,
+      "log": "/tmp/evener-native-1096-de48-final-merge-gate.log",
+      "focused": "688 shared tests and TypeScript passed."
+    },
+    {
+      "scope": "native activity integration canonical",
+      "head": "165d9d3d8dda083c4cf839ffba29a61da0f12262",
+      "status": "Still running; not a pass",
+      "log": "/tmp/evener-native-1096-activity-final-merge-gate.log"
+    },
+    {
+      "scope": "portable activity frontend",
+      "head": "ee614fd613d8f4cb94e14cdb54cd8f59098fecd8",
+      "exit": 0,
+      "log": "/tmp/evener-1091-activity-test-web-final2.log",
+      "focused": "55 activity tests; both new expansion regressions observed RED against prior helper."
+    },
+    {
+      "scope": "environment rollback canonical",
+      "head": "22bf17497d3519b129d1b48539934e0f3a2a34ac",
+      "exit": 0,
+      "log": "/tmp/evener-1098-22bf-final-merge-gate.log",
+      "limitation": "Prior stable-active-ID stop CI failure passed rerun and 20 local race repetitions; intermittent cause remains unproven."
+    },
+    {
+      "scope": "compaction timing canonical",
+      "head": "0250b5e31701973d8da38dda475b07a442a51d61",
+      "exit": 0,
+      "log": "/tmp/evener-compaction-0250-final-merge-gate.log"
+    },
+    {
+      "scope": "fork capability focused race and lint",
+      "head": "3346c78dd77c8aa983cd0d61be08dd4d07cc8847",
+      "evidence": "Focused capability/admission/relay race PASS; golangci 0 issues."
+    },
+    {
+      "scope": "live-roster alias regression",
+      "head": "9d71fc5317b322ed4e3de8e176b2e04589093cb7",
+      "evidence": "Real persisted metadata and roster; absent/missing past index, empty/wrong SessionID. Normal and race PASS. Removing actual admission guard allowed both forks and failed the regression. Preserved source branch; cherry-picked as09eafa082 into candidate."
+    },
+    {
+      "scope": "shutdown canonical",
+      "head": "6fbe60b7972318fa553d155469a4dc40cc2446d5",
+      "status": "FAILED root module; remaining modules were still running",
+      "error": "TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains: clear during teardown: rendezvous update: registration has been removed",
+      "resolution": "Dedicated bridge fixture isolates rendezvous update in8e291eb15; normal/race bridge regressions pass."
+    },
+    {
+      "scope": "shutdown final command packages",
+      "head": "ad45099a958232e400058c008c6a8f68867e4670",
+      "exit": 0,
+      "log": "/tmp/evener-1109-final-all-cmd-tests.log",
+      "evidence": "Full cmd/evener 34.851s and all internal subpackages pass. Removal retry regression RED with old Remove (artifact remained), GREEN current entire rvreg race suite 1.383s. Full canonical and new CI/RoboRev remain required."
+    }
+  ]
+}
