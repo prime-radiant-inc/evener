@@ -31,6 +31,7 @@ export class ActivityList {
   private unsubscribe?: () => void;
   private disposed = false;
   private dirty = false;
+  private queuedBranch?: { id: string; continuation: string };
   private inFlight?: Promise<void>;
   constructor(
     private client: ActivityClient,
@@ -84,6 +85,7 @@ export class ActivityList {
         (n.method === "evener/jobs/treeUpdated" ||
           n.method === "evener/job/started" ||
           n.method === "evener/job/finished" ||
+          n.method === "evener/delegate/updated" ||
           n.method === "evener/thread/resync") &&
         n.params.ref === this.ref &&
         n.params.threadId === this.threadId
@@ -101,12 +103,13 @@ export class ActivityList {
     return this.run();
   };
   loadMore = (id: string, continuation: string): Promise<void> => {
-    if (
-      this.disposed ||
-      this.inFlight ||
-      !this.branches().some((branch) => branch.id === id && branch.continuation === continuation)
-    )
+    if (this.disposed || !this.branches().some((branch) => branch.id === id && branch.continuation === continuation))
       return Promise.resolve();
+    if (this.inFlight) {
+      this.queuedBranch = { id, continuation };
+      this.dirty = true;
+      return this.inFlight;
+    }
     return this.run({ id, continuation });
   };
   private run(branch?: { id: string; continuation: string }) {
@@ -155,7 +158,8 @@ export class ActivityList {
             });
         }
       }
-      branch = undefined;
+      branch = this.queuedBranch;
+      this.queuedBranch = undefined;
     } while (this.dirty && !this.disposed);
     this.publish({ loading: false });
   }
