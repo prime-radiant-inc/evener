@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { WebSocketServer } from "ws";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
@@ -70,4 +74,90 @@ for (const expected of [
   assert(listing.includes(`${expected}\n`), `missing ${expected}`);
 for (const forbidden of ["package/client.ts", "package/src/", "package/node_modules/"])
   assert(!listing.includes(forbidden), `contains ${forbidden}`);
-console.log(`qualified ${packed.name}@${packed.version} in installed consumer`);
+// Run the shipped program from the installed tarball. Only the remote server
+// is scripted; imports, sockets, handshake, client requests and output are real.
+const installedRequire = createRequire(join(consumerDir, "package.json"));
+const { APPWIRE_PROTOCOL_VERSION } = installedRequire("@evener/appwire-client");
+const fixtureCwd = "/fixture/project";
+const responses = new Map([
+  ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],
+  ["thread/list", { params: { limit: 20 }, result: { data: [], nextCursor: "next-page" } }],
+  ["evener/launch/schema", { params: {}, result: { options: [] } }],
+  ["evener/launch/resolve", { params: { cwd: fixtureCwd }, result: { layers: {}, diagnostics: [] } }],
+]);
+const observedMethods = [];
+const controller = new AbortController();
+const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+server.on("connection", (socket) => {
+  socket.on("message", (data) => {
+    try {
+      const request = JSON.parse(data.toString());
+      if (request.method === "initialized" && request.id === undefined) return;
+      observedMethods.push(request.method);
+      let result;
+      if (request.method === "initialize") {
+        assert.equal(request.params.clientInfo.name, "appwire-reference");
+        result = {
+          serverInfo: { name: "package-qualification", version: "0.0.0" },
+          protocolVersion: APPWIRE_PROTOCOL_VERSION,
+          sourceId: "qualification-source",
+          features: {
+            threadList: true,
+            threadTurnsList: true,
+            turnStart: false,
+            turnSteer: false,
+            threadClear: false,
+            threadShutdown: false,
+            forkFromTurn: false,
+            tasks: false,
+            transcriptList: true,
+            modelList: true,
+            directoryComplete: true,
+            auth: false,
+          },
+        };
+      } else {
+        const response = responses.get(request.method);
+        assert(response, `unexpected method ${request.method}`);
+        assert.deepEqual(request.params, response.params);
+        result = response.result;
+      }
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+    } catch (error) {
+      controller.abort(error);
+    }
+  });
+});
+server.on("error", (error) => controller.abort(error));
+try {
+  await once(server, "listening", { signal: controller.signal });
+  const address = server.address();
+  assert(address && typeof address !== "string");
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [join(consumerDir, "node_modules/@evener/appwire-client/examples/inspect.mjs")],
+    {
+      cwd: consumerDir,
+      env: { ...process.env, EVENER_RPC_URL: `ws://127.0.0.1:${address.port}/rpc`, EVENER_CWD: fixtureCwd },
+      signal: controller.signal,
+      timeout: 15000,
+      encoding: "utf8",
+    },
+  );
+  assert.deepEqual(observedMethods, ["initialize", ...responses.keys()]);
+  assert.deepEqual(JSON.parse(stdout), {
+    protocolVersion: APPWIRE_PROTOCOL_VERSION,
+    sourceId: "qualification-source",
+    models: 0,
+    sessionsOnFirstPage: 0,
+    hasMoreSessions: true,
+    launchOptions: 0,
+    resolvedLayers: [],
+    repositoryTrust: "absent",
+    diagnostics: 0,
+  });
+} finally {
+  for (const socket of server.clients) socket.terminate();
+  await new Promise((resolveClose) => server.close(resolveClose));
+}
+console.log(`qualified ${packed.name}@${packed.version}: installed imports, declarations and read-only example`);

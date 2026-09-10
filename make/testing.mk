@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -34,6 +34,18 @@ test-web: web-preflight
 ##   Chrome/Chromium is nonzero.
 test-web-browser: web-preflight
 	@scripts/web/test-web-browser.sh
+
+## The independently consumable AppWire package qualification gate.
+## proves: A packed package installs outside the checkout, exposes ESM and
+##   CommonJS runtime/type entry points, and executes its shipped read-only
+##   example against a scripted local WebSocket server.
+## trigger: Package CI; local pre-merge when protocol sources change.
+## requires: Node 22+ and the protocol package's installed development
+##   dependencies; qualification makes no external network requests.
+## fails-when: Build, pack, outside-checkout install, runtime import/require,
+##   declaration checking, example protocol exchange or output validation fails.
+test-api-package:
+	@cd cmd/evener-hub/frontend/src/protocol && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can

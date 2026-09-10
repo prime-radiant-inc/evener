@@ -28,6 +28,23 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
+  api-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/evener-hub/frontend/src/protocol/package-lock.json
+
+      - name: Install protocol development dependencies
+        run: npm ci --prefix cmd/evener-hub/frontend/src/protocol
+
+      - name: Qualify installed AppWire package
+        run: make test-api-package
+
   static-build:
     runs-on: ubuntu-latest
     steps:
