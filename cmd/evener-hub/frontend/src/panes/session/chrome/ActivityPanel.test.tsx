@@ -641,7 +641,7 @@ describe("ActivityPanel", () => {
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
   });
 
-  test("does not let a continuation patch change the root badge summary", async () => {
+  test("derives the root badge from the merged tree after continuation", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     fake.on("evener/jobs/list", ({ continuation }) => {
@@ -664,7 +664,11 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
     await screen.findByRole("treeitem", { name: /continued shell/i });
-    expect(screen.getByRole("button", { name: /Activity ·/ })).toBeTruthy();
+    const mergedEntry = activityPanelStore.getState().entries.get("ref_root");
+    if (mergedEntry?.load.kind !== "ready") throw new Error("continuation did not publish the merged tree");
+    expect(mergedEntry.load.tree.root.counts.active).toBe(4);
+    expect(activitySummaryStore.getState().entries.get("ref_root")?.counts).toEqual(mergedEntry.load.tree.root.counts);
+    expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
   });
 
   test("continuation grafts only the targeted branch", async () => {
