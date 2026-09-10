@@ -743,3 +743,50 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 		t.Fatalf("removed full context did not trigger full re-emission: before=%d after=%d", before, countEnvironmentTurns(s))
 	}
 }
+
+func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSilent(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	s := newScriptedSummaryCompactSession(t, "env-merge-tail", func(llm.Request) llm.Response {
+		once.Do(func() { close(started) })
+		<-release
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
+	seedNumberedSessionHistory(t, s, 12)
+	s.contextMgr.PreserveRecentTurns = 1
+	done := make(chan error, 1)
+	go func() { done <- s.Compact(context.Background()) }()
+	select {
+	case <-started:
+	case err := <-done:
+		t.Fatalf("Compact returned before provider barrier: %v", err)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	before := countEnvironmentTurns(s)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if countEnvironmentTurns(s) != before {
+		t.Fatalf("merged environment duplicated after fold: before=%d after=%d", before, countEnvironmentTurns(s))
+	}
+	data, err := readTranscriptFull(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := 0
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Kind == schema.TurnEnvironment {
+			got++
+		}
+	}
+	if got != 1 {
+		t.Fatalf("reloaded environment turns = %d, want 1", got)
+	}
+}
