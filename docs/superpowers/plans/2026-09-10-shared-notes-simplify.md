@@ -43,7 +43,7 @@
 - Canonical human-note state lives in `clientMutationSnapshot`. Ensure schema cloning/validation and read-only projection distinguish absent authority from an explicitly empty note. Jesse confirmed no running instance has notes and approved a clean cutover without migration.
 - Existing metadata fields are in `agent/schema/snapshot.go`; the mutation loader in `agent/session_client_mutation_persist.go` rejects unknown fields. Remove obsolete notes delivery fields under the approved cutover, retaining strict decoding and unrelated journal fields. Do not reset or alter real journals.
 
-- [ ] **Write and run the first behavioral red test.** This catches storage committed through a refused notification. The existing fixture creates real session code; the store mutation seeds a durable fence.
+- [x] **Write and run the first behavioral red test.** This catches storage committed through a refused notification. The existing fixture creates real session code; the store mutation seeds a durable fence.
 
 ```go
 func TestHumanNoteFenceRejectsWholeSave(t *testing.T) {
@@ -67,7 +67,7 @@ func TestHumanNoteFenceRejectsWholeSave(t *testing.T) {
 
 Run `GOMAXPROCS=4 go test -p 4 ./agent -run '^TestHumanNoteFenceRejectsWholeSave$' -count=1`. Expect an assertion failure because the old implementation stores the refused note.
 
-- [ ] **Replace the split operation with the existing atomic transition.** Build a request from the raw note so same-ID/different-payload detection remains exact. In the effect, normalize, check current canonical value and fence, reserve normal steering identity only for a changed accepted note, set `SteeringKind` before `addPendingSteering`, and marshal/apply one response. No nested `clientMutationSteer` call. Applied no-ops have no pending execution. On replay return the recorded Note and refresh receipt disposition/projection from the record, reflect/wake accepted pending work normally. Return normalized structured mutation errors.
+- [x] **Replace the split operation with the existing atomic transition.** Build a request from the raw note so same-ID/different-payload detection remains exact. In the effect, normalize, check current canonical value and fence, reserve normal steering identity only for a changed accepted note, set `SteeringKind` before `addPendingSteering`, and marshal/apply one response. No nested `clientMutationSteer` call. Applied no-ops have no pending execution. On replay return the recorded Note and refresh receipt disposition/projection from the record, reflect/wake accepted pending work normally. Return normalized structured mutation errors.
 
 ```go
 type NotesHumanSetResponse struct {
@@ -76,13 +76,13 @@ type NotesHumanSetResponse struct {
 }
 ```
 
-- [ ] **Add red/green durability tests one boundary at a time.** Use `clientMutationFaults.AfterReservation`, `BeforeEffectSnapshotRename`, and `AfterEffectSnapshotRename` with the real filesystem snapshot loader. Assert old note/no steer before effect, and new note/one typed steer after effect even when the call reports uncertainty. Retry with the same ID after restore and after a newer note: assert the recorded response, current latest note, and no duplicate steering. Two different IDs with the same canonical note produce one notification. Reject same-ID/different-payload reuse. Check recovery's effect-time fence because prepare is skipped.
+- [x] **Add red/green durability tests one boundary at a time.** Use `clientMutationFaults.AfterReservation`, `BeforeEffectSnapshotRename`, and `AfterEffectSnapshotRename` with the real filesystem snapshot loader. Assert old note/no steer before effect, and new note/one typed steer after effect even when the call reports uncertainty. Retry with the same ID after restore and after a newer note: assert the recorded response, current latest note, and no duplicate steering. Two different IDs with the same canonical note produce one notification. Reject same-ID/different-payload reuse. Check recovery's effect-time fence because prepare is skipped.
 
-- [ ] **Project committed authority through every read.** Live `Meta`, notes snapshots/context, restore, thread snapshot, and past-session reads must expose the same committed note. Add independent fixture-file tests for a saved nonempty note and a saved clear with stale nonempty metadata. Remove old notes-specific intents, adoption, tombstones, annotation-after-acceptance, and their recovery calls after equivalent new-format durable guarantees are covered. Do not add legacy import or delivery conversion.
+- [x] **Project committed authority through every read.** Live `Meta`, notes snapshots/context, restore, thread snapshot, and past-session reads must expose the same committed note. Add independent fixture-file tests for a saved nonempty note and a saved clear with stale nonempty metadata. Remove old notes-specific intents, adoption, tombstones, annotation-after-acceptance, and their recovery calls after equivalent new-format durable guarantees are covered. Do not add legacy import or delivery conversion.
 
-- [ ] **Preserve standard delivery behavior.** Test a held queue accepts note+typed notification while staying held; replay does not unpark it. Test receipt projection/consumption through normal steering delivery and no-op reconciliation. Update server/hub response forwarding and generated protocol declarations. Existing non-notes queue/start/stop contracts must remain unchanged.
+- [x] **Preserve standard delivery behavior.** Test a held queue accepts note+typed notification while staying held; replay does not unpark it. Test receipt projection/consumption through normal steering delivery and no-op reconciliation. Update server/hub response forwarding and generated protocol declarations. Existing non-notes queue/start/stop contracts must remain unchanged.
 
-- [ ] **Run focused checks and commit.**
+- [x] **Run focused checks and commit.**
 
 ```sh
 go generate ./appwire/...
