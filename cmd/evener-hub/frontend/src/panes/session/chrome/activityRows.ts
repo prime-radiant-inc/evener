@@ -72,7 +72,7 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
     return {
       active: delegate.terminal !== true || childActive,
-      failed: isActivityFailure(delegate.outcome, status) || childFailed,
+      failed: (delegate.terminal === true && isActivityFailure(delegate.outcome, status)) || childFailed,
       status,
     };
   }

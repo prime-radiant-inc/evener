@@ -262,6 +262,17 @@ test("stable delegate keeps its resource status while an active child makes the 
   expect(buildActivityRows(tree([entry]), new Set())[0]).toMatchObject({ kind: "delegate", live: true });
 });
 
+test("running stable delegate ignores stale failure outcome", () => {
+  const entry = delegate("dlg_resumed", {});
+  entry.delegate.terminal = false;
+  entry.delegate.status = "running";
+  entry.delegate.outcome = "failure";
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: true, failed: false, status: "running" });
+
+  entry.delegate.terminal = true;
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failure" });
+});
+
 test("empty turn-container rows use their own active and failure state", () => {
   const active = delegate("dlg_empty_active", { type: "agent" });
   active.delegate.terminal = false;
