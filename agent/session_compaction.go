@@ -160,6 +160,7 @@ func (s *Session) bumpHistoryRevisionLocked() {
 func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool) {
 	s.attentionMu.Lock()
 	s.mu.Lock()
+	previousEnvironmentIDs := environmentTurnIDs(s.history)
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
 	if !ok {
 		s.mu.Unlock()
@@ -191,6 +192,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if onPublishLocked != nil {
 		onPublishLocked(published)
 	}
+	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
 	commit.claimNoteLocked()
 	commit.publishedRevision = s.historyRevision
 	// Publication-order marker for last-write-wins effect suppression, set
@@ -337,10 +339,37 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // the newest PUBLICATION skips its last-write-wins effects, whichever flush
 // runs first.
 type foldCommit struct {
-	claimNoteLocked         func()
-	commitTranscriptsLocked func()
-	flush                   func()
-	publishedRevision       int
+	claimNoteLocked              func()
+	commitTranscriptsLocked      func()
+	flush                        func()
+	resetEnvContextTrackerLocked func(bool)
+	publishedRevision            int
+}
+
+func environmentTurnIDs(history []schema.Turn) map[string]int {
+	ids := make(map[string]int)
+	for _, turn := range history {
+		if turn.Kind == schema.TurnEnvironment {
+			ids[turn.StableTurnID]++
+		}
+	}
+	return ids
+}
+
+func environmentTurnsRemoved(previous map[string]int, published []schema.Turn) bool {
+	if len(previous) == 0 {
+		return false
+	}
+	present := environmentTurnIDs(published)
+	if len(present) < len(previous) {
+		return true
+	}
+	for id, count := range previous {
+		if present[id] < count {
+			return true
+		}
+	}
+	return false
 }
 
 // noteClaimRegistrarKey carries the fold staging's registrar for the
@@ -519,6 +548,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
 	commit := &foldCommit{}
+	commit.resetEnvContextTrackerLocked = func(removed bool) {
+		if removed && len(pendingCompactionTurns) > 0 {
+			s.resetEnvContextTrackerLocked()
+		}
+	}
 	flush := func() {
 		// Deferred last-write-wins effects (compaction naming, task-list
 		// and artifact steering) run only for the NEWEST published fold:

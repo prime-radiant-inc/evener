@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -1584,21 +1586,30 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
 // own goroutine concurrently with this method running on the turn-processing
 // goroutine — see the field's doc comment.
-func (s *Session) maybeAppendEnvironmentContext() {
+func (s *Session) maybeAppendEnvironmentContext() error {
+	return s.appendEnvironmentContext(true)
+}
+
+// appendEnvironmentContext can persist recovery context without publishing a
+// live event: restore seeds its projection from the completed transcript.
+func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if s.envCollector == nil {
-		return
+		return nil
 	}
 	snap := s.envCollector.Collect(envctx.Inputs{
 		Cwd:     s.currentEnv().WorkingDirectory(),
 		Sandbox: s.cfg.Sandbox,
 	})
 
+	s.attentionMu.Lock()
 	s.mu.Lock()
 	tracker := s.envTracker
 	if tracker == nil {
 		s.mu.Unlock()
-		return
+		s.attentionMu.Unlock()
+		return nil
 	}
+	before := tracker.State()
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
 	if block != "" {
@@ -1606,23 +1617,40 @@ func (s *Session) maybeAppendEnvironmentContext() {
 	}
 	s.mu.Unlock()
 	if block == "" {
-		return
+		s.attentionMu.Unlock()
+		return nil
 	}
 
-	s.appendTurn(schema.TurnEnvironment, llm.User(block))
+	// Persist the identity with the entry. Model history can be compacted, so
+	// its length cannot name a durable transcript turn.
+	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
+	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
+	if err := s.appendTurnAfterTranscriptWriteLocked(
+		turn,
+		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
+		// RenderDiff advances the tracker before the transcript write so it can
+		// render the diff. Restore that state when durability fails, allowing a
+		// retry to emit the environment block. attentionMu keeps compaction
+		// from replacing the tracker during this transaction.
+		s.mu.Lock()
+		s.envTracker = envctx.NewTracker(before)
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return err
+	}
 	// Persist tracker state so resume stays silent when nothing changed.
-	s.setEnvContextState(st)
-}
-
-// setEnvContextState updates the mu-guarded mirror of envTracker.State() that
-// Meta() reads, then flushes meta.json — mirroring the lock-then-release-then-
-// maybeAutoSave pattern used by SetReasoningEffort/Rename (maybeAutoSave
-// re-acquires mu via Meta(), so it must not be called while mu is held).
-func (s *Session) setEnvContextState(st envctx.State) {
 	s.mu.Lock()
 	s.envContextState = &st
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	s.maybeAutoSave()
+	if publishEvent {
+		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+	}
+	return nil
 }
 
 // resetEnvContextTrackerAfterCompaction clears the environment-context tracker
@@ -1634,14 +1662,26 @@ func (s *Session) setEnvContextState(st envctx.State) {
 // re-emit a full block rather than staying silent on an environment the model
 // can no longer see anything about.
 func (s *Session) resetEnvContextTrackerAfterCompaction() {
+	s.attentionMu.Lock()
 	s.mu.Lock()
+	changed := s.resetEnvContextTrackerLocked()
+	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	if changed {
+		s.maybeAutoSave()
+	}
+}
+
+// resetEnvContextTrackerLocked requires attentionMu and mu, so a fold and an
+// environment append cannot publish different tracker generations together.
+func (s *Session) resetEnvContextTrackerLocked() bool {
 	if s.envTracker == nil {
-		s.mu.Unlock()
-		return
+		return false
 	}
 	s.envTracker = envctx.NewTracker(envctx.State{})
-	s.mu.Unlock()
-	s.setEnvContextState(envctx.State{})
+	state := envctx.State{}
+	s.envContextState = &state
+	return true
 }
 
 // appendTurnWithTranscriptMessage keeps the live model context and the durable
@@ -1675,15 +1715,18 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 // with a placeholder.
 func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
 	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+}
+
+func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
 	if err := write(); err != nil {
-		s.attentionMu.Unlock()
 		return err
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
-	s.attentionMu.Unlock()
 	return nil
 }
 

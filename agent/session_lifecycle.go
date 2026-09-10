@@ -1916,9 +1916,10 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
 	queuedIdentity := queuedClientMutationFromContext(ctx)
+	var acceptedTurnsFloor uint64
 	if queuedIdentity.ClientMutationID == "" {
 		s.mu.Lock()
-		acceptedTurnsFloor := uint64(s.turns)
+		acceptedTurnsFloor = uint64(s.turns)
 		s.mu.Unlock()
 		err := s.claimDirectClientMutationTurn(acceptedTurnsFloor)
 		if err != nil {
@@ -1947,19 +1948,43 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.turns++
 	s.mu.Unlock()
 
-	if drainResumeSessionStart {
-		// Resume SessionStart hooks are intentionally lazy: they are recorded during
-		// restore, but their model-facing output must join the first accepted real user
-		// turn, never a MaxTurns-rejected input or an autonomous notification,
-		// continuation, or watch turn. Drain them after the proceed gate accepts the
-		// turn and before recording the user turn so their model context precedes the
-		// prompt it applies to in the first resumed model request.
-		s.drainPendingSessionStartHooksForUserTurn(ctx)
-	}
-
 	preseededInput := delegateInputWasPreseeded(ctx, s.id, input) && len(images) == 0 && queuedIdentity.ClientMutationID == ""
 	if !preseededInput {
-		s.maybeAppendEnvironmentContext()
+		if err := s.maybeAppendEnvironmentContext(); err != nil {
+			s.mu.Lock()
+			s.turns--
+			s.mu.Unlock()
+			if queuedIdentity.ClientMutationID == "" {
+				if returnErr := s.returnClaimedDirectClientMutationTurn(acceptedTurnsFloor); returnErr != nil {
+					return errors.Join(err, fmt.Errorf("return claimed direct user turn: %w", returnErr))
+				}
+			} else {
+				pending := s.clientMutations.snapshot().PendingExecutions[queuedIdentity.ClientMutationID]
+				if pending.Method == clientMutationMethodStart {
+					if returnErr := s.returnClaimedClientMutationStart(queuedIdentity.ClientMutationID); returnErr != nil {
+						return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
+					}
+				} else {
+					if rollbackErr := s.pushQueueHead(queuedInput{
+						ID:               queuedIdentity.QueueEntryID,
+						ClientMutationID: queuedIdentity.ClientMutationID,
+						StableTurnID:     queuedIdentity.StableTurnID,
+						Text:             input,
+						Images:           append([]ImageAttachment(nil), images...),
+						Provenance:       provenance.Clone(inputProvenance),
+					}); rollbackErr != nil {
+						return errors.Join(err, fmt.Errorf("return queued input: %w", rollbackErr))
+					}
+				}
+			}
+			return fmt.Errorf("append environment context: %w", err)
+		}
+	}
+
+	if drainResumeSessionStart {
+		// Persist the environment context before consuming deferred resume hooks so
+		// a failed environment write leaves the hook pending for the retry.
+		s.drainPendingSessionStartHooksForUserTurn(ctx)
 	}
 
 	// userInputTurn is computed AFTER any SessionStart-hook and environment-context
@@ -1986,7 +2011,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 				if err := s.beginClientMutationFailure(queuedIdentity.ClientMutationID, failure); err != nil {
 					return errors.Join(failure, fmt.Errorf("persist client start failure intent: %w", err))
 				}
-				if err := s.recoverClientMutationFailures(); err != nil {
+				if err := s.recoverClientMutationFailures(true); err != nil {
 					return errors.Join(failure, fmt.Errorf("record client start failure: %w", err))
 				}
 				s.emit(events.EventUserInput, events.UserInputData{
@@ -2013,14 +2038,16 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 					return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
 				}
 			} else {
-				s.pushQueueHead(queuedInput{
+				if rollbackErr := s.pushQueueHead(queuedInput{
 					ID:               queuedIdentity.QueueEntryID,
 					ClientMutationID: queuedIdentity.ClientMutationID,
 					StableTurnID:     queuedIdentity.StableTurnID,
 					Text:             input,
 					Images:           append([]ImageAttachment(nil), images...),
 					Provenance:       provenance.Clone(inputProvenance),
-				})
+				}); rollbackErr != nil {
+					return errors.Join(err, fmt.Errorf("return queued input: %w", rollbackErr))
+				}
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}

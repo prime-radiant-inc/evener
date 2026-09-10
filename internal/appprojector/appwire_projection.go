@@ -260,6 +260,26 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	}
 
 	switch event.Kind {
+	case events.EventEnvironment:
+		data := eventData[events.EnvironmentData](event.Data)
+		if strings.TrimSpace(data.Text) == "" {
+			return nil
+		}
+		// Environment context is a standalone saved turn, not a runnable
+		// work carrier. Close its group before the following user input.
+		reserved := p.reservedTurnID
+		wasRealTurnStarted := p.anyTurnStarted
+		p.reservedTurnID = ""
+		_, out := p.openTurn(data.TurnID, event.Timestamp)
+		// Environment context is persisted metadata, not a runnable turn. Keep
+		// prelude and reserved-turn state based on real work only.
+		p.anyTurnStarted = wasRealTurnStarted
+		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindEnvironment, "Environment", data.Text)...)
+		out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
+		// The environment has its own durable identity and cannot consume
+		// the runnable identity already advertised for the following input.
+		p.reservedTurnID = reserved
+		return out
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
 		if data.TaskStoreOwnerSessionID != "" {

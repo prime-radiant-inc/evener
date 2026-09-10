@@ -374,6 +374,15 @@ func (s *Session) claimDirectClientMutationTurn(acceptedTurnsFloor uint64) error
 	})
 }
 
+func (s *Session) returnClaimedDirectClientMutationTurn(acceptedTurnsFloor uint64) error {
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if snapshot.AcceptedTurns > acceptedTurnsFloor {
+			snapshot.AcceptedTurns--
+		}
+		return nil
+	})
+}
+
 func queueResponseFromRecord(threadID string, record clientMutationRecord, disposition appwire.MutationDisposition) (appwire.TurnQueueResponse, error) {
 	var response appwire.TurnQueueResponse
 	if len(record.Result) != 0 {
@@ -1207,7 +1216,7 @@ func (s *Session) beginClientMutationFailure(clientMutationID string, cause erro
 	})
 }
 
-func (s *Session) recoverClientMutationFailures() error {
+func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 	if s == nil || s.clientMutations == nil {
 		return nil
 	}
@@ -1219,7 +1228,7 @@ func (s *Session) recoverClientMutationFailures() error {
 			record.Failure == nil {
 			continue
 		}
-		if err := s.recordClientMutationFailure(id, pending, *record.Failure); err != nil {
+		if err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment); err != nil {
 			return err
 		}
 	}
@@ -1230,6 +1239,7 @@ func (s *Session) recordClientMutationFailure(
 	clientMutationID string,
 	pending appwire.PendingMutation,
 	failure clientMutationFailure,
+	publishEnvironment bool,
 ) error {
 	items := s.clientMutationTranscriptItems(clientMutationID, pending.TurnID)
 	queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
@@ -1237,7 +1247,9 @@ func (s *Session) recordClientMutationFailure(
 		if err := s.clientMutationFailureFault("before_user"); err != nil {
 			return err
 		}
-		s.maybeAppendEnvironmentContext()
+		if err := s.appendEnvironmentContext(publishEnvironment); err != nil {
+			return fmt.Errorf("append environment context: %w", err)
+		}
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(queued.Text, queued.Images))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID

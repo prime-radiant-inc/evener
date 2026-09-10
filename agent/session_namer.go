@@ -434,7 +434,20 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	s.mu.Lock()
 	publishedRevision := s.newestPublishedFoldRevision
 	s.mu.Unlock()
-	s.handleCompactionTurnEffects(t, s.writeTranscript(t), false, publishedRevision)
+	s.attentionMu.Lock()
+	writeErr := s.writeTranscriptLocked(t)
+	if isSessionNameCompactionTurn(t) {
+		s.mu.Lock()
+		changed := s.resetEnvContextTrackerLocked()
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
+		if changed {
+			s.maybeAutoSave()
+		}
+	} else {
+		s.attentionMu.Unlock()
+	}
+	s.handleCompactionTurnEffects(t, writeErr, false, publishedRevision)
 }
 
 // handleCompactionTurnEffects runs a compaction turn's post-write side
@@ -445,8 +458,8 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // reports in one step. superseded reports that a NEWER fold publication has
 // already flushed its deferred effects: the last-write-wins pieces
 // (compaction naming, the task-list reminder) are skipped so a stale parked
-// flush cannot overwrite the newer fold's; the additive pieces (env-tracker
-// reset, the compaction-turn event) still run.
+// flush cannot overwrite the newer fold's; the compaction-turn event still
+// runs because it describes published work.
 // publishedRevision is the launching fold's publication sequence
 // (historyRevision at its publish; the fallback path passes the newest
 // published fold revision), re-checked at naming COMPLETION against
@@ -455,15 +468,6 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int) {
 	s.reportCompactionTranscriptAppend(writeErr)
 	if isSessionNameCompactionTurn(t) {
-		// A CHECKPOINT/SUMMARY turn replaces history: any ENVIRONMENT turns
-		// folded away with it are gone from what the model sees, so the
-		// environment-context tracker must forget what it last reported (see
-		// resetEnvContextTrackerAfterCompaction's doc comment). This is the
-		// single choke point every compaction completion path (Compact,
-		// applyPendingForceCompact, and the automatic per-request
-		// ManageContext) funnels through via contextMgr.OnCompactionTurn /
-		// WithCompactionTurnCallback.
-		s.resetEnvContextTrackerAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text(), OwningTurnID: t.OwningTurnID})
 	}
 	if superseded {
