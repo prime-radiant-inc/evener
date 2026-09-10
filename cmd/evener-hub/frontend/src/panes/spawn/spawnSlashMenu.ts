@@ -111,6 +111,9 @@ export async function runSpawnBuiltinAfterStart(
       return { ok: true };
     }
 
+    // Narrowed once for the closures below: after the free-arg return, args
+    // is enum-kind, but closures don't inherit narrowing.
+    const enumArgs = command.args;
     const trimmed = argsText.trim();
 
     // Shared enum-arg runner: resolve the trimmed value against items, toast
@@ -130,7 +133,7 @@ export async function runSpawnBuiltinAfterStart(
         if (!toasted) toasts.push("error", b.message);
         return { ok: false, message: b.message };
       }
-      const result = await command.args.run(wrappedCtx, item);
+      const result = await enumArgs.run(wrappedCtx, item);
       if (isBlocked(result)) {
         const msg = (result as { message: string }).message;
         if (!toasted) toasts.push("error", msg);
@@ -141,7 +144,7 @@ export async function runSpawnBuiltinAfterStart(
 
     async function enumItems(): Promise<CommandArgsEnumItem[]> {
       try {
-        return await command.args.source(wrappedCtx);
+        return await enumArgs.source(wrappedCtx);
       } catch {
         return [];
       }
