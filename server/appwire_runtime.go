@@ -525,7 +525,7 @@ func eventStableTurnID(event events.SessionEvent) string {
 		return data.StableTurnID
 	case events.TurnStartedData:
 		// A steering carrier announces the durable mutation identity on its
-		// turn boundary. RecordAppEvent's pending-identity check below decides
+		// turn boundary. RecordAppEvent's pending-identity check decides
 		// whether this boundary owns that identity; ordinary synthetic turns
 		// must not be treated as durable merely because they have a TurnID.
 		return data.TurnID

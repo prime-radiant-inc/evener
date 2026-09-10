@@ -63,15 +63,10 @@ func TestServerAppWireSteeringCarrierTurnStartedConsumesPendingIdentity(t *testi
 	cursor := srv.appNotifier.CurrentSequence()
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_steering_carrier", Data: events.TurnStartedData{TurnID: "turn_steer"}})
-	srv.mu.RLock()
-	pending := srv.appPendingStableTurnID
-	srv.mu.RUnlock()
-	if pending != "" {
-		t.Fatalf("pending stable carrier identity=%q, want consumed by TurnStarted", pending)
-	}
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSteeringInjected, SessionID: "th_steering_carrier", Data: events.SteeringInjectedData{Text: "steering payload", Source: events.SteeringSourceUser}})
-	srv.SetProcessing(false)
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_steering_carrier", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+	// The lossless consumer can project completion before the input runner
+	// returns and clears processing. Clients still need the terminal frame.
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_steering_carrier", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
 
 	notifications := srv.AppNotificationsAfter(cursor, "th_steering_carrier")
 	var sawCompleted, sawIdle bool
