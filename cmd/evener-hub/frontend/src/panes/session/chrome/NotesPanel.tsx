@@ -223,7 +223,13 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
       // lastSavedRef names the session the loop last persisted: the Saved
       // guard paints only when that session is still the one on screen, so
       // a B-save drained inside an A-started loop still paints for B.
+      // failedRef names a session whose save failed this pass: the loop keeps
+      // draining every other queued session (a B parked behind a failing A
+      // must still persist and report) and only requeues the failure itself.
       let lastSavedRef: string | null = null;
+      let failedRef: string | null = null;
+      let failedNote: string | null = null;
+      let failedMessage: string | null = null;
       for (;;) {
         const next = dirtyRef.current.entries().next();
         if (next.done) break;
@@ -235,26 +241,33 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
           await threadsStore.getState().setHumanNote(nextRef, nextNote);
         } catch (err) {
           const message = sessionActionError("Couldn't save note", err);
-          // Keep the failed entry queued: the textarea still shows unsaved
-          // content, and the next requestSave (e.g. the next blur) restarts
-          // the loop and retries it in queue order. Clearing the queue here
-          // would silently discard a newer draft parked behind the failure.
-          dirtyRef.current.set(nextRef, nextNote);
+          // The textarea still shows unsaved content, so the failure stays
+          // queued for the next requestSave (e.g. the next blur) to retry in
+          // order — but the loop keeps draining behind it instead of breaking,
+          // so a queued sibling is never stranded unsaved and unreported.
+          failedRef = nextRef;
+          failedNote = nextNote;
+          failedMessage = message;
           if (uiRef.current === nextRef) setError(message);
           toasts.push("error", message);
-          break;
+          continue;
         }
         lastSavedRef = nextRef;
       }
+      if (failedRef !== null && failedNote !== null) dirtyRef.current.set(failedRef, failedNote);
       saveLoop.current = null;
       // saving is global to the panel (one loop at a time), so it always
       // clears on settle; Saved is per-session, so it only paints when the
-      // last-persisted session is still the one on screen.
+      // last-persisted session is still the one on screen. A failed entry
+      // suppresses Saved for its own session even when the queue is otherwise
+      // empty: the failure (not the drained siblings) is the session's latest
+      // outcome.
       setSaving(false);
+      if (failedMessage !== null && uiRef.current === failedRef) setError(failedMessage);
       if (
         lastSavedRef !== null &&
         uiRef.current === lastSavedRef &&
-        dirtyRef.current.size === 0 &&
+        uiRef.current !== failedRef &&
         draftRef.current === storedNote(lastSavedRef)
       ) {
         setSaved(true);

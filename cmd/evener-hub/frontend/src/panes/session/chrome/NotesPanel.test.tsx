@@ -356,6 +356,54 @@ test("a draft parked behind a failed save is kept and retried on the next blur",
 
 // --- failure keeps the draft ---------------------------------------------------
 
+test("a B-save queued behind a failing A-save still persists and reports", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    if ((params as { ref: string }).ref === "local:aaaa") throw new Error("A save boom");
+    return { note: (params as { note: string }).note };
+  });
+
+  const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
+  const modelB = testModel({ ref: "local:bbbb", threadId: "bbbb", humanNote: "note B" });
+  threadsStore.setState({
+    threads: new Map([
+      [modelA.ref, modelA],
+      [modelB.ref, modelB],
+    ]),
+  });
+  const { rerender } = render(
+    <>
+      <NotesPanelBody sessionRef={modelA.ref} model={modelA} />
+      <Toast />
+    </>,
+  );
+  // A's blur starts the loop and fails...
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "draft A2");
+  await user.tab();
+  await screen.findAllByText(/A save boom/i);
+  // ...then the panel switches to B, whose blur parks behind A's failure.
+  // The loop must keep draining past it: B persists and reports Saved, while
+  // A stays queued with its error visible - nothing stranded silent.
+  rerender(
+    <>
+      <NotesPanelBody sessionRef={modelB.ref} model={modelB} />
+      <Toast />
+    </>,
+  );
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "draft B2");
+  await user.tab();
+  await screen.findByTestId("shared-notes-saved");
+  expect(seen.map((p) => (p as { ref: string }).ref)).toEqual(["local:aaaa", "local:bbbb"]);
+  expect(threadsStore.getState().threads.get(modelB.ref)?.humanNote).toBe("draft B2");
+});
+
 test("a failed blur-save surfaces an error and keeps the draft", async () => {
   const user = userEvent.setup();
   connectFakeClient();

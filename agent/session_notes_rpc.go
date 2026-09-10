@@ -386,9 +386,16 @@ func (s *Session) deliverAdoptedNotesSteer(lease *clientMutationLease, outerID s
 	// A journal-fault adoption claimed a metadata-committed intent with no
 	// journal marker: spend it now that this attempt's steer accepted, so a
 	// later retry cannot deliver the same value twice. A journal-marker
-	// adoption has no intent under its own ID and this is a no-op.
+	// adoption has no intent under its own ID and this is a no-op. The spend
+	// is durable — the next metadata save persists its absence — because a
+	// crash before that save would otherwise leave the consumed intent
+	// alongside this attempt's in-flight record, and a later same-value
+	// mutation after restart would adopt it and steer twice.
 	if adopted.outerID != strings.TrimSpace(outerID) {
-		s.clearPendingNotesHuman(adopted.outerID)
+		if err := s.consumePendingNotesHumanDurable(adopted.outerID); err != nil {
+			lease.Release()
+			return adopted.stored, err
+		}
 	}
 	return s.applyNotesHumanSetResult(lease, outerID, adopted.stored)
 }
@@ -590,6 +597,36 @@ func (s *Session) notesSupersededWriteTombstone(outerID string) (string, bool) {
 		return "", false
 	}
 	return record.NotesStoredValue, true
+}
+
+// consumePendingNotesHumanDurable drops the committed intent for outerID and
+// persists its absence in the same metadata save: the spend is atomic with
+// its durability, so a crash cannot leave a consumed intent persisted
+// alongside an in-flight journal record (which a later same-value mutation
+// after restart would adopt and steer twice). On a save failure the intent
+// stays, and recovery adopts it exactly as before.
+func (s *Session) consumePendingNotesHumanDurable(outerID string) error {
+	s.mu.Lock()
+	pending, ok := s.pendingNotesHuman[outerID]
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	delete(s.pendingNotesHuman, outerID)
+	if len(s.pendingNotesHuman) == 0 {
+		s.pendingNotesHuman = nil
+	}
+	s.mu.Unlock()
+	if err := s.autoSaveMeta(); err != nil {
+		s.mu.Lock()
+		if s.pendingNotesHuman == nil {
+			s.pendingNotesHuman = make(map[string]schema.PendingNotesHuman)
+		}
+		s.pendingNotesHuman[outerID] = pending
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // pendingNotesHumanIntent reports the notes/human/set intent the last atomic
@@ -1133,19 +1170,33 @@ func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.Session
 // history away, so the next projection re-emits the full current state the
 // model can no longer see (the resume/compaction guarantee).
 func (s *Session) maybeAppendNotesContext() {
+	// Render under the same update lock that serializes every notes store
+	// mutation: a note/URL commit landing between a lock-free render and the
+	// bookkeeping below would let this older snapshot append AFTER the newer
+	// mutation's own projection and reach the next model request stale. The
+	// joined render-compare-record runs as one unit, so the appended turn
+	// always matches the last-projected record.
+	s.notesUpdateMu.Lock()
+	defer s.notesUpdateMu.Unlock()
 	block := s.notesContextBlock()
 	if block == "" {
 		return
 	}
 	s.mu.Lock()
 	if block == s.notesLastProjected {
-		s.mu.Unlock()
 		return
 	}
 	s.notesLastProjected = block
 	s.notesEverProjected = true
+	// appendTurn takes the history lock itself; holding s.mu across it would
+	// invert the mu-before-history order the lifecycle path relies on. The
+	// record above is set before the append: a concurrent projection attempt
+	// sees the newer record and stays silent instead of double-appending.
+	turn := schema.TurnNotesContext
+	body := llm.User(block)
 	s.mu.Unlock()
-	s.appendTurn(schema.TurnNotesContext, llm.User(block))
+	s.appendTurn(turn, body)
+	s.mu.Lock()
 }
 
 // resetNotesProjectionAfterCompaction clears the last-projected notes record
