@@ -61,6 +61,7 @@ import {
 } from "./railNodes";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
+import { humanizeState } from "./sessionState";
 
 export { isTopLevelSession } from "./sessionKind";
 
@@ -148,25 +149,6 @@ export function cadenceStateFor(wireState: string): CadenceState {
 // gap ask_pending closed for "awaiting" above. Sharing Cadence's "needs-you"
 // dot family (cadenceStateFor) is still correct: that comment's own text
 // says only the dot family is shared by design, never the word.
-function humanizeState(wireState: string, askPending: boolean): string {
-  switch (wireState) {
-    case "active":
-      return "working";
-    case "awaiting":
-      return askPending ? "question waiting" : "your move";
-    case "restartRequired":
-      return "restart required";
-    case "warning":
-      return "warning";
-    case "errored":
-      return "failed";
-    case "ended":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
-}
-
 // The Cadence states worth spending a dot on: a row is working, a human is
 // needed, or something failed. idle/ended are deliberately absent - a sidebar
 // full of identical grey dots trains the eye to ignore the one dot that

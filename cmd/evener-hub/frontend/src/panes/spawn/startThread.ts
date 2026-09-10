@@ -4,8 +4,9 @@
 // prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
 // launchOverrides, the schema engine, sticky defaults).
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
-import type { InputItem, LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
+import type { LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
 import { translateAttachmentMarkers } from "../../stores/attachmentMarkers";
+import { buildInput } from "../../stores/composerInput";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
 
@@ -38,15 +39,6 @@ export interface SpawnResult {
 // the wire text gets, the "[image N]" marker translation - shared with the
 // store's own submit path rather than mirrored, since a mirror of THAT would
 // silently drift.
-function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] {
-  const input: InputItem[] = [];
-  if (text.trim()) input.push({ type: "text", text });
-  for (const att of attachments ?? []) {
-    input.push({ type: "image", mediaType: att.mediaType, data: att.data, name: att.name });
-  }
-  return input;
-}
-
 // The ref is thread.evener.ref VERBATIM - the qualified "<source>:<threadId>"
 // form (e.g. "local:abc123"), NOT the legacy server's "local:"-stripped bare
 // id (floor §1.14 / spawn.js:404-417 describes that legacy routing). The SPA
