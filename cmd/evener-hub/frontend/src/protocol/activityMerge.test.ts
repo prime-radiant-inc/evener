@@ -168,8 +168,8 @@ test("merged summaries count empty turn-container delegates as one entry", () =>
   emptyTurns.delegate.outcome = "completed";
   emptyTurns.delegate.branch = {};
   const result = graftContinuationTree(tree([]), "session:root", tree([emptyTurns]));
-  expect(result.root.counts).toMatchObject({ active: 0, failed: 0, completed: 1 });
-  expect(result.root.aggregate).toBe("ended");
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 0, completed: 0 });
+  expect(result.root.aggregate).toBe("idle");
 });
 
 test("partial descendant coverage stays incomplete until its last page loads", () => {

@@ -10,6 +10,7 @@ import {
   defaultExpandedIDs,
   reconcileActivityState,
 } from "../protocol/activityData";
+import { activitySummaryStore } from "./activitySummary";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 import type { PanelLoadFailure } from "./tasksPanel";
 
@@ -169,6 +170,8 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
           const previousTree = retainedTree(current.load);
           if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
+            const summary = activitySummaryStore.getState().entries.get(ref);
+            if (summary) activitySummaryStore.getState().publishRootFetch(ref, summary.requestID, tree.root.counts);
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];

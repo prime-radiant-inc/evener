@@ -406,7 +406,8 @@ const DenseRowView = memo(function DenseRowView({
   const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
   const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
   const target = transcriptTarget(row);
-  const kindState = row.live ? "working" : jobStatusDotState(statusText, true);
+  const statusState = jobStatusDotState(statusText, true);
+  const kindState = row.live && statusState !== "failed" && statusState !== "needs-you" ? "working" : statusState;
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>
