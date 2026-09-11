@@ -591,6 +591,21 @@ module_extra() {
 	esac
 }
 
+# replay_package_list_retries MODULE — put any retry notices this module
+# recorded in front of its own verdict. They are written inside the wave
+# subshell, whose output goes to a module log that a green run deletes, so this
+# is the only place they survive a passing run; printing them before the
+# verdict is what keeps the report in the order the events happened, instead of
+# announcing a retry after the PASS it explains.
+replay_package_list_retries() {
+	local retry_log retry_line
+	retry_log="$(package_list_retry_path "$1")"
+	[ -s "$retry_log" ] || return 0
+	while IFS= read -r retry_line; do
+		printf 'run-module-tests.sh: WARNING: %s\n' "${retry_line#run-module-tests.sh: }" >&2
+	done <"$retry_log"
+}
+
 run_wave() {
 	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
@@ -611,6 +626,7 @@ run_wave() {
 			status=$?
 		fi
 		forget_pid "${pids[$i]}"
+		replay_package_list_retries "$m"
 		if [ "$status" -eq 0 ]; then
 			printf 'PASS  %-8s %s\n' "$m" "$(awk '/^real /{print $2"s"}' "$log" | tail -1)"
 		else
@@ -652,14 +668,6 @@ run_wave $WAVE1
 run_wave $WAVE2
 
 [ -n "$web_pid" ] && finish_stream web "$web_pid"
-
-for m in $WAVE1 $WAVE2; do
-	retry_log="$(package_list_retry_path "$m")"
-	[ -s "$retry_log" ] || continue
-	while IFS= read -r retry_line; do
-		printf '%s\n' "$retry_line" >&2
-	done <"$retry_log"
-done
 
 # A -run pattern that matches no test name is not an error to `go test`: every
 # package reports "[no tests to run]" and exits 0, so every module reports PASS
