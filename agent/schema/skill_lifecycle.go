@@ -90,6 +90,24 @@ type SkillCompactionOperation struct {
 	PublicationID  string               `json:"publication_id,omitempty"`
 }
 
+// SkillCompactionReceipt is the typed record of one compaction handoff: which
+// publication (Revision + SessionID + the operation's PublicationID) carried
+// which operation, and how far that handoff got. Phase is "published" (the
+// winning fold publication claimed the operation and committed its receipt to
+// the transcript), "delivered" (the handoff completed — the cycle's slot
+// cleared and the selection consumed), or "cancelled" (a terminal cancellation
+// retired the operation before any publication claimed it). A receipt whose
+// Operation is the zero value except PublicationID is the absent-selection
+// reminder a real compaction records when no operation was captured: it
+// deliberately adopts no operation and no selection.
+type SkillCompactionReceipt struct {
+	Revision  uint64                   `json:"revision"`
+	SessionID string                   `json:"session_id"`
+	Operation SkillCompactionOperation `json:"operation"`
+	Phase     string                   `json:"phase"` // published, delivered, cancelled
+	Reason    string                   `json:"reason,omitempty"`
+}
+
 type SkillLifecycleSnapshot struct {
 	Revision         uint64                         `json:"revision"`
 	Inventory        map[string]SkillInventoryEntry `json:"inventory"`
@@ -104,6 +122,12 @@ type SkillLifecycleSnapshot struct {
 	// awaiting publication (phase "pending") or delivery (phase "published").
 	// Nil means no compaction intent is outstanding.
 	PendingCompaction *SkillCompactionOperation `json:"pending_compaction,omitempty"`
+	// PendingHandoffs are the typed handoff receipts this session has
+	// recorded — distinct from accepted unpublished intent (PendingCompaction):
+	// a competing winner's handoff coexists with a still-pending losing
+	// operation. Checkpoint/summary phases of the same winning publication
+	// coalesce into its final handoff by publication identity.
+	PendingHandoffs []SkillCompactionReceipt `json:"pending_handoffs,omitempty"`
 }
 
 type SkillInputRecord struct {
@@ -136,6 +160,9 @@ type SkillTurnState struct {
 	Input       *SkillInputRecord         `json:"input,omitempty"`
 	Outcomes    []SkillActivationOutcome  `json:"outcomes"`
 	Obligations []SkillDeliveryObligation `json:"obligations"`
+	// Compaction carries the typed handoff receipt a winning fold publication
+	// attaches to its checkpoint/summary turns; nil on every other turn.
+	Compaction *SkillCompactionReceipt `json:"compaction,omitempty"`
 }
 
 // Clone detaches every mutable record and always initializes the inventory.
@@ -163,6 +190,11 @@ func (s SkillLifecycleSnapshot) Clone() SkillLifecycleSnapshot {
 		operation := *s.PendingCompaction
 		operation.Selection.Names = slices.Clone(operation.Selection.Names)
 		out.PendingCompaction = &operation
+	}
+	out.PendingHandoffs = make([]SkillCompactionReceipt, len(s.PendingHandoffs))
+	for i, handoff := range s.PendingHandoffs {
+		handoff.Operation.Selection.Names = slices.Clone(handoff.Operation.Selection.Names)
+		out.PendingHandoffs[i] = handoff
 	}
 	return out
 }
@@ -195,5 +227,10 @@ func (s *SkillTurnState) Clone() *SkillTurnState {
 		}
 	}
 	out.Obligations = slices.Clone(s.Obligations)
+	if s.Compaction != nil {
+		compaction := *s.Compaction
+		compaction.Operation.Selection.Names = slices.Clone(compaction.Operation.Selection.Names)
+		out.Compaction = &compaction
+	}
 	return &out
 }

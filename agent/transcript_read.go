@@ -172,3 +172,84 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	repaired, _ := repairOrphanedToolResults(result)
 	return repaired
 }
+
+// reconcileSkillCompactionReceipts replays the typed compaction handoff
+// receipts found in ALL decoded transcript entries into a persisted
+// lifecycle snapshot that may be staler than the transcript (a crash or
+// failed save between a winning publication and its metadata write). A
+// restart must call this BEFORE ResumeHistory seeds the session's history:
+// the receipts live on pre-marker entries too, which the resume anchor would
+// otherwise discard along with every older turn.
+//
+// Only receipts originating from this session (SessionID match) and NEWER
+// than the snapshot (Revision greater than the snapshot's) are applied: the
+// snapshot already covers anything at or below its own revision, and
+// re-applying a covered receipt could repeat a delivered operation or attach
+// a retired selection to another fold. Application is generation-matched —
+// a receipt only advances the operation with its own generation — and never
+// rebuilds inventory or obligations from the receipt's captured selection,
+// so concurrent inventory additions absent from that selection survive.
+// Handoffs coalesce by publication identity, preserving each winning
+// publication's final handoff (the summary phase that followed its
+// checkpoint phase), with the final publication's handoff last.
+func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *schema.SkillLifecycleSnapshot, sessionID string) {
+	if snapshot == nil {
+		return
+	}
+	for _, entry := range entries {
+		state := entry.Turn.SkillState
+		if state == nil || state.Compaction == nil {
+			continue
+		}
+		receipt := *state.Compaction
+		if receipt.SessionID != sessionID {
+			continue // only this session's own receipts reconcile into its snapshot
+		}
+		if receipt.Revision <= snapshot.Revision {
+			continue // the snapshot already covers this receipt's lifecycle revision
+		}
+		applySkillCompactionReceipt(snapshot, receipt)
+	}
+}
+
+// applySkillCompactionReceipt advances a stale snapshot by one newer typed
+// receipt, generation-matched so it can never attach a cancelled or claimed
+// operation's outcome to a different fold's intent.
+func applySkillCompactionReceipt(snapshot *schema.SkillLifecycleSnapshot, receipt schema.SkillCompactionReceipt) {
+	snapshot.Revision = receipt.Revision
+	if receipt.Operation.Generation != 0 && snapshot.PendingCompaction != nil &&
+		snapshot.PendingCompaction.Generation == receipt.Operation.Generation {
+		switch receipt.Phase {
+		case skillCompactionReceiptDelivered:
+			// The handoff completed: the operation must not be repeated —
+			// clear the cycle's slot and its consumed selection.
+			snapshot.PendingCompaction = nil
+			snapshot.PendingSelection = nil
+		case skillCompactionReceiptPublished:
+			// The winning publication claimed the operation but delivery did
+			// not complete before the crash: it resumes delivery-only, and
+			// its selection was consumed by the publication that claimed it.
+			snapshot.PendingCompaction.Phase = skillCompactionPhasePublished
+			snapshot.PendingCompaction.PublicationID = receipt.Operation.PublicationID
+			snapshot.PendingSelection = nil
+		case skillCompactionReceiptCancelled:
+			// The retirement predates any metadata write that could have
+			// recorded it: redo it, and only for its own generation.
+			snapshot.PendingCompaction = nil
+			snapshot.PendingSelection = nil
+		}
+	}
+	// The handoff itself coalesces by publication identity, so the final
+	// checkpoint/summary phase of each winning publication keeps exactly one
+	// entry, the last one seen.
+	receipt.Operation.Selection.Names = slices.Clone(receipt.Operation.Selection.Names)
+	if id := receipt.Operation.PublicationID; id != "" {
+		for i := range snapshot.PendingHandoffs {
+			if snapshot.PendingHandoffs[i].Operation.PublicationID == id {
+				snapshot.PendingHandoffs[i] = receipt
+				return
+			}
+		}
+	}
+	snapshot.PendingHandoffs = append(snapshot.PendingHandoffs, receipt)
+}

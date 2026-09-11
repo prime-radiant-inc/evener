@@ -24,15 +24,33 @@ const (
 	// retired. Clearing or replacing a note never cancels a forced operation.
 	skillCompactionCancelSupersededNote = "superseded_note"
 	// skillCompactionCancelForcedNotPublished retires a forced operation whose
-	// owning fold never published. Declared here so the reason set is
-	// complete; the generation-matched publication claim that issues it is the
-	// fold transaction's (Task 8), not this file's.
+	// owning fold never published — issued only by the fold driver's retry
+	// exhaustion, on exactly the generation its requesting caller captured.
 	skillCompactionCancelForcedNotPublished = "forced_not_published"
 	// skillCompactionCancelSaveFailed retires an accepted operation whose
 	// metadata save failed, so no later autosave can expose an unsaved
 	// success and no dispatch treats the intent as durable.
 	skillCompactionCancelSaveFailed = "save_failed"
 )
+
+// Phases of a schema.SkillCompactionReceipt.
+const (
+	// skillCompactionReceiptPublished marks a receipt whose winning fold
+	// publication claimed its operation and committed the receipt to the
+	// durable transcript.
+	skillCompactionReceiptPublished = "published"
+	// skillCompactionReceiptDelivered marks a completed handoff: the claimed
+	// operation left the cycle's slot and its reload selection was consumed.
+	skillCompactionReceiptDelivered = "delivered"
+	// skillCompactionReceiptCancelled marks a terminal cancellation recorded
+	// before any publication claimed the operation.
+	skillCompactionReceiptCancelled = "cancelled"
+)
+
+// skillCompactionReminderNoOperation is the reason a real compaction's receipt
+// carries when no operation was captured by its fold: the publication adopted
+// no operation and no reload selection.
+const skillCompactionReminderNoOperation = "no_captured_operation"
 
 // skillCompactionSaveError is the typed outcome of an accepted compaction
 // operation whose metadata save failed. It retains the failed operation's
@@ -80,10 +98,12 @@ func (s *Session) skillCompactionCancelNotice(op schema.SkillCompactionOperation
 }
 
 // cancelSkillCompactionLocked retires the pending operation with the given
-// generation, together with the reload-selection slot that operation owned.
-// A missing or generation-mismatched slot is left untouched. Callers hold
-// s.mu; the returned copy is detached, nil when nothing was cancelled.
-func (s *Session) cancelSkillCompactionLocked(generation uint64) *schema.SkillCompactionOperation {
+// generation, together with the reload-selection slot that operation owned,
+// and records the terminal cancellation as a typed receipt in the same
+// lifecycle snapshot. A missing or generation-mismatched slot is left
+// untouched. Callers hold s.mu; the returned copy is detached, nil when
+// nothing was cancelled.
+func (s *Session) cancelSkillCompactionLocked(generation uint64, reason string) *schema.SkillCompactionOperation {
 	op := s.skillLifecycle.PendingCompaction
 	if op == nil || op.Generation != generation {
 		return nil
@@ -95,6 +115,13 @@ func (s *Session) cancelSkillCompactionLocked(generation uint64) *schema.SkillCo
 	s.skillLifecycle.Revision++
 	cancelled := *op
 	cancelled.Selection.Names = slices.Clone(op.Selection.Names)
+	s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
+		Revision:  s.skillLifecycle.Revision,
+		SessionID: s.id,
+		Operation: cancelled,
+		Phase:     skillCompactionReceiptCancelled,
+		Reason:    reason,
+	})
 	return &cancelled
 }
 
@@ -106,7 +133,7 @@ func (s *Session) cancelSkillCompactionLocked(generation uint64) *schema.SkillCo
 func (s *Session) cancelSkillCompaction(ctx context.Context, generation uint64, reason string) error {
 	_ = ctx
 	s.mu.Lock()
-	cancelled := s.cancelSkillCompactionLocked(generation)
+	cancelled := s.cancelSkillCompactionLocked(generation, reason)
 	s.mu.Unlock()
 	if cancelled == nil {
 		return nil
@@ -161,7 +188,7 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 		var cancelled *schema.SkillCompactionOperation
 		if existing != nil && existing.Origin == skillCompactionOriginAutomatic && existing.Phase == skillCompactionPhasePending {
 			// Clearing a note cancels only its associated automatic operation.
-			cancelled = s.cancelSkillCompactionLocked(existing.Generation)
+			cancelled = s.cancelSkillCompactionLocked(existing.Generation, skillCompactionCancelSupersededNote)
 		}
 		s.mu.Unlock()
 		if cancelled != nil {
@@ -177,7 +204,7 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 	var superseded *schema.SkillCompactionOperation
 	if existing != nil {
 		// The replacing note supersedes the pending automatic acceptance.
-		superseded = s.cancelSkillCompactionLocked(existing.Generation)
+		superseded = s.cancelSkillCompactionLocked(existing.Generation, skillCompactionCancelSupersededNote)
 	}
 	s.pinnedNote = note
 	s.pinnedNoteGen++
@@ -258,6 +285,84 @@ func (s *Session) acceptAutomaticSkillCompaction(ctx context.Context, capturedNo
 	return true, nil
 }
 
+// recordSkillCompactionHandoffLocked appends receipt to the lifecycle's
+// pending handoffs, coalescing by publication identity rather than list
+// position: a later receipt for the same winning publication (the summary
+// phase following its checkpoint phase, say) replaces that publication's
+// earlier entry, so each publication keeps exactly one final handoff.
+// Receipts without a publication identity (terminal cancellations) never
+// coalesce — each retired generation keeps its own record. Callers hold s.mu.
+func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompactionReceipt) {
+	receipt.Operation.Selection.Names = slices.Clone(receipt.Operation.Selection.Names)
+	if id := receipt.Operation.PublicationID; id != "" {
+		for i := range s.skillLifecycle.PendingHandoffs {
+			if s.skillLifecycle.PendingHandoffs[i].Operation.PublicationID == id {
+				s.skillLifecycle.PendingHandoffs[i] = receipt
+				return
+			}
+		}
+	}
+	s.skillLifecycle.PendingHandoffs = append(s.skillLifecycle.PendingHandoffs, receipt)
+}
+
+// capturableAutomaticCompaction returns a detached copy of the pending
+// AUTOMATIC operation the per-request fold may claim — the operation this
+// round's elicitation accepted (or an earlier round deferred). It returns nil
+// for a forced operation (only its requesting round-tail dispatch captures
+// it) and for anything not pending: an unrelated fold must never adopt an
+// intent its caller did not capture, and a published operation is
+// delivery-only.
+func (s *Session) capturableAutomaticCompaction() *schema.SkillCompactionOperation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op := s.skillLifecycle.PendingCompaction
+	if op == nil || op.Origin != skillCompactionOriginAutomatic || op.Phase != skillCompactionPhasePending {
+		return nil
+	}
+	captured := *op
+	captured.Selection.Names = slices.Clone(op.Selection.Names)
+	return &captured
+}
+
+// commitSkillCompactionPublication completes a winning fold's compaction
+// handoff after its receipt and markers are durably committed and its events
+// flushed: the claimed operation's delivery finishes — the cycle's slot
+// clears and its reload selection is consumed, so the cycle reopens for a
+// fresh intent — the handoff receipt's phase advances to delivered, and the
+// metadata save persists the result. A reminder receipt (no operation
+// claimed) persists the handoff alone. A failed save is warned, not fatal:
+// the durable transcript receipt lets a restart reconcile the stale snapshot.
+//
+// Losing folds never reach this: they run none of the publication's commits.
+func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
+	if commit == nil || commit.receipt == nil {
+		return
+	}
+	receipt := *commit.receipt
+	s.mu.Lock()
+	if receipt.Phase == skillCompactionReceiptPublished && receipt.Operation.Generation != 0 {
+		if op := s.skillLifecycle.PendingCompaction; op != nil && op.Phase == skillCompactionPhasePublished &&
+			op.Generation == receipt.Operation.Generation {
+			// The winning publication carried the handoff itself — the note
+			// steering in the fold result and the receipt on its checkpoint or
+			// summary turn — so the delivery completes here and the cycle's
+			// slot reopens.
+			s.skillLifecycle.PendingCompaction = nil
+			s.skillLifecycle.PendingSelection = nil
+			receipt.Phase = skillCompactionReceiptDelivered
+			for i := range s.skillLifecycle.PendingHandoffs {
+				if s.skillLifecycle.PendingHandoffs[i].Operation.PublicationID == receipt.Operation.PublicationID {
+					s.skillLifecycle.PendingHandoffs[i].Phase = skillCompactionReceiptDelivered
+				}
+			}
+		}
+	}
+	s.mu.Unlock()
+	if err := s.saveMeta(); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("persisting the published compaction handoff failed", err))
+	}
+}
+
 // resumeSkillCompaction restores a persisted compaction operation's runtime
 // side effects after a restart. Restart is not cancellation:
 //
@@ -270,7 +375,7 @@ func (s *Session) acceptAutomaticSkillCompaction(ctx context.Context, capturedNo
 //   - missing legacy lifecycle metadata resumes with fresh state and no
 //     history backfill.
 func (s *Session) resumeSkillCompaction(ctx context.Context) error {
-	_ = ctx // reserved for the publication-claim path (Task 8); resume is pure memory
+	_ = ctx // resume is pure memory; fold-outcome handling lives in the publication transaction
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	op := s.skillLifecycle.PendingCompaction
