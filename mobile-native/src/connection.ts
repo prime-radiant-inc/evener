@@ -110,11 +110,11 @@ export class HubProfiles {
 	private async ids(): Promise<string[]> {
 		const raw = await this.storage.getItemAsync(INDEX);
 		if (!raw) return [];
-		// An index we cannot parse names no hubs we could open, so it reads as
-		// empty: list() shows an empty roster and the user can save a hub again,
-		// where propagating the parse error would leave the app with no way in.
-		// A parsed index of the wrong shape still throws below — that one is a
-		// readable record making a claim we refuse, not an unreadable one.
+		// An index that will not parse, and one that parses to anything but a
+		// list of hub ids, are the same thing: neither names a hub anyone could
+		// open. Both read as empty, so list() shows an empty roster and the user
+		// can save a hub again; failing instead would leave an app with a
+		// damaged index no way back in.
 		let ids: unknown;
 		try {
 			ids = JSON.parse(raw);
@@ -125,7 +125,7 @@ export class HubProfiles {
 			!Array.isArray(ids) ||
 			!ids.every((id) => typeof id === "string" && /^[a-zA-Z0-9-]+$/.test(id))
 		)
-			throw new Error("Saved hub index could not be read.");
+			return [];
 		return ids;
 	}
 	private async read(

@@ -111,6 +111,15 @@ describe("hub connections", () => {
 		// list() still degrades around the unreadable record.
 		expect(await profiles.list()).toEqual([]);
 	});
+	it("degrades to an empty roster for an index of the wrong shape", async () => {
+		const data = new Map<string, string>();
+		const profiles = profilesBackedBy(data);
+		// Readable JSON that is not a list of hub ids names no hub either.
+		data.set("evener.hubs", JSON.stringify({ not: "an array" }));
+		expect(await profiles.list()).toEqual([]);
+		data.set("evener.hubs", JSON.stringify(["ok", 42]));
+		expect(await profiles.list()).toEqual([]);
+	});
 	it("reports a record that parses to null as unreadable", async () => {
 		const data = new Map<string, string>([
 			["evener.hubs", JSON.stringify(["a"])],
