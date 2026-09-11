@@ -1,7 +1,7 @@
 # Skills lifecycle design
 
 - Date: 2026-09-10
-- Revised: 2026-09-11 after roborev design review 7814.
+- Revised: 2026-09-11 after roborev design reviews 7814 and 7839.
 - Status: design sections approved by Jesse; written specification awaiting review.
 - Base: `627e6c000491795773f7e6f542808298363abc5f`
 
@@ -99,16 +99,27 @@ successful inventory entry. A failed reinvocation does not erase an earlier
 successful inventory entry; it also does not mark the new content available.
 
 Track **loaded previously** separately from **complete content currently present**.
-Only the latter permits an already-loaded response. Deduplication checks canonical
-identity, source, and rendered-content identity against the final outgoing
-context, after compaction and history projection. Keep invocation-specific user
-arguments separate so deduplication cannot discard a new request's arguments.
+Only the latter permits deduplication. Check canonical identity, source, and
+rendered-content identity. A hit during tool execution is provisional because
+compaction and history projection can still remove that body. `use_skill` may
+return a structured already-present outcome with those identities and a brief
+notice, but the session retains a pending delivery obligation for that invocation.
+Preserve this obligation across retry and restart.
 
-On deduplication, `use_skill` returns a structured already-present outcome with
-canonical identity, source, and content identity, plus a brief model-facing notice.
-It does not repeat the body. Explicit invocation retains its selection record
-and original user text/arguments while omitting only the duplicate body. Record
-the invocation outcome without emitting a second new-body-delivery event.
+Revalidate provisional hits against the final outgoing context before dispatch.
+If the complete body is still present, satisfy the obligation without repeating
+it or emitting a new-body-delivery event. Otherwise, use the shared loader to
+load the same source under the invocation's policy and supply complete instructions
+through a typed activation notification linked to the original invocation. Report
+changed disk content and any failure explicitly; the notification supersedes the
+earlier already-present outcome. Apply current-activation budget priority and
+complete-or-fail admission, including atomic failure for explicit selections.
+Do not run another compact/reload cycle or duplicate a body another reload already
+restored. Record delivery only after final admission succeeds.
+
+Explicit invocation retains its selection record and original user text/arguments
+while omitting only duplicate bodies. Keep invocation-specific arguments separate
+so deduplication cannot discard a new request's arguments.
 
 Remove the default suffix-only `use_skill` truncation behavior. Admit complete
 skill content using the existing request token estimator, model context window,
@@ -195,9 +206,12 @@ Build the loaded-skill list from successful session records, not tool-call names
 or the remaining history prefix. Include canonical names and descriptions even
 when earlier compactions removed their activation turns.
 
-The context-pressure nudge and automatic note elicitation present this list and
-ask: which skills should be reloaded after compaction? Preserve the existing
-must-keep note behavior.
+Automatic note elicitation and the context-pressure nudge for profiles with
+`compact_context` present this list and ask which skills to reload after
+compaction. Without that tool, the nudge lists the skills for awareness and keeps
+its existing actionable note advice; it does not request a structured selection
+the model cannot submit. Automatic elicitation can still collect the selection.
+Preserve the existing must-keep note behavior.
 
 Add optional `reload_skills` to `compact_context`: an array of exact canonical
 names from this session's loaded inventory. Automatic note elicitation returns
@@ -230,12 +244,37 @@ the first note or selection. An accepted selection belongs to one compaction
 cycle and is consumed only by an actual, successfully published compaction.
 
 Publishing unchanged history during a normal model request is not a compaction:
-it neither consumes selection nor emits a reload/reminder. If a forced request
-terminates without an actual compaction, report that no compaction applied its
-selection and cancel only that request's selection, using its generation to
-preserve newer intent. Keep the existing pinned-note behavior. A losing fold
-attempt alone performs no cancellation; cancellation belongs to the terminal
-request outcome after retries, not to an unpublished attempt.
+it neither consumes selection nor emits a reload/reminder. A published checkpoint
+that performs actual compaction does count, even without a later summary layer.
+If a forced request terminates without publishing its own compaction, report that
+its selection was not applied and cancel only that request's selection, using its
+generation to preserve newer intent. Keep the existing pinned-note behavior. A
+losing fold attempt alone performs no cancellation; cancellation belongs to the
+terminal request outcome after retries, not to an unpublished attempt.
+
+A competing winner does not adopt a forced request's selection. It uses its own
+selection, or emits the reminder if it has none. If the forced request exhausts
+its retries, the model receives its selection-cancellation notice alongside any
+handoff from the winner. The notice identifies which intent was lost; it must not claim
+that no compaction occurred. This parallels the existing warning for unapplied
+`compaction_instructions`.
+
+An accepted automatic elicitation belongs to an operation and associated note
+generation, including when its note is empty. It waits for the next actual
+published compaction that captures and claims those generations. A no-op,
+unpublished attempt, or drop in pressure leaves it pending; a checkpoint-only
+compaction can fulfill it. Clearing or replacing the associated note cancels
+that automatic operation's selection with a visible superseded outcome. Normal
+publication claims consume it rather than cancelling it. A later fold with a
+different generation cannot adopt the cancelled selection.
+
+Latch automatic elicitation on a nonempty pinned note **or a pending operation**.
+A selection-only response, including `[]`, therefore closes the latch. Accept
+elicitation results only if the captured note generation is still current and
+no competing operation has been accepted; stale responses cannot replace newer
+intent. Do not re-elicit or overwrite an automatic selection while its operation
+is pending. Explicit clear-note-without-compaction remains available to cancel
+it; a second compaction request still follows the rejection rule above.
 
 Automatic elicitation remains best-effort. Failure, no client, a preexisting note
 without a selection, and forced compaction without a selection all take the
@@ -248,7 +287,10 @@ the next model request. Use the shared loader, policy checks, and complete-body
 admission. Keep the recorded source identity: do not silently retarget a skill
 to a different collision winner. A different source requires fresh activation.
 A changed digest at the same source loads current instructions with a visible
-change notice. Missing, unreadable, disallowed, or oversized skills yield a
+change notice, including old and new invocation-flag values when those changed.
+Record those flag values with successful activation metadata so the comparison
+survives compaction and restart. Same-source user authorization still follows the
+policy below. Missing, unreadable, disallowed, or oversized skills yield a
 structured failure identifying the skill; they remain unavailable for dependent
 work. Continue with successfully reloaded skills and explicit failure notices,
 without pretending the entire selection succeeded.
@@ -273,16 +315,23 @@ and values, and whether compaction has published but reload delivery is pending.
 The operation owns its selection; never persist a selection without its owner or
 attach it to an unrelated future automatic compaction. The existing pinned-note
 slot still owns the note text and keeps its generation-checked claim semantics.
+Save accepted operation state, including elicitation results, through the existing
+snapshot machinery before relying on its durability; waiting for the current
+post-publication `maybeAutoSave` would leave a restart gap. Save cancellation and
+phase changes as well, and surface save failures. Store operation metadata, not
+skill bodies, and avoid writes on unchanged pressure checks or fold retries.
 
-Restart is interruption, not terminal cancellation. Restore an unpublished
-operation and run it at the first safe seam before normal model dispatch. A
-published operation finishes only its pending reload/delivery; it does not
-compact again. A previously recorded delivery is not repeated. Apply the same
-terminal no-compaction cancellation rule to a restored attempt as to a live one.
+Restart is interruption, not terminal cancellation. Resume an unpublished forced
+operation at the first safe seam before normal model dispatch. Restore an
+unpublished automatic operation and its elicitation latch, but let it wait for
+normal pressure-driven compaction; restoration must not force a fold. A published
+operation of either origin finishes only its pending reload/delivery; it does
+not compact again. A previously recorded delivery is not repeated. Restored
+operations use their origin-specific completion and cancellation rules above.
 Preserve these states across the final checkpoint/summary boundary used by
-`ResumeHistory`, using publication records to reconcile a stale snapshot.
-Derive current-context availability from complete retained content, never from
-inventory membership alone.
+`ResumeHistory`, using publication records to reconcile a stale snapshot. Derive
+current-context availability from complete retained content, never from inventory
+membership alone.
 
 Use the existing generation-checked fold publication transaction. A losing fold
 must not consume selection, mark instructions delivered, append reload results,
@@ -331,6 +380,10 @@ not expose a lower-precedence permissive entry under that name.
 
 `disable-model-invocation` filters the general model catalog;
 `user-invocable` filters user completion. Catalog filtering uses current metadata.
+These are advertisement views: `use_skill` resolves against the full canonical
+catalog and the session's source-scoped authorization record, then applies the
+runtime policy. A name's absence from the advertised model catalog must not block
+an authorized same-source reload or bypass policy for an unauthorized request.
 Authorization for a prior user activation is session-local, scoped to canonical
 name plus source, and survives resume of that session. It does not confer tool
 permissions or authorize a replacement source. Model-generated text and delegate
@@ -401,11 +454,15 @@ stages, with scoped commits and reviewable diffs inside the requested single PR:
 1. **Skill package:** loader, renderer, metadata controls, diagnostics, and
    portable discovery. Gate with package tests and discovery/catalog parity.
 2. **Session activation:** inventory, provenance, complete-body admission,
-   deduplication, and existing invocation routes. Gate at the provider-request
-   boundary and through persistence/preload restoration.
-3. **Compaction:** selection protocol, persisted operation ownership, reload,
-   reminder, and restart/publication behavior. Gate with compaction tests plus
-   the session activation regression cases.
+   dispatch-time deduplication revalidation, and existing invocation routes.
+   Gate at the provider-request boundary, including a dedupe hit followed by a
+   pre-dispatch fold, and through persistence/preload restoration.
+3. **Compaction:** selection protocol, automatic elicitation ownership and latch
+   in `maybeElicitNoteBeforeCompaction`, pre-dispatch integration in
+   `session_model_call.go`, persisted operation state, reload, reminder, and
+   restart/publication behavior. Gate with deferred automatic compaction,
+   selection-only elicitation, and competing-publication cases, plus the session
+   activation regression cases.
 4. **Explicit client selection:** AppWire input and capability, generated API/SDK
    surfaces, then composer integration. Regenerate SDK/types in the same stage
    as the wire change, before building browser tests against them. Gate with
@@ -430,19 +487,22 @@ Required deterministic acceptance coverage:
 | Input | Original prose, arguments, attachments, and explicit selections survive normal submit, queued input, user steering, retry, and restart; fresh mixed-selection failure is atomic and retains retryable input |
 | Resolution | Canonical names, unique/ambiguous plugin suffixes, command collisions, and stale selections take the specified routes |
 | Completeness | Oversized and configured-limit cases never report partial success; a new activation survives any pre-dispatch compaction |
-| Deduplication | Identical complete outgoing content deduplicates; changed or removed content reloads; new user arguments remain intact |
+| Deduplication | Identical complete outgoing content deduplicates; a provisional hit followed by a pre-dispatch fold or projection reloads complete content through a causal notification; failed revalidation corrects the outcome without false delivery; retry/restart retain the obligation; new user arguments remain intact |
 | Failure | Missing files, malformed metadata, denied routes, and failed reloads produce no false activation events |
 | Compaction choice | Agent-forward nudge, automatic elicitation, and self-requested compaction use the successful inventory; valid, empty, omitted, null, malformed, and unknown-name selections differ correctly |
-| Reload | Current disk bytes reach the next request; digest changes are reported; missing/replaced sources and budget failures remain explicit |
+| Automatic lifetime | An attempt with no published compaction leaves the elicited choice pending; a later generation-matched compaction, including checkpoint-only, consumes it; clear/replacement cancels only its operation; lower pressure or restart never forces a fold |
+| Elicitation latch | Selection-only responses, including `[]`, prevent repeated calls while pending; stale concurrent responses cannot overwrite newer notes or operations; a new cycle can elicit once both the note and pending operation are absent |
+| Tool availability | Without `compact_context`, the nudge requests no unsupported structured response; automatic elicitation can still select reloads |
+| Reload | Current disk bytes reach the next request; digest and invocation-flag changes are reported; missing/replaced sources and budget failures remain explicit |
 | Repeated lifetime | Multiple compactions and restart retain the full inventory, preserve pending choice, and avoid replaying consumed choice |
-| Publication | Losing/concurrent folds cause no ghost activation, lost selection, dropped steering, or duplicate reload; unchanged publications cause no handoff; forced no-ops cancel only their own selection; checkpoint followed by summary retains the final handoff |
-| Invocation policy | Catalog and runtime checks agree, prior human authorization enables reload, generated input cannot forge it, and flags change no execution permissions |
+| Publication | Losing attempts cause no ghost activation, silent selection loss, dropped steering, or duplicate reload; a competing winner does not adopt a forced selection and its handoff accompanies terminal cancellation; unchanged publications cause no handoff; forced no-ops cancel only their own selection; checkpoint followed by summary retains the final handoff |
+| Invocation policy | Advertisement and runtime policy agree on their separate roles; full-catalog resolution permits authorized hidden-name reloads and rejects unauthorized ones; generated input cannot forge authorization, and flags change no execution permissions |
 | Discovery | All precedence levels, namespaced plugins, collision diagnostics, malformed files, and live/cold catalog parity |
 | Browser | Selecting/removing skills, accessible indicators, draft switching, queue editing, failed-send recovery, and steering retain exact identities and text |
 | Role lifetime | Existing frozen descriptor restoration and permanent prompt content remain intact; a same-name ordinary activation retains distinct provenance and the specified selection target |
 | Raw file reads | Full and partial `SKILL.md` reads do not create activation or authorization records; profiles without `use_skill` retain tracked explicit/preload routes |
 | Budget priority | New activation plus compaction reload pressure preserves the new activation, rejects excess reloads individually, and causes no additional compact/reload cycle |
-| Pending operation | Restart before publication resumes the owning operation; restart after publication completes only pending delivery; no selection attaches to an unrelated fold |
+| Pending operation | Acceptance is saved before publication, including selection-only elicitation; restart runs forced operations at the safe seam but keeps automatic operations pressure-driven; restart after publication completes only pending delivery; no selection attaches to an unrelated fold; save failures are visible and unchanged checks do not save again |
 | Note semantics | `note_to_self` remains required; empty note with a present selection clears the pinned note and requests compaction |
 | Historical sessions | A saved session without inventory resumes without backfill, then records new verified activations |
 | Delegates | New delegates and forked history import no parent inventory, pending operation, or authorization; delegate resume restores its own records |
