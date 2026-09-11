@@ -352,12 +352,17 @@ async function main() {
 
   let failed = 0;
   try {
+    const viteDeadline = createStartupDeadline();
     try {
-      await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server", guard.getViteLaunchError);
+      await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server", guard.getViteLaunchError, {
+        signal: viteDeadline.signal,
+      });
     } catch (error) {
       throw new Error(
         describeBrowserStartupFailure({ error: error, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
+    } finally {
+      viteDeadline.clear();
     }
     const startupDeadline = createStartupDeadline();
     try {

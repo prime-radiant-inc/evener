@@ -110,7 +110,7 @@ function raceWithAbort(promise, signal) {
  * answers, and the caller's deadline still decides how long the phase may take.
  * Measured announcement-to-answer on a warm local Chrome: 138ms to 1.6s.
  */
-const PROBE_ATTEMPT_TIMEOUT_MS = 2000;
+export const PROBE_ATTEMPT_TIMEOUT_MS = 2000;
 
 /**
  * Bound ONE attempt without losing the caller's deadline.
@@ -130,22 +130,29 @@ function boundAttempt(signal, ms) {
 }
 
 /**
- * Name the phase a startup deadline died in, and what its attempts were doing.
+ * What the poll actually did, for whichever way it ended.
  *
- * Waiting for Chrome's stderr announcement and waiting for the announced
- * endpoint to answer share one deadline, and both used to report the same bare
- * "browser startup deadline exceeded" - so a failed CI run could not say which
- * of the two had stalled. The deadline's own message stays the prefix, because
- * that is what run.mjs frames as an environment problem.
+ * A phase that ran out of budget and a phase that ran out of attempts are both
+ * unreadable without it: waiting for Chrome's stderr announcement and waiting
+ * for the announced endpoint to answer share one deadline and used to report
+ * the same bare "browser startup deadline exceeded", and the attempt-cap
+ * message named neither how many attempts there had been nor what the last one
+ * was doing.
  */
-function describePollAbort(reason, label, url, attempts, lastAttempt) {
-  return new Error(
-    `${reason.message} while waiting for ${label} after ${attempts} attempt${attempts === 1 ? "" : "s"} ` +
-      `polling ${url}: last attempt ${lastAttempt}`,
-  );
+function describeAttempts(attempts, lastAttempt) {
+  return `after ${attempts} attempt${attempts === 1 ? "" : "s"}, last attempt ${lastAttempt}`;
 }
 
-export function createStartupDeadline(ms = 30000) {
+/**
+ * The budget one startup PHASE gets - the wait for Chrome's DevTools
+ * announcement, or a poll for an endpoint to answer. Each phase's caller arms
+ * one of these and hands its signal down, and for a poll that signal is the
+ * ONLY thing bounding total wall time: the attempt cap inside waitForHttp is a
+ * backstop, not a clock.
+ */
+export const STARTUP_DEADLINE_MS = 30000;
+
+export function createStartupDeadline(ms = STARTUP_DEADLINE_MS) {
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)),
@@ -171,7 +178,10 @@ export function createStartupDeadline(ms = 30000) {
  *
  * Every attempt carries its own bound (PROBE_ATTEMPT_TIMEOUT_MS) so that one
  * request the endpoint accepts and never answers cannot stand in for the whole
- * poll; the caller's signal remains the only thing that ends the wait.
+ * poll. THE CALLER OWNS THE TOTAL BUDGET and must pass a signal: the attempt
+ * cap below is a backstop against an endless loop, not a wall-clock bound, and
+ * with per-attempt bounds it no longer approximates one. A phase polled without
+ * a deadline can sit here for minutes.
  */
 export async function waitForHttp(
   url,
@@ -204,12 +214,14 @@ export async function waitForHttp(
       await raceWithFailure(delay(100, signal), failure);
     }
   } catch (error) {
+    // The deadline's own message stays the prefix: that is what the runners
+    // frame as an environment problem rather than a test case failure.
     if (attempts > 0 && signal && error === abortReason(signal)) {
-      throw describePollAbort(error, label, url, attempts, lastAttempt);
+      throw new Error(`${error.message} while polling ${url} for ${label} ${describeAttempts(attempts, lastAttempt)}`);
     }
     throw error;
   }
-  throw new Error(`${label} never came up at ${url}`);
+  throw new Error(`${label} never came up at ${url} ${describeAttempts(attempts, lastAttempt)}`);
 }
 
 /**

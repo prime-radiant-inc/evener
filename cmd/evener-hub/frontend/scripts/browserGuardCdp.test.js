@@ -27,6 +27,8 @@ import {
   evaluate,
   forcePseudoStates,
   navigateTo,
+  PROBE_ATTEMPT_TIMEOUT_MS,
+  STARTUP_DEADLINE_MS,
   waitForHttp,
 } from "./browserGuardCdp.mjs";
 
@@ -62,38 +64,47 @@ test("one startup deadline aborts the pending HTTP readiness phase", async () =>
 });
 
 /**
- * A loopback endpoint that ACCEPTS connections and answers nothing until
- * `silentMs` have passed since it started listening, then answers every
- * request. That is the shape of a Chrome which has bound - and therefore
- * announced - its DevTools port while the browser thread behind it is still
- * too busy to serve /json/version.
+ * A loopback endpoint that ACCEPTS connections and answers nothing for its
+ * first `ignoredRequests` requests, then answers every request after them.
+ * That is the shape of a Chrome which has bound - and therefore announced -
+ * its DevTools port while the browser thread behind it is still too busy to
+ * serve /json/version.
+ *
+ * What it answers is decided by that COUNT and never by a clock, so the retry
+ * these tests pin does not ride on scheduler timing. Requests are counted by
+ * parsing complete request heads rather than by counting "data" events or
+ * accepted connections: one request split across two TCP reads, or a
+ * connection undici opens without sending on, must not read as two attempts
+ * and let a poll that never retried pass.
  */
-function silentEndpoint(silentMs) {
-  let listeningAt = 0;
+function silentEndpoint(ignoredRequests) {
   let requests = 0;
-  // An abandoned attempt leaves its socket behind on this side too. They are
-  // destroyed by hand at the end of the test: a net.Server stays a live handle
-  // on the event loop until every connection it accepted is gone, and a test
-  // file that never drains is a hang, not a failure.
+  // A net.Server stays a live handle on the event loop until every connection
+  // it accepted is gone, and an abandoned attempt leaves its socket on this
+  // side too - so they are destroyed by hand when the test ends.
   const sockets = new Set();
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     socket.on("error", () => {});
-    socket.on("data", () => {
-      requests++;
-      if (Date.now() - listeningAt < silentMs) return;
-      socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+    let received = "";
+    socket.on("data", (chunk) => {
+      received += chunk;
+      // Every probe is a GET with no body, so the blank line ends the request.
+      for (let head = received.indexOf("\r\n\r\n"); head >= 0; head = received.indexOf("\r\n\r\n")) {
+        received = received.slice(head + 4);
+        requests++;
+        if (requests > ignoredRequests) {
+          socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        }
+      }
     });
   });
   return {
     requestCount: () => requests,
     listen: () =>
       new Promise((resolve) => {
-        server.listen(0, "127.0.0.1", () => {
-          listeningAt = Date.now();
-          resolve(`http://127.0.0.1:${server.address().port}/json/version`);
-        });
+        server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}/json/version`));
       }),
     close: () => {
       for (const socket of sockets) socket.destroy();
@@ -110,24 +121,40 @@ function silentEndpoint(silentMs) {
 // poll-every-100ms loop below it never ran a second time. The loop only ever
 // advanced when an attempt failed FAST, which after the announcement it cannot:
 // the port is bound, so the connection is accepted and then simply ignored.
+//
+// The endpoint is a real socket on purpose: what has to hold is that fetch
+// honours the abort and the NEXT request goes out, which no fake transport can
+// stand in for. Nothing here is timed, though - the endpoint ignores its first
+// request and answers the second, so a slow machine changes when this test
+// finishes and never whether it passes.
 test("a probe attempt that never answers is abandoned so the poll keeps going", async (context) => {
-  const endpoint = silentEndpoint(400);
-  context.after(() => endpoint.close());
+  const endpoint = silentEndpoint(1);
+  context.onTestFinished(() => endpoint.close());
   const url = await endpoint.listen();
   const deadline = createStartupDeadline(3_000);
-  context.after(() => deadline.clear());
+  context.onTestFinished(() => deadline.clear());
   const before = liveTimers();
-  const started = Date.now();
 
+  // Before the fix this rejected with the deadline, having spent all 3000ms
+  // of it inside the first attempt.
   await waitForHttp(url, "chrome devtools endpoint", () => null, {
     signal: deadline.signal,
     attemptTimeoutMs: 150,
   });
 
-  const elapsed = Date.now() - started;
-  assert.ok(elapsed < 3_000, `the wait took ${elapsed}ms: it spent the whole startup deadline inside one attempt`);
-  assert.ok(endpoint.requestCount() > 1, `only ${endpoint.requestCount()} request was ever sent: the poll never retried`);
-  assert.equal(liveTimers(), before, "an attempt's own timer outlived the attempt it was bounding");
+  assert.equal(deadline.signal.aborted, false, "the poll did not finish inside its own startup budget");
+  assert.ok(
+    endpoint.requestCount() >= 2,
+    `the endpoint parsed ${endpoint.requestCount()} request(s): the poll never retried after the first went unanswered`,
+  );
+  // A leak here shows up as GROWTH - one armed timer per abandoned attempt.
+  // The count is not asserted equal because it is process-wide: unrelated
+  // timers belonging to the runner expire while this test is running, and a
+  // test that fails when one of those happens to fire is not a test.
+  assert.ok(
+    liveTimers() <= before,
+    `live timers went from ${before} to ${liveTimers()}: an attempt's own timer outlived the attempt it was bounding`,
+  );
 });
 
 // A startup deadline that names neither the phase it died in nor what its
@@ -136,10 +163,10 @@ test("a probe attempt that never answers is abandoned so the poll keeps going", 
 // budget and, until now, one indistinguishable message.
 test("the startup deadline says which endpoint it was polling and how often", async (context) => {
   const endpoint = silentEndpoint(Number.MAX_SAFE_INTEGER);
-  context.after(() => endpoint.close());
+  context.onTestFinished(() => endpoint.close());
   const url = await endpoint.listen();
   const deadline = createStartupDeadline(600);
-  context.after(() => deadline.clear());
+  context.onTestFinished(() => deadline.clear());
 
   await assert.rejects(
     waitForHttp(url, "chrome devtools endpoint", () => null, { signal: deadline.signal, attemptTimeoutMs: 100 }),
@@ -150,6 +177,18 @@ test("the startup deadline says which endpoint it was polling and how often", as
       assert.match(error.message, /after \d+ attempts?/);
       return true;
     },
+  );
+});
+
+// Every test above hands waitForHttp its own attemptTimeoutMs so it can run in
+// milliseconds, which means none of them would notice an edit that put the
+// PRODUCTION bound back above the deadline it has to retry inside - restoring
+// the flake with this whole file still green. This is the only thing holding
+// the two constants in a workable relationship.
+test("the shipped attempt bound leaves room to retry inside the startup deadline", () => {
+  assert.ok(
+    PROBE_ATTEMPT_TIMEOUT_MS * 5 <= STARTUP_DEADLINE_MS,
+    `one attempt may hold ${PROBE_ATTEMPT_TIMEOUT_MS}ms of a ${STARTUP_DEADLINE_MS}ms phase: too few fit for a poll to be a poll`,
   );
 });
 

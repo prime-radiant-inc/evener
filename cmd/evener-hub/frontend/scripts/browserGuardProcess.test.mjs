@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { waitForHttp } from "./browserGuardCdp.mjs";
+import { createStartupDeadline, waitForHttp } from "./browserGuardCdp.mjs";
 import * as browserGuardProcess from "./browserGuardProcess.mjs";
 
 const { createBrowserProcessCleanup, findAvailablePort, startBrowserGuard } = browserGuardProcess;
@@ -1030,6 +1030,34 @@ test("the diagnostic blames vite for a vite failure and does not send the reader
   });
 
   assert.match(message, /Port 5173 is already in use/);
+  assert.match(message, /Chrome is not implicated/);
+  assert.doesNotMatch(message, /install Chrome/);
+});
+
+// The Vite readiness poll only recently got a deadline of its own (every guard
+// runner arms one beside the Chrome phase's). What it produces when that
+// deadline fires has to keep reading as an environment problem and has to keep
+// pointing at Vite: a guard that told the reader to install Chrome because its
+// dev server never answered would send them to the wrong place with an
+// authoritative-looking checklist.
+test("a vite readiness poll that runs out of deadline still frames as a vite environment problem", async () => {
+  const deadline = createStartupDeadline(300);
+  const error = await waitForHttp("http://127.0.0.1:1/", "vite dev server", () => null, {
+    signal: deadline.signal,
+  }).then(
+    () => null,
+    (rejection) => rejection,
+  );
+  deadline.clear();
+
+  assert.match(error.message, /browser startup deadline exceeded after 300ms/);
+  assert.match(error.message, /vite dev server/);
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error,
+    subsystem: "vite",
+    viteStderr: "",
+  });
+  assert.match(message, /environment problem, not a test case failure/);
   assert.match(message, /Chrome is not implicated/);
   assert.doesNotMatch(message, /install Chrome/);
 });
