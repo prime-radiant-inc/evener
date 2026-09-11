@@ -137,6 +137,8 @@ func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
 	}
 	select {
 	case <-emitterDone:
+	// TRIPWIRE: this ceiling only fires if the emitter stays parked after the
+	// close deadline released it; emitterDone is the real completion signal.
 	case <-time.After(10 * time.Second):
 		t.Fatal("ordinary authoritative emitter remained blocked after close deadline")
 	}
@@ -155,7 +157,11 @@ func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	awaitWithin(t, time.Second, "canceled notification hook", func() {
+	// TRIPWIRE: the close context is already canceled, so the runner declines
+	// the hook without launching `sleep 30`; this normally returns in well
+	// under a millisecond. 10s sits far below the hook's own 30s timeout, so
+	// it still fires if cancellation stops being honored.
+	awaitWithin(t, 10*time.Second, "canceled notification hook", func() {
 		s.runNotificationHook(ctx, "warning")
 	})
 
