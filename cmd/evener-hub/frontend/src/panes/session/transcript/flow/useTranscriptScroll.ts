@@ -645,6 +645,55 @@ function failedTurnCount(model: ThreadModel | undefined): number {
   return n;
 }
 
+/**
+ * The scrollTop change a vertical input asks for: 1 toward the bottom, -1 toward
+ * the top. A wheel with positive deltaY and a finger moving UP both push content
+ * down, so both are 1.
+ */
+type ScrollDirection = 1 | -1;
+
+/** Can this element still move that way, from the geometry it has right now? */
+function canScroll(el: Element, direction: ScrollDirection): boolean {
+  if (direction === -1) return el.scrollTop > 0;
+  return !isAtBottom({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
+}
+
+/** An element that scrolls vertically on its own, independently of the port. */
+function isIndependentVerticalScroller(el: Element): boolean {
+  if (el.scrollHeight <= el.clientHeight) return false;
+  const overflowY = getComputedStyle(el).overflowY;
+  return overflowY === "auto" || overflowY === "scroll";
+}
+
+/**
+ * Can a vertical input landing on `target` actually move `port`? Two ways it
+ * cannot:
+ *
+ *   the port is already at that limit; or
+ *   something between the target and the port is an independent vertical
+ *   scroller with room left in that direction, so IT answers the input and the
+ *   event merely bubbles past (the sandbox-escalation panel is overflow-y:auto
+ *   inside the transcript).
+ *
+ * Both are read from state that exists BEFORE the browser scrolls, which is a
+ * plain read of the present - not the after-the-fact geometry inference this
+ * design replaced. A nested scroller at its OWN limit passes the input on, so
+ * that case still counts as a gesture.
+ *
+ * Being wrong costs one unmarked real scroll, never a false veto: the safe
+ * direction, since a false veto disarms the bottom-hold correction until the
+ * reader returns to the bottom.
+ */
+function verticalInputCanMovePort(port: HTMLElement, target: EventTarget | null, direction: ScrollDirection): boolean {
+  if (!canScroll(port, direction)) return false;
+  let node = target instanceof Element ? target : null;
+  while (node !== null && node !== port) {
+    if (isIndependentVerticalScroller(node) && canScroll(node, direction)) return false;
+    node = node.parentElement;
+  }
+  return true;
+}
+
 export function useTranscriptScroll({
   ref,
   model,
@@ -735,23 +784,24 @@ export function useTranscriptScroll({
   //
   //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
   //     and marks only when the write moved it (its scrollPortBy).
-  //   wheel         - a deltaY of zero is a sideways wheel and scrolls nothing
-  //     here, so it never marks. Two cases still mark without moving the port:
-  //     a vertical wheel AT a scroll limit, and a vertical wheel over a NESTED
-  //     vertical scroller that consumes it and bubbles the event up anyway (the
-  //     sandbox-escalation panel is overflow-y:auto inside the transcript).
-  //     Neither is knowable here: a passive handler runs before the scroll, and
-  //     reading the offset back afterwards would be the geometry inference this
-  //     whole design replaced. Each costs a veto only if a correction lands in
-  //     that same frame.
-  //   touch         - marks only on real vertical movement, so a sideways swipe
-  //     is not a transcript scroll. Same two residuals as wheel: a vertical drag
-  //     at a limit, and one inside a nested vertical scroller.
+  //   wheel         - a sideways wheel scrolls nothing here and never marks, and
+  //     a vertical one only marks when verticalInputCanMovePort says it can
+  //     reach and move the port: not into a limit the port is already at, and
+  //     not when a nested scroller will answer it instead.
+  //   touch         - the same predicate, on real vertical movement only, so a
+  //     sideways swipe and a swipe a nested scroller answers are both ignored.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
-  //     from a scrollbar drag that does scroll. What is ruled out is a drag that
-  //     is over (no button held) and one that has left the port.
-  const startPointerDrag = useCallback(() => {
+  //     from a scrollbar drag that does scroll. Ruled out are a finger (it has
+  //     the touch path, which is more exact), a secondary button, a drag that is
+  //     over (no button held), and one that has left the port.
+  const startPointerDrag = useCallback((event: PointerEvent) => {
+    // A finger produces BOTH event streams. The touch path knows about
+    // direction and nested scrollers; adopting the same finger here as a drag
+    // would mark every sideways swipe and undo that exactness. Secondary
+    // buttons open menus, they do not drag.
+    if (event.pointerType === "touch") return;
+    if (event.button !== 0 || !event.isPrimary) return;
     pointerDraggingRef.current = true;
   }, []);
   // A mouse pointer gets no implicit capture, so a drag released outside the
@@ -763,6 +813,9 @@ export function useTranscriptScroll({
   // marking; under-marking is the safe direction here.
   const continuePointerDrag = useCallback(
     (event: PointerEvent) => {
+      // Ahead of both reading AND writing the flag: a finger must neither mark
+      // a mouse drag nor end one.
+      if (event.pointerType === "touch") return;
       if (event.buttons === 0) {
         pointerDraggingRef.current = false;
         return;
@@ -771,12 +824,20 @@ export function useTranscriptScroll({
     },
     [markGesture],
   );
+  // Deliberately NOT filtered by pointerType, unlike the two above: ending a
+  // drag is the under-marking direction, so a stray touch pointerup clearing a
+  // mouse drag costs an unmarked scroll, while ignoring it would leave the drag
+  // latched - the harmful direction.
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
   }, []);
   const markWheel = useCallback(
     (event: WheelEvent) => {
-      if (event.deltaY !== 0) markGesture();
+      if (event.deltaY === 0) return;
+      const port = event.currentTarget;
+      if (!(port instanceof HTMLElement)) return;
+      if (!verticalInputCanMovePort(port, event.target, event.deltaY > 0 ? 1 : -1)) return;
+      markGesture();
     },
     [markGesture],
   );
@@ -791,10 +852,20 @@ export function useTranscriptScroll({
       // A first move with no recorded start (the touch began outside the port)
       // is not marked; the next one with real movement is.
       if (y === null || last === null || y === last) return;
+      const port = event.currentTarget;
+      if (!(port instanceof HTMLElement)) return;
+      // A finger moving UP - clientY decreasing - pushes content down.
+      if (!verticalInputCanMovePort(port, event.target, y < last ? 1 : -1)) return;
       markGesture();
     },
     [markGesture],
   );
+  // A finished touch has to clear the recorded Y, or the "no recorded start"
+  // guard above is true exactly once per mount and every later outside-start
+  // move compares against a stale value.
+  const endTouch = useCallback(() => {
+    lastTouchYRef.current = null;
+  }, []);
   useEffect(
     () => () => {
       if (gestureClearFrameRef.current !== null) cancelAnimationFrame(gestureClearFrameRef.current);
@@ -1244,6 +1315,8 @@ export function useTranscriptScroll({
     el.addEventListener("wheel", markWheel, { passive: true });
     el.addEventListener("touchstart", startTouch, { passive: true });
     el.addEventListener("touchmove", continueTouch, { passive: true });
+    el.addEventListener("touchend", endTouch, { passive: true });
+    el.addEventListener("touchcancel", endTouch, { passive: true });
     el.addEventListener("pointerdown", startPointerDrag, { passive: true });
     el.addEventListener("pointermove", continuePointerDrag, { passive: true });
     el.addEventListener("pointerup", endPointerDrag, { passive: true });
@@ -1254,6 +1327,8 @@ export function useTranscriptScroll({
       el.removeEventListener("wheel", markWheel);
       el.removeEventListener("touchstart", startTouch);
       el.removeEventListener("touchmove", continueTouch);
+      el.removeEventListener("touchend", endTouch);
+      el.removeEventListener("touchcancel", endTouch);
       el.removeEventListener("pointerdown", startPointerDrag);
       el.removeEventListener("pointermove", continuePointerDrag);
       el.removeEventListener("pointerup", endPointerDrag);
@@ -1291,6 +1366,7 @@ export function useTranscriptScroll({
     markWheel,
     startTouch,
     continueTouch,
+    endTouch,
     startPointerDrag,
     continuePointerDrag,
     endPointerDrag,

@@ -135,6 +135,33 @@ function touchEvent(type: string, clientY: number): Event {
   return event;
 }
 
+function pointerEvent(type: string, init: PointerEventInit): PointerEvent {
+  return new PointerEvent(type, { bubbles: true, ...init });
+}
+
+// A mouse drag's events, the shape the pointer path is meant to track.
+const MOUSE_DOWN: PointerEventInit = { pointerType: "mouse", button: 0, buttons: 1, isPrimary: true };
+const MOUSE_DRAG: PointerEventInit = { pointerType: "mouse", button: -1, buttons: 1, isPrimary: true };
+
+// jsdom computes no layout, so the port's own geometry is defined outright -
+// the marker predicate reads it from the DOM, not through the `measure` seam.
+// Kept in step with what `measure` reports, since a browser could not disagree.
+function definePort(el: HTMLElement, metrics: ScrollMetrics): void {
+  Object.defineProperty(el, "scrollHeight", { value: metrics.scrollHeight, configurable: true });
+  Object.defineProperty(el, "clientHeight", { value: metrics.clientHeight, configurable: true });
+  el.scrollTop = metrics.scrollTop;
+}
+
+// An independently scrollable descendant, like the sandbox-escalation panel
+// (tools/sandboxescalation.module.css is overflow-y:auto inside the transcript).
+function nestedScroller(port: HTMLElement, metrics: ScrollMetrics): HTMLElement {
+  const inner = document.createElement("div");
+  inner.style.overflowY = "auto";
+  port.appendChild(inner);
+  definePort(inner, metrics);
+  return inner;
+}
+
 const AT_BOTTOM: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
 
@@ -648,8 +675,8 @@ describe("jumpToBottom landing reliability", () => {
     [
       "a pointer drag",
       (el: HTMLElement) => {
-        el.dispatchEvent(new Event("pointerdown"));
-        el.dispatchEvent(new MouseEvent("pointermove", { buttons: 1 }));
+        el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
       },
     ],
   ])("%s in the same frame vetoes the correction re-pin too", (_label, gesture) => {
@@ -758,7 +785,7 @@ describe("jumpToBottom landing reliability", () => {
     el.scrollTop = 16374;
 
     act(() => {
-      el.dispatchEvent(new Event("pointerdown"));
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
       el.scrollTop = 16432;
       set({ scrollTop: 16432, scrollHeight: 17221 });
       el.dispatchEvent(new Event("scroll"));
@@ -788,13 +815,13 @@ describe("jumpToBottom landing reliability", () => {
     el.scrollTop = 16374;
 
     act(() => {
-      el.dispatchEvent(new Event("pointerdown"));
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
       // The release happens elsewhere: the port sees no pointerup at all.
     });
 
     act(() => {
       // A plain move with no button held - the pointer is just passing over.
-      el.dispatchEvent(new MouseEvent("pointermove", { buttons: 0 }));
+      el.dispatchEvent(pointerEvent("pointermove", { ...MOUSE_DRAG, buttons: 0 }));
       el.scrollTop = 16432;
       set({ scrollTop: 16432, scrollHeight: 17221 });
       el.dispatchEvent(new Event("scroll"));
@@ -858,9 +885,9 @@ describe("jumpToBottom landing reliability", () => {
       // transcript being scrolled.
       "a drag that left the transcript",
       (el: HTMLElement) => {
-        el.dispatchEvent(new Event("pointerdown"));
-        el.dispatchEvent(new Event("pointerleave"));
-        el.dispatchEvent(new MouseEvent("pointermove", { buttons: 1 }));
+        el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+        el.dispatchEvent(pointerEvent("pointerleave", MOUSE_DRAG));
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
       },
     ],
   ])("%s does not scroll the transcript - the correction still re-pins", (_label, notAScroll) => {
@@ -885,6 +912,171 @@ describe("jumpToBottom landing reliability", () => {
     });
 
     expect(el.scrollTop).toBe(17221 - 702);
+  });
+
+  // --- a gesture that cannot move the port is not a gesture ---------------
+  //
+  // Over-marking is the harmful direction: one false veto records the reader as
+  // away from the bottom, which disarms the correction until they return there.
+  // These cover input that reaches the port but moves nothing - it is already at
+  // that limit, or an independently scrollable descendant consumes it.
+  const PORT_AT_BOTTOM: ScrollMetrics = { scrollTop: 16519, scrollHeight: 17221, clientHeight: 702 };
+  const PORT_AFTER_GROWTH: ScrollMetrics = { scrollTop: 16577, scrollHeight: 17366, clientHeight: 702 };
+  const TRUE_BOTTOM_AFTER_GROWTH = PORT_AFTER_GROWTH.scrollHeight - PORT_AFTER_GROWTH.clientHeight;
+
+  function mountAtBottom(start: ScrollMetrics = PORT_AT_BOTTOM) {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(start);
+    const view = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    definePort(el, start);
+    return { el, set, result: view.result };
+  }
+
+  /** The late measurement correction the gesture markers must not veto. */
+  function landCorrection(el: HTMLElement, set: (m: Partial<ScrollMetrics>) => void) {
+    definePort(el, PORT_AFTER_GROWTH);
+    set(PORT_AFTER_GROWTH);
+    el.dispatchEvent(new Event("scroll"));
+  }
+
+  test("a wheel into the bottom the port is already at marks nothing", () => {
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel into the top the port is already at marks nothing", () => {
+    // A transcript that exactly fits its port is at BOTH limits at once, which
+    // is the only way to be at the top with the correction still armed: a
+    // scrollable port sitting at the top is not at the bottom, so wasAtBottom is
+    // already false and nothing could be vetoed there anyway.
+    const fits: ScrollMetrics = { scrollTop: 0, scrollHeight: 702, clientHeight: 702 };
+    const { el, set } = mountAtBottom(fits);
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel a nested scroller can still answer marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, { scrollTop: 500, scrollHeight: 2000, clientHeight: 400 });
+
+    act(() => {
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel over a nested scroller at its OWN limit reaches the port and marks", () => {
+    // The suppression must stay narrow: a nested scroller that cannot move in
+    // this direction passes the input on, and that really is a reader scroll.
+    const { el, set, result } = mountAtBottom();
+    const inner = nestedScroller(el, { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 });
+
+    act(() => {
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a finger swiping into the bottom the port is already at marks nothing", () => {
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      // Finger moving UP pushes content down: scrollTop would increase.
+      el.dispatchEvent(touchEvent("touchstart", 460));
+      el.dispatchEvent(touchEvent("touchmove", 400));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a finger a nested scroller can still answer marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, { scrollTop: 500, scrollHeight: 2000, clientHeight: 400 });
+
+    act(() => {
+      inner.dispatchEvent(touchEvent("touchstart", 400));
+      inner.dispatchEvent(touchEvent("touchmove", 460));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a horizontal swipe delivered as BOTH touch and pointer events marks nothing", () => {
+    // A finger produces both streams. The touch path ignores sideways movement;
+    // the pointer path must not adopt the same finger as a drag and mark it.
+    const { el, set } = mountAtBottom();
+    const finger: PointerEventInit = { pointerType: "touch", button: 0, buttons: 1, isPrimary: true };
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchstart", 400));
+      el.dispatchEvent(pointerEvent("pointerdown", finger));
+      el.dispatchEvent(touchEvent("touchmove", 400));
+      el.dispatchEvent(pointerEvent("pointermove", { ...finger, button: -1 }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a right-button drag marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const right: PointerEventInit = { pointerType: "mouse", button: 2, buttons: 2, isPrimary: true };
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", right));
+      el.dispatchEvent(pointerEvent("pointermove", { ...right, button: -1 }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a touch that began outside the port is not marked on its first move, after an earlier touch ended", () => {
+    // The "no recorded start" guard only works while lastTouchY is null, so a
+    // finished touch has to clear it - otherwise the guard is true exactly once
+    // per mount and every later outside-start move compares against a stale Y.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchstart", 400));
+      el.dispatchEvent(touchEvent("touchmove", 460));
+      // A scroll event that is not a correction consumes that legitimate mark.
+      el.dispatchEvent(new Event("scroll"));
+      el.dispatchEvent(touchEvent("touchend", 460));
+    });
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchmove", 500));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
   });
 
   test("a reader scrolling back while content is still measuring in keeps their position and gets the pill", () => {
