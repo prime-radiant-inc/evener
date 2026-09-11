@@ -2227,6 +2227,14 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 			if persisted.Message.Text() != input {
 				return "", errors.New("read back child input transcript: latest user input differs")
 			}
+			// Text alone does not identify the entry this call wrote: a
+			// delegate is routinely re-sent the same instruction, so a write
+			// that silently did nothing would leave an older entry as the
+			// newest and pass. The id is what makes the read-back proof, and
+			// it is the id the run adopts.
+			if persisted.StableTurnID != turn.StableTurnID {
+				return "", fmt.Errorf("read back child input transcript: latest user input carries turn id %q, not the one just written", persisted.StableTurnID)
+			}
 			return turn.StableTurnID, nil
 		}
 	}
