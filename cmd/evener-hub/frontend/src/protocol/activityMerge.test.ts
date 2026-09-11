@@ -155,10 +155,15 @@ test("a child-session continuation keeps the turn container's own newer turns", 
   expect(entry.delegate.latestActivityAt).toBe("2026-09-10T00:03:00Z");
 });
 
-test("a child-session continuation adopts turns the client had never seen", () => {
+// The wire always sends turns (appwire/types.go has no omitempty on the field),
+// so an empty list is the daemon saying "none", the same standing as absent.
+test.each([
+  { held: "no turn list", turns: undefined },
+  { held: "an empty turn list", turns: [] },
+])("a child-session continuation adopts turns a client holding $held had never seen", ({ turns }) => {
   const currentEntry = delegate(session("child", [shell("a")], "next"));
   delete currentEntry.delegate.type;
-  currentEntry.delegate.turns = undefined;
+  currentEntry.delegate.turns = turns;
   const patchEntry = delegate(session("child", [shell("b")]));
   delete patchEntry.delegate.type;
   patchEntry.delegate.turns = [shell("turn-first").job];
