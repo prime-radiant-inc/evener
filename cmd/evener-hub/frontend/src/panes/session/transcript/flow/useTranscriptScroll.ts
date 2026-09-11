@@ -704,6 +704,18 @@ export function useTranscriptScroll({
   // run BEFORE its requestAnimationFrame callbacks, so every scroll event the
   // gesture can be responsible for is delivered while the flag is up, and none
   // of the next frame's corrections see it.
+  //
+  // That frame may never arrive - requestAnimationFrame does not run while the
+  // tab is hidden, and the first frame after it becomes visible again can be
+  // arbitrarily far away - so the scroll listener also CONSUMES the flag on the
+  // event it explains. Between the two, a gesture vetoes the event it caused and
+  // nothing later.
+  //
+  // Over-marking is the dangerous direction, not under-marking. A veto falls
+  // through to the ordinary path below, which records the reader as away from
+  // the bottom, so the at-bottom clause fails for every later correction until
+  // the reader actually returns to the bottom: one false veto reinstates the
+  // mount strand permanently, rather than costing a single frame.
   const markGesture = useCallback(() => {
     gesturePendingRef.current = true;
     if (gestureClearFrameRef.current !== null) return;
@@ -715,9 +727,19 @@ export function useTranscriptScroll({
   const startPointerDrag = useCallback(() => {
     pointerDraggingRef.current = true;
   }, []);
-  const continuePointerDrag = useCallback(() => {
-    if (pointerDraggingRef.current) markGesture();
-  }, [markGesture]);
+  // A mouse pointer gets no implicit capture, so a drag released outside the
+  // port never delivers pointerup to it. The held button is the authority:
+  // no button means the drag is over, wherever it ended.
+  const continuePointerDrag = useCallback(
+    (event: PointerEvent) => {
+      if (event.buttons === 0) {
+        pointerDraggingRef.current = false;
+        return;
+      }
+      if (pointerDraggingRef.current) markGesture();
+    },
+    [markGesture],
+  );
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
   }, []);
@@ -1063,6 +1085,10 @@ export function useTranscriptScroll({
       // possibility.
       if (!el) return;
       const m = measure(el);
+      // Consumed here, not merely read: see markGesture on why the frame
+      // boundary alone cannot be trusted to clear it.
+      const gestured = gesturePendingRef.current;
+      gesturePendingRef.current = false;
       // Content measured in BELOW a transcript that was already at the true
       // bottom, in the SAME scroll port, with the offset never moving
       // backwards: the virtualizer correcting its own estimates, not the reader
@@ -1109,7 +1135,7 @@ export function useTranscriptScroll({
       const previous = lastScrollGeometryRef.current;
       lastScrollGeometryRef.current = m;
       if (
-        !gesturePendingRef.current &&
+        !gestured &&
         wasAtBottomRef.current &&
         !isAtBottom(m) &&
         m.clientHeight === previous.clientHeight &&

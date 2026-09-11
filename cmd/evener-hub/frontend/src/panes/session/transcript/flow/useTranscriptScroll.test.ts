@@ -635,7 +635,7 @@ describe("jumpToBottom landing reliability", () => {
       "a pointer drag",
       (el: HTMLElement) => {
         el.dispatchEvent(new Event("pointerdown"));
-        el.dispatchEvent(new Event("pointermove"));
+        el.dispatchEvent(new MouseEvent("pointermove", { buttons: 1 }));
       },
     ],
   ])("%s in the same frame vetoes the correction re-pin too", (_label, gesture) => {
@@ -750,6 +750,79 @@ describe("jumpToBottom landing reliability", () => {
     });
 
     expect(el.scrollTop).toBe(17221 - 702);
+  });
+
+  test("a drag released outside the transcript stops marking gestures (roborev low 1)", () => {
+    // pointerdown lands on the port, but a mouse pointer gets no implicit
+    // capture, so a selection drag released over the composer or another pane
+    // never delivers pointerup here. Tracking "a drag is in progress" from those
+    // two events alone therefore latches on forever, and every later pointermove
+    // over the transcript marks a gesture - which, because a veto marks the
+    // reader away from the bottom, disarms the correction for good.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      el.dispatchEvent(new Event("pointerdown"));
+      // The release happens elsewhere: the port sees no pointerup at all.
+    });
+
+    act(() => {
+      // A plain move with no button held - the pointer is just passing over.
+      el.dispatchEvent(new MouseEvent("pointermove", { buttons: 0 }));
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+  });
+
+  test("a stalled animation frame cannot leave a gesture vetoing later corrections (roborev low 2)", () => {
+    // requestAnimationFrame does not run in a hidden tab, so the frame-boundary
+    // clear can be arbitrarily late. The gesture is therefore also consumed by
+    // the scroll event it explains: here the gesture's own event is still at the
+    // bottom (nothing to correct), and the correction that follows must re-pin.
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { ref, el } = makeListHandle();
+      const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+      renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      );
+      el.scrollTop = 16374;
+
+      act(() => {
+        el.dispatchEvent(new Event("wheel"));
+        el.dispatchEvent(new Event("scroll"));
+      });
+
+      act(() => {
+        el.scrollTop = 16432;
+        set({ scrollTop: 16432, scrollHeight: 17221 });
+        el.dispatchEvent(new Event("scroll"));
+      });
+
+      expect(el.scrollTop).toBe(17221 - 702);
+    } finally {
+      raf.mockRestore();
+    }
   });
 
   test("a reader scrolling back while content is still measuring in keeps their position and gets the pill", () => {
