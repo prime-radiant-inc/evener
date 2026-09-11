@@ -3348,3 +3348,401 @@ Requirements:
    `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-33-report.md` with RED and GREEN
    evidence, which option the ruling's preference resolved to and why, commit SHA, one-line test
    summary; return only status, commit SHA, test summary, concerns.
+
+## Task 58: PR #1098 environment replay — round 5: return a claimed turn exactly once
+
+Worktree: `/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1098`
+Branch: `codex/mobile-transcript-identity`. Current head `f913e3190` (contains main `c7e6c0968`; main
+has since moved to `3f8c9cb25` - the coordinator merges it before the push, do not merge it
+yourself). Module: `agent/` (own module).
+
+RoboRev finding at head `f913e31` (verbatim; one reviewer done, one SKIPPED):
+
+## roborev: Combined Review (`f913e31`)
+
+## Review Findings
+- **Severity**: Medium
+- **Location**: `agent/session_client_mutation_queue.go:377-383`
+- **Problem**: `returnClaimedDirectClientMutationTurn` releases a claim using only the caller’s `acceptedTurnsFloor`, so concurrent failed inputs can release the wrong claim. For example, claims at floors `0` and `1` can raise `AcceptedTurns` to `2`; if the first releases first, the counter becomes `1`, and the second sees `AcceptedTurns == floor` and does not decrement. The actual turns are rolled back, but `AcceptedTurns` remains inflated, potentially causing premature max-turn exhaustion.
+- **Fix**: Associate each claim with a unique reservation/token and release that exact reservation, or serialize direct input admission and rollback so claim ownership cannot interleave.
+
+## Summary
+The change adds durable environment-context events and replay while hardening transcript append failure handling.
+
+---
+*Reviewers: 2 total (1 done, 1 skipped) | Synthesis: codex | Total: 24m53s*
+
+Coordinator verification and ruling: in scope and real. `returnClaimedDirectClientMutationTurn`
+is NEW in this PR (added with the environment-append failure path; the PR diff adds it and calls
+it from the durable-environment-append failure branch), and it releases by comparing
+`AcceptedTurns` to the caller's floor, so two inputs whose claims interleaved (floors 0 and 1,
+counter at 2) release wrongly when the first returns first (2→1, then 1 > 1 is false and the
+second never decrements), leaving the counter inflated by one and max-turn exhaustion early.
+Ruling: a claim is a unit, and a release returns exactly that unit - release decrements by one,
+unconditionally except for a zero guard, and the call site guarantees one release per failed
+claim (the failure path runs once per claim). Do not add a reservation token unless the
+one-decrement rule cannot be made safe at the single call site; if you find a second caller or a
+path that can release twice for one claim, report it and use a token. Cost if wrong: a double
+release under-counts by one, the opposite error, equally bounded.
+
+Requirements:
+1. RED-first: two direct inputs whose claims interleave (claim A at floor 0, claim B at floor 1,
+   counter 2), both failing their durable environment append; release in the order A then B and
+   in the order B then A; `AcceptedTurns` must return to its starting value in both orders
+   (pre-fix one order leaves it inflated). Drive it through the real claim/mutate path with the
+   fault-plan fixtures the Task 26/47 tests use; if true concurrency is needed to interleave,
+   use the session's own test hooks (the `testOnly` hooks the compaction tests use) rather than
+   sleeps, and no bare wall-clock deadline without `// TRIPWIRE:`.
+2. Verify with file:line that the failure path calls the release exactly once per claim and that
+   no other path releases the same claim; state it in the report.
+3. Gates: `gofmt -l`; `go vet ./...` in `agent/`; `go test -count=1 ./...` in `agent/`; deadline
+   audit; `-race` on the focused tests; pinned golangci-lint 0 issues. One commit; do NOT push,
+   do not amend, do not merge main.
+4. Report contract: append a "Task 58" section to
+   `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-26-report.md` (same lane) with RED and
+   GREEN evidence for both orders, the single-release trace, commit SHA, one-line test summary;
+   return only status, commit SHA, test summary, concerns.
+
+## Task 59: PR #1105 local fork capability — round 13: an unverifiable claim refuses, it does not admit
+
+Worktree: `/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1105`
+Branch: `codex/mobile-fork-capability`. Current head `8205599de` (contains main `3f8c9cb25`; CI fully
+green). Module: root (`cmd/evener-hub`).
+
+RoboRev finding at head `8205599` (verbatim; one reviewer):
+
+## roborev: Combined Review (`8205599`)
+
+## Verdict: One Medium issue found; fork capability projection is otherwise solid.
+
+### Medium
+
+- **`cmd/evener-hub/app_threadlifecycle.go:1176-1180`** — `forkClaimIsLiveOwner` treats every `daemonprocess.Controller.Open` error except `ErrExited` as proof that the claim is live. When there's only one claim or multiple claims name the same session, `resumeClaimTarget` returns early without re-verifying any process, so a malformed, stale, or PID-reused rendezvous entry can authorize a fork without ownership being established. Fail closed by propagating verification errors, or make `resumeClaimTarget` verify every retained claim before accepting a non-conflicting target — only `ErrExited` should be treated as a non-live claim.
+
+### Summary
+
+The change adds hub-side fork capability projection with dual-identity recovery, deletion, and live-delegate fencing across reads, lists, relays, and fork admission. One ownership verification path can still admit an unverified rendezvous claim; all other paths reviewed clean.
+
+---
+*Reviewers: 2 done | Synthesis: codex, 7s | Total: 24m2s*
+
+Coordinator verification and ruling: real, and it corrects Task 48's rule for the single-claim
+case. `forkClaimIsLiveOwner` (app_threadlifecycle.go:1169-1186) returns true for every `Open`
+error other than `ErrExited` (:1179-1181); Task 48 chose that so an ambiguous alias would meet
+`resumeClaimTarget`'s conflict refusal rather than a resolver disagreement, but when there is
+ONE claim (or several naming one session) `resumeClaimTarget` returns it without any
+verification, so a malformed, stale or PID-reused rendezvous entry becomes the fork's target with
+ownership never established. Ruling: three outcomes, not two. A claim whose process verifies is
+live; a claim whose process has exited (`ErrExited`) is dropped as before; a claim whose
+verification FAILS for any other reason is unverifiable, and a fork that would resolve through an
+unverifiable claim is refused with the retryable `Unavailable` the ambiguity path already uses
+("cannot verify session ownership: …", carrying the verification error), never admitted and never
+silently dropped. The ambiguity behaviour is unchanged (two verified claims naming different
+sessions still refuse through `resumeClaimTarget`). Cost if wrong: a hub whose process handles
+cannot be opened for a legitimate reason (permissions) refuses forks retryably where it used to
+admit them - the safe direction for a mutation.
+
+Consequence for fixtures: the Task 32 and Task 38 recheck tests keep their claims "live" only
+because `Open` refuses a self-PID with a non-`ErrExited` error (Task 48's review noted this).
+Under the new rule those forks would be refused as unverifiable. Correct those fixtures to live
+process stubs the way Task 48 corrected the two-daemons test (`forceStopProcess`), keeping their
+names, rows and assertions unchanged, and list each in the report as a fixture correction with
+the reason; do not weaken any assertion.
+
+Requirements:
+1. RED-first: a single rendezvous claim whose process verification fails with a non-`ErrExited`
+   error (a PID-reused / start-time-mismatch shape, or a controller stub returning a distinct
+   error); pre-fix the fork is admitted and branches, post-fix it is refused retryably without
+   branching (`ListSessionMetas` before/after) and the refusal carries the verification error. A
+   control with a verifying claim still forks; an `ErrExited` claim still drops through to the
+   redirect/alias rule as before.
+2. The fixture corrections above, each named.
+3. Gates: `gofmt -l`; `go vet ./cmd/evener-hub/...`; `go test -count=1 ./cmd/evener-hub/...`;
+   `-race` over the fork fence tests; pinned golangci-lint 0 issues. One commit; do NOT push, do
+   not amend, do not merge main (main has not moved since `3f8c9cb25`).
+4. Report contract: append a "Task 59" section to
+   `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-32-report.md` with RED and GREEN
+   evidence, the fixture-correction list, commit SHA, one-line test summary; return only status,
+   commit SHA, test summary, concerns.
+
+## Task 60: PR #1096 native checkpoint — round 6: identity-first lifecycle lookup, cursor/flag agreement, orphan rendering, clamped truncation
+
+Worktree: `/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1096`
+Branch: `codex/mobile-native-checkpoint` (PR #1096). Current head `b899447a3` (contains main
+`3f8c9cb25`; CI fully green). Shared mobile core `mobile/src` (`make test-native`). Lane context:
+Task 44/52/54 sections of `task-39-report.md` and `task-54-report.md` (identity model, member-aware
+lookup/rebuild).
+
+RoboRev finding at head `b899447` (verbatim):
+
+## roborev: Combined Review (`b899447`)
+
+**Verdict:** Code adds valuable native activity projection and checkpoint features, but has paging, hierarchy, and reasoning-output edge cases to address.
+
+## Review Findings
+
+### Medium
+
+- **`mobile/src/state/conversation.ts:2802`** — Lifecycle events replace activity members using canonical `transcriptKey` identity, but the existing reasoning output is looked up only by the incoming wire `id`. If the wire ID changes while `transcriptKey` remains stable, a sparse reasoning completion cannot find the accumulated output and replaces it with `undefined`, causing streamed reasoning text to disappear. **Fix:** Resolve the existing activity using `params.item.transcriptKey ?? params.item.id` (including clustered-member lookup) before preserving sparse reasoning output.
+
+- **`mobile/src/state/conversation.ts:2166`** — `loadOlder` nulls `olderCursor` whenever the merged list is at `RETAINED_ITEM_CAP`, but preserves `hasEarlierItems` from the page result. This leaves `hasEarlierItems=true` with a null cursor, where subsequent `loadOlder` calls early-return `ignored`. **Fix:** Clear `hasEarlierItems` when forcing the cursor to null at cap, or preserve the server cursor instead of nulling it.
+
+- **`mobile/src/services/activity.ts:283`** — `validateHierarchy` throws `missing-parent` for any delegate or job whose parent is absent, while `projectWork` below retains fallback logic to render orphans at top level as never-dropped. The fallback is unreachable, so one orphaned delegate or job fails the entire `ActivityView` projection instead of degrading gracefully. **Fix:** Align the two paths: either allow missing parents to render top-level and remove the throw, or remove the dead fallback and document fail-closed behavior.
+
+### Low
+
+- **`mobile/src/state/conversation.ts:488`** — `truncateText` computes `targetBytes` as `maxBytes` minus marker length without clamping. When `maxBytes` is smaller than the marker, it returns only the marker, which already exceeds `maxBytes`. **Fix:** Clamp `targetBytes` at zero and handle the marker-larger-than-limit case explicitly.
+
+## Summary
+
+The change strengthens native activity projection, clustering, rehydration, and canonical identity handling, and adds the native checkpoint app with shared session projection. Four edge cases remain: reasoning-output loss on wire ID changes, paging cursor/flag desync at the retained-item cap, an unreachable orphan-hierarchy fallback, and an unclamped truncation calculation.
+
+---
+*Reviewers: 2 done | Synthesis: codex, 13s | Total: 22m10s*
+
+Coordinator verification and rulings (all four in scope - both files are new in this PR):
+- M1 (lifecycle lookup by wire id): the residual Task 54 named at the call site, now a finding.
+  Ruling: resolve the existing activity by canonical identity (`transcriptKey ?? id`) first, then by
+  wire id, in the lifecycle completion path (extend `findActivityTarget` or add the identity form
+  beside it - one lookup family, no second seam), so a sparse reasoning completion whose wire id
+  changed keeps the accumulated output. RED-first: a reasoning member with stable transcriptKey
+  and a changed wire id completes sparsely; pre-fix its output becomes undefined.
+- M2 (cursor/flag desync at cap): `loadOlder` nulls `olderCursor` when the merged list is at
+  `RETAINED_ITEM_CAP` but keeps `hasEarlierItems` from the page (state/conversation.ts:~2166),
+  so later loads early-return ignored while the UI still offers them. Ruling: the two must agree.
+  Determine which the design intends - if the store already evicts on load (the eviction/prune
+  machinery the cap uses elsewhere), preserve the server cursor and let `loadOlder` evict; if the
+  cap is meant to stop paging, clear `hasEarlierItems` when the cursor is nulled and say so in the
+  comment. State the choice and why in the report. RED-first: at cap, a subsequent `loadOlder` is
+  either honoured (cursor kept) or not offered (flag cleared); pre-fix it is offered and ignored.
+- M3 (orphan hierarchy): `validateHierarchy` throws `missing-parent` (services/activity.ts:283,
+  :291) while `projectWork` documents rendering orphans at top level "never dropped" (:357) - the
+  fallback is unreachable and one orphan fails the whole `ActivityView`. Ruling: graceful
+  degradation wins - orphans render at top level; remove the missing-parent throw for that case
+  only, keep the other validations, and make the doc and the code agree. RED-first: a delegate
+  whose parent is absent projects at top level instead of throwing.
+- Low (unclamped truncation): `truncateText` computes `targetBytes = maxBytes - marker` without a
+  clamp (:488), so a limit smaller than the marker returns the marker alone, exceeding the limit.
+  Ruling: clamp at zero and handle the marker-larger-than-limit case explicitly (return a prefix
+  that fits, or the empty string with the marker only if the caller's contract says the marker is
+  mandatory - read the callers and say which). RED-first with maxBytes below the marker length.
+
+Requirements:
+1. RED-first for each; existing tests untouched (Task 44/52/54 tests green).
+2. Gates: touched test files green; `make test-native` green. One commit per finding,
+   `fix(mobile): …`; do NOT push, do not amend, do not merge main (main has not moved since
+   `3f8c9cb25`).
+3. Report contract: append a "Task 60" section to
+   `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-54-report.md` (same lane) with RED and
+   GREEN evidence, the M2 design determination, the truncation contract determination, commit
+   SHAs, one-line test summary; return only status, commit SHAs, test summary, concerns.
+
+## Task 61: PR #1098 environment replay — round 6: no claim before the poisoned check; environment event inside the ordering transaction
+
+Worktree: `/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1098`
+Branch: `codex/mobile-transcript-identity`. Current head `a4a6a20bb` (contains main `3f8c9cb25`; CI fully
+green). Module: `agent/` (own module).
+
+RoboRev finding at head `a4a6a20` (verbatim; two reviewers done):
+
+## roborev: Combined Review (`a4a6a20`)
+
+## Summary Verdict: Two medium issues found — durable environment-context replay and live projection are solid, but mutation cleanup and event ordering need attention.
+
+### Medium
+
+- **Mutation claim/release is not rolled back on poisoned-transcript early returns** — `agent/session_lifecycle.go:1015-1028`, `agent/session_queue.go:664-715`, `agent/session_client_mutation.go:442-456`: `ProcessPendingUserInput` and `ProcessClientMutationStart` claim or remove a durable mutation before calling `ProcessInputKind`. If the new poisoned-transcript guard returns early, `acceptUserInput` is never reached and its existing claim-rollback path does not run. The queue entry can remain removed with a `"claimed"` pending execution, while a start mutation can remain claimed with its turn budget consumed; the session may then report idle and the accepted input is unavailable until restart recovery. Fix: check for a poisoned writer before claiming work, and also roll back/release the mutation whenever `ProcessInputKind` returns before transcript incorporation, including races where poisoning occurs after the pre-check.
+
+- **Environment event emitted outside the transcript ordering transaction** — `agent/session.go:1679-1684`, `agent/session_compaction.go:224-231`: Environment history is committed under `attentionMu`, but `EventEnvironment` is emitted only after releasing that ordering boundary and after autosave. A concurrent `Session.Compact` can therefore publish and emit compaction events before the environment event even though the environment entry precedes the compaction in the transcript. The AppWire projector treats environment events as standalone turn boundaries, so live projection can close or split an unrelated turn and diverge from cold transcript replay. Fix: tie the environment event to the same ordered publication mechanism as the transcript append and compaction side effects, rather than emitting it after the transaction has released its ordering lock.
+
+---
+*Reviewers: 2 done | Synthesis: codex, 13s | Total: 31m1s*
+
+Coordinator verification and rulings:
+- Medium 1 is the residual recorded in Tasks 47 and 58, now in scope: the poisoned-transcript gate
+  made a refusal reachable in a live session, and `ProcessPendingUserInput`
+  (session_client_mutation_queue.go:208 → :214) and `ProcessClientMutationStart`
+  (session_client_mutation.go:451 → :455) claim or durably pop BEFORE calling into the loop, so the
+  gate's early return leaves the queue entry removed with a "claimed" pending execution, or a start
+  mutation claimed with its turn budget consumed, until restart recovery. Ruling, in two halves:
+  (a) check the writer's poisoned state (the same nil-safe read the gate uses) before claiming or
+  popping in both callers, refusing with the same wrapped `ErrWriterPoisoned`; (b) because
+  poisoning can happen between that pre-check and the gate, also release or roll back the claim
+  when `ProcessInputKind` returns before transcript incorporation - reuse the existing rollback
+  helpers (`returnClaimedDirectClientMutationTurn` for the direct budget; the queue's own restore
+  for the popped entry, the way the in-loop drain now leaves a message queued) rather than adding
+  a new mechanism. RED-first for each caller: a claimed start mutation and a popped queued
+  message with a poisoned writer; pre-fix the claim stays consumed / the entry stays removed after
+  the refusal; post-fix the budget is returned and the entry is back in the durable queue.
+- Medium 2 is real by reading: environment history is committed under `attentionMu` but
+  `EventEnvironment` is emitted after the unlock and after autosave (session.go:~1679-1684), while
+  compaction side effects publish under the same ordering boundary (session_compaction.go:224-231),
+  so a concurrent `Compact` can emit its events before the environment event although the
+  environment entry precedes the compaction in the transcript; the projector treats environment
+  events as standalone turn boundaries, so live can split or close a turn cold does not. Ruling:
+  emit `EventEnvironment` inside the same ordered publication the transcript append and the
+  compaction side effects use (before the ordering boundary is released), so live event order
+  equals transcript order; keep the warning emission where it is. RED-first: a live/cold parity
+  test that interleaves an environment append with a fold using the session's `testOnly` hooks
+  (`beforeFoldTranscriptCommit` / `beforeFoldSideEffectsFlush` already exist) so the fold publishes
+  between the environment commit and its emission; pre-fix the live projection orders the
+  compaction before the environment block, cold the reverse.
+
+Requirements:
+1. Both findings RED-first as above; no bare wall-clock deadline without `// TRIPWIRE:`; the
+   existing poisoned-writer tests (Tasks 47/58) and the environment parity tests stay green
+   untouched.
+2. Gates: `gofmt -l`; `go vet ./...` in `agent/`; `go test -count=1 ./...` in `agent/`; deadline
+   audit; `-race` on the focused tests; pinned golangci-lint 0 issues. One commit per finding; do
+   NOT push, do not amend, do not merge main.
+3. Report contract: append a "Task 61" section to
+   `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-26-report.md` with RED and GREEN
+   evidence, the release/rollback trace for each caller, commit SHAs, one-line test summary;
+   return only status, commit SHAs, test summary, concerns.
+
+## Task 62: PR #1105 local fork capability — round 14: the two resolvers fall back to each other's source
+
+Worktree: `/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1105`
+Branch: `codex/mobile-fork-capability`. Current head `049f26b98` (contains main `3f8c9cb25`; CI fully
+green). Module: root (`cmd/evener-hub`).
+
+RoboRev finding at head `049f26b` (verbatim; one Low, the other reviewer clean):
+
+## roborev: Combined Review (`049f26b`)
+
+**Verdict:** 1 minor consistency issue found across 2 reviews.
+
+## Review Findings
+
+### Low
+
+- **`cmd/evener-hub/app_threadlifecycle.go:1061-1099`, `1142-1158`** — The pre-lock resolver uses `cfg.Roster` to resolve a stable workspace alias, while the under-lock resolver only consults `cfg.RunDir`. In configurations with a roster but no run directory, a valid alias resolves to the current session before locking but back to the alias under the lock, causing `hubThreadFork` to reject the fork as "session ownership changed." The inverse occurs when `RunDir` is set but `Roster` is nil. **Fix:** Use a shared resolution path, or make each resolver fall back to the other configured ownership source, and add stable-alias coverage for configurations where only one source is available.
+
+## Summary
+
+The change projects hub-owned fork capability across reads, lists, relays, recovery fences, ownership checks, and crashed-subagent navigation. Reviewer 2 found no issues and confirmed consistent recovery, deletion, and live-delegate fencing.
+
+---
+*Reviewers: 2 done | Synthesis: codex, 7s | Total: 22m49s*
+
+Coordinator verification and ruling: real as stated, in configurations production does not wire
+(`cmd/evener-hub/main.go` builds the roster from the same run dir that becomes `WebConfig.RunDir`,
+as Task 51's review recorded), but it is the last remaining way the two resolvers can disagree
+without an ownership change, and closing it is two fallback lines. Ruling: each resolver falls
+back to the other's source when its own is absent - the pre-lock resolver keeps roster-first and,
+when `cfg.Roster == nil` and `cfg.RunDir != ""`, resolves through the rendezvous the way the
+under-lock resolver does; the under-lock resolver keeps rendezvous-first and, when
+`cfg.RunDir == ""` and the roster is present, resolves through the roster the way the pre-lock
+resolver does; both then end in the shared redirect/alias tail as today. No behaviour change in
+the production configuration (both sources present).
+
+Requirements:
+1. RED-first, two rows: roster present with no run dir, and run dir present with no roster; a fork
+   through a stable alias must not be refused as "session ownership changed" (pre-fix it is in
+   each row) and must branch the same session both resolvers name; the production-config tests
+   stay green untouched.
+2. State the fallback rule once, in the comment both resolvers already share (Task 53's), and
+   note in the report that this closes the last configuration-dependent disagreement.
+3. Gates: `gofmt -l`; `go vet ./cmd/evener-hub/...`; `go test -count=1 ./cmd/evener-hub/...`;
+   `-race` over the fork fence tests; pinned golangci-lint 0 issues. One commit; do NOT push, do
+   not amend, do not merge main.
+4. Report contract: append a "Task 62" section to
+   `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-32-report.md` with RED and GREEN
+   evidence, commit SHA, one-line test summary; return only status, commit SHA, test summary,
+   concerns.
+
+## Task 63: PR #1100 round timings — round 8: a fold's replay tail must survive a crash before the marker anchors
+
+Worktree: `/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1100`
+Branch: `codex/mobile-round-timing-replay`. Current head `6f7f61540` (contains main `3f8c9cb25`; CI fully
+green). Modules: `agent/` (own module; `agent/schema`, `agent/transcript` inside it); root
+(`internal/apptranscript`, `internal/appprojector`) only to confirm cold behaviour.
+
+RoboRev finding at head `6f7f615` (verbatim; two reviewers done):
+
+## roborev: Combined Review (`6f7f615`)
+
+**Verdict: One high-severity issue found — compaction marker durability gap risks permanent turn loss on crash.**
+
+### High
+
+- **`agent/session_compaction.go:217-231`** — Compaction marker is appended before the replay tail. If the marker becomes durable but the process crashes before the subsequent `ContextReplay` entries are durably appended, `ResumeHistory` anchors on that marker and discards the original entries before it, permanently losing turns recorded during the fold. Make marker and replay-tail publication crash-atomic, or persist a recovery journal/completion state that lets startup detect and finish an incomplete tail before applying the compaction anchor.
+
+---
+*Reviewers: 2 done | Synthesis: codex, 7s | Total: 53m16s*
+
+Coordinator verification and ruling: real. `publishFoldedHistory` writes the fold's markers
+durably in `commitTranscriptsLocked` and only then the `rewriteTail` copies (session_compaction.go
+:217-231, the Task 45 guard); `ResumeHistory` anchors on the last marker and discards everything
+before it. A crash after the marker is durable and before the tail is durable therefore loses the
+turns recorded during the fold from every later resume. The window predates this PR, but this PR
+owns the replay-tail design now (Task 45), so it closes it. Ruling: prefer the ordering fix over a
+new record kind - write the replay tail BEFORE the marker, with each copy tagged as belonging to
+the fold it replays, and make `ResumeHistory`'s anchored branch include the tagged `ContextReplay`
+copies that immediately precede the marker they name (the originals before the marker stay
+discarded as today). Crash before the marker → no anchor → the no-anchor branch drops the copies
+and keeps the originals (Task 45); crash mid-tail → same; crash after the marker → the tail is
+already durable. The tag is a new optional field on `schema.Turn` (an `omitempty` addition, no
+format-version bump unless the transcript reader rejects unknown fields - verify and say). Cold
+projection drops `ContextReplay` unconditionally (Task 45 verified), so it is unaffected; confirm.
+If you find the tail-first order impossible (the tail must reference the marker's identity before
+the marker exists, and the marker's id is minted at stage time so it should be available - check),
+fall back to RoboRev's other option: a durable completion record after the tail, with the anchored
+branch honouring only a completed marker; say why.
+
+Requirements:
+1. RED-first: a fold whose transcript ends after the marker with the tail absent (simulate the
+   crash with the fault plan the transcript tests use, or by truncating the file after the marker)
+   must, after the fix, resume with the fold's turns present - pre-fix they are gone. A second case:
+   transcript ends mid-tail before any marker → originals present, no duplicates.
+2. `TestCompactionReplay_ResumeHistoryRetainsReplayCopies`, the four `TestResumeHistoryFromTranscript_*`
+   cases and Task 45's tests stay green; if one contradicts the ordering, report before changing.
+3. Gates: `gofmt -l`; `go vet ./...` in `agent/`; `go test -count=1 ./...` in `agent/`; deadline
+   audit; `-race` on the focused tests; pinned golangci-lint 0 issues; if a `go:generate` source is
+   touched, commit the regenerated output. One commit (two if the schema field is separated); do
+   NOT push, do not amend, do not merge main.
+4. Report contract: append a "Task 63" section to
+   `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-33-report.md` with RED and GREEN
+   evidence, the ordering/tag design and the format-version determination, commit SHAs, one-line
+   test summary; return only status, commit SHAs, test summary, concerns.
+
+## Task 64: PR #1096 native checkpoint — round 7: tolerate corrupt saved hubs; bound the sign-in poll interval
+
+Worktree: `/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1096`
+Branch: `codex/mobile-native-checkpoint` (PR #1096). Current head `c563a5d29` (contains main
+`3f8c9cb25`; CI fully green). Native app `mobile-native/src` (`make test-native`).
+
+RoboRev finding at head `c563a5d` (verbatim; two Low, one reviewer clean):
+
+## roborev: Combined Review (`c563a5d`)
+
+**Verdict: 2 low-severity robustness issues found (no critical/high concerns).**
+
+### Low
+
+- **`mobile-native/src/connection.ts:113`, `mobile-native/src/connection.ts:126`** — `JSON.parse` on SecureStore data throws a raw `SyntaxError` when the index or a hub record is corrupt, bypassing the intended `Saved hub index could not be read` / `Saved hub could not be read` errors. A corrupt index makes `list()` fail entirely instead of degrading gracefully. Fix: wrap both parses in try/catch and throw the domain errors, and treat a corrupt index as empty or filtered rather than propagating `SyntaxError`.
+- **`mobile-native/src/providerSignIn.ts:75`** — Server-controlled `intervalSeconds` is validated only as a non-negative safe integer with no upper bound; `delay * 1000` can exceed the `setTimeout` maximum and fire immediately, turning a huge interval into a tight device-poll loop. Fix: clamp the delay to a sane maximum such as `Math.min(delay, 60)` before scheduling.
+
+> One reviewer found no issues; the findings above come from a second reviewer. No critical, high, or medium-severity issues were reported.
+
+---
+*Reviewers: 2 done | Synthesis: codex, 8s | Total: 22m44s*
+
+Coordinator verification and rulings: both in scope (the native app is this PR) and small.
+- Low 1: `JSON.parse` on SecureStore data throws a raw `SyntaxError` past the intended domain errors
+  (connection.ts:113, :126). Ruling: wrap both parses; a corrupt hub record throws the "Saved hub
+  could not be read" domain error, and a corrupt index is treated as empty so `list()` degrades
+  rather than failing; say which and why in the code.
+- Low 2: server-controlled `intervalSeconds` (providerSignIn.ts:75) is unbounded; a huge value
+  overflows `setTimeout` and fires immediately, turning the device-code poll into a tight loop.
+  Ruling: clamp the delay to a sane maximum (60 seconds) before scheduling.
+
+Requirements:
+1. RED-first for each: a corrupt index and a corrupt record in the SecureStore stub; an
+   `intervalSeconds` above the clamp.
+2. Gates: touched test files green; `make test-native` green. One commit per finding,
+   `fix(mobile-native): …`; do NOT push, do not amend, do not merge main.
+3. Report contract: append a "Task 64" section to
+   `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-54-report.md` (same lane) with RED and
+   GREEN evidence, commit SHAs, one-line test summary; return only status, commit SHAs, test
+   summary, concerns.
