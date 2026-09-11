@@ -22,11 +22,12 @@ func IsSlashAddressableName(name string) bool {
 
 // SkillMeta holds discovery-time metadata for a single skill.
 type SkillMeta struct {
-	Name         string   // from frontmatter (required)
-	Description  string   // from frontmatter (required)
-	AllowedTools []string // from frontmatter (optional)
-	Dir          string   // absolute path to the skill directory
-	SkillFile    string   // absolute path to SKILL.md
+	Name         string         // from frontmatter (required)
+	Description  string         // from frontmatter (required)
+	AllowedTools []string       // from frontmatter (optional)
+	Metadata     map[string]any // preserved descriptive frontmatter
+	Dir          string         // absolute path to the skill directory
+	SkillFile    string         // absolute path to SKILL.md
 }
 
 // DiscoverSkills walks from git root to cwd looking for skills/ directories.
@@ -83,8 +84,6 @@ func ScanSkillsDir(dir string, out map[string]SkillMeta) {
 		if !ok {
 			continue
 		}
-		meta.Dir = filepath.Join(dir, entry.Name())
-		meta.SkillFile = skillFile
 		out[meta.Name] = meta
 	}
 }
@@ -110,6 +109,7 @@ func CatalogEntries(skills map[string]SkillMeta) []SkillMeta {
 			Name:         key,
 			Description:  meta.Description,
 			AllowedTools: append([]string(nil), meta.AllowedTools...),
+			Metadata:     cloneMetadata(meta.Metadata),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
@@ -157,34 +157,9 @@ func parseSkillFile(path string) (SkillMeta, bool) {
 	if err != nil {
 		return SkillMeta{}, false
 	}
-	doc, err := frontmatter.Parse(string(data))
-	if err != nil || doc.Meta == nil {
+	descriptor, _, err := Parse(data, path)
+	if err != nil || descriptor.Unavailable {
 		return SkillMeta{}, false
 	}
-
-	name, _ := doc.Meta["name"].(string)
-	desc, _ := doc.Meta["description"].(string)
-	if strings.TrimSpace(name) == "" || strings.TrimSpace(desc) == "" {
-		return SkillMeta{}, false
-	}
-	if !IsSlashAddressableName(name) {
-		return SkillMeta{}, false
-	}
-
-	var allowed []string
-	if tools, ok := doc.Meta["allowed-tools"]; ok {
-		if arr, ok := tools.([]any); ok {
-			for _, v := range arr {
-				if s, ok := v.(string); ok {
-					allowed = append(allowed, s)
-				}
-			}
-		}
-	}
-
-	return SkillMeta{
-		Name:         name,
-		Description:  desc,
-		AllowedTools: allowed,
-	}, true
+	return descriptor.Meta, true
 }

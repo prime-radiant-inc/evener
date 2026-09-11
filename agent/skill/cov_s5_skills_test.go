@@ -60,8 +60,11 @@ func TestScanSkillsDir_ParsesValidSkillAndSkipsInvalid(t *testing.T) {
 	if len(meta.AllowedTools) != 2 || meta.AllowedTools[0] != "read_file" {
 		t.Errorf("allowed-tools = %v, want [read_file edit_file]", meta.AllowedTools)
 	}
-	if meta.SkillFile == "" || meta.Dir == "" {
-		t.Errorf("meta paths not set: %+v", meta)
+	if meta.Metadata["name"] != "tdd" || meta.Metadata["description"] != "Test-driven development discipline" {
+		t.Errorf("frontmatter metadata not preserved: %+v", meta.Metadata)
+	}
+	if !filepath.IsAbs(meta.SkillFile) || !filepath.IsAbs(meta.Dir) || meta.Dir != filepath.Dir(meta.SkillFile) {
+		t.Errorf("meta paths not absolute and paired: %+v", meta)
 	}
 }
 
