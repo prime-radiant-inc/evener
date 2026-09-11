@@ -206,6 +206,30 @@ test("a bounded refresh keeps the turns a continuation loaded into a container",
   const entry = fenced.entries[0];
   if (entry?.kind !== "delegate") throw new Error("missing turn container");
   expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+  // A retained turn is work the session still holds, so it has to be counted.
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+});
+
+test("a bounded refresh still updates the container state it does list", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.status = "running";
+  currentEntry.delegate.outcome = undefined;
+  currentEntry.delegate.terminal = false;
+  currentEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const incoming = delegate(session("child", [shell("a")]));
+  delete incoming.delegate.type;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.status = "completed";
+  incoming.delegate.outcome = "completed";
+  incoming.delegate.terminal = true;
+  incoming.delegate.turns = [shell("turn-1").job];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate).toMatchObject({ status: "completed", outcome: "completed", terminal: true });
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
 });
 
 test("a child-session continuation adopts unseen turns beside the ones on screen", () => {

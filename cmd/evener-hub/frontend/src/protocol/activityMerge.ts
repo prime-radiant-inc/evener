@@ -65,14 +65,17 @@ function maxActivity(current: string | undefined, incoming: string | undefined):
 // A stable delegate fences on its projection revision, which orders the two
 // snapshots. A turn container carries no revision, so nothing orders them and
 // authority has to come from elsewhere: patchIsAuthority says whether this
-// patch speaks for the container - a page that targets it, or a refresh whose
-// branch is a complete statement - or merely carries it as it stood when the
-// patch was cut. A patch that does not speak for it may still contribute what
-// is purely additive: turns the client has never seen, and a later timestamp.
+// patch speaks for the container or merely carries it as a by-product. Only a
+// continuation page aimed at a descendant is the latter - a root refresh is a
+// whole freshly fetched tree, and rounds 1-2 keep one from overlapping a page,
+// so whatever it lists is strictly newer than what is on screen. A patch that
+// does not speak for the container may still contribute what is purely
+// additive: turns the client has never seen, and a later timestamp. Required
+// rather than defaulted, so a new caller has to say which it is.
 function revisionFencedDelegate(
   current: ActivityDelegate,
   patch: ActivityDelegate,
-  patchIsAuthority = true,
+  patchIsAuthority: boolean,
 ): ActivityDelegate {
   const turnContainer = current.type !== "delegate" || patch.type !== "delegate";
   const authoritative = turnContainer
@@ -121,10 +124,19 @@ function fenceSession(
     if (entry.kind === "shell") return cloneEntry(entry);
     const prior = currentByID.get(activityNodeID(entry));
     if (prior?.kind !== "delegate") return cloneEntry(entry);
-    // A refresh speaks for this delegate when its branch is a complete
-    // statement; a bounded one stopped somewhere and cannot overwrite it.
-    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate, completeBranch(entry.delegate.branch));
+    // A refresh speaks for every delegate it lists, so its projection wins
+    // outright. Coverage only governs what it left out: a bounded branch may
+    // have stopped part-way through the turn list, and turns already on screen
+    // are not contradicted by a page that never reached them.
+    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate, true);
     delegate.branch = { ...entry.delegate.branch };
+    if (!completeBranch(entry.delegate.branch)) {
+      const turns = unionTurns(prior.delegate.turns, entry.delegate.turns);
+      // A turn kept past the incoming list is work this session still holds,
+      // so it has to be counted, exactly as a kept entry or child is.
+      if ((turns?.length ?? 0) > (entry.delegate.turns?.length ?? 0)) retainedBelow = true;
+      delegate.turns = turns;
+    }
     if (
       prior.delegate.child &&
       entry.delegate.child &&
