@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -169,6 +170,67 @@ func assertEnvironmentNotReemitted(t *testing.T, sess *Session, retained []strin
 	if got := durableEnvironmentTurnIDs(t, sess); !reflect.DeepEqual(got, retained) {
 		t.Fatalf("durable environment entries after the next turn = %v, want only the entry already in the transcript %v", got, retained)
 	}
+}
+
+// drainPendingEvents takes every event the session has already published,
+// without waiting for another.
+func drainPendingEvents(sess *Session) []events.SessionEvent {
+	var drained []events.SessionEvent
+	for {
+		select {
+		case event := <-sess.Events():
+			drained = append(drained, event)
+		default:
+			return drained
+		}
+	}
+}
+
+// environmentEventTurnIDs lists the turn IDs the live ENVIRONMENT events in
+// these carried, which is what a watching client projects.
+func environmentEventTurnIDs(t *testing.T, drained []events.SessionEvent) []string {
+	t.Helper()
+	var ids []string
+	for _, event := range drained {
+		if event.Kind != events.EventEnvironment {
+			continue
+		}
+		data, ok := event.Data.(events.EnvironmentData)
+		if !ok {
+			t.Fatalf("environment event data = %#v, want EnvironmentData", event.Data)
+		}
+		ids = append(ids, data.TurnID)
+	}
+	return ids
+}
+
+// historyEnvironmentTurnIDs lists the stable IDs of the ENVIRONMENT turns in
+// the session's live model history.
+func historyEnvironmentTurnIDs(sess *Session) []string {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	var ids []string
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnEnvironment {
+			ids = append(ids, turn.StableTurnID)
+		}
+	}
+	return ids
+}
+
+// pairLogEnvironmentTurnIDs lists the ENVIRONMENT turns recorded in the
+// append/write pair log, the forms a fold publication re-appends after its
+// compaction markers.
+func pairLogEnvironmentTurnIDs(sess *Session) []string {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	var ids []string
+	for _, turn := range sess.persistedAppendLog {
+		if turn.Kind == schema.TurnEnvironment {
+			ids = append(ids, turn.StableTurnID)
+		}
+	}
+	return ids
 }
 
 // durableEnvironmentTurnIDs lists the stable IDs of every ENVIRONMENT entry a
@@ -343,11 +405,17 @@ func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 	if len(ambiguous) != 1 || ambiguous[0] == "" {
 		t.Fatalf("durable environment entries after the failed rollback = %v, want the one entry rollback could not remove", ambiguous)
 	}
-	if got := countEnvironmentTurns(sess); got != 0 {
-		t.Fatalf("failed environment append entered model history %d times", got)
+	// Confirming the entry commits it late, so model history carries it once —
+	// TestEnvironmentAmbiguousWriteCommitsConfirmedEntry owns that contract in
+	// full. Here it only has to stay at one across the next turn.
+	if got := countEnvironmentTurns(sess); got != 1 {
+		t.Fatalf("model history environment turns after the confirmed append = %d, want the committed entry", got)
 	}
 
 	assertEnvironmentNotReemitted(t, sess, ambiguous)
+	if got := countEnvironmentTurns(sess); got != 1 {
+		t.Fatalf("model history environment turns after the next turn = %d, want no duplicate of the committed entry", got)
+	}
 }
 
 // TestEnvironmentRolledBackWriteReemitsEntry is the other half of the
@@ -443,4 +511,49 @@ func TestEnvironmentAmbiguousWriteKeepsEntryWhenDurabilityUnestablished(t *testi
 	}
 
 	assertEnvironmentNotReemitted(t, sess, ambiguous)
+}
+
+// TestEnvironmentAmbiguousWriteCommitsConfirmedEntry: reconciling an
+// indeterminate append by reading the entry back out of the transcript
+// establishes that the write committed, late. Everything the clean path does
+// with a committed environment entry has to happen too — model history, the
+// pair log a fold publication replays after its markers, the persisted tracker
+// state, and the live ENVIRONMENT event — or the model and every watching
+// client omit a block that cold restore reads straight out of the transcript.
+func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	syncFailure := errors.New("environment transcript durability failure")
+	rollbackFailure := errors.New("environment transcript rollback failure")
+	attachEnvironmentAmbiguousWrite(t, sess, syncFailure, rollbackFailure)
+	drainPendingEvents(sess)
+
+	err := sess.maybeAppendEnvironmentContext()
+	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
+		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
+	}
+	confirmed := durableEnvironmentTurnIDs(t, sess)
+	if len(confirmed) != 1 || confirmed[0] == "" {
+		t.Fatalf("durable environment entries after the failed rollback = %v, want the one entry rollback could not remove", confirmed)
+	}
+
+	if got := historyEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
+		t.Fatalf("model history environment turns = %v, want the confirmed durable entry %v", got, confirmed)
+	}
+	if got := pairLogEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
+		t.Fatalf("pair-log environment turns = %v, want the confirmed durable entry %v", got, confirmed)
+	}
+	if got := environmentEventTurnIDs(t, drainPendingEvents(sess)); !reflect.DeepEqual(got, confirmed) {
+		t.Fatalf("live environment events = %v, want the confirmed durable entry %v", got, confirmed)
+	}
+	sess.mu.Lock()
+	state := sess.envContextState
+	sess.mu.Unlock()
+	if state == nil || !state.HasSent {
+		t.Fatalf("persisted environment tracker state = %+v, want the confirmed entry recorded", state)
+	}
+
+	assertEnvironmentNotReemitted(t, sess, confirmed)
+	if got := historyEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
+		t.Fatalf("model history environment turns after the next turn = %v, want only the committed entry %v", got, confirmed)
+	}
 }

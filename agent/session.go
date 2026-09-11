@@ -1626,65 +1626,103 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// its length cannot name a durable transcript turn.
 	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
-	if err := s.appendTurnAfterTranscriptWriteLocked(
+	err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
-	); err != nil {
+	)
+	committed := err == nil
+	if err != nil {
 		// RenderDiff advances the tracker before the transcript write so it can
-		// render the diff. Rewind it when the failed write left nothing behind,
-		// allowing a retry to emit the environment block. attentionMu keeps
-		// compaction from replacing the tracker during this transaction.
-		if s.environmentEntryAbsentAfterFailedWriteLocked(turn, err) {
+		// render the diff. What becomes of that advance depends on what the
+		// transcript can be shown to hold. attentionMu keeps compaction from
+		// replacing the tracker during this transaction, and holds a late
+		// commit's append whole against a fold publication exactly as the clean
+		// path's pair is held.
+		switch s.reconcileEnvironmentEntryAfterFailedWriteLocked(turn, err) {
+		case environmentEntryAbsent:
+			// Nothing landed, so a retry has nothing to duplicate.
 			s.mu.Lock()
 			s.envTracker = envctx.NewTracker(before)
 			s.mu.Unlock()
+		case environmentEntryDurable:
+			// The entry is in the transcript and now synced, so the write
+			// committed after all. Complete the half of the pair the failure
+			// skipped; everything below then runs as it does for a clean
+			// append, because the entry is late rather than different.
+			s.mu.Lock()
+			s.history = append(s.history, turn)
+			s.logPairPersistedLocked(turn)
+			s.mu.Unlock()
+			committed = true
 		}
-		s.attentionMu.Unlock()
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	// Persist tracker state so resume stays silent when nothing changed.
-	s.mu.Lock()
-	s.envContextState = &st
-	s.mu.Unlock()
+	if committed {
+		// Persist tracker state so resume stays silent when nothing changed.
+		s.mu.Lock()
+		s.envContextState = &st
+		s.mu.Unlock()
+	}
 	s.attentionMu.Unlock()
-	s.maybeAutoSave()
-	if publishEvent {
-		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+	if committed {
+		s.maybeAutoSave()
+		if publishEvent {
+			s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+		}
 	}
-	return nil
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	return err
 }
 
-// environmentEntryAbsentAfterFailedWriteLocked reports whether a failed
-// environment append definitely left nothing in the transcript, which is what
-// makes rewinding the tracker safe: the next turn re-renders the same
-// observation, and there is no earlier entry for it to duplicate. A rollback
-// failure removes that guarantee — the entry's line may still be in the file —
-// so the outcome is reconciled by the entry's stable ID instead, and the
-// tracker is rewound only once the transcript is confirmed not to hold it.
-// Anything that leaves the answer unknown keeps the advanced tracker: a
-// silent environment on one turn costs the model a diff it can rebuild, while
-// a second entry for the same observation is duplicate context no reader of
-// the transcript can tell apart. The caller holds attentionMu, so no other
-// writer can append between the failure and this read.
-func (s *Session) environmentEntryAbsentAfterFailedWriteLocked(turn schema.Turn, err error) bool {
+// environmentEntryOutcome is what reconciliation could establish about the
+// entry a failed environment append left, or did not leave, in the transcript.
+type environmentEntryOutcome int
+
+const (
+	// environmentEntryAbsent: the transcript does not hold the entry, so the
+	// next turn must render the observation again.
+	environmentEntryAbsent environmentEntryOutcome = iota
+	// environmentEntryDurable: the transcript holds the entry and it is synced,
+	// so the append committed late and owes its in-memory side effects.
+	environmentEntryDurable
+	// environmentEntryUnknown: reconciliation could not establish either, so
+	// neither re-rendering nor committing is safe.
+	environmentEntryUnknown
+)
+
+// reconcileEnvironmentEntryAfterFailedWriteLocked settles what a failed
+// environment append left behind. A rollback that succeeded took the entry
+// back out, and that is the whole answer. A rollback that failed leaves the
+// entry's line possibly still in the file, so the entry is looked up by its
+// stable ID behind a durability barrier that makes what a reader can see
+// authoritative.
+//
+// Absence is only ever reported when it is established. A barrier that cannot
+// be raised or a transcript that cannot be read leaves the outcome unknown,
+// and unknown keeps the advanced tracker: one silent environment costs the
+// model a diff it rebuilds at the next change, while a second entry for the
+// same observation is duplicate context no reader of the transcript can tell
+// apart. The caller holds attentionMu, so no other writer can append between
+// the failure and this read.
+func (s *Session) reconcileEnvironmentEntryAfterFailedWriteLocked(turn schema.Turn, err error) environmentEntryOutcome {
 	if !errors.Is(err, transcript.ErrRollbackFailed) {
-		return true
+		return environmentEntryAbsent
 	}
 	if durabilityErr := s.attachedTranscript().EstablishDurability(); durabilityErr != nil {
-		return false
+		return environmentEntryUnknown
 	}
 	data, readErr := readTranscriptFull(s.TranscriptPath())
 	if readErr != nil {
-		return false
+		return environmentEntryUnknown
 	}
 	for _, entry := range data.Entries {
 		if entry.Turn.StableTurnID == turn.StableTurnID {
-			return false
+			return environmentEntryDurable
 		}
 	}
-	return true
+	return environmentEntryAbsent
 }
 
 // resetEnvContextTrackerAfterCompaction clears the environment-context tracker
