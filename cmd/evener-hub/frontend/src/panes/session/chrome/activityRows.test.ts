@@ -215,6 +215,14 @@ test("terminal rows read each entry kind's own failure vocabulary", () => {
   expect(activityDelegateState(stable.delegate)).toMatchObject({ failed: false });
 });
 
+test("a terminal delegate whose type the wire omitted rows and counts as a stable one", () => {
+  const entry = delegate("dlg_typeless", { failed: true });
+  delete (entry.delegate as { type?: string }).type;
+  const rows = buildActivityRows(tree([entry]), new Set());
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 1, failedCount: 1 });
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failed" });
+});
+
 test("fold row counts a terminal delegate outcome when lifecycle status is idle", () => {
   const rows = buildActivityRows(tree([delegate("dlg_failed", { failed: true })]), new Set());
   const fold = rows.find((row) => row.kind === "fold");

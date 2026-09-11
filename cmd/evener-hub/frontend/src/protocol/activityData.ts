@@ -137,6 +137,13 @@ export interface ActivityDelegate {
 // "delegate" (agent/jobs_activity.go:988). A turn container is therefore a
 // delegate that says it is something else; silence means the stable form, the
 // only shape the daemon actually emits.
+//
+// No turn-container type exists yet, so this knowingly sends an unrecognized
+// one down the container path - no count of its own, no projection fence -
+// rather than the milder stable default. Listing recognized values instead
+// would mean writing today's fixture string into the protocol, and an empty
+// list would leave the container path unreachable. When a real
+// turn-container type is defined, narrow this to that value.
 export function isTurnContainer(delegate: Pick<ActivityDelegate, "type">): boolean {
   return !!delegate.type && delegate.type !== "delegate";
 }

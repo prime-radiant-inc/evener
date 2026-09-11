@@ -651,6 +651,21 @@ describe("defaultExpandedIDs", () => {
     expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
   });
 
+  // The same shape as the closed container below, minus the type the wire is
+  // free to omit: without it this is the stable form, whose running state is
+  // its own rather than a turn's.
+  it("expands a running delegate whose type the wire omitted", () => {
+    const wire = cloneWire(VALID_TREE_WIRE);
+    const rootDelegate = getRootDelegateWire(wire);
+    Object.assign(rootDelegate, { terminal: false, turns: [], child: undefined });
+    delete (rootDelegate as { type?: string }).type;
+    const tree = parseActivityTree(wire) as ActivityTree;
+    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
+    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
+    expect(delegateHasActiveWork(entry.delegate)).toBe(true);
+    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+  });
+
   it("does not expand an empty closed turn container", () => {
     const wire = cloneWire(VALID_TREE_WIRE);
     const rootDelegate = getRootDelegateWire(wire);
