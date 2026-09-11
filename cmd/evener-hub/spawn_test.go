@@ -157,7 +157,7 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -665,7 +665,7 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -720,7 +720,7 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -1344,7 +1344,7 @@ func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

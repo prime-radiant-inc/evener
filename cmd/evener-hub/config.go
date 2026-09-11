@@ -51,6 +51,13 @@ type Config struct {
 	// PluginAutoUpgradeInterval is how often the daemon refreshes marketplaces
 	// and re-checks autoUpgrade-enabled plugins, plus once on hub start.
 	PluginAutoUpgradeInterval time.Duration `toml:"plugin_auto_upgrade_interval"`
+	// APILog is the hub's default for durable API-request logging on the
+	// evener serve daemons it spawns: true passes --api-log on, so every
+	// provider request and response body is recorded to the session's
+	// .api.jsonl. It is a floor, not a force: launch config layers that set
+	// api_log explicitly (either direction) win over it. Defaults to false —
+	// API-request logging is opt-in because its records are large.
+	APILog bool `toml:"api_log"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.

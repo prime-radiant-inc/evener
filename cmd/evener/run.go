@@ -61,6 +61,7 @@ type runConfig struct {
 	runTimeout                  time.Duration // --timeout; zero disables
 	sandboxMode                 string        // --sandbox mode name (default "off")
 	sandboxNet                  string        // --sandbox-net on|off
+	apiLog                      string        // --api-log on|off (default off)
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -156,6 +157,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
 		return err
 	}
+	apiLogEnabled, err := parseAPILog(cfg.apiLog)
+	if err != nil {
+		return err
+	}
 	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
 	// Compute runtime state directory.
@@ -230,7 +235,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr)
+	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr, apiLogEnabled)
 	if err != nil {
 		return err
 	}

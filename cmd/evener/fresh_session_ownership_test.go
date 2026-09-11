@@ -52,8 +52,8 @@ func TestRunResumeWithFailedReservationPreservesForeignOwnedChild(t *testing.T) 
 	var childID string
 	foreignAcquiredPublishedChild := false
 	var foreignLogger *llm.APILogger
-	runAttachAPILogger = func(client *llm.Client, gotStateDir string, warnings io.Writer) (func(string) error, func() error, error) {
-		reserveCreator, closeCreator, err := oldAttach(client, gotStateDir, warnings)
+	runAttachAPILogger = func(client *llm.Client, gotStateDir string, warnings io.Writer, recordAttempts bool) (func(string) error, func() error, error) {
+		reserveCreator, closeCreator, err := oldAttach(client, gotStateDir, warnings, recordAttempts)
 		if err != nil {
 			return nil, nil, err
 		}
