@@ -225,3 +225,14 @@ test("a continuation cannot start while a root refresh owns the panel", async ()
   expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(1);
   expect(activityPanelStore.getState().beginContinuationFetch(ref, nodeID)).not.toBeNull();
 });
+
+test("a bump deferred behind a continuation survives a missing summary entry", () => {
+  const page = activityPanelStore.getState().beginContinuationFetch(ref, nodeID);
+  if (page === null) throw new Error("the page was refused");
+  activitySummaryStore.getState().resetForTests();
+  const queued = vi.fn(async () => tree(["first", "second"]));
+  expect(activitySummaryStore.getState().refreshRoot(ref, 30, queued)).toBeNull();
+  expect(activitySummaryStore.getState().entries.get(ref)?.pendingBump).toMatchObject({ bump: 30 });
+  activityPanelStore.getState().publishFetch(ref, page, { kind: "ready", tree: tree(["second"]) });
+  expect(queued).toHaveBeenCalledOnce();
+});

@@ -166,7 +166,10 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       // the same bump. Older non-forced calls queue nothing: reissuing one
       // would regress lastFetchedBump and could replace a good result.
       set((state) => {
-        const entry = state.entries.get(ref);
+        // Deferred with no entry of our own: the panel still holds the page the
+        // bump is waiting behind, so the queue has somewhere to live. Start an
+        // entry rather than dropping the bump and its freshness with it.
+        const entry = state.entries.get(ref) ?? (deferred ? { ...EMPTY_ACTIVITY_SUMMARY_ENTRY } : undefined);
         if (!entry || (!entry.loading && !deferred)) return state;
         const newerThanRequested =
           bump !== null &&
