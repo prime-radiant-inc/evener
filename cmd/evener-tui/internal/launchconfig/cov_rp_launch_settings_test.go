@@ -108,6 +108,13 @@ func TestApplyEdit_ScalarAndNumericFields(t *testing.T) {
 	if _, err := applyEdit(base, "verbose", "perhaps"); err == nil {
 		t.Fatal("expected error for non-bool verbose")
 	}
+	got, err = applyEdit(base, "api_log", "true")
+	if err != nil || got.APILog == nil || !*got.APILog {
+		t.Fatalf("api_log = %v, %v", got.APILog, err)
+	}
+	if _, err := applyEdit(base, "api_log", "perhaps"); err == nil {
+		t.Fatal("expected error for non-bool api_log")
+	}
 }
 
 func TestApplyEdit_SystemPromptDefaults(t *testing.T) {

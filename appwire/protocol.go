@@ -201,6 +201,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
 	{MethodEvenerCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display."},
+	{MethodEvenerSpawnSlashCatalog, SpawnSlashCatalogParams{}, SpawnSlashCatalogResponse{}, ScopeHub, "Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer."},
 	{MethodEvenerSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data."},
 	{MethodEvenerSettingsTranscriptDisplayGet, EmptyParams{}, TranscriptDisplayDefaults{}, ScopeHub, "Reads the canonical Desktop and Mobile transcript-display defaults."},
 	{MethodEvenerSettingsTranscriptDisplayPatch, TranscriptDisplayDefaultsPatchParams{}, TranscriptDisplayPatchResponse{}, ScopeHub, "Updates one transcript-display default using an expected revision and returns the canonical value."},
