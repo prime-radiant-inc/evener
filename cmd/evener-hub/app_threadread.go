@@ -421,13 +421,20 @@ func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
 	if err != nil || ref.SourceID != "local" {
 		return false
 	}
-	// A live subagent alias remains daemon-owned and read-only. Once its
-	// daemon has stopped, the persisted delegate is hub-owned like any other
-	// saved local session and may be forked.
-	if thread.Evener.Kind == "subagent" && cfg.Roster != nil && cfg.Roster.IsSubagentActive(ref.ThreadID) {
-		return false
-	}
-	return true
+	return !hubForkLiveDelegateFenced(cfg, ref.ThreadID)
+}
+
+// hubForkLiveDelegateFenced reports whether a live parent daemon is currently
+// running this session as an in-process child. Such a delegate remains
+// daemon-owned and read-only. Once its daemon has stopped, the persisted
+// delegate is hub-owned like any other saved local session and may be forked.
+//
+// The capability projection and the fork RPC both decide on this one signal:
+// the persisted IsSubagent flag and the projected wire kind each describe only
+// part of the live alias population, so either alone lets the advertised
+// capability and the RPC's answer diverge.
+func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
+	return cfg.Roster != nil && cfg.Roster.IsSubagentActive(threadID)
 }
 
 func hubForkRecoveryFenced(thread appwire.Thread) bool {

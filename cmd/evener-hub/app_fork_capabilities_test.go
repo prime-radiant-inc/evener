@@ -473,3 +473,65 @@ func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
 		t.Fatalf("resume launches=%d", *resumeCalls)
 	}
 }
+
+// A delegate a live parent daemon is running in process is daemon-owned, and
+// the capability projection and the fork RPC must say so from the same signal:
+// neither the persisted IsSubagent flag nor the projected wire kind is reliably
+// present on every live alias, so either alone lets the two answers diverge.
+func TestHubForkFencesLiveDelegateFromOneSignal(t *testing.T) {
+	for _, persisted := range []bool{false, true} {
+		for _, kind := range []string{"", "subagent"} {
+			name := map[bool]string{false: "meta is a fork", true: "meta is a subagent"}[persisted] +
+				map[string]string{"": " untyped thread", "subagent": " subagent thread"}[kind]
+			t.Run(name, func(t *testing.T) {
+				stateDir := t.TempDir()
+				parentID := buildRPCParentSession(t, stateDir)
+				childID, err := agent.ForkSession(stateDir, parentID, 1, "live delegate", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if persisted {
+					meta, err := schema.LoadSessionMeta(stateDir, childID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					meta.IsSubagent = true
+					if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runDir := t.TempDir()
+				writeRendezvous(t, runDir, rendezvous.Entry{
+					PID: os.Getpid(), SourceID: "local", ThreadID: parentID, SessionID: parentID, StateDir: stateDir,
+				})
+				roster := hubcore.NewRoster(runDir, liveSubagentProber{
+					sessionID: parentID, runningSubagentIDs: []string{childID},
+					runningSubagentState: map[string]string{childID: appwire.ThreadStatusActive},
+				})
+				roster.Refresh()
+				if !roster.IsSubagentActive(childID) {
+					t.Fatal("scripted live roster did not admit the delegate")
+				}
+				cfg := hubcore.WebConfig{StateDir: stateDir, Roster: roster}
+
+				thread := appwire.Thread{Evener: appwire.EvenerThread{
+					Ref: "local:" + childID, Kind: kind,
+					Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true},
+				}}
+				if applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn {
+					t.Error("live delegate was advertised as forkable")
+				}
+				_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+					Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				})
+				if err == nil {
+					t.Fatal("live delegate fork succeeded")
+				}
+				wire, ok := errors.AsType[appwire.WireError](err)
+				if !ok || wire.Code != appwire.CodeUnavailable {
+					t.Fatalf("live delegate fork error=%v, want structured unavailable", err)
+				}
+			})
+		}
+	}
+}

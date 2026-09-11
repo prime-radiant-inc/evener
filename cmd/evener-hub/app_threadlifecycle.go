@@ -804,8 +804,8 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if !ok {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
 	}
-	if entry.Meta.IsSubagent && cfg.Roster != nil && cfg.Roster.IsSubagentActive(ref.ThreadID) {
-		return appwire.ThreadForkResponse{}, appwire.Unavailable("subagent threads cannot be forked")
+	if hubForkLiveDelegateFenced(cfg, ref.ThreadID) {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("a delegate running inside a live daemon cannot be forked")
 	}
 	if params.Aside {
 		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
