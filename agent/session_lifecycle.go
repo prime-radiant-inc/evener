@@ -1538,9 +1538,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// follow-up is still EntryUserInput once the drain loop dequeues it (so it
 	// is expanded too), but a goal continuation's or notification's synthesized
 	// text never is.
+	//
+	// Skill routes keep the original input as the turn's text; their prepared
+	// activations admit below, after the input turn is recorded. A known skill
+	// failure is a visible failed input, never ordinary chat fall-through.
+	var skillSelection *schema.SkillInputRecord
+	var skillBatch *skillActivationBatch
+	var skillRouteErr error
 	if kind == EntryUserInput {
-		if expanded, ok := s.expandSlashCommand(ctx, input); ok {
-			input = expanded
+		result := s.expandSlashCommand(ctx, input)
+		if result.Handled {
+			input = result.Text
+			skillSelection = result.Selection
+			skillBatch = result.Activations
+			skillRouteErr = result.Err
 		}
 	}
 
@@ -1706,8 +1717,23 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if !s.acceptSteeringCarrierInput(ctx, runningTurnID) {
 			return "", false, nil
 		}
-	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
+	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		return "", false, err
+	}
+	if skillRouteErr != nil {
+		// A known but failed skill route is a visible failed input: the
+		// original request is recorded above for correction and explicit
+		// retry, and no dependent model work dispatches.
+		s.emitTurnFailure(errorDataFromError(skillRouteErr))
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		return "", false, nil
+	}
+	if skillBatch != nil {
+		if err := s.admitSkillActivationBatch(skillBatch); err != nil {
+			s.emitTurnFailure(errorDataFromError(err))
+			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			return "", false, nil
+		}
 	}
 	if delegateEntryRequiresReport(kind) && s.delegateController != nil {
 		if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
@@ -2114,6 +2140,13 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 }
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
+	return s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, drainResumeSessionStart, nil)
+}
+
+// acceptUserInputWithSkillSelection is acceptUserInput plus the typed skill
+// selection for a genuine user skill route: the recorded input turn keeps the
+// original text and carries the selection record in its SkillState.
+func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool, skillInput *schema.SkillInputRecord) error {
 	// A new top-level input starts a fresh causal context: replace active
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
@@ -2183,7 +2216,11 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
-			if err := s.appendUserInputTurnRefusingPoison(schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))); err != nil {
+			turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+			if skillInput != nil {
+				turn.SkillState = &schema.SkillTurnState{Input: skillInput}
+			}
+			if err := s.appendUserInputTurnRefusingPoison(turn); err != nil {
 				if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
 					return errors.Join(err, returnErr)
 				}
@@ -2194,6 +2231,9 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
 		turn.StableTurnID = queuedIdentity.StableTurnID
+		if skillInput != nil {
+			turn.SkillState = &schema.SkillTurnState{Input: skillInput}
+		}
 		pending := s.clientMutations.snapshot().PendingExecutions[queuedIdentity.ClientMutationID]
 		if pending.Method == clientMutationMethodStart && s.clientMutationPreAppendFailure != nil {
 			if failure := s.clientMutationPreAppendFailure(turn); failure != nil {

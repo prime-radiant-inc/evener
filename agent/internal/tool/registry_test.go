@@ -1330,3 +1330,106 @@ func TestToolRegistry_GlobAndGrep_HeadFirstBoundedNoFrontTruncation(t *testing.T
 		})
 	}
 }
+
+// Complete-or-fail shaping: a StateResult opting into RequireCompleteOutput
+// fails with the typed complete-delivery error when the configured output
+// policy would truncate its content, instead of returning partial content.
+func TestToolRegistry_RequireCompleteOutputFailsOnTruncation(t *testing.T) {
+	r := NewRegistry()
+	body := strings.Repeat("complete-content-line\n", 400)
+	if err := r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "big_state"},
+		Limit:      schema.ToolOutputLimit{MaxChars: 128, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			_ = args
+			return StateResult{Output: body, RequireCompleteOutput: true, State: map[string]any{"id": 1}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID: "c1", Name: "big_state", Arguments: json.RawMessage(`{}`),
+	})
+	if !res.IsError {
+		t.Fatalf("expected complete-delivery failure, got output of %d chars", len(res.Output))
+	}
+	if !errors.Is(res.Err, ErrCompleteOutputExceedsLimit) {
+		t.Fatalf("Err = %v, want ErrCompleteOutputExceedsLimit", res.Err)
+	}
+	if res.Output != ErrCompleteOutputExceedsLimit.Error() || res.FullOutput != "" || res.RecoverableOutput != "" || res.Truncated {
+		t.Fatalf("failure shape = %+v", res)
+	}
+	// The typed state still rides along for the session's failure record.
+	if len(res.ToolState) == 0 {
+		t.Fatal("failure dropped the tool-state side channel")
+	}
+}
+
+// A complete output under the configured limit passes through untouched.
+func TestToolRegistry_RequireCompleteOutputWithinLimit(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "small_state"},
+		Limit:      schema.ToolOutputLimit{MaxChars: 128, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			return StateResult{Output: "complete", RequireCompleteOutput: true}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID: "c1", Name: "small_state", Arguments: json.RawMessage(`{}`),
+	})
+	if res.IsError || res.Truncated || res.Output != "complete" || res.FullOutput != "complete" {
+		t.Fatalf("complete in-limit result = %+v", res)
+	}
+}
+
+// Without the opt-in, the same over-limit StateResult keeps the existing
+// truncation behavior.
+func TestToolRegistry_StateResultWithoutOptInStillTruncates(t *testing.T) {
+	r := NewRegistry()
+	body := strings.Repeat("partial-content-line\n", 400)
+	if err := r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "ordinary_state"},
+		Limit:      schema.ToolOutputLimit{MaxChars: 128, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			return StateResult{Output: body}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID: "c1", Name: "ordinary_state", Arguments: json.RawMessage(`{}`),
+	})
+	if res.IsError || !res.Truncated || len(res.Output) >= len(body) {
+		t.Fatalf("ordinary over-limit result = error=%v truncated=%v outputLen=%d", res.IsError, res.Truncated, len(res.Output))
+	}
+}
+
+// use_skill carries no default character limit: skill content is
+// complete-or-fail at the operation level, so the registry default must not
+// silently truncate a large body.
+func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
+	if lim := defaultToolLimit("use_skill"); lim.MaxChars != 0 || lim.MaxLines != 0 {
+		t.Fatalf("defaultToolLimit(use_skill) = %+v, want no default limit", lim)
+	}
+	r := NewRegistry()
+	body := strings.Repeat("skill-body-line\n", 4000)
+	if err := r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "use_skill"},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			return StateResult{Output: body, RequireCompleteOutput: true}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID: "c1", Name: "use_skill", Arguments: json.RawMessage(`{"skill_name":"x"}`),
+	})
+	if res.IsError || res.Truncated || res.Output != body {
+		t.Fatalf("default use_skill dispatch truncated complete content: error=%v truncated=%v", res.IsError, res.Truncated)
+	}
+}

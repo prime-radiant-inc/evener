@@ -9,9 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
@@ -425,5 +430,914 @@ func TestSkillActivation_PrepareReloadsRelaxedControls(t *testing.T) {
 	}
 	if len(s.skillLifecycle.Inventory) != 0 {
 		t.Fatal("preparation granted authorization")
+	}
+}
+
+// --- Task 5: provider-boundary route tests -------------------------------
+//
+// These tests drive the real session against a scripted provider adapter (the
+// only fake boundary) and assert on captured provider requests, typed turn
+// state, lifecycle inventory, and typed events. Expected instruction bytes and
+// digests come from the fixtures these tests write, never from the production
+// renderer.
+
+// skillEnvelope is one complete typed skill-context carrier found in a
+// provider-boundary document, with the exact carrier bytes preserved so digest
+// assertions stay independent of the production renderer.
+type skillEnvelope struct {
+	Raw string
+	Doc skill.SkillDocument
+}
+
+// extractSkillEnvelopes finds every complete skill-context envelope embedded
+// in content, whether the content is exactly one envelope (a tool result or
+// context message) or a larger document (the system prompt's activated-skills
+// section).
+func extractSkillEnvelopes(t *testing.T, content string) []skillEnvelope {
+	t.Helper()
+	const open, closeTag = "<skill-context>\n", "\n</skill-context>"
+	var out []skillEnvelope
+	rest := content
+	for {
+		i := strings.Index(rest, open)
+		if i < 0 {
+			return out
+		}
+		rest = rest[i+len(open):]
+		j := strings.Index(rest, closeTag)
+		if j < 0 {
+			t.Fatalf("unterminated skill-context envelope in %.200q", content)
+		}
+		raw := open + rest[:j] + closeTag
+		var doc skill.SkillDocument
+		if err := json.Unmarshal([]byte(rest[:j]), &doc); err != nil {
+			t.Fatalf("decoding skill-context envelope: %v", err)
+		}
+		out = append(out, skillEnvelope{Raw: raw, Doc: doc})
+		rest = rest[j+len(closeTag):]
+	}
+}
+
+// requestSkillEnvelopes collects the envelopes carried by a provider request's
+// text, system, and tool-result parts.
+func requestSkillEnvelopes(t *testing.T, req llm.Request) []skillEnvelope {
+	t.Helper()
+	var out []skillEnvelope
+	for _, msg := range req.Messages {
+		for _, part := range msg.Content {
+			switch part.Kind {
+			case llm.ContentText:
+				out = append(out, extractSkillEnvelopes(t, part.Text)...)
+			case llm.ContentToolResult:
+				if part.ToolResult == nil {
+					continue
+				}
+				if content, ok := part.ToolResult.Content.(string); ok {
+					out = append(out, extractSkillEnvelopes(t, content)...)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// requireSingleEnvelope asserts the request carries exactly one complete
+// envelope and that it delivers the fixture's complete original body with
+// canonical identity.
+func requireSingleEnvelope(t *testing.T, req llm.Request, name, body, source string) skillEnvelope {
+	t.Helper()
+	envs := requestSkillEnvelopes(t, req)
+	if len(envs) != 1 {
+		t.Fatalf("request carries %d skill envelopes, want exactly 1", len(envs))
+	}
+	env := envs[0]
+	if env.Doc.Name != name {
+		t.Fatalf("envelope name = %q, want canonical %q", env.Doc.Name, name)
+	}
+	if env.Doc.Instructions != body {
+		t.Fatalf("envelope instructions are not the complete original body (%d bytes, want %d)", len(env.Doc.Instructions), len(body))
+	}
+	if env.Doc.Source != source {
+		t.Fatalf("envelope source = %q, want %q", env.Doc.Source, source)
+	}
+	if env.Doc.BaseDirectory != filepath.Dir(source) {
+		t.Fatalf("envelope base directory = %q, want %q", env.Doc.BaseDirectory, filepath.Dir(source))
+	}
+	return env
+}
+
+// captureEvents records the session's events until stop closes the session
+// and drains the channel.
+func captureEvents(s *Session) (seen *[]events.SessionEvent, stop func()) {
+	evs := &[]events.SessionEvent{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range s.Events() {
+			*evs = append(*evs, ev)
+		}
+	}()
+	return evs, func() { s.Close(); <-done }
+}
+
+func skillActivatedEventNames(evs []events.SessionEvent) []string {
+	var names []string
+	for _, ev := range evs {
+		if ev.Kind != events.EventSkillActivated {
+			continue
+		}
+		if d, ok := ev.Data.(events.SkillActivatedData); ok {
+			names = append(names, d.Name)
+		}
+	}
+	return names
+}
+
+func hasEventKind(evs []events.SessionEvent, kind events.EventKind) bool {
+	for _, ev := range evs {
+		if ev.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// skillTurnStates snapshots the typed skill state of every recorded turn.
+func skillTurnStates(s *Session) []schema.SkillTurnState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []schema.SkillTurnState
+	for _, turn := range s.history {
+		if turn.SkillState != nil {
+			out = append(out, *turn.SkillState.Clone())
+		}
+	}
+	return out
+}
+
+// lifecycleInventory snapshots the session's skill lifecycle inventory.
+func lifecycleInventory(s *Session) map[string]schema.SkillInventoryEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.skillLifecycle.Clone().Inventory
+}
+
+// lifecycleObligations snapshots the session's outstanding delivery obligations.
+func lifecycleObligations(s *Session) []schema.SkillDeliveryObligation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.skillLifecycle.Clone().Obligations
+}
+
+// requireOrdinaryActivation asserts the inventory's ordinary record for name
+// and verifies its recorded digests against the fixture file bytes and the
+// envelope bytes actually delivered to the provider.
+func requireOrdinaryActivation(t *testing.T, s *Session, name, source, route string, userAuthorized bool, delivered skillEnvelope) schema.OrdinarySkillActivation {
+	t.Helper()
+	entry, ok := lifecycleInventory(s)[name]
+	if !ok || entry.Ordinary == nil {
+		t.Fatalf("inventory missing ordinary activation for %q: %+v", name, lifecycleInventory(s))
+	}
+	ordinary := *entry.Ordinary
+	if ordinary.Route != route || ordinary.UserAuthorized != userAuthorized {
+		t.Fatalf("ordinary activation route=%q authorized=%v, want %q/%v", ordinary.Route, ordinary.UserAuthorized, route, userAuthorized)
+	}
+	if ordinary.InvocationID == "" {
+		t.Fatal("ordinary activation has no invocation identity")
+	}
+	if ordinary.Identity.Name != name || ordinary.Identity.Source != source || ordinary.Identity.DeclaredName == "" {
+		t.Fatalf("ordinary identity = %+v, want name %q source %q", ordinary.Identity, name, source)
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileHash := sha256.Sum256(data)
+	if ordinary.Identity.FileDigest != hex.EncodeToString(fileHash[:]) {
+		t.Fatalf("recorded file digest %q does not match fixture bytes", ordinary.Identity.FileDigest)
+	}
+	renderedHash := sha256.Sum256([]byte(delivered.Raw))
+	if ordinary.Identity.RenderedDigest != hex.EncodeToString(renderedHash[:]) {
+		t.Fatalf("recorded rendered digest %q does not match the delivered envelope bytes", ordinary.Identity.RenderedDigest)
+	}
+	return ordinary
+}
+
+func userMessageTexts(req llm.Request) []string {
+	var out []string
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleUser {
+			out = append(out, msg.Text())
+		}
+	}
+	return out
+}
+
+func TestSkillActivation_Routes(t *testing.T) {
+	t.Parallel()
+	const fixtureHeader = "---\nname: opaque\ndescription: fixture\n---\n"
+
+	t.Run("tool", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		body := strings.Repeat("BODY_7f2a\n", 64)
+		writeSkillMD(t, root, "opaque", fixtureHeader+body)
+		source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+		calls := 0
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			calls++
+			if calls == 1 {
+				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			}
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 2 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		delivered := requireSingleEnvelope(t, adapter.Requests()[1], "opaque", body, source)
+		if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "opaque" {
+			t.Fatalf("activation events = %v, want [opaque]", names)
+		}
+		ordinary := requireOrdinaryActivation(t, s, "opaque", source, "model_tool", false, delivered)
+
+		// Typed saved state links the delivery to the model's tool call.
+		states := skillTurnStates(s)
+		foundLink := false
+		for _, state := range states {
+			for _, outcome := range state.Outcomes {
+				if outcome.ToolCallID == "skill-1" && outcome.Identity.Name == "opaque" && outcome.InvocationID == ordinary.InvocationID {
+					foundLink = true
+				}
+			}
+			for _, obligation := range state.Obligations {
+				if obligation.ToolCallID == "skill-1" && obligation.Identity.Name == "opaque" {
+					foundLink = true
+				}
+			}
+		}
+		if !foundLink {
+			t.Fatalf("no typed outcome/obligation links tool call skill-1: %+v", states)
+		}
+	})
+
+	t.Run("slash", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		body := strings.Repeat("BODY_7f2a\n", 64)
+		writeSkillMD(t, root, "opaque", fixtureHeader+body)
+		source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "/opaque REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 1 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		req := adapter.Requests()[0]
+		delivered := requireSingleEnvelope(t, req, "opaque", body, source)
+
+		// The original request stays separately identifiable as user input.
+		var originals []string
+		for _, text := range userMessageTexts(req) {
+			if text == "/opaque REQUEST_93d2" {
+				originals = append(originals, text)
+			}
+		}
+		if len(originals) != 1 {
+			t.Fatalf("request user messages = %q, want exactly one original request", userMessageTexts(req))
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "opaque" {
+			t.Fatalf("activation events = %v, want [opaque]", names)
+		}
+		requireOrdinaryActivation(t, s, "opaque", source, "user_slash", true, delivered)
+
+		// The typed saved input records the original request and arguments.
+		states := skillTurnStates(s)
+		if len(states) == 0 || states[0].Input == nil {
+			t.Fatalf("no typed skill input recorded: %+v", states)
+		}
+		input := states[0].Input
+		if input.OriginalText != "/opaque REQUEST_93d2" || input.Arguments != "REQUEST_93d2" {
+			t.Fatalf("typed input = %+v", input)
+		}
+		if len(input.Names) != 1 || input.Names[0] != "opaque" || input.AtomicGroupID == "" {
+			t.Fatalf("typed input names/group = %+v", input)
+		}
+	})
+
+	t.Run("preload", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		body := strings.Repeat("BODY_7f2a\n", 64)
+		writeSkillMD(t, root, "opaque", fixtureHeader+body)
+		source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		s.pluginAgents["preload-role"] = plugin.Agent{
+			Name: "preload-role", PluginName: "test", AllTools: true,
+			SystemPrompt: "preload role", Skills: []string{"opaque"},
+		}
+		result, err := s.spawnAgent(context.Background(), "child task", "", "", 0, "preload-role", "", nil, nil)
+		if err != nil {
+			t.Fatalf("spawnAgent: %v", err)
+		}
+		var spawned struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
+			t.Fatalf("unmarshal spawn result: %v", err)
+		}
+		sub := s.getSub(spawned.AgentID)
+		if sub == nil {
+			t.Fatalf("subagent %q not tracked", spawned.AgentID)
+		}
+		select {
+		case <-sub.done:
+		case <-time.After(30 * time.Second): // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			t.Fatal("timed out waiting for preload child")
+		}
+
+		if len(adapter.Requests()) != 1 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		req := adapter.Requests()[0]
+		if len(req.Messages) == 0 || req.Messages[0].Role != llm.RoleSystem {
+			t.Fatalf("child request missing system prompt")
+		}
+		delivered := requireSingleEnvelope(t, req, "opaque", body, source)
+
+		// A new delegate's inventory is seeded by exactly its own role preload,
+		// with independent provenance and no ordinary authorization.
+		child := sub.sess
+		childEntry, ok := lifecycleInventory(child)["opaque"]
+		if !ok || childEntry.Preload == nil {
+			t.Fatalf("child inventory missing preload metadata: %+v", lifecycleInventory(child))
+		}
+		preload := *childEntry.Preload
+		if preload.Name != "opaque" || preload.Source != source || preload.Description == "" {
+			t.Fatalf("preload metadata = %+v", preload)
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fileHash := sha256.Sum256(data)
+		renderedHash := sha256.Sum256([]byte(delivered.Raw))
+		if preload.FileDigest != hex.EncodeToString(fileHash[:]) || preload.RenderedDigest != hex.EncodeToString(renderedHash[:]) {
+			t.Fatalf("preload digests do not match fixture/delivered bytes: %+v", preload)
+		}
+		if childEntry.Ordinary != nil {
+			t.Fatalf("role preload granted ordinary authorization: %+v", childEntry.Ordinary)
+		}
+		if got := lifecycleInventory(child); len(got) != 1 {
+			t.Fatalf("child inventory = %+v, want exactly its own role preload", got)
+		}
+		if got := lifecycleInventory(s); len(got) != 0 {
+			t.Fatalf("parent inventory imported child preload: %+v", got)
+		}
+	})
+}
+
+func TestSkillActivation_Failure(t *testing.T) {
+	t.Parallel()
+	const fixtureHeader = "---\nname: opaque\ndescription: fixture\n---\n"
+
+	t.Run("deleted_source_slash_dispatches_nothing", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		writeSkillMD(t, root, "opaque", fixtureHeader+"BODY_7f2a\n")
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		if err := os.Remove(filepath.Join(root, "skills", "opaque", "SKILL.md")); err != nil {
+			t.Fatal(err)
+		}
+		evs, stop := captureEvents(s)
+		_, err := s.ProcessInput(context.Background(), "/opaque REQUEST_93d2", nil)
+		stop()
+		if len(adapter.Requests()) != 0 {
+			t.Fatalf("known failed activation dispatched %d dependent requests", len(adapter.Requests()))
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("failed activation emitted success events: %v", names)
+		}
+		if err == nil && !hasEventKind(*evs, events.EventError) {
+			t.Fatal("failed activation produced no visible failure")
+		}
+		// The original input remains recorded for correction and explicit retry.
+		s.mu.Lock()
+		var userTurns []schema.Turn
+		for _, turn := range s.history {
+			if turn.Kind == schema.TurnUserInput {
+				userTurns = append(userTurns, turn)
+			}
+		}
+		s.mu.Unlock()
+		if len(userTurns) != 1 || userTurns[0].Message.Text() != "/opaque REQUEST_93d2" {
+			t.Fatalf("failed activation lost the original input: %+v", userTurns)
+		}
+	})
+
+	t.Run("deleted_source_tool_has_no_success_event", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		writeSkillMD(t, root, "opaque", fixtureHeader+"BODY_7f2a\n")
+		calls := 0
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			calls++
+			if calls == 1 {
+				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			}
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		if err := os.Remove(filepath.Join(root, "skills", "opaque", "SKILL.md")); err != nil {
+			t.Fatal(err)
+		}
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("failed activation emitted success events: %v", names)
+		}
+		if len(adapter.Requests()) != 2 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		// The failed tool call produced an error result for the model and a
+		// typed failed outcome, never an inventory entry.
+		req := adapter.Requests()[1]
+		errorSeen := false
+		for _, msg := range req.Messages {
+			for _, part := range msg.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "skill-1" && part.ToolResult.IsError {
+					errorSeen = true
+				}
+			}
+		}
+		if !errorSeen {
+			t.Fatal("deleted-source use_skill did not return an error result")
+		}
+		if got := lifecycleInventory(s); len(got) != 0 {
+			t.Fatalf("failed activation recorded inventory: %+v", got)
+		}
+		states := skillTurnStates(s)
+		failedOutcome := false
+		for _, state := range states {
+			for _, outcome := range state.Outcomes {
+				if outcome.ToolCallID == "skill-1" && outcome.Status == "failed" && outcome.ErrorCode == "source_missing" {
+					failedOutcome = true
+				}
+			}
+		}
+		if !failedOutcome {
+			t.Fatalf("no typed source_missing failure outcome: %+v", states)
+		}
+	})
+
+	t.Run("user_denied_slash_dispatches_nothing", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\nuser-invocable: false\n---\nBODY_7f2a\n")
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		evs, stop := captureEvents(s)
+		_, err := s.ProcessInput(context.Background(), "/opaque REQUEST_93d2", nil)
+		stop()
+		if len(adapter.Requests()) != 0 {
+			t.Fatalf("policy-denied activation dispatched %d requests", len(adapter.Requests()))
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("denied activation emitted success events: %v", names)
+		}
+		if err == nil && !hasEventKind(*evs, events.EventError) {
+			t.Fatal("denied activation produced no visible failure")
+		}
+		if got := lifecycleInventory(s); len(got) != 0 {
+			t.Fatalf("denied activation recorded inventory: %+v", got)
+		}
+	})
+
+	t.Run("unknown_slash_keeps_ordinary_input_behavior", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "/nosuch REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 1 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		texts := userMessageTexts(adapter.Requests()[0])
+		if len(texts) == 0 || texts[len(texts)-1] != "/nosuch REQUEST_93d2" {
+			t.Fatalf("unknown slash did not flow as ordinary input: %q", texts)
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("unknown slash emitted activation events: %v", names)
+		}
+		if states := skillTurnStates(s); len(states) != 0 {
+			t.Fatalf("unknown slash recorded typed skill state: %+v", states)
+		}
+	})
+
+	t.Run("model_generated_slash_without_authorization", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		// User-only skill: the model route requires disable-model-invocation:false
+		// or prior user authorization; this source has neither.
+		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\ndisable-model-invocation: true\n---\nBODY_7f2a\n")
+		calls := 0
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			calls++
+			if calls == 1 {
+				return toolCallResponse(useSkillCall("skill-1", "opaque"))
+			}
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		evs, stop := captureEvents(s)
+		// A plain inline mention is ordinary prose, never a user_slash route.
+		if _, err := s.ProcessInput(context.Background(), "please apply /opaque here", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 2 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		texts := userMessageTexts(adapter.Requests()[0])
+		if len(texts) == 0 || texts[len(texts)-1] != "please apply /opaque here" {
+			t.Fatalf("inline mention did not flow as ordinary prose: %q", texts)
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("unauthorized model invocation emitted success events: %v", names)
+		}
+		if got := lifecycleInventory(s); len(got) != 0 {
+			t.Fatalf("unauthorized model invocation recorded inventory: %+v", got)
+		}
+		states := skillTurnStates(s)
+		deniedOutcome := false
+		for _, state := range states {
+			if state.Input != nil {
+				t.Fatalf("plain prose recorded a typed skill input: %+v", state.Input)
+			}
+			for _, outcome := range state.Outcomes {
+				if outcome.ToolCallID == "skill-1" && outcome.Status == "failed" && outcome.ErrorCode == "policy_denied" {
+					deniedOutcome = true
+				}
+			}
+		}
+		if !deniedOutcome {
+			t.Fatalf("no typed policy_denied outcome: %+v", states)
+		}
+	})
+}
+
+func TestSkillActivation_Resolution(t *testing.T) {
+	t.Parallel()
+
+	writePluginSkill := func(t *testing.T, pluginDir, pluginName, skillName, body string) {
+		t.Helper()
+		dir := filepath.Join(pluginDir, "skills", skillName)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: "+skillName+"\ndescription: fixture\n---\n"+body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), []byte(`{"name":"`+pluginName+`"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("unique_suffix_resolves_through_full_catalog", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		pluginDir := t.TempDir()
+		writePluginSkill(t, pluginDir, "plug", "probe", "BODY_7f2a\n")
+		source := filepath.Join(pluginDir, "skills", "probe", "SKILL.md")
+		calls := 0
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			calls++
+			if calls == 1 {
+				return toolCallResponse(useSkillCall("skill-1", "probe"))
+			}
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+			withConfig(SessionConfig{MaxSubagentDepth: 1, PluginDirs: []string{pluginDir}}))
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 2 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		delivered := requireSingleEnvelope(t, adapter.Requests()[1], "plug:probe", "BODY_7f2a\n", source)
+		if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "plug:probe" {
+			t.Fatalf("activation events = %v, want [plug:probe]", names)
+		}
+		requireOrdinaryActivation(t, s, "plug:probe", source, "model_tool", false, delivered)
+	})
+
+	t.Run("ambiguous_suffix_reports_no_choice", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		first, second := t.TempDir(), t.TempDir()
+		writePluginSkill(t, first, "alpha", "probe", "BODY_alpha\n")
+		writePluginSkill(t, second, "beta", "probe", "BODY_beta\n")
+		calls := 0
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			calls++
+			if calls == 1 {
+				return toolCallResponse(useSkillCall("skill-1", "probe"))
+			}
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+			withConfig(SessionConfig{MaxSubagentDepth: 1, PluginDirs: []string{first, second}}))
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("ambiguous suffix chose a winner: %v", names)
+		}
+		if got := lifecycleInventory(s); len(got) != 0 {
+			t.Fatalf("ambiguous suffix recorded inventory: %+v", got)
+		}
+		req := adapter.Requests()[1]
+		errorSeen := false
+		for _, msg := range req.Messages {
+			for _, part := range msg.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "skill-1" && part.ToolResult.IsError {
+					errorSeen = true
+				}
+			}
+		}
+		if !errorSeen {
+			t.Fatal("ambiguous suffix did not return an error result")
+		}
+	})
+
+	t.Run("exact_name_wins_over_plugin_suffix", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		body := strings.Repeat("BODY_7f2a\n", 64)
+		writeSkillMD(t, root, "probe", "---\nname: probe\ndescription: fixture\n---\n"+body)
+		source := filepath.Join(root, "skills", "probe", "SKILL.md")
+		pluginDir := t.TempDir()
+		writePluginSkill(t, pluginDir, "plug", "probe", "BODY_other\n")
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot(),
+			withConfig(SessionConfig{MaxSubagentDepth: 1, PluginDirs: []string{pluginDir}}))
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "/probe REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 1 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		delivered := requireSingleEnvelope(t, adapter.Requests()[0], "probe", body, source)
+		if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "probe" {
+			t.Fatalf("activation events = %v, want [probe]", names)
+		}
+		requireOrdinaryActivation(t, s, "probe", source, "user_slash", true, delivered)
+	})
+
+	t.Run("command_name_collision_keeps_command_precedence", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		writeSkillMD(t, root, "review", "---\nname: review\ndescription: fixture\n---\nBODY_7f2a\n")
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		s.pluginCommands = map[string]plugin.Command{
+			"review": {Name: "review", Body: "command $ARGUMENTS", Source: "project"},
+		}
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "/review diff", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 1 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		texts := userMessageTexts(adapter.Requests()[0])
+		if len(texts) == 0 || texts[len(texts)-1] != "command diff" {
+			t.Fatalf("command collision did not expand the command: %q", texts)
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("command precedence emitted skill events: %v", names)
+		}
+		if states := skillTurnStates(s); len(states) != 0 {
+			t.Fatalf("command expansion recorded typed skill state: %+v", states)
+		}
+	})
+
+	t.Run("hidden_name_resolvable_by_user_through_full_catalog", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		body := strings.Repeat("BODY_7f2a\n", 64)
+		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\ndisable-model-invocation: true\n---\n"+body)
+		source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		for _, d := range s.skills.ModelEntries() {
+			if d.CatalogName == "opaque" {
+				t.Fatal("hidden skill leaked into the advertised model catalog")
+			}
+		}
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "/opaque REQUEST_93d2", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 1 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		delivered := requireSingleEnvelope(t, adapter.Requests()[0], "opaque", body, source)
+		if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "opaque" {
+			t.Fatalf("activation events = %v, want [opaque]", names)
+		}
+		requireOrdinaryActivation(t, s, "opaque", source, "user_slash", true, delivered)
+	})
+
+	t.Run("new_arguments_with_duplicate_bodies", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		body := strings.Repeat("BODY_7f2a\n", 64)
+		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}}
+		s := newSession(t, withAdapter(adapter), withDir(root),
+			withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		evs, stop := captureEvents(s)
+		if _, err := s.ProcessInput(context.Background(), "/opaque FIRST_ARGS", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ProcessInput(context.Background(), "/opaque SECOND_ARGS", nil); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if len(adapter.Requests()) != 2 {
+			t.Fatalf("requests=%d", len(adapter.Requests()))
+		}
+		// Both requests keep their own original prose and typed arguments; a
+		// duplicate body can never discard the new request's arguments.
+		second := adapter.Requests()[1]
+		texts := userMessageTexts(second)
+		foundOriginal := false
+		for _, text := range texts {
+			if text == "/opaque SECOND_ARGS" {
+				foundOriginal = true
+			}
+		}
+		if !foundOriginal {
+			t.Fatalf("second request lost the original input: %q", texts)
+		}
+		var inputs []*schema.SkillInputRecord
+		for _, state := range skillTurnStates(s) {
+			if state.Input != nil {
+				inputs = append(inputs, state.Input)
+			}
+		}
+		if len(inputs) != 2 || inputs[0].Arguments != "FIRST_ARGS" || inputs[1].Arguments != "SECOND_ARGS" {
+			t.Fatalf("typed inputs = %+v", inputs)
+		}
+		if inputs[0].AtomicGroupID == "" || inputs[0].AtomicGroupID == inputs[1].AtomicGroupID {
+			t.Fatalf("typed inputs share an atomic group: %+v", inputs)
+		}
+		// One success event per genuinely new body: the second activation has
+		// identical content, so no second new-body event may fire.
+		if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "opaque" {
+			t.Fatalf("activation events = %v, want exactly one new-body event", names)
+		}
+	})
+}
+
+func TestSkillActivation_RawRead(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	body := strings.Repeat("BODY_7f2a\n", 64)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
+	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+	readFull, _ := json.Marshal(map[string]any{"file_path": source})
+	readPartial, _ := json.Marshal(map[string]any{"file_path": source, "limit": 2})
+	calls := 0
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		calls++
+		switch calls {
+		case 1:
+			return toolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: readFull, Type: "function"})
+		case 2:
+			return toolCallResponse(llm.ToolCallData{ID: "read-2", Name: "read_file", Arguments: readPartial, Type: "function"})
+		default:
+			return toolCallResponse(communicateCall("done-1", "ok"))
+		}
+	}}
+	s := newSession(t, withAdapter(adapter), withDir(root),
+		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+	evs, stop := captureEvents(s)
+	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if len(adapter.Requests()) != 3 {
+		t.Fatalf("requests=%d", len(adapter.Requests()))
+	}
+	// Both reads returned real file bytes to the model.
+	foundFull, foundPartial := false, false
+	for _, msg := range adapter.Requests()[2].Messages {
+		for _, part := range msg.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
+			}
+			content, _ := part.ToolResult.Content.(string)
+			switch part.ToolResult.ToolCallID {
+			case "read-1":
+				foundFull = strings.Contains(content, "BODY_7f2a")
+			case "read-2":
+				foundPartial = strings.Contains(content, "name: opaque")
+			}
+		}
+	}
+	if !foundFull || !foundPartial {
+		t.Fatalf("raw reads did not return file bytes: full=%v partial=%v", foundFull, foundPartial)
+	}
+	// Inspecting SKILL.md is not activation: no success event, no inventory, no
+	// obligations, and no typed skill state anywhere in the turn history.
+	if names := skillActivatedEventNames(*evs); len(names) != 0 {
+		t.Fatalf("raw file reads emitted activation events: %v", names)
+	}
+	if got := lifecycleInventory(s); len(got) != 0 {
+		t.Fatalf("raw file reads recorded inventory: %+v", got)
+	}
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("raw file reads recorded obligations: %+v", got)
+	}
+	if states := skillTurnStates(s); len(states) != 0 {
+		t.Fatalf("raw file reads recorded typed skill state: %+v", states)
 	}
 }

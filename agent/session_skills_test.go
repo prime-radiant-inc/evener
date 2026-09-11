@@ -233,21 +233,23 @@ func TestStandaloneSkillActivationUsesCanonicalPluginName(t *testing.T) {
 	}}
 	_ = drainSlashEvents(s)
 
-	got, ok := s.expandSlashCommand(context.Background(), "/plugin:simplify")
-	if !ok || got != "plugin steps" {
-		t.Fatalf("expanded = %q, %v; want plugin skill body", got, ok)
+	got := s.expandSlashCommand(context.Background(), "/plugin:simplify")
+	if !got.Handled || got.Text != "/plugin:simplify" {
+		t.Fatalf("expanded = %+v; want handled with the original input preserved", got)
 	}
-	var activated []string
+	// The activation event belongs to final dispatch admission; expansion
+	// itself prepares the batch under the canonical plugin name.
+	if got.Activations == nil || len(got.Activations.Items) != 1 {
+		t.Fatalf("activations = %+v, want one prepared item", got.Activations)
+	}
+	item := got.Activations.Items[0]
+	if item.Invocation.Name != "plugin:simplify" || item.Loaded.Body != "plugin steps" {
+		t.Fatalf("prepared = %q/%q, want plugin:simplify with its body", item.Invocation.Name, item.Loaded.Body)
+	}
 	for _, ev := range drainSlashEvents(s) {
-		if ev.Kind != events.EventSkillActivated {
-			continue
+		if ev.Kind == events.EventSkillActivated {
+			t.Fatal("expansion emitted a premature skill activation")
 		}
-		if data, ok := ev.Data.(events.SkillActivatedData); ok {
-			activated = append(activated, data.Name)
-		}
-	}
-	if len(activated) != 1 || activated[0] != "plugin:simplify" {
-		t.Fatalf("activation names = %v, want [plugin:simplify]", activated)
 	}
 }
 
@@ -559,9 +561,9 @@ func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
 	if _, ok := sess.skills.Entries["automatic-user"]; !ok {
 		t.Fatal("automatic user skill was not discovered")
 	}
-	got, ok := sess.expandSlashCommand(context.Background(), "/automatic-user")
-	if !ok || !strings.Contains(got, body) {
-		t.Fatalf("slash skill expansion = %q, %v; want body %q", got, ok, body)
+	got := sess.expandSlashCommand(context.Background(), "/automatic-user")
+	if !got.Handled || got.Activations == nil || len(got.Activations.Items) != 1 || !strings.Contains(got.Activations.Items[0].Loaded.Body, body) {
+		t.Fatalf("slash skill expansion = %+v; want a handled activation with body %q", got, body)
 	}
 }
 

@@ -363,6 +363,42 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		budget.LimitedOutput = true
 	}
 	s.warnOutputReduction(profile, budget)
+
+	// Final-dispatch skill delivery: revalidate every pending obligation
+	// against the actual projected request. A carrier lost to folding or
+	// projection is reloaded from its recorded source and re-admitted through
+	// a typed causal notification appended to the real history; the request
+	// then rebuilds so the restored carrier joins this dispatch. The commit
+	// itself lands at callModel's final budget seam.
+	deliveryReq, deliveryCommit, deliveryErr := s.prepareSkillDelivery(ctx, profile, historyTurns, req)
+	if deliveryErr != nil {
+		return profile, sys, history, req, fullHistory, reasoningEffort, deliveryErr
+	}
+	req = deliveryReq
+	if deliveryCommit.reloaded {
+		s.mu.Lock()
+		var appended []schema.Turn
+		if len(s.history) > len(historyTurns) {
+			appended = append(appended, s.history[len(historyTurns):]...)
+		}
+		historyTurns = append([]schema.Turn{}, s.history...)
+		s.mu.Unlock()
+		// The notification turns land after the in-flight boundary and project
+		// as-is; append them rather than re-running the delegate claim.
+		for _, notification := range appended {
+			history = append(history, scope.projectTurnMessage(notification, true))
+		}
+		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
+		if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, err
+		}
+		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
+		if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, err
+		}
+		s.warnOutputReduction(profile, budget)
+	}
 	// Stage the mid-turn attention this round's request presents. The guard
 	// inside is the single gate, whichever path built the history; staging
 	// follows anchor planning because credit belongs to what the request

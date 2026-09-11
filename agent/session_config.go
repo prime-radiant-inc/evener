@@ -686,8 +686,12 @@ type spawnConfig struct {
 	// session shaping for restricted subagents and reviewer runs.
 	rolePromptOverride   string
 	activatedSkillBodies []string
-	allowedToolNames     []string
-	deniedToolNames      []string
+	// frozenSkillMetadata is the typed provenance of this delegate's role
+	// preloads, seeded into the skill lifecycle inventory once the permanent
+	// prompt is admitted. It never grants ordinary invocation authorization.
+	frozenSkillMetadata []schema.FrozenSkillPreload
+	allowedToolNames    []string
+	deniedToolNames     []string
 	// toolNameCeiling is the durable stable-delegate capability ceiling carried
 	// into construction. NewSession applies it after all intrinsic tools and
 	// ordinary spawn policy so the model-facing cache cannot exceed the ceiling.

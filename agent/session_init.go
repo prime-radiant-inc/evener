@@ -306,6 +306,14 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	if inheritedContext != nil {
 		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
+		// Copied history is background text only: a new or forked delegate
+		// imports no parent skill lifecycle. Typed activation records belong to
+		// the originating session, so they are stripped rather than imported;
+		// the child seeds exactly its own role preloads (seedFrozenSkillPreloads)
+		// and tracks its own future activations.
+		for i := range inheritedContext {
+			inheritedContext[i].Turn.SkillState = nil
+		}
 		s.history = ResumeHistory(inheritedContext)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
@@ -1484,6 +1492,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if warning := s.refreshSystemPromptCache(env); warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
 			events.WarningData{Message: warning})
+	} else {
+		// Role preloads join the skill inventory only after the permanent
+		// prompt carrying their complete instructions was admitted.
+		s.seedFrozenSkillPreloads()
 	}
 
 	return s.promptSourceLog, nil

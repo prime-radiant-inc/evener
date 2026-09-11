@@ -289,6 +289,12 @@ type ExecResult struct {
 	Err error `json:"-"`
 }
 
+// ErrCompleteOutputExceedsLimit is the typed failure a StateResult with
+// RequireCompleteOutput produces when the configured output policy would
+// truncate its content: the operation promised complete content, so a partial
+// result is an error, never a successful truncation.
+var ErrCompleteOutputExceedsLimit = errors.New("complete output exceeds configured limit")
+
 // StateResult is returned by tool executors that want to emit a
 // structured state snapshot alongside the terse string reply. Output is
 // what goes to the LLM; State is JSON-marshaled into TOOL_CALL_END's
@@ -296,6 +302,11 @@ type ExecResult struct {
 type StateResult struct {
 	Output string
 	State  any
+	// RequireCompleteOutput opts this result into complete-or-fail shaping:
+	// when the registry's output policy would truncate Output, the dispatch
+	// fails with ErrCompleteOutputExceedsLimit instead of returning partial
+	// content. Only operations that promise complete content set it.
+	RequireCompleteOutput bool
 }
 
 // TextResult is returned by executors that need different text for the model
@@ -807,6 +818,17 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 	// State snapshot that rides along on the TOOL_CALL_END event.
 	if st, ok := v.(StateResult); ok {
 		res := truncateResult(name, callID, st.Output, false, lim)
+		if st.RequireCompleteOutput && res.Truncated {
+			// The operation promised complete content: a configured limit
+			// produces an explicit complete-delivery failure, never a
+			// successful partial result.
+			res.IsError = true
+			res.Err = ErrCompleteOutputExceedsLimit
+			res.Output = res.Err.Error()
+			res.FullOutput = ""
+			res.RecoverableOutput = ""
+			res.Truncated = false
+		}
 		if st.State != nil {
 			if data, err := json.Marshal(st.State); err == nil {
 				res.ToolState = data
@@ -992,7 +1014,10 @@ func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	case "communicate":
 		return schema.ToolOutputLimit{MaxChars: 5_000, Strategy: schema.TruncTail}
 	case "use_skill":
-		return schema.ToolOutputLimit{MaxChars: 32_000, Strategy: schema.TruncTail}
+		// Skill content is complete-or-fail (StateResult.RequireCompleteOutput):
+		// no default suffix truncation. Explicit configured limits still apply
+		// and produce a complete-delivery failure rather than a partial body.
+		return schema.ToolOutputLimit{}
 	default:
 		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncHeadTail}
 	}

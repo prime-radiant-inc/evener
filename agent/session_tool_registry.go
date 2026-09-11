@@ -112,6 +112,12 @@ type toolDeps struct {
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
 
+	// skillActivate runs one use_skill invocation through the shared
+	// activation pipeline (Session.skillToolActivate): full-catalog
+	// resolution, current policy, shared loading/rendering, and the typed
+	// pending identity for the delivery pipeline.
+	skillActivate func(ctx context.Context, skillName, toolCallID string) (any, error)
+
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
 
@@ -289,6 +295,7 @@ func newToolDeps(s *Session) *toolDeps {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok
 		},
+		skillActivate:         s.skillToolActivate,
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
 		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),
 		stateDir:              s.stateDir,
