@@ -283,6 +283,42 @@ func TestAppendDurable_WriteFailsRollbackAlsoFails(t *testing.T) {
 	}
 }
 
+// The same double failure with a write that transferred NOTHING is a different
+// shape: no bytes past startOffset, the position unmoved, the file's end still
+// known. There is nothing for a later append to run onto, so the writer stays
+// usable — the same rule the buffered door follows, and the shape every
+// pre-existing write-failure fixture produces.
+func TestAppendDurable_WriteTransferredNothingLeavesWriterUsable(t *testing.T) {
+	plan := bytes.Repeat([]byte{0x01}, 128)
+	plan[5] = 0x00 // entry Write, which fault.FS fails having transferred nothing
+	plan[6] = 0x00 // rollback Truncate
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("append error = %v, want the rollback failure over a write that transferred nothing", err)
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands"))); err != nil {
+		t.Fatalf("append after a write that transferred nothing: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := faultTestEntries(t, base)
+	if len(entries) != 1 {
+		t.Fatalf("entries a reader sees = %d, want only the append that landed", len(entries))
+	}
+	if got := entries[0].Turn.Message.Text(); got != "lands" {
+		t.Fatalf("entry text = %q, want the append that landed", got)
+	}
+	if entries[0].Seq != 0 {
+		t.Fatalf("entry seq = %d, want the 0 the failed append never spent", entries[0].Seq)
+	}
+}
+
 // When the durable Sync faults (index 6), rollback runs; a compounding fault on a
 // rollback op surfaces the "sync transcript entry: ...; rollback failed: ..."
 // shape and exercises each failure branch of rollbackAppendLocked.

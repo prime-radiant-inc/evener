@@ -488,7 +488,7 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	previousDirty := w.dirty
 	if written, err := w.writeLineLocked(data); err != nil {
 		if forceSync {
-			return w.appendFailureLocked("write transcript entry", err, startOffset, turn, written == len(data))
+			return w.appendFailureLocked("write transcript entry", err, startOffset, turn, written, len(data))
 		}
 		// The buffered door attempts no rollback, so whatever landed stays
 		// exactly where it is — including the writer's position, which only
@@ -569,24 +569,26 @@ func (w *Writer) writeLineLocked(line []byte) (int, error) {
 // line or only part of one. A rollback that takes those bytes back out settles
 // it: nothing was written, nothing is spent.
 //
-// A rollback that fails does not settle it, and the two shapes it can leave
-// differ. A retained WHOLE line is a record a reader will see, so it spends its
-// sequence number and counts the failures it settles, the way the retained
-// entry of a failed sync does. A retained PARTIAL line is not a record and
-// spends nothing — a reader skips it while it is the file's tail, and rejects
-// the whole file once a later append runs onto it. Either way the writer is
-// poisoned: after a rollback that did not complete it can promise nothing about
-// where the file ends, so it refuses to append rather than write a record no
-// reader can get back out.
-func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64, turn schema.Turn, wholeLine bool) error {
+// A rollback that fails settles nothing, and what it leaves decides the rest —
+// on exactly the rule the buffered door follows, since the bytes at the tail are
+// the same bytes either way. A truncate that succeeded removed them, so there is
+// nothing to guard and only the file's end is in question (rollbackAppendLocked
+// records that). A truncate that failed left whatever the write transferred:
+// nothing at all leaves the file and the position as they were and the writer
+// usable; a WHOLE line is a record a reader will see, so it spends its sequence
+// number and counts the failures it settles before the writer stops; a PARTIAL
+// line is not a record and spends nothing. Bytes that landed and could not be
+// taken back out are the only arm that poisons the writer: past them it can
+// promise nothing about where the file ends, so it refuses to append rather
+// than write a record no reader can get back out.
+func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64, turn schema.Turn, written, lineLen int) error {
 	removed, rollbackErr := w.rollbackAppendLocked(startOffset)
 	if rollbackErr == nil {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
-	if !removed && wholeLine {
-		w.countAppendedEntryLocked(turn)
+	if !removed {
+		w.poisonLandedBytesLocked(turn, written, lineLen)
 	}
-	w.poisoned = true
 	return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
 }
 
@@ -603,8 +605,11 @@ func (w *Writer) rollbackAppendLocked(startOffset int64) (removed bool, err erro
 	removed = truncateErr == nil
 	// Only a truncate that moved the end and a seek that could not follow it
 	// leave the position wrong. A truncate that failed left the entry in the
-	// file, so the position this append reached is still the file's end.
-	w.positionUnknown = removed && seekErr != nil
+	// file, so the position this append reached is still the file's end. Set
+	// only: no rollback outcome establishes an end this writer had already lost.
+	if removed && seekErr != nil {
+		w.positionUnknown = true
+	}
 	if truncateErr != nil && seekErr != nil {
 		return removed, fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
 	}
