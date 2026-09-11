@@ -292,20 +292,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// Establish the in-flight-turn boundary (spec N4 exemption) for the
 	// paths that published no fold above — no strategy configured, or both
-	// fold attempts lost the race. Re-snapshot and initialize/read the
-	// boundary under ONE lock so the (historyTurns, inFlightFrom) pair is
-	// mutually consistent even against a concurrently publishing fold; a
-	// winning fold in this round already did both atomically with its own
-	// publication. Round > 0 has nothing to shrink here: this round folded
-	// nothing, and a competing fold's transaction
-	// corrects the boundary for whatever IT folds.
+	// fold attempts lost the race. Initialize round zero's boundary under
+	// the history lock before the notes refresh; the final snapshot below
+	// captures history and its boundary together. A winning fold already
+	// initialized the boundary atomically with publication. Round > 0 has
+	// nothing to shrink here: a competing fold's transaction corrects the
+	// boundary for whatever it folds.
 	if !baselineSynced {
 		s.mu.Lock()
-		historyTurns = append([]schema.Turn{}, s.history...)
 		if round == 0 {
-			s.turnHistoryBaseline = len(historyTurns)
+			s.turnHistoryBaseline = len(s.history)
 		}
-		inFlightFrom = s.turnHistoryBaseline
 		s.mu.Unlock()
 	}
 

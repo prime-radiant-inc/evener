@@ -249,9 +249,7 @@ func (s *Session) removeSessionURLSerialized(id string) (bool, []schema.SessionU
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
 	removed := s.removeSessionURL(id)
-	s.mu.Lock()
-	urls := append([]schema.SessionURL(nil), s.sessionURLs...)
-	s.mu.Unlock()
+	urls := s.snapshotSessionURLsLocked()
 	return removed, urls
 }
 
@@ -321,9 +319,7 @@ func (s *Session) addSessionURLSerialized(rawURL, label string) (schema.SessionU
 	if err != nil {
 		return schema.SessionURL{}, nil, err
 	}
-	s.mu.Lock()
-	urls := append([]schema.SessionURL(nil), s.sessionURLs...)
-	s.mu.Unlock()
+	urls := s.snapshotSessionURLsLocked()
 	return entry, urls, nil
 }
 
@@ -497,9 +493,11 @@ func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.Session
 	human, agent, urls = "", s.agentNote, append([]schema.SessionURL(nil), s.sessionURLs...)
 	s.mu.Unlock()
 	if s.clientMutations != nil {
-		if canonical := s.clientMutations.snapshot().HumanNote; canonical != nil {
+		s.clientMutations.stateMu.RLock()
+		if canonical := s.clientMutations.state.HumanNote; canonical != nil {
 			human = *canonical
 		}
+		s.clientMutations.stateMu.RUnlock()
 	}
 	return human, agent, urls
 }

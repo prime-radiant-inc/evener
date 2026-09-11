@@ -521,11 +521,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				// Fresh copy, nil-on-empty: the envelope owns its slices
 				// once written (threadEnvelope's rule), so the push's
 				// backing array must not alias the installed state.
-				var urls []appwire.SessionURL
-				if len(params.URLs) > 0 {
-					urls = append([]appwire.SessionURL(nil), params.URLs...)
-				}
-				s.appEnvelope.SessionURLs = urls
+				s.appEnvelope.SessionURLs = append([]appwire.SessionURL(nil), params.URLs...)
 				s.appEnvelope.notesCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			default:
@@ -759,12 +755,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				projection.thread.Evener.AgentNote = params.AgentNote
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
 			case appwire.UrlsUpdatedParams:
-				var urls []appwire.SessionURL
-				if len(params.URLs) > 0 {
-					urls = make([]appwire.SessionURL, 0, len(params.URLs))
-					urls = append(urls, params.URLs...)
-				}
-				projection.thread.Evener.SessionURLs = urls
+				projection.thread.Evener.SessionURLs = append([]appwire.SessionURL(nil), params.URLs...)
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: item.Params, snapshot: projection.turns})

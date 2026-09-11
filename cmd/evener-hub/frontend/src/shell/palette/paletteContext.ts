@@ -51,16 +51,10 @@ export function buildPaletteContext(): PaletteContext {
   const ws = workspaceStore.getState();
   const focused = ws.panes.find((p) => p.id === ws.focusedPaneId);
   if (!focused) return { sessionRef: null, onPage: "other" };
-  const sessionRef =
-    focused.type === "session" ||
-    focused.type === "sessionTasks" ||
-    focused.type === "sessionActivity" ||
-    focused.type === "sessionDetails" ||
-    focused.type === "sessionNotes"
-      ? refFromParams(focused.params)
-      : null;
+  const onPage = onPageForType(focused.type);
+  const sessionRef = onPage === "session" ? refFromParams(focused.params) : null;
   return {
-    onPage: onPageForType(focused.type),
+    onPage,
     sessionRef,
   };
 }

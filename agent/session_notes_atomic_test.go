@@ -47,13 +47,7 @@ func reloadHumanNoteStore(t *testing.T, s *Session) {
 }
 
 func TestHumanNoteFenceRejectsWholeSave(t *testing.T) {
-	s := newNotesToolSession(t)
-	s.stateDir = t.TempDir()
-	storeForTest, storeErr := newClientMutationStore(s.stateDir, s.ID())
-	if storeErr != nil {
-		t.Fatal(storeErr)
-	}
-	s.clientMutations = storeForTest
+	s := newDurableHumanNoteSession(t)
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatal(err)
 	}
@@ -78,13 +72,7 @@ func TestHumanNoteFenceRejectsWholeSave(t *testing.T) {
 func TestHumanNoteAtomicDurability(t *testing.T) {
 	for _, boundary := range []string{"reservation", "before-effect", "after-effect"} {
 		t.Run(boundary, func(t *testing.T) {
-			s := newNotesToolSession(t)
-			s.stateDir = t.TempDir()
-			storeForTest, storeErr := newClientMutationStore(s.stateDir, s.ID())
-			if storeErr != nil {
-				t.Fatal(storeErr)
-			}
-			s.clientMutations = storeForTest
+			s := newDurableHumanNoteSession(t)
 			if _, err := s.SetHumanNote("initial", "old"); err != nil {
 				t.Fatal(err)
 			}
@@ -158,13 +146,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 }
 
 func TestHumanNoteRecoveryChecksEffectFence(t *testing.T) {
-	s := newNotesToolSession(t)
-	s.stateDir = t.TempDir()
-	storeForTest, storeErr := newClientMutationStore(s.stateDir, s.ID())
-	if storeErr != nil {
-		t.Fatal(storeErr)
-	}
-	s.clientMutations = storeForTest
+	s := newDurableHumanNoteSession(t)
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatal(err)
 	}
@@ -195,13 +177,7 @@ func TestHumanNoteRecoveryChecksEffectFence(t *testing.T) {
 }
 
 func TestHumanNoteAtomicNoOpHeldAndConsumedReceipt(t *testing.T) {
-	s := newNotesToolSession(t)
-	s.stateDir = t.TempDir()
-	storeForTest, storeErr := newClientMutationStore(s.stateDir, s.ID())
-	if storeErr != nil {
-		t.Fatal(storeErr)
-	}
-	s.clientMutations = storeForTest
+	s := newDurableHumanNoteSession(t)
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatal(err)
 	}

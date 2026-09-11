@@ -1759,6 +1759,10 @@ function handleNotification(n: AnyNotification): void {
   // a setHumanNote response commit).
   const acceptedGoalRefs = new Set<string>();
   const acceptedNotesRefs = new Set<string>();
+  let acceptedPendingRefs: Set<string> | undefined;
+  if (isFallbackInvalidatingPush(n.method)) {
+    acceptedPendingRefs = n.method === "evener/goal/updated" ? acceptedGoalRefs : acceptedNotesRefs;
+  }
   // Pending-hydration routing: pendingThreadHydrations/pendingWatchedHydrations
   // are intentionally left as plain map iterations (NOT indexed). They are
   // usually tiny — at most one entry per in-flight thread/read (bounded by
@@ -1771,28 +1775,14 @@ function handleNotification(n: AnyNotification): void {
   let pendingRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingThreadHydrations.size > 0) {
     const refs = new Set<string>();
-    const targeted = isFallbackInvalidatingPush(n.method) ? new Set<string>() : undefined;
-    collectPendingRefs(pendingThreadHydrations, n, refs, targeted);
+    collectPendingRefs(pendingThreadHydrations, n, refs, acceptedPendingRefs);
     if (refs.size > 0) pendingRefs = refs;
-    if (targeted) {
-      for (const ref of targeted) {
-        if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
-        else if (n.method === "evener/notes/updated") acceptedNotesRefs.add(ref);
-      }
-    }
   }
   let pendingWatchedRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingWatchedHydrations.size > 0) {
     const refs = new Set<string>();
-    const targeted = isFallbackInvalidatingPush(n.method) ? new Set<string>() : undefined;
-    collectPendingRefs(pendingWatchedHydrations, n, refs, targeted);
+    collectPendingRefs(pendingWatchedHydrations, n, refs, acceptedPendingRefs);
     if (refs.size > 0) pendingWatchedRefs = refs;
-    if (targeted) {
-      for (const ref of targeted) {
-        if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
-        else if (n.method === "evener/notes/updated") acceptedNotesRefs.add(ref);
-      }
-    }
   }
   const {
     next: nextThreads,
