@@ -45,6 +45,19 @@ import (
 // deliberately does not do.
 const shutdownDrainWaitBudget = 30 * time.Second
 
+// rendezvousRemovalAttempts bounds how many times shutdown asks for its
+// rendezvous entry to be removed. Registration.Remove keeps a failed removal
+// retryable rather than terminal, precisely so a transient filesystem failure
+// gets another pass; spending exactly one attempt made that retryability dead
+// code. Past this budget the failure is not transient, and an exiting daemon
+// that discards it leaves a PID artifact discovery reads as a live daemon at a
+// PID the OS is free to reuse.
+const rendezvousRemovalAttempts = 3
+
+// rendezvousRemovalRetryPause spaces those attempts so a directory that is
+// momentarily busy has time to settle.
+const rendezvousRemovalRetryPause = 50 * time.Millisecond
+
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
@@ -135,6 +148,12 @@ type serveDeps struct {
 	// real timer happened to fire proves the budget exists, not that it is
 	// honoured, and the whole point of the budget is which of the two arms runs.
 	drainWaitExpiry func() <-chan time.Time
+	// rendezvousRetryPause starts the pause between shutdown's rendezvous
+	// removal attempts and returns the channel that fires when it is over.
+	// Injectable for the same reason drainWaitExpiry is: a test that clears a
+	// blocked removal on a real timer races the retry instead of driving it,
+	// and which attempt does the removing is the whole claim.
+	rendezvousRetryPause func() <-chan time.Time
 	// verboseOut is where --verbose writes its NDJSON. Nil means os.Stderr.
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
@@ -208,6 +227,7 @@ func defaultServeDeps() serveDeps {
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		rendezvousRetryPause:          func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
 		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
 		provisionSandbox:              provisionSandbox,
 		newClearSession:               agent.NewSession,
@@ -1348,7 +1368,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
-			_ = rvRegistration.Remove()
+			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
+				serveLogf(os.Stderr, getSession().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+			})
 		}()
 	}
 
@@ -1369,6 +1391,23 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+// removeRendezvousAtShutdown spends rendezvousRemovalAttempts on remove,
+// pausing between attempts, and hands a removal that never succeeded to
+// report. Registration.Remove stays retryable after a failure by design; this
+// is what spends that.
+func removeRendezvousAtShutdown(remove func() error, pause func() <-chan time.Time, report func(error)) {
+	var err error
+	for attempt := range rendezvousRemovalAttempts {
+		if err = remove(); err == nil {
+			return
+		}
+		if attempt < rendezvousRemovalAttempts-1 {
+			<-pause()
+		}
+	}
+	report(err)
 }
 
 // closeSupersededSession closes a session a concurrent clear has replaced, in

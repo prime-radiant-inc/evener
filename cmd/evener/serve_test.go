@@ -1488,3 +1488,105 @@ func TestServeAgentsDocFlagReachesTheRestoredSessionConfig(t *testing.T) {
 		t.Fatalf("RestoreSessionConfig.AgentsDocPath = %q, want %q", got, wantPath)
 	}
 }
+
+// TestRunServeRetriesBlockedRendezvousRemoval proves the exiting daemon does
+// not leave its rendezvous entry behind after a removal that failed once.
+//
+// Registration.Remove deliberately stays retryable after a failure -- it keeps
+// the entry registered so a later attempt can finish the job -- and shutdown
+// spending exactly one attempt, with the error discarded, made that dead code.
+// What is left behind is a PID artifact that discovery reads as a live daemon,
+// at a PID the OS is free to hand to something else.
+//
+// The blocker is the real refusal: the artifact path replaced by a non-empty
+// directory, which os.Remove will not take. It is cleared from inside the retry
+// pause, so the removal is performed by the retry rather than by a test racing
+// a timer.
+func TestRunServeRetriesBlockedRendezvousRemoval(t *testing.T) {
+	runDir := t.TempDir()
+	artifact := filepath.Join(runDir, strconv.Itoa(os.Getpid())+".json")
+	blocker := filepath.Join(artifact, "blocker")
+
+	deps := defaultServeDeps()
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		return client, func() error { return nil }, nil
+	}
+	pauses := 0
+	deps.rendezvousRetryPause = func() <-chan time.Time {
+		pauses++
+		if pauses == 1 {
+			if err := os.Remove(blocker); err != nil {
+				t.Errorf("clear rendezvous blocker: %v", err)
+			}
+		}
+		elapsed := make(chan time.Time, 1)
+		elapsed <- time.Now()
+		return elapsed
+	}
+
+	args := []string{
+		"--model", "openai/test",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", runDir,
+	}
+	done := make(chan error, 1)
+	go func() { done <- runServeWithDeps(args, deps) }()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	if err := os.Remove(artifact); err != nil {
+		t.Fatalf("take the rendezvous artifact: %v", err)
+	}
+	if err := os.Mkdir(artifact, 0o700); err != nil {
+		t.Fatalf("replace the rendezvous artifact with a directory: %v", err)
+	}
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write the blocker: %v", err)
+	}
+	if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runServeWithDeps: %v", err)
+	}
+
+	if pauses == 0 {
+		t.Fatal("shutdown never retried the blocked rendezvous removal")
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("shutdown left a stale rendezvous artifact behind: stat err=%v", err)
+	}
+}
+
+// TestRemoveRendezvousAtShutdownReportsAnExhaustedBudget covers the other arm:
+// a removal that fails every attempt is named rather than discarded, and it is
+// bounded -- an exiting daemon does not retry forever over a directory that is
+// never going to let go.
+func TestRemoveRendezvousAtShutdownReportsAnExhaustedBudget(t *testing.T) {
+	wantErr := errors.New("remove rendezvous file: device busy")
+	attempts, pauses := 0, 0
+	var reported error
+	reports := 0
+	removeRendezvousAtShutdown(
+		func() error { attempts++; return wantErr },
+		func() <-chan time.Time {
+			pauses++
+			elapsed := make(chan time.Time, 1)
+			elapsed <- time.Now()
+			return elapsed
+		},
+		func(err error) { reports++; reported = err },
+	)
+	if attempts != rendezvousRemovalAttempts {
+		t.Fatalf("removal attempts = %d, want %d", attempts, rendezvousRemovalAttempts)
+	}
+	if pauses != rendezvousRemovalAttempts-1 {
+		t.Fatalf("retry pauses = %d, want %d: the last attempt must not pause before giving up", pauses, rendezvousRemovalAttempts-1)
+	}
+	if reports != 1 || !errors.Is(reported, wantErr) {
+		t.Fatalf("reports = %d with err = %v, want exactly one carrying %v", reports, reported, wantErr)
+	}
+}
