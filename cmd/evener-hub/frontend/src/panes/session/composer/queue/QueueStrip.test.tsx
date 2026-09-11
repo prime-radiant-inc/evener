@@ -437,6 +437,9 @@ describe("dismiss a rejected Stop", () => {
 
   test("a record already discarded elsewhere still leaves the strip", async () => {
     const { record, row } = await renderRejectedStop();
+    // The seeded row is visible before the mount's projection reads settle.
+    // Finish those existing reads before another surface deletes their record.
+    await flushPendingTurnsProjectionForTests();
     // Discarded by another surface (a second tab, or this session's own
     // Composer) after this projection last read: the durable record is gone,
     // the row on screen is not, and the discard below reports "nothing to do".
@@ -948,8 +951,10 @@ describe("drain-as-steer affordance", () => {
       defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: false }), onDrainSuccess }),
     );
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
 
     await waitFor(() => {
@@ -973,8 +978,10 @@ describe("drain-as-steer affordance", () => {
     });
     renderStrip(defaultProps());
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
     expect(getToasts()).toHaveLength(0);
     expect(screen.queryByText(/reload/i)).toBeNull();
@@ -1006,8 +1013,10 @@ describe("drain-as-steer affordance", () => {
     }));
     renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
 
     await screen.findByText(/image attachment is still processing/i);

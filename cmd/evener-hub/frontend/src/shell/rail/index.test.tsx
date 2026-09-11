@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Component, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -32,25 +32,17 @@ function StubRailHost() {
   return <p>rail host mounted</p>;
 }
 
-// Suppress console.error noise from React's error-boundary logging during
-// tests that deliberately trigger chunk-load failures. The errors are
-// expected; the boundary catches them. Matched on React's own stable
-// componentDidCatch format string plus its fixed boundary-recovery
-// sentence, rather than blanket-silenced, so any *other* console.error a
-// regression here might produce still reaches real console.error and
-// stays visible in test output (DockRegion.test.tsx's own recipe).
-const REACT_ERROR_BOUNDARY_FORMAT = "%o\n\n%s\n\n%s\n";
-const REACT_ERROR_BOUNDARY_PREFACE = "The above error occurred in one of your React components.";
 const realConsoleError = console.error.bind(console);
-let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+// Capture only this render's injected failure; every test also asserts the
+// complete callback count and error identity, including repeated retries.
+function captureExpectedError(expectedError: Error) {
+  return vi.fn<NonNullable<RenderOptions["onCaughtError"]>>((error, info) => {
+    if (error !== expectedError) realConsoleError(error, info);
+  });
+}
 
 beforeEach(() => {
-  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    if (args[0] === REACT_ERROR_BOUNDARY_FORMAT && args[2] === REACT_ERROR_BOUNDARY_PREFACE) {
-      return;
-    }
-    realConsoleError(...args);
-  });
   loadRailHost.mockReset();
   loadRailHost.mockImplementation(realLoadRailHost);
   // The chunk is one shared lazy() payload per page load, so each test needs
@@ -61,7 +53,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  consoleErrorSpy.mockRestore();
   cleanup();
   // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
   // mockResolvedValueOnce...) would otherwise still be armed on this shared
@@ -73,19 +64,25 @@ afterEach(() => {
 });
 
 test("a rejected RailHost chunk shows the failure message with a Retry", async () => {
-  vi.mocked(loadRailHost).mockRejectedValue(new Error(CHUNK_ERROR));
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadRailHost).mockRejectedValue(chunkError);
 
-  render(<RailHost />);
+  render(<RailHost />, { onCaughtError });
 
   expect(await screen.findByText("Couldn't load the sidebar")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
 });
 
 test("the failure stands in a rail-sized shell holding the row's width", async () => {
-  vi.mocked(loadRailHost).mockRejectedValue(new Error(CHUNK_ERROR));
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadRailHost).mockRejectedValue(chunkError);
 
-  render(<RailHost />);
+  render(<RailHost />, { onCaughtError });
 
   const failure = await screen.findByTestId("rail-chunk-failure");
   // The same flex:none + width + background + right-border the live rail
@@ -94,15 +91,17 @@ test("the failure stands in a rail-sized shell holding the row's width", async (
   expect(failure.className).toMatch(/rail/);
   const style = getComputedStyle(failure);
   expect(style.getPropertyValue("--rail-width").trim()).not.toBe("");
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
 });
 
 test("Retry fetches the chunk again and mounts the host on the second attempt", async () => {
-  vi.mocked(loadRailHost)
-    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
-    .mockResolvedValueOnce({ RailHost: StubRailHost });
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadRailHost).mockRejectedValueOnce(chunkError).mockResolvedValueOnce({ RailHost: StubRailHost });
   const user = userEvent.setup();
 
-  render(<RailHost />);
+  render(<RailHost />, { onCaughtError });
   await screen.findByText("Couldn't load the sidebar");
   await user.click(screen.getByRole("button", { name: "Retry" }));
 
@@ -113,33 +112,39 @@ test("Retry fetches the chunk again and mounts the host on the second attempt", 
   expect(await screen.findByText("rail host mounted")).toBeTruthy();
   expect(vi.mocked(loadRailHost).mock.calls).toEqual([[false], [true]]);
   expect(screen.queryByText("Couldn't load the sidebar")).toBeNull();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
 });
 
 test("a successful retry is reused after the wrapper unmounts and remounts", async () => {
-  vi.mocked(loadRailHost)
-    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
-    .mockResolvedValueOnce({ RailHost: StubRailHost });
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadRailHost).mockRejectedValueOnce(chunkError).mockResolvedValueOnce({ RailHost: StubRailHost });
   const user = userEvent.setup();
 
-  const first = render(<RailHost />);
+  const first = render(<RailHost />, { onCaughtError });
   await screen.findByText("Couldn't load the sidebar");
   await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("rail host mounted")).toBeTruthy();
 
   first.unmount();
-  render(<RailHost />);
+  render(<RailHost />, { onCaughtError });
 
   expect(await screen.findByText("rail host mounted")).toBeTruthy();
   expect(vi.mocked(loadRailHost).mock.calls).toEqual([[false], [true]]);
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
 });
 
 test("a retry that fails again offers a page reload instead of stranding the sidebar", async () => {
-  vi.mocked(loadRailHost).mockRejectedValue(new Error(CHUNK_ERROR));
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadRailHost).mockRejectedValue(chunkError);
   const reload = vi.fn();
   vi.stubGlobal("location", { ...window.location, reload });
   const user = userEvent.setup();
 
-  render(<RailHost />);
+  render(<RailHost />, { onCaughtError });
   await screen.findByText("Couldn't load the sidebar");
   // The first failure offers only the cache-busted retry: a deploy that
   // removed the hashed chunk is still only one hypothesis among transient
@@ -151,6 +156,9 @@ test("a retry that fails again offers a page reload instead of stranding the sid
 
   expect(reload).toHaveBeenCalledTimes(1);
   expect(vi.mocked(loadRailHost).mock.calls).toEqual([[false], [true]]);
+  expect(onCaughtError).toHaveBeenCalledTimes(2);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
+  expect(onCaughtError.mock.calls[1]?.[0]).toBe(chunkError);
 });
 
 test("an ordinary retry failure does not prescribe a page reload", async () => {
@@ -159,17 +167,23 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   // a chunk-load failure: the rail boundary declines it, so it lands on the
   // next boundary above - never the rail failure state, and so never the
   // Retry/Reload pair that could misreport it as a stale deploy.
-  vi.mocked(loadRailHost).mockRejectedValue(new Error("RailHost chunk request failed with status 500"));
+  const chunkError = new Error("RailHost chunk request failed with status 500");
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadRailHost).mockRejectedValue(chunkError);
 
   render(
     <RailTestOuterBoundary>
       <RailHost />
     </RailTestOuterBoundary>,
+    { onCaughtError },
   );
 
   expect(await screen.findByText("outer boundary caught: RailHost chunk request failed with status 500")).toBeTruthy();
   expect(screen.queryByText("Couldn't load the sidebar")).toBeNull();
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
+  expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(RailTestOuterBoundary);
 });
 
 // A logic bug thrown by the RESOLVED chunk's own render is not a chunk-load
@@ -187,11 +201,15 @@ class RailTestOuterBoundary extends Component<{ children: ReactNode }, { failure
 }
 
 test("a logic bug in the resolved chunk keeps unwinding past the rail boundary", async () => {
-  const error = new Error("RailHost render logic bug");
-  const onCaughtError = vi.fn();
+  const renderError = new Error("RailHost render logic bug");
+  const onCaughtError = vi.fn<NonNullable<RenderOptions["onCaughtError"]>>((error, info) => {
+    if (error !== renderError || !(info.errorBoundary instanceof RailTestOuterBoundary)) {
+      realConsoleError(error, info);
+    }
+  });
   vi.mocked(loadRailHost).mockResolvedValue({
     RailHost: () => {
-      throw error;
+      throw renderError;
     },
   });
 
@@ -204,9 +222,7 @@ test("a logic bug in the resolved chunk keeps unwinding past the rail boundary",
 
   expect(await screen.findByText("outer boundary caught: RailHost render logic bug")).toBeTruthy();
   expect(screen.queryByText("Couldn't load the sidebar")).toBeNull();
-  // Capture React's expected diagnostic at this root, not via a broader
-  // console filter. Any additional or different caught error fails here.
   expect(onCaughtError).toHaveBeenCalledTimes(1);
-  expect(onCaughtError.mock.calls[0]?.[0]).toBe(error);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(renderError);
   expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(RailTestOuterBoundary);
 });

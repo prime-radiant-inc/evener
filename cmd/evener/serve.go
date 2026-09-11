@@ -45,6 +45,19 @@ import (
 // deliberately does not do.
 const shutdownDrainWaitBudget = 30 * time.Second
 
+// rendezvousRemovalAttempts bounds how many times shutdown asks for its
+// rendezvous entry to be removed. Registration.Remove keeps a failed removal
+// retryable rather than terminal, precisely so a transient filesystem failure
+// gets another pass; spending exactly one attempt made that retryability dead
+// code. Past this budget the failure is not transient, and an exiting daemon
+// that discards it leaves a PID artifact discovery reads as a live daemon at a
+// PID the OS is free to reuse.
+const rendezvousRemovalAttempts = 3
+
+// rendezvousRemovalRetryPause spaces those attempts so a directory that is
+// momentarily busy has time to settle.
+const rendezvousRemovalRetryPause = 50 * time.Millisecond
+
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
@@ -137,6 +150,12 @@ type serveDeps struct {
 	// real timer happened to fire proves the budget exists, not that it is
 	// honoured, and the whole point of the budget is which of the two arms runs.
 	drainWaitExpiry func() <-chan time.Time
+	// rendezvousRetryPause starts the pause between shutdown's rendezvous
+	// removal attempts and returns the channel that fires when it is over.
+	// Injectable for the same reason drainWaitExpiry is: a test that clears a
+	// blocked removal on a real timer races the retry instead of driving it,
+	// and which attempt does the removing is the whole claim.
+	rendezvousRetryPause func() <-chan time.Time
 	// verboseOut is where --verbose writes its NDJSON. Nil means os.Stderr.
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
@@ -210,6 +229,7 @@ func defaultServeDeps() serveDeps {
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		rendezvousRetryPause:          func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
 		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
 		provisionSandbox:              provisionSandbox,
 		newClearSession:               agent.NewSession,
@@ -520,6 +540,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return err
 	}
 	sessionCfg := agent.SessionConfig{
+		// The session tree lives exactly as long as this daemon does. Shutdown
+		// waits for the input loop before it closes the session, so work that
+		// runs synchronously on that loop -- a Notification hook, which runs
+		// for its own timeout -- is reached by nothing else: without this the
+		// only cancellation it ever sees arrives after the wait it is holding
+		// up. A turn is already cancelled directly (turnCtx derives from ctx).
+		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
 		ShareTasksWithChildren:      *shareTaskStore,
 		ResultToolName:              *resultToolName,
@@ -584,6 +611,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var sess *agent.Session
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
@@ -662,6 +690,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	rvRegistration := &rvreg.Registration{}
 
 	var currentMu sync.RWMutex
+	// identityTransitionMu serializes shutdown's ownership claim with a clear's
+	// final identity swap. It remains held through the old session's drain and
+	// identity projection; currentMu is held only for the brief ownership check.
+	var identityTransitionMu sync.Mutex
 	currentSess := sess
 	// currentEnv tracks the CURRENT session's execution environment (each session
 	// owns its own). thread/clear reads it to inherit the live sandbox and swaps it
@@ -690,11 +722,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// critical section cannot observe the pass as still pending, so it knows it
 	// owns its replacement's teardown.
 	closeLiveSession := func() {
+		identityTransitionMu.Lock()
+		defer identityTransitionMu.Unlock()
 		currentMu.Lock()
 		liveSessionClosed = true
 		live := currentSess
 		currentMu.Unlock()
-		live.Close()
+		live.CloseForShutdown()
 	}
 	// shutdownClosedTheLiveSession reports whether that pass has already run.
 	// Read it only AFTER the session in question is the current one, which is
@@ -725,11 +759,31 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// A session gets a new one on thread/clear, and each ends when its own session's
 	// event channel closes.
 	var drainsMu sync.Mutex
+	var bridgeStartMu sync.Mutex
 	var bridgeDrains []<-chan struct{}
+	bridgeDrainBySession := make(map[string]<-chan struct{})
 	// teardownStarted says the snapshot below has already been taken, so no
 	// later drain can ever appear in it. bridgeSession refuses to start one
 	// past this point; see the refusal there for why that is the right answer.
 	var teardownStarted bool
+	var shutdownExpiryOnce sync.Once
+	var shutdownExpiry <-chan struct{}
+	shutdownExpiryStop := make(chan struct{})
+	sharedShutdownExpiry := func() <-chan struct{} {
+		shutdownExpiryOnce.Do(func() {
+			source := deps.drainWaitExpiry()
+			done := make(chan struct{})
+			shutdownExpiry = done
+			go func() {
+				defer close(done)
+				select {
+				case <-source:
+				case <-shutdownExpiryStop:
+				}
+			}()
+		})
+		return shutdownExpiry
+	}
 	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
 	// but does not wait for the buffered tail, so a drain is still calling the
 	// observer after the session is closed -- and observe on a closed tee panics
@@ -767,15 +821,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session nothing would ever close, which no budget can end -- the expiry
 	// fired every time, on work that was neither wedged nor real.
 	defer func() {
+		defer close(shutdownExpiryStop)
+		bridgeStartMu.Lock()
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
-		// Closing the list and reading it are ONE critical section, so no
-		// bridgeSession can slip a drain in behind the snapshot.
+		// The bridge-start lock prevents bridgeSession from slipping a drain
+		// behind this snapshot while drainsMu protects the list itself.
 		teardownStarted = true
 		drainsMu.Unlock()
+		bridgeStartMu.Unlock()
 		// One budget for the whole teardown, not one per drain: what must be
 		// bounded is how long SIGTERM goes unanswered.
-		expiry := deps.drainWaitExpiry()
+		expiry := sharedShutdownExpiry()
 		for _, drained := range pending {
 			select {
 			case <-drained:
@@ -866,32 +923,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// Spawning this would reopen the window in which the session is live
 		// and its feed is still best-effort.
 		//
-		// The call and the registration are ONE critical section. An entry in
-		// bridgeDrains means "a drain exists that will close this channel", and
-		// each ordering without the lock breaks that in an opposite direction:
-		//
-		//   - Appending BEFORE the call leaves a channel nothing will ever close
-		//     if deps.bridge does not reach the drain. That is not theoretical
-		//     noise -- bridgeSession also runs from SetClearFunc on a net/http
-		//     handler goroutine, and net/http RECOVERS handler panics, so the
-		//     daemon would survive the panic and then wait out its whole
-		//     shutdown budget on a phantom, abandoning the tee. A loud crash
-		//     becomes a silent truncation.
-		//   - Appending AFTER it but outside the lock leaves a window in which
-		//     the teardown's snapshot misses a drain that is already live and
-		//     closes the tee under it, which is the crash this whole wait exists
-		//     to prevent.
-		//
-		// Holding drainsMu across both makes neither state observable: the
-		// snapshot runs either before deps.bridge is called or after the append,
-		// never between. deps.bridge does not block by contract, and nothing
-		// reachable from it takes drainsMu, so the section stays short. The
-		// unlock is deferred rather than written out because it must also run
-		// when deps.bridge panics -- an explicit unlock would leave the mutex
-		// held and deadlock the shutdown that the phantom was going to stall.
+		// The bridge start and drain registration are one critical section with
+		// teardown, but the bridge call itself must stay outside drainsMu because
+		// a closed session invokes onDrained synchronously.
 		drained := make(chan struct{})
-		drainsMu.Lock()
-		defer drainsMu.Unlock()
+		bridgeStartMu.Lock()
+		defer bridgeStartMu.Unlock()
 		// Past the teardown's snapshot, a drain started here would be one the
 		// wait cannot see, and the tee would be closed under it -- the same
 		// crash the wait exists to prevent, reached from the other side. The
@@ -917,11 +954,62 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// exits, it survives AFTER exit. Do not read this refusal as the thing
 		// that prevents that: declining to bridge a session and closing one are
 		// different acts, and only the second reaches the env.
-		if teardownStarted {
+		drainsMu.Lock()
+		teardown := teardownStarted
+		drainsMu.Unlock()
+		if teardown {
 			return
 		}
-		deps.bridge(srv, s, eventObserver, func() { close(drained) })
+		deps.bridge(srv, s, eventObserver, func() {
+			close(drained)
+			drainsMu.Lock()
+			if bridgeDrainBySession[s.ID()] == drained {
+				delete(bridgeDrainBySession, s.ID())
+			}
+			drainsMu.Unlock()
+		})
+		drainsMu.Lock()
 		bridgeDrains = append(bridgeDrains, drained)
+		bridgeDrainBySession[s.ID()] = drained
+		completed := false
+		select {
+		case <-drained:
+			completed = true
+		default:
+		}
+		if completed && bridgeDrainBySession[s.ID()] == drained {
+			delete(bridgeDrainBySession, s.ID())
+		}
+		drainsMu.Unlock()
+	}
+	waitForSessionBridgeDrain := func(sessionID string) bool {
+		drainsMu.Lock()
+		drained := bridgeDrainBySession[sessionID]
+		drainsMu.Unlock()
+		if drained == nil {
+			return true
+		}
+		select {
+		case <-drained:
+			drainsMu.Lock()
+			if bridgeDrainBySession[sessionID] == drained {
+				delete(bridgeDrainBySession, sessionID)
+			}
+			drainsMu.Unlock()
+			return true
+		default:
+		}
+		select {
+		case <-drained:
+			drainsMu.Lock()
+			if bridgeDrainBySession[sessionID] == drained {
+				delete(bridgeDrainBySession, sessionID)
+			}
+			drainsMu.Unlock()
+			return true
+		case <-sharedShutdownExpiry():
+			return false
+		}
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
@@ -1088,7 +1176,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// client that discovers the new session id can always reach a daemon
 		// already serving it; a failure here still names the old session, which
 		// is still the live one.
+		identityTransitionMu.Lock()
+		shutdownClaimed := shutdownClosedTheLiveSession()
+		if shutdownClaimed {
+			closeSupersededSession(oldSess, true) // disposes oldEnv
+			if !waitForSessionBridgeDrain(oldSess.ID()) {
+				identityTransitionMu.Unlock()
+				newSess.Close() // disposes clearEnv; old identity remains current
+				return errors.New("old session bridge did not drain before clear deadline")
+			}
+		}
 		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
+			identityTransitionMu.Unlock()
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
@@ -1103,7 +1202,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// after it -- the new session's own events are still queued in its
 		// channel, and its bridge has not started.
 		srv.RefreshThreadEnvelope()
-		oldSess.Close() // disposes oldEnv
+		if !shutdownClaimed {
+			closeSupersededSession(oldSess, false) // disposes oldEnv after the swap
+		}
+		identityTransitionMu.Unlock()
 		// Every session this daemon makes current gets closed by someone, and
 		// shutdown covers only the one that was live when its pass ran. A
 		// replacement installed after that pass has no other closer, so thread/clear
@@ -1282,7 +1384,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
-			_ = rvRegistration.Remove()
+			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
+				serveLogf(os.Stderr, getSession().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+			})
 		}()
 	}
 
@@ -1303,6 +1407,44 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+// removeRendezvousAtShutdown spends rendezvousRemovalAttempts on remove,
+// pausing between attempts, and hands a removal that never succeeded to
+// report. Registration.Remove stays retryable after a failure by design; this
+// is what spends that.
+func removeRendezvousAtShutdown(remove func() error, pause func() <-chan time.Time, report func(error)) {
+	var err error
+	for attempt := range rendezvousRemovalAttempts {
+		if err = remove(); err == nil {
+			return
+		}
+		if attempt < rendezvousRemovalAttempts-1 {
+			<-pause()
+		}
+	}
+	report(err)
+}
+
+// closeSupersededSession closes a session a concurrent clear has replaced, in
+// the form its owner is entitled to. shutdownClaimed means shutdown's single
+// pass already reached this session -- and already closed it with
+// CloseForShutdown, because closeLiveSession holds identityTransitionMu across
+// that close and the claim is read under the same lock -- so the call below is
+// a no-op over a terminal boundary shutdown has already published. Without the
+// claim this is the session's only close, and the ordinary form is the right
+// one: the clear announces the replaced identity with a resync.
+//
+// Double close buys nothing either way. Both forms run through the session's
+// close-once, so the terminal boundary belongs to whichever close runs FIRST,
+// and a second call cannot publish one the first declined. The agent package's
+// TestSession_DoubleCloseCannotRecoverATerminalBoundary pins that.
+func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
+	if shutdownClaimed {
+		sess.CloseForShutdown()
+		return
+	}
+	sess.Close()
 }
 
 // processNextServeInput gives durable turn/start work priority over the

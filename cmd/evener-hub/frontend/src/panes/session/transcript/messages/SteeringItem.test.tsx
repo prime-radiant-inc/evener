@@ -8,6 +8,8 @@ import { afterAll, afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { navigationStore } from "../../../../stores/navigation/store";
+import { keyID } from "../../../../stores/navigation/types";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { SteeringItem } from "./SteeringItem";
@@ -16,6 +18,7 @@ afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
   resetWorkspaceStoreForTests();
+  navigationStore.setState({ resources: new Map() });
 });
 
 afterAll(
@@ -394,6 +397,27 @@ excerpt:
 });
 
 test("a notification restores its owning session to main before opening the child beside it", async () => {
+  const key = { kind: "location", ref: "local:owner" } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: {
+      generation_id: "generation_test",
+      revision: 1,
+      ref: "local:owner",
+      top_level_ref: "local:owner",
+      top_level: true,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  navigationStore.setState({ resources });
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();
   render(

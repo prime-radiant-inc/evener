@@ -11,7 +11,7 @@
 // threadsStore.subscribe wiring), so seeding a thread whose transcript ends
 // on an unanswered ask_user call is what makes the real dock populate -
 // exactly the mechanism a live ask_user call would use.
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AskDock } from "../../panes/session/composer/askDock";
 import { Composer } from "../../panes/session/composer/Composer";
 import { writeDraft } from "../../panes/session/composer/draft";
@@ -22,6 +22,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
+import layout from "./composer-surface.module.css";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -117,8 +118,10 @@ function seedComposerFixtures(): void {
 }
 
 export default function ComposerSurfaceSection() {
+  const [seeded, setSeeded] = useState(false);
   useEffect(() => {
     seedComposerFixtures();
+    setSeeded(true);
   }, []);
 
   return (
@@ -132,20 +135,22 @@ export default function ComposerSurfaceSection() {
         own input row hides while the question is pending.
       </p>
       <ClientProvider client={client}>
-        <ThemeFlip>
-          <div className={styles.row}>
-            <p className={styles.rowLabel}>resting</p>
-            <Composer ref={RESTING_REF} />
-          </div>
-          <div className={styles.row}>
-            <p className={styles.rowLabel}>drafted</p>
-            <Composer ref={DRAFTED_REF} />
-          </div>
-          <div className={styles.row}>
-            <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>
-            <AskDock ref={ASK_REF} />
-          </div>
-        </ThemeFlip>
+        {seeded && (
+          <ThemeFlip>
+            <div className={layout.paneFixture}>
+              <p className={styles.rowLabel}>resting</p>
+              <Composer ref={RESTING_REF} />
+            </div>
+            <div className={layout.paneFixture}>
+              <p className={styles.rowLabel}>drafted</p>
+              <Composer ref={DRAFTED_REF} />
+            </div>
+            <div className={layout.paneFixture}>
+              <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>
+              <AskDock ref={ASK_REF} />
+            </div>
+          </ThemeFlip>
+        )}
       </ClientProvider>
     </section>
   );

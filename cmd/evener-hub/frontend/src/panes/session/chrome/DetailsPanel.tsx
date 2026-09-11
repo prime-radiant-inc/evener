@@ -202,7 +202,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
         )}
         {model.gitBranch && (
           <DetailRow label="branch" testId="session-details-branch">
-            {model.gitBranch}
+            <span className={CLASS.path}>{model.gitBranch}</span>
           </DetailRow>
         )}
         {createdAt && (

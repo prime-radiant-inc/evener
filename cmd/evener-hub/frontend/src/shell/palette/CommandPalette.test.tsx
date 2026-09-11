@@ -294,8 +294,10 @@ test("the palette scopes catalog commands to active diagnostics without mutating
   await user.type(screen.getByRole("combobox"), "/whoami");
   expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
 
-  threadsStore.setState({
-    threads: new Map([["ref_a", testModel({ ref: "ref_a" })]]),
+  act(() => {
+    threadsStore.setState({
+      threads: new Map([["ref_a", testModel({ ref: "ref_a" })]]),
+    });
   });
   await waitFor(() => expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy());
   await user.clear(screen.getByRole("combobox"));
@@ -350,7 +352,7 @@ test("a session-scoped built-in (/interrupt) is never listed as a runnable comma
   connectionStore.getState().connect(fake);
   focusSession("ref_a", { status: { type: "idle" }, activeTurnId: undefined });
   render(<CommandPalette />);
-  act(() => openPalette("/interrupt"));
+  await act(async () => openPalette("/interrupt"));
 
   expect(screen.queryByRole("option", { name: /Interrupt agent/ })).toBeNull();
   expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();

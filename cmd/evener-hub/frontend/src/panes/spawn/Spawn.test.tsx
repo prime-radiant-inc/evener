@@ -337,8 +337,8 @@ test("successful keyless testing refreshes availability without an auth notifica
   const connectProvider = await screen.findByRole("button", { name: "Connect provider" });
   // Finish the lazy dialog's mount and catalog refresh before retaining a button
   // reference: the refresh replaces the initially cached instance rows.
+  await user.click(connectProvider);
   await act(async () => {
-    await user.click(connectProvider);
     await vi.dynamicImportSettled();
   });
   const testConnection = await screen.findByRole("button", { name: "Test connection" });
@@ -2252,7 +2252,9 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
   await setWorkingDir(user, "/tmp/project");
   await user.type(prompt, "do the thing");
-  pastePngInto(prompt);
+  await act(async () => {
+    pastePngInto(prompt);
+  });
   await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
@@ -2280,7 +2282,9 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
   await user.type(prompt, "do the thing");
-  pastePngInto(prompt);
+  await act(async () => {
+    pastePngInto(prompt);
+  });
   await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
@@ -2444,7 +2448,9 @@ test("a settled attachment renders as a thumbnail tile, not a text chip (kata kb
   await settled();
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  pastePngInto(prompt, "shot.png");
+  await act(async () => {
+    pastePngInto(prompt, "shot.png");
+  });
   await waitFor(() => expect(prompt.value).toBe("[image 1]"));
 
   // The whole thumbnail is the control that opens the lightbox, named for the
@@ -2461,7 +2467,9 @@ test("a pending attachment is the same tile, and says nothing about its progress
   await settled();
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  pastePngInto(prompt, "shot.png");
+  await act(async () => {
+    pastePngInto(prompt, "shot.png");
+  });
   await waitFor(() => expect(prompt.value).toBe("[image 1]"));
 
   // An empty slot the thumbnail will fill, named so a screen reader hears
@@ -2490,11 +2498,13 @@ test("focus on a staged attachment's remove button survives its decode settling 
   await settled();
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  act(() => {
+  await act(async () => {
     pastePngInto(prompt, "shot.png");
   });
   const removeButton = screen.getByRole("button", { name: "Remove shot.png" });
-  removeButton.focus();
+  await act(async () => {
+    removeButton.focus();
+  });
   expect(document.activeElement).toBe(removeButton);
 
   await act(async () => {

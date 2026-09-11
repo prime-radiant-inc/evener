@@ -3365,48 +3365,60 @@ describe("notification routing differential (randomized: index vs scan reference
 
     let clock = 10_000;
     const history: AnyNotification[] = [];
-    // Input-only ledger, independent of both reducers and routing helpers.
-    // Each pane/watch starts empty; starts and completions introduce turn ids,
-    // while item notifications never create turns. These turn generators carry
-    // refs, which take precedence over their deliberately contradictory ids.
-    const diagnosticLedger = [...refs, "ref_a"].map((ref) => ({ ref, turns: new Set<string>() }));
+    let duplicateStarts = 0;
     for (let i = 0; i < 200; i += 1) {
       const n = pick(generators)();
       history.push(n);
       clock += 7;
-      const expectedDiagnostics: string[][] = [];
-      if (n.method === "turn/started" || n.method === "turn/completed") {
-        for (const entry of diagnosticLedger) {
-          if (entry.ref !== n.params.ref) continue;
-          if (n.method === "turn/started" && entry.turns.has(n.params.turn.id)) {
-            expectedDiagnostics.push([
-              `applyNotification: turn/started turnId ${n.params.turn.id} already exists in model.turns — replacing it in place instead of appending a duplicate row (turn-id-uniqueness invariant violated)`,
-            ]);
-          }
-          entry.turns.add(n.params.turn.id);
+      // The small, deliberately shared turn-id space generates repeated
+      // starts. Derive the expected diagnostics from the independent scan
+      // state BEFORE either fold, never from what the indexed store logs.
+      const expectedDiagnostics =
+        n.method === "turn/started"
+          ? [...reference.threads.values(), ...reference.watchedThreads.values()]
+              .filter(
+                (model) =>
+                  notificationTargetsThread(n, model) && model.turns.some((turn) => turn.id === n.params.turn.id),
+              )
+              .map(() => [
+                `applyNotification: turn/started turnId ${n.params.turn.id} already exists in model.turns — replacing it in place instead of appending a duplicate row (turn-id-uniqueness invariant violated)`,
+              ])
+          : [];
+      duplicateStarts += expectedDiagnostics.length;
+      const checkDiagnostics = (fold: () => void): void => {
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          fold();
+          expect(errorSpy.mock.calls, `diagnostics for notification ${i}: ${n.method}`).toEqual(expectedDiagnostics);
+        } finally {
+          errorSpy.mockRestore();
         }
-      }
+      };
       const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(clock);
-      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        fake.emitNotification(n);
-        expect(errorSpy.mock.calls, `store diagnostics at notification ${i}`).toEqual(expectedDiagnostics);
+        checkDiagnostics(() => fake.emitNotification(n));
       } finally {
         dateNowSpy.mockRestore();
-        errorSpy.mockRestore();
       }
-      const referenceErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      try {
-        scanFold(reference, n, clock, new Set());
-        expect(referenceErrorSpy.mock.calls, `scan diagnostics at notification ${i}`).toEqual(expectedDiagnostics);
-      } finally {
-        referenceErrorSpy.mockRestore();
+      checkDiagnostics(() => scanFold(reference, n, clock, new Set()));
+      for (const map of [
+        threadsStore.getState().threads,
+        threadsStore.getState().watchedThreads,
+        reference.threads,
+        reference.watchedThreads,
+      ]) {
+        for (const model of map.values()) {
+          expect(new Set(model.turns.map((turn) => turn.id)).size, `unique turn ids after notification ${i}`).toBe(
+            model.turns.length,
+          );
+        }
       }
       // The index must stay in lockstep with the maps after every fold, not
       // just at the end: a skipped re-index must fail at the frame that
       // skipped it, not only if a later random frame observes the staleness.
       assertIndexesConsistent();
     }
+    expect(duplicateStarts).toBeGreaterThan(0);
 
     const actual = snapshotFor({
       threads: threadsStore.getState().threads,
@@ -4658,20 +4670,29 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       const firstRequest = nextHandledRequest(fake, "notes/human/set", () => {
         throw new RequestTimeoutError("request lost before acceptance");
       });
-      const record = await threadsStore.getState().setHumanNote("ref_a", "B");
-      await firstRequest;
-      await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
+      // The draft hook is already mounted: the dispatch, the lost-response
+      // settlement, and the outbox persistence all publish to it, so the whole
+      // region through the persisted submitted draft is owned.
+      const record = await act(async () => {
+        const submitted = await threadsStore.getState().setHumanNote("ref_a", "B");
+        await firstRequest;
+        await waitFor(() => expect(result.current?.submitted?.id).toBe(submitted.clientMutationId));
+        return submitted;
+      });
       expect(result.current?.text).toBe("B");
       const inspector = new MutationOutboxIndexedDB({ indexedDB });
       expect((await inspector.getOutbox(record.clientMutationId))?.payload).toEqual(record.payload);
       fake.on("thread/read", () => snapshot("smoke"));
       const reply = deferred<NotesHumanSetResponse>();
       const retried = nextHandledRequest(fake, "notes/human/set", () => reply.promise);
-      act(() => {
+      // The ready event triggers outbox rediscovery, whose persistence refresh
+      // republishes the retained draft to the mounted hook; own the region
+      // through the retried request it dispatches.
+      const params = await act(async () => {
         fake.emitStateChange("reconnecting");
         fake.emitReady();
+        return retried;
       });
-      const params = await retried;
       expect(params).toEqual(record.payload);
       expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("smoke");
       if (boundary === "push") {
@@ -6393,7 +6414,7 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
     const scope = turnScopeKey("ref_a", "turn_1");
-    upsertSubagentRow(scope, { rowKey: "dlg:1", kind: "running", resultPreview: "" });
+    upsertSubagentRow(scope, { rowKey: "dlg:1", resultPreview: "" });
     const { result: row } = renderHook(() => useSubagentRow(scope, "dlg:1"));
 
     act(() => threadsStore.getState().releaseThread("ref_a"));

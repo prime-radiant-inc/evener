@@ -82,7 +82,19 @@ type retryTracker struct {
 // for the root session, removes any embedded skills directory, waits for
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
-	s.close(context.Background(), true)
+	s.close(context.Background(), closeOptions{cleanupEnv: true})
+}
+
+// CloseForShutdown closes the session with a terminal lifecycle boundary.
+// A cancelled in-flight turn may already have published an interrupted idle
+// boundary; that boundary must not suppress the session's closed notification.
+func (s *Session) CloseForShutdown() {
+	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true})
+}
+
+type closeOptions struct {
+	cleanupEnv    bool
+	forceTerminal bool
 }
 
 // joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
@@ -315,13 +327,29 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 		strings.Join(outstanding, "; "))})
 }
 
-func (s *Session) close(ctx context.Context, cleanupEnv bool) {
+func (s *Session) close(ctx context.Context, options closeOptions) {
 	s.closeOnce.Do(func() {
+		emitTerminal := options.forceTerminal
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
-		// close(budgetCtx, false) reuse it rather than minting their own.
+		// close(budgetCtx, closeOptions{}) reuse it rather than minting their own.
 		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 		defer cancelBudget()
+		// Publish the shared deadline independently of eventsMu: an emitter may
+		// already hold eventsMu.RLock while waiting for the authoritative bridge.
+		// Its send must observe this context so the final close can acquire the
+		// write lock after the deadline instead of waiting behind that emitter.
+		s.closeCtxMu.Lock()
+		s.closeCtx = budgetCtx
+		if s.closeSignal == nil {
+			s.closeSignal = make(chan struct{})
+		}
+		closeSignal := s.closeSignal
+		s.closeCtxMu.Unlock()
+		go func() {
+			<-budgetCtx.Done()
+			close(closeSignal)
+		}()
 		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
 		// items 1-2): set-flag → cancel → join → drain. An in-turn dispose op
 		// admitted via beginDispose() holds disposeWG; close must not begin
@@ -338,7 +366,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
-		emitEnd := !s.sessionEndEmitted
+		emitEnd := emitTerminal || !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
 			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
@@ -504,7 +532,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		}
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
-		if cleanupEnv {
+		if options.cleanupEnv {
 			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
 				observe(s.currentEnv())
 			}
@@ -533,11 +561,20 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 		// 5-6. Emit SESSION_END with final state.
 		if emitEnd {
-			s.emit(events.EventSessionEnd, events.SessionEndData{
+			// A live authoritative bridge gets the terminal boundary with the
+			// same lossless backpressure as every other event. A wedged bridge
+			// cannot be allowed to hold CloseForShutdown here: the shared close
+			// deadline releases sendEventContext, after which the durable closed
+			// state and stream close below still complete.
+			data := events.SessionEndData{
 				Reason: "session_closed",
 				State:  string(SessionClosed),
 				Turns:  turns,
-			})
+			}
+			_, ev, delivered := s.sendEventContext(budgetCtx, events.EventSessionEnd, data, s.activeCausalProvenance())
+			if delivered && s.jobManager != nil {
+				s.jobManager.onSessionEvent(ev)
+			}
 		}
 
 		if s.mcpMgr != nil {

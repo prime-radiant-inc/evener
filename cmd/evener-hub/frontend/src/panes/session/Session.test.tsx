@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { AppwireClient } from "../../protocol/client";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -15,6 +15,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
@@ -378,19 +379,27 @@ test("omits the old live Detail toolbar while transcript and older-history conte
   expect(screen.getByTestId("load-older-row")).toBeTruthy();
   expect(screen.getByTestId("load-older-sentinel")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
-  transcriptDisplayStore.setState({ viewport: "desktop" });
-  transcriptDisplayStore.getState().setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  act(() => {
+    transcriptDisplayStore.setState({ viewport: "desktop" });
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  });
   await waitFor(() =>
     expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Full detail"),
   );
   const status = screen.getByTestId("transcript-view-announcement");
-  transcriptDisplayStore
-    .getState()
-    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { roundTimings: true }));
+  act(() => {
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { roundTimings: true }));
+  });
   await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
-  transcriptDisplayStore
-    .getState()
-    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true }));
+  act(() => {
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true }));
+  });
   await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
   expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
 });
@@ -590,7 +599,7 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   );
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
 
-  const clientMutationId = await seedPendingSend();
+  const clientMutationId = await act(async () => seedPendingSend());
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
@@ -625,8 +634,10 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   expect(screen.queryByTestId("pending-chips")).toBeNull();
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-  await mutationStorage.settleApplied(clientMutationId);
-  await refreshPendingTurnsProjection("ref_a");
+  await act(async () => {
+    await mutationStorage.settleApplied(clientMutationId);
+    await refreshPendingTurnsProjection("ref_a");
+  });
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
@@ -684,11 +695,13 @@ test("an explicitly rejected first send leaves cold-start state for durable reco
   );
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
 
-  const clientMutationId = await seedPendingSend();
+  const clientMutationId = await act(async () => seedPendingSend());
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
-  await mutationStorage.transferToRecovery(clientMutationId, "rejected");
-  await refreshPendingTurnsProjection("ref_a");
+  await act(async () => {
+    await mutationStorage.transferToRecovery(clientMutationId, "rejected");
+    await refreshPendingTurnsProjection("ref_a");
+  });
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
   expect((await mutationStorage.getRecovery(clientMutationId))?.recoveryKind).toBe("rejected");
 });
@@ -2111,13 +2124,19 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
     </ClientProvider>,
   );
   await screen.findByRole("alert");
-  if (pending) await seedPendingSend();
+  if (pending) await act(async () => seedPendingSend());
   expect(screen.queryByText(/send the first message/i)).toBeNull();
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
   expect(screen.getByText("Session unavailable until restart")).toBeTruthy();
 });
 
 test("explicit Resume follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {
+  const hydration = vi.spyOn(threadsStore.getState(), "ensureThread");
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  onTestFinished(() => {
+    hydration.mockRestore();
+    refresh.mockRestore();
+  });
   onTestFinished(stubSessionSlots);
   vi.mocked(ComposerModule.Composer).mockRestore();
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
@@ -2211,12 +2230,36 @@ test("explicit Resume follows the returned identity through transcript and new s
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(resumed).toBe(false);
+  // Reconnect starts discovery after hydration. Observe that original promise
+  // when it starts; a snapshot of spy results here would miss the pending scan.
+  let observeDiscovery!: (completion: Promise<void>) => void;
+  const readyDiscovery = new Promise<void>((resolve) => {
+    observeDiscovery = resolve;
+  });
+  const connectionReady = MutationOutbox.prototype.connectionReady;
+  const discovery = vi.spyOn(MutationOutbox.prototype, "connectionReady").mockImplementation(function (
+    this: MutationOutbox,
+  ) {
+    const completion = connectionReady.call(this);
+    observeDiscovery(completion);
+    return completion;
+  });
+  onTestFinished(() => discovery.mockRestore());
   await user.click(screen.getByRole("button", { name: "Resume session" }));
   await screen.findByText("Current transcript after clear");
   expect(window.location.pathname).toBe("/s/local%3Acurrent-b");
   expect(screen.queryByText("Saved transcript before clear")).toBeNull();
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
   expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(0);
+  expect(hydration).toHaveBeenCalledWith(stableRef);
+  expect(hydration).toHaveBeenCalledWith(currentRef);
+  expect(refresh).toHaveBeenCalledWith(currentRef);
+  await act(async () => {
+    await Promise.all(hydration.mock.results.map((result) => result.value));
+    await Promise.all(refresh.mock.results.map((result) => result.value));
+    await readyDiscovery;
+    await flushPendingTurnsProjectionForTests();
+  });
   expect(await mutationStorage.listOutbox(stableRef)).toEqual([
     expect.objectContaining({ clientMutationId: uncertain, state: "blockedUnknown" }),
   ]);
@@ -2227,6 +2270,7 @@ test("explicit Resume follows the returned identity through transcript and new s
   expect(requests.find(({ method }) => method === "turn/start")?.params).toEqual(
     expect.objectContaining({ ref: currentRef }),
   );
+  await flushPendingTurnsProjectionForTests();
 });
 
 test("offers explicit resume after restart even without pending messages", async () => {
@@ -2460,8 +2504,10 @@ test.each(["notLoaded", "active", "idle"])(
     };
     try {
       status = recoveryStatus;
-      fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
-      await readHeld;
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+        await readHeld;
+      });
       const resume = await screen.findByRole("button", { name: "Resume session" });
       expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
@@ -2528,10 +2574,12 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   expect(screen.getByRole("link", { name: "Open owning session" }).getAttribute("href")).toContain("parent");
   expect(threadsStore.getState().restartBlockingObligations.size).toBe(0);
   expect(threadsStore.getState().mutationAuthorityRefs.has("local:retained-child")).toBe(false);
+  await flushPendingTurnsProjectionForTests();
   expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
   fireEvent.click(refresh);
   await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+  await flushPendingTurnsProjectionForTests();
   expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   // A session retained by its owner offers no force stop anywhere in the
@@ -2688,6 +2736,21 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
   try {
     const fake = connectFakeClient();
     const ref = "local:failed-stop-recovery";
+    // Advancing the discovery clock does not finish its IndexedDB-backed
+    // hydration. This store publication is the reconciliation completion edge.
+    const nextReconciliation = () =>
+      new Promise<void>((resolve) => {
+        const unsubscribe = threadsStore.subscribe((state, previous) => {
+          if (
+            state.mutationReconciliationFailures !== previous.mutationReconciliationFailures &&
+            !state.mutationReconciliationFailures.has(ref)
+          ) {
+            unsubscribe();
+            resolve();
+          }
+        });
+        onTestFinished(unsubscribe);
+      });
     let fenced = false;
     let reads = 0;
     let mutationId = "";
@@ -2721,16 +2784,21 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     });
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
+      await flushPendingTurnsProjectionForTests();
     });
     await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
+    const reconciled = nextReconciliation();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
+      await reconciled;
+      await flushPendingTurnsProjectionForTests();
     });
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
     expect(reads).toBeGreaterThan(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4000);
+      await flushPendingTurnsProjectionForTests();
     });
     expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("preserve this uncertain message");
     expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
@@ -2746,6 +2814,8 @@ test.each(["pending", "failed"])(
   async (outcome) => {
     vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
     const fake = connectFakeClient();
+    const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+    onTestFinished(() => refresh.mockRestore());
     const ref = "local:saved-auto-resume";
     let daemonStarted = false;
     let stopped = false;
@@ -2797,6 +2867,7 @@ test.each(["pending", "failed"])(
       await user.keyboard("{Escape}");
       await act(async () => {
         await threadsStore.getState().send(ref, "continue the saved conversation");
+        await flushPendingTurnsProjectionForTests();
       });
       await waitFor(() => expect(daemonStarted).toBe(true));
       if (outcome === "failed") {
@@ -2806,6 +2877,7 @@ test.each(["pending", "failed"])(
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+      refresh.mockClear();
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       await waitFor(() => expect(stopped).toBe(true));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
@@ -2814,6 +2886,11 @@ test.each(["pending", "failed"])(
       ]);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+      expect(refresh).toHaveBeenCalledWith(ref);
+      await act(async () => {
+        await Promise.all(refresh.mock.results.map((result) => result.value));
+        await flushPendingTurnsProjectionForTests();
+      });
       expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("continue the saved conversation");
     } finally {
       await act(async () => rejectRead(blocked()));

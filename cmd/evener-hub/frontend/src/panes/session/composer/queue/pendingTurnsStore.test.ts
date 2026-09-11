@@ -69,24 +69,7 @@ async function connect(overrides: Partial<Thread> = {}): Promise<FakeClient> {
   return fake;
 }
 
-// Suppress React's "not configured to support act(...)" warnings. These fire
-// because zustand store updates trigger async re-renders that settle after
-// act() returns in jsdom. The tests are correct; the warning is a known
-// limitation of the jsdom + zustand + testing-library interaction. Matched
-// on its exact, stable one-arg text rather than blanket-silenced, so any
-// *other* console.error a regression here might produce still reaches real
-// console.error and stays visible in test output.
-const ACT_ENVIRONMENT_WARNING = "The current testing environment is not configured to support act(...)";
-const realConsoleError = console.error.bind(console);
-let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
-
 beforeEach(() => {
-  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    if (args.length === 1 && args[0] === ACT_ENVIRONMENT_WARNING) {
-      return;
-    }
-    realConsoleError(...args);
-  });
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
@@ -94,7 +77,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  consoleErrorSpy.mockRestore();
   cleanup();
   vi.restoreAllMocks();
   // Every test here calls ensureThread(ref)/connect(fake) directly for
@@ -515,9 +497,9 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     if (clientMutationId === mutationId) signalReceiptSettled();
     return settled;
   });
-  replayReceipt();
-  await receiptSettled;
   await act(async () => {
+    replayReceipt();
+    await receiptSettled;
     await refreshPendingTurnsProjection("ref_a");
   });
   expect(await storage.listOutbox("ref_a")).toEqual([]);
@@ -552,8 +534,8 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
       },
     });
   });
-  await identitySettled;
   await act(async () => {
+    await identitySettled;
     await refreshPendingTurnsProjection("ref_a");
   });
 
