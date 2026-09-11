@@ -70,11 +70,17 @@ function timelineIdentity(item: MobileTimelineItem): string {
   return item.transcriptKey ?? item.id;
 }
 
+// The canonical identity of a clustered activity member — the same
+// transcriptKey-first rule timelineIdentity applies to a top-level row.
+function activityIdentity(activity: ActivityMember): string {
+  return activity.transcriptKey ?? activity.id;
+}
+
 function timelineIdentities(item: MobileTimelineItem): Set<string> {
   const identities = new Set([timelineIdentity(item)]);
   if (item.kind === "activity" && item.members) {
     for (const member of item.members) {
-      identities.add(member.transcriptKey ?? member.id);
+      identities.add(activityIdentity(member));
     }
   }
   const source = attachmentSourceIdentity(item);
@@ -192,6 +198,57 @@ function activityClusterSegments(
   const members = cluster.members ? [...cluster.members] : [];
   members[updatedIndex] = updatedMember;
   return projectActivityMembers(members);
+}
+
+// The activity a live notification addresses by wire item id: either a
+// top-level row, or one member of a clustered row. Wire ids address members
+// directly, so every delta and the lifecycle handler resolve through this —
+// searching top-level rows alone leaves a later member unreachable (a reread)
+// and a first member stale behind the cluster's own detail.
+interface ActivityTarget {
+  row: Extract<MobileTimelineItem, { kind: "activity" }>;
+  rowIndex: number;
+  memberIndex: number | null;
+  activity: ActivityMember;
+}
+
+function findActivityTarget(
+  items: MobileTimelineItem[],
+  itemId: string,
+): ActivityTarget | null {
+  for (const [rowIndex, row] of items.entries()) {
+    if (row.kind !== "activity") continue;
+    const memberIndex = (row.members ?? []).findIndex(
+      (member) => member.id === itemId,
+    );
+    const member = row.members?.[memberIndex];
+    if (member) return { row, rowIndex, memberIndex, activity: member };
+    if (row.id === itemId) {
+      return { row, rowIndex, memberIndex: null, activity: row };
+    }
+  }
+  return null;
+}
+
+// Write a new detail onto the addressed activity. A clustered member is
+// replaced through the cluster projector, so every other member keeps its own
+// identity, output and truncation state, and the cluster's own top-level
+// fields (which mirror its first member) stay in step with it.
+function replaceActivityTargetDetail(
+  items: MobileTimelineItem[],
+  target: ActivityTarget,
+  detail: ActivityDetail,
+): MobileTimelineItem[] {
+  const replacement =
+    target.memberIndex === null
+      ? [{ ...target.row, detail }]
+      : activityClusterSegments(target.row, target.memberIndex, {
+          ...target.activity,
+          detail,
+        });
+  return items.flatMap((item, index) =>
+    index === target.rowIndex ? replacement : [item],
+  );
 }
 
 export type ConversationStatus =
@@ -2717,14 +2774,17 @@ export function createConversationStore() {
               projectedRaw === null
                 ? null
                 : decorateLifecycleItem(projectedRaw, params.item);
-            const existing = conv.items.find(
-              (candidate) => candidate.id === params.item.id,
-            );
+            // A sparse completion carries no text, so the accumulated output
+            // must come from the row the event settles — which is a clustered
+            // member whenever this item runs beside its neighbours.
+            const existing = findActivityTarget(
+              conv.items,
+              params.item.id,
+            )?.activity;
             const preservesReasoningOutput =
               projected?.kind === "activity" &&
               projected.family === "reasoning" &&
-              existing?.kind === "activity" &&
-              existing.family === "reasoning" &&
+              existing?.family === "reasoning" &&
               params.item.text === undefined;
             const projectedWithReasoning = preservesReasoningOutput
               ? {
@@ -2916,45 +2976,38 @@ export function createConversationStore() {
 
           case "item/reasoning/summaryTextDelta": {
             const params = n.params as { itemId: string; delta: string };
-            const existing = conv.items.find(
-              (i) => i.id === params.itemId && i.kind === "activity",
-            );
+            const target = findActivityTarget(conv.items, params.itemId);
             // Task 2A-Family: exact delta family from required item.family
             // (never label inference). Reasoning delta mutates only family=
             // reasoning. Missing target, wrong family, or unknown family =>
             // no mutation/live revision/freeze change, request authoritative
             // reread.
-            if (
-              existing?.kind !== "activity" ||
-              existing.family !== "reasoning"
-            ) {
+            if (target === null || target.activity.family !== "reasoning") {
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
               break;
             }
+            const identity = activityIdentity(target.activity);
             // F12: Per-item truncation ownership — frozen guard.
-            if (truncatedItemIds.has(timelineIdentity(existing))) {
+            if (truncatedItemIds.has(identity)) {
               break;
             }
-            const combined = (existing.detail.output ?? "") + params.delta;
+            const combined =
+              (target.activity.detail.output ?? "") + params.delta;
             const truncated = truncateText(combined, MAX_ITEM_BYTES);
             if (truncated !== combined) {
-              truncatedItemIds.add(timelineIdentity(existing));
+              truncatedItemIds.add(identity);
             }
             // Mark live revision only on accepted exact update.
-            markLiveOwned(timelineIdentity(existing));
+            markLiveOwned(identity);
             set({
               conversation: {
                 ...conv,
-                items: conv.items.map((item) =>
-                  item.kind === "activity" && item.id === params.itemId
-                    ? {
-                        ...item,
-                        detail: { ...item.detail, output: truncated },
-                      }
-                    : item,
-                ),
+                items: replaceActivityTargetDetail(conv.items, target, {
+                  ...target.activity.detail,
+                  output: truncated,
+                }),
               },
             });
             break;
@@ -2966,9 +3019,7 @@ export function createConversationStore() {
               callId: string;
               delta: string;
             };
-            const existing = conv.items.find(
-              (i) => i.id === params.itemId && i.kind === "activity",
-            );
+            const target = findActivityTarget(conv.items, params.itemId);
             // Task 2A-Family: exact delta family from required item.family
             // (never label inference). Tool-output delta mutates only family=
             // tool AND requires stored detail.callId and incoming params.callId
@@ -2976,13 +3027,13 @@ export function createConversationStore() {
             // either callId, mismatch, unknown family, or wrong family => no
             // mutation/live revision/freeze change, request authoritative
             // reread.
-            if (existing?.kind !== "activity") {
+            if (target === null) {
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
               break;
             }
-            if (existing.family !== "tool") {
+            if (target.activity.family !== "tool") {
               // Wrong family or unknown family — not a tool item.
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
@@ -2990,7 +3041,7 @@ export function createConversationStore() {
               break;
             }
             {
-              const itemCallId = existing.detail.callId;
+              const itemCallId = target.activity.detail.callId;
               if (
                 typeof itemCallId !== "string" ||
                 typeof params.callId !== "string" ||
@@ -3003,28 +3054,26 @@ export function createConversationStore() {
                 break;
               }
             }
+            const identity = activityIdentity(target.activity);
             // F12: Per-item truncation ownership — frozen guard.
-            if (truncatedItemIds.has(timelineIdentity(existing))) {
+            if (truncatedItemIds.has(identity)) {
               break;
             }
-            const combined = (existing.detail.output ?? "") + params.delta;
+            const combined =
+              (target.activity.detail.output ?? "") + params.delta;
             const truncated = truncateText(combined, MAX_ITEM_BYTES);
             if (truncated !== combined) {
-              truncatedItemIds.add(timelineIdentity(existing));
+              truncatedItemIds.add(identity);
             }
             // Mark live revision only on accepted exact update.
-            markLiveOwned(timelineIdentity(existing));
+            markLiveOwned(identity);
             set({
               conversation: {
                 ...conv,
-                items: conv.items.map((item) =>
-                  item.kind === "activity" && item.id === params.itemId
-                    ? {
-                        ...item,
-                        detail: { ...item.detail, output: truncated },
-                      }
-                    : item,
-                ),
+                items: replaceActivityTargetDetail(conv.items, target, {
+                  ...target.activity.detail,
+                  output: truncated,
+                }),
               },
             });
             break;

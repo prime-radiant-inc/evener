@@ -14,6 +14,7 @@ import type {
   Turn,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
+  ActivityMember,
   MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
@@ -12206,6 +12207,175 @@ describe("ConversationStore", () => {
         .conversation?.items.find((i) => i.id === "assistant-1");
       expect(row?.kind).toBe("assistant");
       expect(row?.kind === "assistant" && row.streaming).toBe(true);
+    });
+  });
+
+  describe("Task 2A-Cluster: live updates resolve clustered members", () => {
+    async function openProjectedWithItems(items: ThreadItem[]): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items })] }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      return { store, service };
+    }
+
+    function toolItem(
+      id: string,
+      transcriptKey: string,
+      callId: string,
+      output: string,
+    ): ThreadItem {
+      return {
+        type: "commandExecution",
+        id,
+        transcriptKey,
+        toolName: "shell",
+        status: "completed",
+        callId,
+        output,
+      };
+    }
+
+    function reasoningItem(
+      id: string,
+      transcriptKey: string,
+      text: string,
+    ): ThreadItem {
+      return { type: "reasoning", id, transcriptKey, status: "completed", text };
+    }
+
+    function clusterMembers(
+      store: ReturnType<typeof createConversationStore>,
+      rowId: string,
+    ): ActivityMember[] {
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === rowId);
+      expect(row?.kind).toBe("activity");
+      if (row?.kind !== "activity") throw new Error("expected an activity row");
+      expect(row.members?.length).toBe(2);
+      return row.members ?? [];
+    }
+
+    function toolOutputDelta(
+      store: ReturnType<typeof createConversationStore>,
+      itemId: string,
+      callId: string,
+      delta: string,
+    ): void {
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId,
+          callId,
+          delta,
+        },
+      } as AnyNotification);
+    }
+
+    it("applies a tool-output delta aimed at a later clustered member in place", async () => {
+      const { store } = await openProjectedWithItems([
+        toolItem("wire-a", "key-a", "call-a", "first"),
+        toolItem("wire-b", "key-b", "call-b", "second"),
+      ]);
+
+      toolOutputDelta(store, "wire-b", "call-b", " MORE");
+
+      const [memberA, memberB] = clusterMembers(store, "wire-a");
+      expect(memberB?.detail.output).toBe("second MORE");
+      // The other member keeps its own identity, output and position.
+      expect(memberA?.detail.output).toBe("first");
+      expect(memberA?.transcriptKey).toBe("key-a");
+      expect(memberB?.transcriptKey).toBe("key-b");
+    });
+
+    it("applies a tool-output delta aimed at the first clustered member to that member, not only the cluster", async () => {
+      const { store } = await openProjectedWithItems([
+        toolItem("wire-a", "key-a", "call-a", "first"),
+        toolItem("wire-b", "key-b", "call-b", "second"),
+      ]);
+
+      toolOutputDelta(store, "wire-a", "call-a", " MORE");
+
+      const [memberA, memberB] = clusterMembers(store, "wire-a");
+      expect(memberA?.detail.output).toBe("first MORE");
+      expect(memberB?.detail.output).toBe("second");
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "wire-a");
+      expect(row?.kind === "activity" && row.detail.output).toBe("first MORE");
+    });
+
+    it("applies a reasoning delta aimed at a later clustered member in place", async () => {
+      const { store } = await openProjectedWithItems([
+        reasoningItem("wire-a", "key-a", "first"),
+        reasoningItem("wire-b", "key-b", "second"),
+      ]);
+
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "wire-b",
+          delta: " MORE",
+        },
+      } as AnyNotification);
+
+      const [memberA, memberB] = clusterMembers(store, "wire-a");
+      expect(memberB?.detail.output).toBe("second MORE");
+      expect(memberA?.detail.output).toBe("first");
+    });
+
+    it("refuses a delta aimed at a frozen later clustered member's wire id", async () => {
+      const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
+      const { store } = await openProjectedWithItems([
+        toolItem("wire-a", "key-a", "call-a", "first"),
+        toolItem("wire-b", "key-b", "call-b", oversized),
+      ]);
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+      const frozenOutput = clusterMembers(store, "wire-a")[1]?.detail.output;
+
+      toolOutputDelta(store, "wire-b", "call-b", " MORE");
+
+      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
+        frozenOutput,
+      );
+    });
+
+    it("preserves a later clustered member's output when a sparse completion omits text", async () => {
+      const { store } = await openProjectedWithItems([
+        reasoningItem("wire-a", "key-a", "first"),
+        reasoningItem("wire-b", "key-b", "accumulated"),
+      ]);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            type: "reasoning",
+            id: "wire-b",
+            transcriptKey: "key-b",
+            status: "completed",
+          },
+        },
+      } as AnyNotification);
+
+      const [memberA, memberB] = clusterMembers(store, "wire-a");
+      expect(memberB?.detail.output).toBe("accumulated");
+      expect(memberA?.detail.output).toBe("first");
     });
   });
   // --- C1: Service-specific operation binding ---------------------------------------
