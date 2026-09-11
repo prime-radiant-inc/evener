@@ -1024,7 +1024,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// append holds it across a write and an fsync), and poisoned is never
 		// cleared, so a stale read costs one turn that then meets the writer's
 		// own refusal.
-		if err := s.refuseTurnOnPoisonedTranscript(); err != nil {
+		if err := s.refuseTurnOnPoisonedTranscript(processCtx); err != nil {
 			return strings.Join(outputs, "\n"), err
 		}
 		// Capture the kind actually being processed this iteration before the
@@ -1195,6 +1195,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		awaiting := s.State() == SessionAwaiting
 		var fu string
 		if !awaiting {
+			// Follow-ups need no such guard: they live in memory for this
+			// process only, so a refusal that leaves one popped loses nothing a
+			// restart could have recovered. The queue below is durable.
 			fu = s.popFollowUp()
 		}
 		var queued queuedInput
@@ -1204,7 +1207,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// taking the message rather than after: a message popped for a turn
 			// that is then refused is in no transcript, no queue and no session.
 			// Left queued, it is waiting when the restart recovers the writer.
-			if err := s.refuseTurnOnPoisonedTranscript(); err != nil {
+			if err := s.refuseTurnOnPoisonedTranscript(processCtx); err != nil {
 				return strings.Join(outputs, "\n"), err
 			}
 			// kata 111a / t5j6: each drained queued message becomes a distinct user
@@ -1379,16 +1382,21 @@ func (s *Session) endInputAtTurnFailure() {
 
 // refuseTurnOnPoisonedTranscript reports why no further turn may run when the
 // transcript has stopped accepting records, and ends the input the way a failed
-// turn ends one — admission cleared the emit-once gate on its way in, so a
-// refusal that returns without this leaves the session looking mid-input to
-// every client on the event stream. It reads the writer's own lock outside s.mu
-// (an append holds that lock across a write and an fsync), and poisoned is never
-// cleared, so a stale read costs one turn that then meets the writer's own
-// refusal.
-func (s *Session) refuseTurnOnPoisonedTranscript() error {
+// turn ends one: settle the processing boundary, then emit. Admission cleared
+// the emit-once gate on its way in, so a refusal that returns without the
+// emission leaves the session looking mid-input to every client on the event
+// stream; and a refusal that emits without settling claims an idle the session
+// is not in, since a turn may already have run in this loop. Settling is a no-op
+// when no turn did, which is the first iteration's case.
+//
+// It reads the writer's own lock outside s.mu (an append holds that lock across
+// a write and an fsync), and poisoned is never cleared, so a stale read costs
+// one turn that then meets the writer's own refusal.
+func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 	if !s.attachedTranscript().Poisoned() {
 		return nil
 	}
+	s.finishProcessingAtBoundary(ctx, SessionIdle)
 	s.endInputAtTurnFailure()
 	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
 }

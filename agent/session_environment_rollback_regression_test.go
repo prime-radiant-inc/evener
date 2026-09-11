@@ -734,13 +734,14 @@ func armEnvironmentPartialWriteAfter(fs *environmentSyncFailureFS, skip int) {
 	fs.mu.Unlock()
 }
 
-// assertOneTurnFailedSessionEnd requires the refused input to have ended the
-// way a failed turn ends one. Without it the session looks perpetually mid-input
-// to every client on the event stream, because admission already cleared the
-// emit-once gate on its way in.
-func assertOneTurnFailedSessionEnd(t *testing.T, drained []events.SessionEvent) {
+// assertRefusalEndedTheInput requires the refused input to have ended the way a
+// failed turn ends one: the session settled idle, and one SESSION_END said so.
+// Without the emission the session looks perpetually mid-input to every client
+// on the event stream, because admission cleared the emit-once gate on its way
+// in; without the settle the emission claims an idle the session is not in.
+func assertRefusalEndedTheInput(t *testing.T, drained []events.SessionEvent) events.SessionEndData {
 	t.Helper()
-	var reasons []string
+	var ends []events.SessionEndData
 	for _, event := range drained {
 		if event.Kind != events.EventSessionEnd {
 			continue
@@ -749,11 +750,12 @@ func assertOneTurnFailedSessionEnd(t *testing.T, drained []events.SessionEvent) 
 		if !ok {
 			t.Fatalf("session-end event data = %#v, want SessionEndData", event.Data)
 		}
-		reasons = append(reasons, data.Reason)
+		ends = append(ends, data)
 	}
-	if len(reasons) != 1 || reasons[0] != "turn_failed" {
-		t.Fatalf("session-end reasons after the refusal = %v, want exactly one turn_failed", reasons)
+	if len(ends) != 1 || ends[0].Reason != "turn_failed" {
+		t.Fatalf("session-end events after the refusal = %+v, want exactly one turn_failed", ends)
 	}
+	return ends[0]
 }
 
 // TestPoisonedWriterRefusesTheNextInput: a poisoned writer has stopped
@@ -795,7 +797,12 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	if after := len(sessionHistoryText(sess)); after != before {
 		t.Fatal("the refused input changed model history")
 	}
-	assertOneTurnFailedSessionEnd(t, drainPendingEvents(sess))
+	// The state the emission reports is not asserted here: no turn ran in this
+	// call, so the session is still in whatever the previous one left it
+	// (awaiting, for this fixture) while the emission carries the failure exit's
+	// fixed idle. That disagreement belongs to the shared emitter, not to this
+	// refusal — see the report's fix round 3.
+	assertRefusalEndedTheInput(t, drainPendingEvents(sess))
 }
 
 // TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn: admission is not the
@@ -837,7 +844,13 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("model requests = %d, want the follow-up never to have run", got)
 	}
-	assertOneTurnFailedSessionEnd(t, drainPendingEvents(sess))
+	// A turn ran and nothing is left waiting, so the session really is idle and
+	// the emission has to agree: a refusal that reported an idle the session was
+	// not in would be a worse answer than no emission at all.
+	end := assertRefusalEndedTheInput(t, drainPendingEvents(sess))
+	if got := sess.WireState(); got != string(SessionIdle) || end.State != got {
+		t.Fatalf("session wire state = %q and session-end state = %q, want both %q", got, end.State, SessionIdle)
+	}
 }
 
 // TestPoisonedWriterLeavesAQueuedMessageQueued: the drain pops the queue head
@@ -875,5 +888,7 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 	if got := sess.QueueDepth(); got != 1 {
 		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
-	assertOneTurnFailedSessionEnd(t, drainPendingEvents(sess))
+	// The state is deliberately not idle here: the message this refusal kept is
+	// work still pending, which is what WireState reports.
+	assertRefusalEndedTheInput(t, drainPendingEvents(sess))
 }
