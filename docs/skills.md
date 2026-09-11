@@ -230,6 +230,41 @@ recorded, not even with an invalid one. Sessions persisted before this
 lifecycle metadata existed resume with fresh compaction state; nothing is
 reconstructed from old tool calls or transcript prose.
 
+A fold publication claims its operation only when the fold actually
+compacted something and the operation is the one the fold's own requesting
+dispatch captured. The claim is generation-matched and runs inside the
+winning publish's critical section, so:
+
+- **No-op publications claim nothing.** A publication that staged no actual
+  compaction (an unchanged publication) leaves the operation pending for the
+  next real fold — a claimed cycle always corresponds to content that truly
+  compacted.
+- **Unrelated folds claim nothing.** A fold whose requesting caller captured
+  no operation — for example a manual compact racing a pending one —
+  publishes its own compaction without adopting the pending operation or
+  touching its selection; the pending operation stays armed for its own
+  dispatch.
+- **Losing attempts record nothing.** A fold that loses the publication race
+  attaches no receipts and cancels nothing; only the winner claims. A forced
+  dispatch that exhausts its retries without ever publishing cancels its own
+  operation with a `forced_not_published` notice — a forced intent never
+  lingers past the dispatch that owned it.
+
+The winning claim moves the operation to its published phase under the
+publication's identity and stamps a typed receipt on every compaction turn
+the publication wrote — the checkpoint and the summary turn of one
+publication carry the same receipt, and the handoff list coalesces them into
+one final handoff per publication. Delivery completes only after the
+publication's transcript flush and metadata save both land: then the
+operation slot and its selection are consumed, the cycle reopens for a new
+request, and the receipt flips to delivered. A crash between the winning
+publication and its metadata save is repaired on restart: transcript
+receipts are reconciled against the persisted snapshot before history is
+resumed, so a published operation resumes delivery-only (never re-armed), a
+delivered operation stays consumed, and a cancelled one stays retired. A
+receipt only ever advances its own generation, and a stale snapshot can
+never resurrect or repeat a claimed cycle.
+
 The context-pressure nudge lists the loaded skills either way: with
 `compact_context` available it asks for the selection through `reload_skills`;
 without the tool it lists the skills for awareness and keeps its existing

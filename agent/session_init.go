@@ -822,6 +822,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		profile = provider.WithCheapModel(profile, meta.CheapModel)
 	}
 
+	// Reconcile the typed compaction handoff receipts from ALL decoded
+	// transcript entries into the persisted lifecycle snapshot BEFORE
+	// ResumeHistory seeds the session's history: the receipts live on
+	// pre-marker entries the resume anchor would discard, and the snapshot
+	// may be staler than the transcript (a crash or failed save between a
+	// winning publication and its metadata write). A stale snapshot cannot
+	// repeat a delivered operation or attach a retired selection to another
+	// fold; nothing is inferred from old text or tool calls.
+	reconcileSkillCompactionReceipts(transcriptEntries, meta.Skills, meta.ID)
+
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	if restoreCfg.resumeHistory != nil {

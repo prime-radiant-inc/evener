@@ -248,7 +248,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// decaying through successive summaries.
 			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
 
+			// This per-request fold is the REQUESTING caller of the pending
+			// AUTOMATIC operation (the one this round's elicitation just
+			// accepted, or one an earlier round deferred): its winning
+			// publication claims exactly that generation, note generation
+			// included — even for an empty note. A FORCED operation is never
+			// captured here; only its round-tail dispatch claims it.
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 			}
@@ -1377,7 +1384,9 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// publish. A total loss leaves s.history as the winning competitor
 	// published it, which is a valid state for the retry this recovery
 	// precedes.
-	_, _ = s.foldWithForceCompact(ctx, "")
+	// The content-filter recovery fold captures no compaction operation —
+	// it is not any intent's requesting caller.
+	_, _ = s.foldWithForceCompact(ctx, "", nil)
 	s.maybeAutoSave()
 }
 

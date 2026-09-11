@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -221,20 +222,32 @@ func (s *Session) requestForceCompact(instructions string) error {
 // and this tail cannot lose the steering. A bare transient without an
 // operation (the requestForceCompact primitive) keeps its own instructions.
 //
-// The persisted operation itself stays PENDING on BOTH fold success and
-// failure: consuming, claiming, or cancelling it from a fold result belongs to
-// the generation-matched publication claim inside the fold transaction, not
-// here. On conflict the caller's compaction_instructions are still intent, not
-// pressure, and losing them without a trace hides real steering loss.
+// The pending FORCED operation is captured here — this dispatch is its
+// REQUESTING caller — and handed to the fold, whose winning publication claims
+// exactly that generation. An automatic operation is never captured by this
+// path: only the per-request fold that elicited it can claim it. On total
+// publication loss, foldWithForceCompact retires the captured forced operation
+// (forced_not_published); on conflict the caller's compaction_instructions are
+// still intent, not pressure, and losing them without a trace hides real
+// steering loss.
 func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	s.mu.Lock()
 	requested := s.forceRequested
 	instructions := s.pendingInstructions
 	s.forceRequested = false
 	s.pendingInstructions = ""
+	var captured *schema.SkillCompactionOperation
 	if op := s.skillLifecycle.PendingCompaction; op != nil && op.Origin == skillCompactionOriginForced && op.Phase == skillCompactionPhasePending {
 		// The persisted owner snapshot wins over the transient copy.
 		instructions = op.Instructions
+		captured = &schema.SkillCompactionOperation{
+			Generation:     op.Generation,
+			Origin:         op.Origin,
+			Instructions:   op.Instructions,
+			NoteGeneration: op.NoteGeneration,
+			Selection:      schema.SkillReloadSelection{State: op.Selection.State, Names: slices.Clone(op.Selection.Names), ErrorCode: op.Selection.ErrorCode},
+			Phase:          op.Phase,
+		}
 	}
 	s.mu.Unlock()
 	if !requested || s.contextMgr == nil {
@@ -248,11 +261,13 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	// conflict; on total failure this is a best-effort self-compaction, so
 	// the fold's own loss stays silent
 	// rather than retrying indefinitely or failing the round — a competing
-	// fold already relieved whatever pressure prompted this one. The
+	// fold already relieved whatever pressure prompted this one. The forced
+	// operation's terminal retirement notice (when one was captured) is
+	// emitted by the fold driver itself. The
 	// caller's compaction_instructions are different: they are intent, not
 	// pressure, and the competitor did not honor them, so losing them
 	// without a trace hides real steering loss.
-	if ok, refusal := s.foldWithForceCompact(ctx, instructions); !ok {
+	if ok, refusal := s.foldWithForceCompact(ctx, instructions, captured); !ok {
 		if strings.TrimSpace(instructions) != "" {
 			reason := "a concurrent compaction published first"
 			if refusal != nil {
