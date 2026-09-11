@@ -60,6 +60,38 @@ func completeSkillContentPresent(req llm.Request, identity schema.SkillContentId
 	return false
 }
 
+// completeSkillContentInTurns reports whether the retained history itself
+// carries one complete typed skill-context envelope whose canonical name,
+// source, and rendered digest match identity exactly — the reuse check for
+// content that survived a fold in the retained tail or was restored by
+// another activation. Like completeSkillContentPresent it reads only
+// well-formed envelope carriers, never inferring intent from arbitrary text.
+func completeSkillContentInTurns(turns []schema.Turn, identity schema.SkillContentIdentity) bool {
+	if identity.Name == "" || identity.RenderedDigest == "" {
+		return false
+	}
+	for _, turn := range turns {
+		for _, part := range turn.Message.Content {
+			var content string
+			switch part.Kind {
+			case llm.ContentText:
+				content = part.Text
+			case llm.ContentToolResult:
+				if part.ToolResult == nil {
+					continue
+				}
+				content, _ = part.ToolResult.Content.(string)
+			default:
+				continue
+			}
+			if envelopeCarriesIdentity(content, identity) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // envelopeCarriesIdentity scans content for complete skill-context envelopes
 // and reports whether one matches identity's name, source, and rendered digest.
 func envelopeCarriesIdentity(content string, identity schema.SkillContentIdentity) bool {

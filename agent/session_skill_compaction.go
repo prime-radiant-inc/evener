@@ -305,6 +305,30 @@ func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompact
 	s.skillLifecycle.PendingHandoffs = append(s.skillLifecycle.PendingHandoffs, receipt)
 }
 
+// removeSkillCompactionHandoffsLocked removes the pending handoff receipts
+// identified by publication identity — the consumption that prevents repeat
+// delivery after a handoff's reload or reminder was durably admitted. Only the
+// named publications are removed: identity-less terminal cancellations keep
+// their records, and the cycle's operation slot (PendingCompaction) is never
+// touched, so a concurrent newer pending operation is undisturbed. Callers
+// hold s.mu; the return reports whether anything was removed.
+func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bool) bool {
+	if len(publications) == 0 || len(s.skillLifecycle.PendingHandoffs) == 0 {
+		return false
+	}
+	kept := s.skillLifecycle.PendingHandoffs[:0]
+	removed := false
+	for _, handoff := range s.skillLifecycle.PendingHandoffs {
+		if publications[handoff.Operation.PublicationID] {
+			removed = true
+			continue
+		}
+		kept = append(kept, handoff)
+	}
+	s.skillLifecycle.PendingHandoffs = kept
+	return removed
+}
+
 // capturableAutomaticCompaction returns a detached copy of the pending
 // AUTOMATIC operation the per-request fold may claim — the operation this
 // round's elicitation accepted (or an earlier round deferred). It returns nil

@@ -66,11 +66,23 @@ type SkillReloadSelection struct {
 // SkillInventorySummary is the typed loaded-skill metadata handed to note
 // elicitation so the model can choose reloads by canonical name.
 type SkillInventorySummary struct {
-	Name         string
-	Description  string
-	Availability string
-	HasOrdinary  bool
-	HasPreload   bool
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Availability string `json:"availability"`
+	HasOrdinary  bool   `json:"has_ordinary"`
+	HasPreload   bool   `json:"has_preload"`
+}
+
+// SkillReloadReminder is the typed complete loaded-skill inventory a
+// compaction handoff delivers when its selection authorized no reload: every
+// inventory entry with its availability classification, linked to the
+// publication whose fold dropped the bodies. It carries metadata only —
+// never instruction bodies.
+type SkillReloadReminder struct {
+	Revision      uint64                  `json:"revision"`
+	PublicationID string                  `json:"publication_id,omitempty"`
+	Selection     SkillReloadSelection    `json:"selection"`
+	Inventory     []SkillInventorySummary `json:"inventory"`
 }
 
 // SkillCompactionOperation is one generation-owned compaction intent: the
@@ -163,6 +175,10 @@ type SkillTurnState struct {
 	// Compaction carries the typed handoff receipt a winning fold publication
 	// attaches to its checkpoint/summary turns; nil on every other turn.
 	Compaction *SkillCompactionReceipt `json:"compaction,omitempty"`
+	// ReloadReminder carries the typed inventory notification a compaction
+	// handoff records when its selection is absent or invalid; nil on every
+	// other turn.
+	ReloadReminder *SkillReloadReminder `json:"reload_reminder,omitempty"`
 }
 
 // Clone detaches every mutable record and always initializes the inventory.
@@ -231,6 +247,12 @@ func (s *SkillTurnState) Clone() *SkillTurnState {
 		compaction := *s.Compaction
 		compaction.Operation.Selection.Names = slices.Clone(compaction.Operation.Selection.Names)
 		out.Compaction = &compaction
+	}
+	if s.ReloadReminder != nil {
+		reminder := *s.ReloadReminder
+		reminder.Inventory = slices.Clone(s.ReloadReminder.Inventory)
+		reminder.Selection.Names = slices.Clone(s.ReloadReminder.Selection.Names)
+		out.ReloadReminder = &reminder
 	}
 	return &out
 }

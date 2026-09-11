@@ -278,6 +278,53 @@ The context-pressure nudge lists the loaded skills either way: with
 without the tool it lists the skills for awareness and keeps its existing
 note advice, never requesting a structured response the model cannot submit.
 
+### Reload delivery after compaction
+
+The next model request after a publication consumes its handoff receipt —
+and every other recorded, unconsumed handoff, whichever phase the
+publication or restart reconciliation left it in. A valid selection reloads
+exactly its named skills: each reload reopens the ordinary record's own
+recorded source — never a catalog winner, so a missing or identity-replaced
+source fails explicitly (`source_missing` / `source_changed`) rather than
+retargeting — and delivers the complete current bytes from disk through the
+shared loader and renderer. A changed source is reported with both the old
+and new digests and both flag generations in the typed outcome. A name held
+only by a preload needs no disk load: selecting it is a no-op.
+
+An absent or invalid selection authorizes no body. Instead the session
+delivers one complete typed inventory notification listing every loaded
+skill — both provenances when a name holds a frozen preload and an ordinary
+activation — each classified from current source metadata and actual
+retained content:
+
+| Availability | Meaning |
+|---|---|
+| `already_present` | Complete current content is already in the retained tail or was restored by another activation; reusing it needs nothing. |
+| `reloadable` | The session can reload it: an authorized same-source continuation regardless of current flags, or current controls still admit the reload route. |
+| `requires_user_activation` | Hidden but user-invocable: current controls block the model's routes; only a genuine user invocation restores it. |
+| `unavailable` | Both flags block every ordinary route, or the recorded source can no longer be read (each unreadable source is diagnosed). |
+| `permanent` | A frozen role preload, which keeps its permanent-prompt lifetime. |
+
+The full list is always delivered — never trimmed to fit. In sessions
+without the `use_skill` tool the reminder explains the untracked fallback:
+reading the skill's `SKILL.md` directly restores the text to the conversation
+but is not a tracked activation.
+
+Reload bodies are admitted in selection order against the request's real
+remaining budget: a new explicit activation already in the conversation
+outranks them, each admitted reload consumes from the running total, and one
+that does not fit fails individually with a typed `context_budget` outcome —
+never a truncated body, never a second compaction or model-repair round.
+Complete content already present in the retained tail or restored by another
+activation is reused rather than duplicated, keeping a pending delivery
+obligation until final admission. A failed reload stays visible as its own
+typed outcome and never erases the earlier successful record.
+
+After the reload carriers and obligations (or the reminder notification) are
+durably recorded, the consumed receipts are removed by publication identity —
+touching no other pending operation — and the snapshot save plus the
+transcript receipt reconciliation keep a restart from repeating delivery.
+
 ## Evener-wide slash commands
 
 A evener-wide slash command is a markdown file — frontmatter optional — in one
