@@ -1082,3 +1082,33 @@ func TestPoisonedWriterStandsDownOnAnIdleWake(t *testing.T) {
 		t.Fatalf("idle wake against a poisoned transcript = (%q, %v, %v), want a quiet stand-down", result, ran, err)
 	}
 }
+
+// TestPoisonedWriterRefusesAWakeCarryingSteering: pending user steering is work
+// the wake would carry into a turn, so a dead transcript has to refuse it the
+// way it refuses a queued message — and leave the steering where it is, for the
+// turn that runs after the restart.
+func TestPoisonedWriterRefusesAWakeCarryingSteering(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	poisonSessionTranscript(t, sess)
+	sess.SteerFromUser("waits for the restart")
+	if got := sess.QueueDepth(); got != 0 {
+		t.Fatalf("setup: queue depth = %d, want the steering to be the only work", got)
+	}
+
+	var announced []string
+	result, ran, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
+		announced = append(announced, turnID)
+	})
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("wake carrying steering = (%q, %v, %v), want an error wrapping transcript.ErrWriterPoisoned", result, ran, err)
+	}
+	if !sess.hasPendingUserSteering() {
+		t.Fatal("the refused wake consumed the steering it never delivered")
+	}
+	// Refusing before the steering carrier is claimed is the point: a wake that
+	// claims first tells the daemon a turn is running and then fails it, so a
+	// client sees a turn begin and die for every poll until the restart.
+	if len(announced) != 0 {
+		t.Fatalf("the refused wake announced turns %v, want a refusal ahead of any claim", announced)
+	}
+}
