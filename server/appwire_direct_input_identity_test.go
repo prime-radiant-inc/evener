@@ -270,6 +270,77 @@ func TestUnservedNotificationWakeKeepsLiveAndColdTurnIdentity(t *testing.T) {
 	assertReplayItemParity(t, "unserved notification wake replay", directInputReplayItems(srv.appTurns.Snapshot()), directInputReplayItems(cold))
 }
 
+// The interrupt marker a cancelled turn appends is persisted ownerless: the
+// drain loop clears the self-minted name before the interrupt branch runs
+// (session_lifecycle.go clears at the top of the iteration, appends the marker
+// further down). Both projections still land it in the turn that was
+// interrupted, and for the same reason rather than by coincidence: the marker
+// is a STEERING entry, which continues an open group in the cold projection,
+// and it is emitted BEFORE the interrupted turn's SESSION_END, so the live
+// projector's turn is still open too. This pins that pair — an owner captured
+// before the clear would make the grouping explicit instead of inherited, but
+// nothing diverges today, so nothing here changes it.
+func TestInterruptedDirectTurnKeepsLiveAndColdMarkerGrouping(t *testing.T) {
+	adapter := &environmentReplayAdapter{mutationProjectionAdapter{blockAt: 2, blocked: make(chan struct{})}}
+	sess := newMutationReplaySessionWithAdapter(t, adapter)
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, sess.ID(), sess.TranscriptPath())
+	drain := func() {
+		t.Helper()
+		for {
+			select {
+			case event := <-sess.Events():
+				srv.RecordAppEvent(event)
+			default:
+				return
+			}
+		}
+	}
+	if _, err := sess.ProcessInput(context.Background(), "completed input", nil); err != nil {
+		t.Fatalf("completed input: %v", err)
+	}
+	drain()
+	turnCtx, cancel := context.WithCancel(context.Background())
+	interrupted := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(turnCtx, "interrupted input", nil)
+		interrupted <- err
+	}()
+	<-adapter.blocked
+	cancel()
+	if err := <-interrupted; err == nil {
+		t.Fatal("cancelled turn returned no error")
+	}
+	drain()
+	cold, _, err := appTurnsFromTranscriptFile(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := directInputReplayItems(srv.appTurns.Snapshot())
+	// The marker belongs to the turn that was interrupted, which is the last
+	// user message — not a standalone group of its own, and not the completed
+	// turn before it.
+	interruptedTurn := ""
+	markers := 0
+	for _, item := range live {
+		if item.Type == "userMessage" {
+			interruptedTurn = item.TurnID
+			continue
+		}
+		if item.Type != "steering" {
+			continue
+		}
+		markers++
+		if item.TurnID != interruptedTurn {
+			t.Fatalf("interrupt marker owner=%s, want the interrupted turn %s: %#v", item.TurnID, interruptedTurn, live)
+		}
+	}
+	if markers != 1 {
+		t.Fatalf("live steering items = %d, want the single interrupt marker: %#v", markers, live)
+	}
+	assertReplayItemParity(t, "interrupted direct turn replay", live, directInputReplayItems(cold))
+}
+
 // goalContinuationItemDescription is the label the projection gives a goal
 // continuation's system item.
 const goalContinuationItemDescription = "Goal"

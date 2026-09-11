@@ -14,11 +14,19 @@ import (
 // and a queued message claimed off the input queue arrive already named — the
 // reservation before the turn runs is what makes them retry-safe across a
 // crash. Everything else — a goal continuation, a job or delegate
-// notification wake — is named here, so the id the daemon publishes is always
-// an id the mutation preconditions accept, and Steer, Send and Stop work on
-// every turn rather than only on the ones a client started.
+// notification wake, a bare ProcessInput caller's input — is named here.
 //
-// The id is minted, never adopted. An ActiveTurnID this call did not write
+// Two kinds of name come out of this file, and only one is durable.
+// mintRunningTurnID takes the durable slot, so the id the daemon publishes is
+// an id the mutation preconditions accept, and Steer, Send and Stop work on
+// every turn rather than only on the ones a client started. When it refuses —
+// unconditionally, for a session no daemon serves — nameTurnItself supplies an
+// in-memory name instead. That name is deliberately NOT a reservation and the
+// preconditions do not accept it: no client can address a turn on a session
+// nobody serves. It exists so the live and cold projections still agree on what
+// the turn's records belong to, which an anonymous turn breaks.
+//
+// The durable id is minted, never adopted. An ActiveTurnID this call did not write
 // belongs to a mutation that is about to run; taking it would let a Stop
 // aimed at that mutation cancel this turn instead, and mark a message the
 // user sent — and the session never ran — "interrupted".

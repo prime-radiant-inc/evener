@@ -2154,10 +2154,13 @@ func (s *Session) acceptDelegateAttentionInput() {
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
 // acceptNotificationInput decides whether this wake has anything to deliver and
-// prepares it. turnID is the name processOneInput already took for the turn --
-// empty only for a session no daemon serves, which needs no name. The caller
-// stands down before reaching here when a served session could not be named, so
-// every wake that gets this far can address its own turn.
+// prepares it. turnID is the name processOneInput already took for the turn and
+// is never empty: a served session that could not be named stands down before
+// reaching here, and an unserved one -- where the refusal is unconditional --
+// names the turn itself instead, so the live and cold projections still agree
+// on what this wake's records belong to. Only the served name is a durable
+// reservation; a self-minted one is not an id the mutation preconditions
+// accept, which costs nothing on a session no client can address anyway.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
