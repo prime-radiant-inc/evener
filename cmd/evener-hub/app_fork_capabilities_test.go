@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -757,5 +759,83 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 	}
 	if !relayedForkStamp("cleared relay fixture") {
 		t.Fatal("relayed status still refused fork on the same subscription after recovery cleared")
+	}
+}
+
+// crashingSubagentProber reports a parent daemon running one in-process child
+// until it is stopped, after which its probe fails the way a dead daemon's does.
+type crashingSubagentProber struct {
+	sessionID string
+	childID   string
+	stopped   atomic.Bool
+}
+
+func (p *crashingSubagentProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
+	if p.stopped.Load() {
+		return hubcore.ProbeResult{}
+	}
+	return hubcore.ProbeResult{
+		SessionID:             p.sessionID,
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{p.childID},
+		RunningSubagentStates: map[string]string{p.childID: appwire.ThreadStatusActive},
+		OK:                    true,
+	}
+}
+
+// A crashed daemon stays in the roster for the crash-retention window carrying
+// the in-process children it last reported. Those delegates are not running
+// anywhere, so a stopped persisted one is hub-owned from the moment its parent
+// dies: the capability advertises the fork and the RPC branches it, rather than
+// both waiting out retention.
+func TestHubForkAdmitsPersistedDelegateOfCrashedParent(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-crashfork-0000000000")
+	parentID := buildRPCParentSession(t, stateDir)
+	childID, err := agent.ForkSession(stateDir, parentID, 1, "stopped delegate", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.IsSubagent = true
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: os.Getpid(), SourceID: "local", ThreadID: parentID, SessionID: parentID, StateDir: stateDir,
+		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
+	})
+	prober := &crashingSubagentProber{sessionID: parentID, childID: childID}
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return !prober.stopped.Load() })
+	roster.Refresh()
+	if !roster.IsSubagentActive(childID) {
+		t.Fatal("scripted live roster did not admit the delegate")
+	}
+
+	// kill -9 the parent: its probe fails and the process is confirmed gone.
+	prober.stopped.Store(true)
+	roster.Refresh()
+	parent, ok := roster.Find(parentID)
+	if !ok || !parent.Crashed || !slices.Contains(parent.RunningSubagentIDs, childID) {
+		t.Fatalf("parent entry=%+v ok=%v, want a retained crashed record still listing the delegate", parent, ok)
+	}
+
+	cfg := hubcore.WebConfig{StateDir: root, Roster: roster}
+	thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:" + childID, Kind: "subagent"}}
+	if !applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn {
+		t.Error("stopped delegate of a crashed parent was not advertised as forkable")
+	}
+	resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+		Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+	})
+	if err != nil {
+		t.Fatalf("stopped delegate of a crashed parent could not be forked: %v", err)
+	}
+	if _, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID); err != nil {
+		t.Fatalf("child was not branched beside its parent: %v", err)
 	}
 }

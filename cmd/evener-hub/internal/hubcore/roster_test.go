@@ -560,6 +560,54 @@ func TestRosterCarriesRunningJobsDefensively(t *testing.T) {
 	}
 }
 
+// A crash-retained entry keeps the running-subagent list its daemon reported
+// before it died (Refresh copies the previous richer snapshot onto the crashed
+// record). That daemon is gone, so none of those children is running in any
+// process: subagent activity must not read a dead parent's last word as
+// liveness, or a stopped persisted delegate stays daemon-owned for the whole
+// crash-retention window.
+func TestRosterCrashedParentDoesNotOwnItsChildren(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1001,
+		Address:   "127.0.0.1:50001",
+		SessionID: "01PARENT",
+		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
+	})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:             "01PARENT",
+		Status:                "active",
+		RunningSubagentIDs:    []string{"01CHILD"},
+		RunningSubagentStates: map[string]string{"01CHILD": "active"},
+		OK:                    true,
+	}}
+	r := NewRoster(dir, prober)
+	r.procAlive = func(int) bool { return true }
+	r.Refresh()
+	if state, live := r.SubagentState("01CHILD"); !live || state != "active" {
+		t.Fatalf("SubagentState(01CHILD) = %q, %v while the parent daemon is alive, want active, true", state, live)
+	}
+
+	// kill -9 the parent: its probe fails and the process is confirmed gone.
+	prober.result = ProbeResult{}
+	r.procAlive = func(int) bool { return false }
+	r.Refresh()
+
+	parent, ok := r.Find("01PARENT")
+	if !ok || !parent.Crashed {
+		t.Fatalf("parent entry = %+v, ok=%v, want a retained crashed record", parent, ok)
+	}
+	if !slices.Contains(parent.RunningSubagentIDs, "01CHILD") {
+		t.Fatalf("crash retention dropped the child list (%v); this test no longer covers the case it names", parent.RunningSubagentIDs)
+	}
+	if state, live := r.SubagentState("01CHILD"); live || state != "" {
+		t.Fatalf("SubagentState(01CHILD) = %q, %v after the parent crashed, want \"\", false", state, live)
+	}
+	if r.IsSubagentActive("01CHILD") {
+		t.Fatal("a crashed parent's retained child list still reported the child as daemon-owned")
+	}
+}
+
 func TestRosterSubagentUnresolvedOwner(t *testing.T) {
 	r := NewRosterWithEntries(LiveEntry{
 		RunningSubagentIDs: []string{"child-unresolved-owner"},

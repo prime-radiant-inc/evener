@@ -647,6 +647,11 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 // status, or "" when its daemon carried no per-descendant states (an old
 // daemon — unknown, NOT settled). Callers deciding what to render should
 // keep their pre-states fallback for the "" case.
+//
+// A crash-retained record keeps the child list its daemon reported before the
+// process died, and that daemon runs nothing any more. Skipping those entries
+// is what lets a stopped persisted delegate stop reading as daemon-owned the
+// moment its parent dies, rather than when crash retention expires.
 func (r *Roster) SubagentState(sessionID string) (string, bool) {
 	if sessionID == "" {
 		return "", false
@@ -654,6 +659,9 @@ func (r *Roster) SubagentState(sessionID string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, entry := range r.byPID {
+		if entry.Crashed {
+			continue
+		}
 		if slices.Contains(entry.RunningSubagentIDs, sessionID) {
 			return entry.RunningSubagentStates[sessionID], true
 		}
