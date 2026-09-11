@@ -714,6 +714,15 @@ function isIndependentVerticalScroller(el: Element): boolean {
  * bottom-hold correction until the reader returns to the bottom, where an
  * unmarked scroll costs a single frame.
  *
+ * A nested scroller with LESS room than the input's delta does not split it:
+ * Chrome scrolls that element to its own limit and keeps the remainder, chaining
+ * to the port only on a LATER event, which then finds no room here and marks.
+ * Measured in the browser guards' own headless Chrome 153.0.8010.36 - a 120px
+ * wheel over a scroller with 3px left moved the scroller 3px and the port not at
+ * all - so "has any room" is the right question to ask, not "has room enough".
+ * Latching is browser-defined; an engine that split the delta instead would make
+ * this under-mark, which is the safe direction.
+ *
  * The one band left: an ancestor with overscroll-behavior other than `auto`
  * refuses to chain the input onward when it reaches its own limit, so it can
  * swallow an input this says will reach the port. Not modelled - computing it
