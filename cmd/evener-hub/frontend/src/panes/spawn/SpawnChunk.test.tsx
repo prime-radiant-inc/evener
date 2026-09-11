@@ -255,8 +255,10 @@ class DialogTestOuterBoundary extends Component<{ children: ReactNode }, { failu
 }
 
 test("a logic bug in the resolved dialog keeps unwinding past the dialog boundary", async () => {
+  const error = new Error("ConnectProviderDialog render logic bug");
+  const onCaughtError = vi.fn();
   function BuggyDialog() {
-    throw new Error("ConnectProviderDialog render logic bug");
+    throw error;
   }
   vi.mocked(loadConnectDialog).mockResolvedValue({ ConnectProviderDialog: BuggyDialog } as never);
   const user = userEvent.setup();
@@ -269,10 +271,14 @@ test("a logic bug in the resolved dialog keeps unwinding past the dialog boundar
       </DialogTestOuterBoundary>
       <Toast />
     </ClientProvider>,
+    { onCaughtError },
   );
 
   await openConnectDialog(user);
 
   expect(await screen.findByText("outer boundary caught: ConnectProviderDialog render logic bug")).toBeTruthy();
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(error);
+  expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(DialogTestOuterBoundary);
 });
