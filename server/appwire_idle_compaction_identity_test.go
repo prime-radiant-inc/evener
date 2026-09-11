@@ -16,15 +16,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// A fold with no turn running has no turn to own its records, but it still
-// produces a contiguous run of them — the context-compaction metadata and the
-// checkpoint/summary artifacts. Both projections have to put that run in ONE
-// group, and they used to do it differently: the live projector coalesces
-// ownerless announcements on a synthetic gap id it mints once per gap, while
-// the transcript projection makes every unowned record a standalone group of
-// its own entry index. The result is a different turn id and a different entry
-// ordinal for every item once the session is reloaded.
-func TestIdleCompactionKeepsLiveAndColdGrouping(t *testing.T) {
+// driveIdleCompaction runs six turns and then folds with the session idle, so
+// no turn is running when the fold stages and its records land on a synthetic
+// owner of their own.
+func driveIdleCompaction(t *testing.T) (*Server, *agent.Session, context.Context) {
+	t.Helper()
 	dir := t.TempDir()
 	a := &overlapAdapter{mainStarted: make(chan int, 8), summaryStarted: make(chan struct{}, 1), releaseA: make(chan struct{}), releaseB: make(chan struct{}), releaseSummary: make(chan struct{})}
 	c := llm.NewClient()
@@ -72,6 +68,71 @@ func TestIdleCompactionKeepsLiveAndColdGrouping(t *testing.T) {
 		t.Fatalf("idle compact: %v", err)
 	}
 	wait(compacted)
+	return srv, s, ctx
+}
+
+// The synthetic owner only ever carries item completions, so the live store
+// opens it like any unknown turn — InProgress — and nothing it receives closes
+// it, while the cold projection stamps every grouped turn Completed. An idle
+// fold's group could therefore read InProgress live and Completed after a
+// reload, from the same records.
+func TestIdleCompactionKeepsLiveAndColdTurnStatus(t *testing.T) {
+	srv, s, ctx := driveIdleCompaction(t)
+
+	read, err := srv.handleAppThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + s.ID(), IncludeTurns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cold, _, err := appTurnsFromTranscriptFile(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := func(turns []appwire.Turn) map[string]string {
+		byID := make(map[string]string, len(turns))
+		for _, turn := range turns {
+			byID[turn.ID] = turn.Status
+		}
+		return byID
+	}
+	liveStatus, coldStatus := status(read.Thread.Turns), status(cold)
+	gap := ""
+	for id := range coldStatus {
+		if strings.HasPrefix(id, "turn_compaction_") {
+			gap = id
+		}
+	}
+	if gap == "" {
+		t.Fatalf("cold projection has no idle-fold group: %v", coldStatus)
+	}
+	if coldStatus[gap] != appwire.TurnStatusCompleted {
+		t.Fatalf("cold idle-fold group %s status = %q, want %q", gap, coldStatus[gap], appwire.TurnStatusCompleted)
+	}
+	if liveStatus[gap] != coldStatus[gap] {
+		t.Fatalf("idle-fold group %s is %q live and %q cold; the fold is over on both sides", gap, liveStatus[gap], coldStatus[gap])
+	}
+	// Nothing else may drift either: every turn both projections know about
+	// reports the same status.
+	for id, want := range coldStatus {
+		got, ok := liveStatus[id]
+		if !ok {
+			continue
+		}
+		if got != want {
+			t.Fatalf("turn %s status = %q live, %q cold", id, got, want)
+		}
+	}
+}
+
+// A fold with no turn running has no turn to own its records, but it still
+// produces a contiguous run of them — the context-compaction metadata and the
+// checkpoint/summary artifacts. Both projections have to put that run in ONE
+// group, and they used to do it differently: the live projector coalesces
+// ownerless announcements on a synthetic gap id it mints once per gap, while
+// the transcript projection makes every unowned record a standalone group of
+// its own entry index. The result is a different turn id and a different entry
+// ordinal for every item once the session is reloaded.
+func TestIdleCompactionKeepsLiveAndColdGrouping(t *testing.T) {
+	srv, s, ctx := driveIdleCompaction(t)
 
 	read, err := srv.handleAppThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + s.ID(), IncludeTurns: true})
 	if err != nil {

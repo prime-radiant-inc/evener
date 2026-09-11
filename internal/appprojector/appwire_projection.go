@@ -1585,6 +1585,15 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemE
 	return p.ownedSystemAnnouncementItem("", eventKind, description, text, raw, exitCode)
 }
 
+// compactionGapTurnIDPrefix marks an owner a compaction fold minted for itself
+// because it staged with no turn running (the agent package mints it as
+// compactionGapIDPrefix; the literal is repeated rather than shared because
+// this is not a wire contract and the two modules do not otherwise couple).
+//
+// Such a group is owner-only: the fold's records are the whole of it, and no
+// turn lifecycle will ever arrive to close it, because no turn ran.
+const compactionGapTurnIDPrefix = "turn_compaction_"
+
 // An explicitly owned announcement can arrive after its turn finishes. Keep
 // that durable owner without changing the currently running turn's lifecycle.
 func (p *AppEventProjector) ownedSystemAnnouncementItem(owner string, eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
@@ -1614,7 +1623,13 @@ func (p *AppEventProjector) ownedSystemAnnouncementItem(owner string, eventKind 
 		EventKind:   eventKind,
 		ExitCode:    exitCode,
 	}
-	if owner == "" && p.activeTurnID == "" {
+	// A gap group is over the moment its records are published: nothing is
+	// running, and nothing will name this turn again. The ownerless gap has
+	// always been completed here; a fold that staged idle now carries a
+	// synthetic owner of its own instead, and needs the same close — the live
+	// store opens an unknown turn InProgress and would leave it that way,
+	// while the transcript projection stamps the reloaded group Completed.
+	if p.activeTurnID == "" && (owner == "" || strings.HasPrefix(owner, compactionGapTurnIDPrefix)) {
 		// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
 			"threadId": p.threadID,
