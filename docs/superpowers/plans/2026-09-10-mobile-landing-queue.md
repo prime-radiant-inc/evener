@@ -3746,3 +3746,95 @@ Requirements:
    `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-54-report.md` (same lane) with RED and
    GREEN evidence, commit SHAs, one-line test summary; return only status, commit SHAs, test
    summary, concerns.
+
+## Task 65: PR #1145 round 3 (head 5496dcc) — CI tooling flake fix, RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/flake-ci-tools (branch claude/fix-ci-tooling-download-flakes). This is the flake lane: unlike the other lanes you DO push your branch and update the PR (#1145); you do not merge it.
+
+### RoboRev verdict (verbatim, 3 reviewers)
+
+## roborev: Combined Review (`5496dcc`)
+
+**Verdict: One blocker (version verification rejects a correct install) plus several medium-severity gaps in process-group cleanup and post-failure diagnostics.**
+
+## Critical
+
+None.
+
+## High
+
+### Version verification always rejects a correct golangci-lint install
+- **Location**: `scripts/ops/install-golangci-lint.sh:75-91`
+- **Problem**: `.tool-versions` pins the linter as `golangci-lint 2.13.1` (no leading `v`), and `version` is read verbatim. `golangci-lint version` prints its release with a leading `v` (`v2.13.1`). The guard builds `reported` and matches `*" version $version "*` — i.e. `version 2.13.1` — but the printed token is `v2.13.1`, which never contains `version 2.13.1`. The case always falls through to the mismatch branch and exits 1. This is exactly the failure mode the script exists to prevent: the installer succeeds, the guard rejects a correctly installed binary, and `lint-golangci` (and the aggregate `static` job CI gates on) fails unconditionally. The bare `$version` in the match is suspect because the version is *only* used with the `v` prefix elsewhere (`sh -s -- -b "$bindir" "v$version"`).
+- **Fix**: Match the tag form the tool actually prints, e.g. `*" version v$version "*`, or normalize the leading `v` out of `version` when reading the pin. Verify against a real `golangci-lint version` invocation rather than assuming — the exact wording is what the match depends on.
+
+## Medium
+
+### `ps` error suppression defeats process-group liveness guarantee
+- **Location**: `scripts/gate/run-module-tests.sh:303-305`, used by `stop_root_package_list_group` at `:331-343`
+- **Problem**: `root_package_list_group_survivors` suppresses `ps` errors and returns only the `awk` output. If `ps` fails or produces no parseable output, callers interpret the empty result as proof the process group is gone and may start a retry while the timed-out `go list` is still running — defeating the cache-lock and concurrent-writer safety the cleanup is meant to provide.
+- **Fix**: Propagate the process-listing failure separately from the survivor list and fail closed when liveness cannot be determined; only retry after a successful probe confirms no live members remain.
+
+### Gate proceeds to unbounded Go work after root discovery fails
+- **Location**: `scripts/gate/run-module-tests.sh:573`, `:575`, `:487`
+- **Problem**: A failed bounded root `go list` still falls through to `run_wave $WAVE2`, whose `go test` invocations and the agent module's bare `go list ./...` have no timeout on the same stalled `GOCACHE`/`GOMODCACHE`. The gate can hang indefinitely after the ~212s root bound is reported.
+- **Fix**: Distinguish root-discovery failure from test failure and exit/skip `WAVE2` when discovery failed, or route the remaining `go list`/`go test` invocations through the same bound.
+
+### `set -m` toggled on the shared shell
+- **Location**: `scripts/gate/run-module-tests.sh:325-345`
+- **Problem**: Enabling monitor mode in a non-interactive shell changes job-notification and process-group behavior for the *entire* script, not just the one job. The script relies on job semantics: `run_wave` backgrounds every module/stream with `( ... ) &`, tracks pids in `active_pids`, and `stop_children`/`cleanup` signal those pids with `kill -TERM` then `wait`. With `set -m` active, each background job becomes its own process group and job, and `kill -TERM "$pid"` no longer reaches the job's children the way tree-snapshotting assumes. The window is short and precedes the waves, so it may be benign — but the change asserts safety without evidence.
+- **Fix**: Scope monitor mode to the single job (e.g. run the attempt inside a subshell that turns monitor mode on for its own `&`, capturing the pgid there and passing it back). If the shared-shell toggle is kept, document and pin with a test that wave scheduling and `stop_children` still behave identically.
+
+### Hard-failure branches lack artifacts and have reversed diagnostic ordering
+- **Location**: `scripts/gate/run-module-tests.sh:361-364`, `:379-381`
+- **Problem**: Both new hard-failure branches return 1 without the artifacts a reader needs. In the `list_pgid != list_pid` branch the attempt is killed and `wait "$list_pid"` is deliberately skipped, but `$attempt_list` is left behind with partial content and `root.packages.attempt*` is never removed. On failure the log directory is kept and only per-module logs are dumped — the attempt files and their stderr are separate paths named only in the timeout diagnostic. Additionally, the pid-mismatch branch prints its message *before* calling `root_package_list_timeout_diagnostic`, so the reader sees "cannot be stopped as one" before knowing where the log is.
+- **Fix**: Print the pid-mismatch explanation before `root_package_list_timeout_diagnostic`, and state in the failure output exactly which files were retained (`$package_list_stderr`, `$attempt_list`) so a stalled host's partial package list is discoverable rather than inferred.
+
+## Low
+
+### Retry replay appears after the verdict summary
+- **Location**: `scripts/gate/run-module-tests.sh:525-529`
+- **Problem**: The replay reads `$root_package_list_retry_log` and prefixes lines with `run-module-tests.sh: `, but it runs after `run_wave $WAVE1`/`run_wave $WAVE2` and `finish_stream web`. If the root list times out on attempt 1 and succeeds on attempt 2, that fact is reported *after* the PASS lines — output no longer matches event order, and a reader grepping for the retry notice before the verdicts finds nothing. The stated purpose (making the notice visible) suffers when it trails a passing report.
+- **Fix**: Move the replay before the verdict summary and mark it as a warning, or include a line in the final summary block when the retry log is non-empty.
+
+### `~212s` ceiling arithmetic describes an unreachable state
+- **Location**: `docs/developing-evener/testing.md:328-332`
+- **Problem**: The doc states a run "fails in about three and a half minutes rather than hanging" and the script comment claims a "~212s ceiling." The 212s figure is 3 × (60s timeout + up to 10s stop grace) + 2s backoff, but the stop grace only applies when the group fails to die cleanly — and the branch that gives up retrying (`stop_root_package_list_group` returning non-zero) ends the run on the first attempt. The ~212s state is unreachable: the run either retries cheaply (60s + 1s per attempt) or stops at attempt 1. Quoting both as the same quantity will mislead future debugging.
+- **Fix**: State the two cases separately: a clean-stop timeout costs ~61s per attempt and fails at ~183s over three attempts; a group that will not stop fails on the attempt where that happens, after at most 10s of grace, and is not retried.
+
+### `pipefail` retry loop makes non-network failures slow and indistinguishable
+- **Location**: `scripts/ops/install-golangci-lint.sh:52-56`
+- **Problem**: `curl -sSfL "$installer_url" | sh -s -- -b "$bindir" "v$version"` under `set -o pipefail` makes a failed fetch count as a failed attempt (the stated rationale), but a successful fetch piped into a failing `sh` is indistinguishable from a network failure. The retry loop then re-downloads up to three times with 5s/10s backoff — for a broken pin or bindir permission problem the operator waits 15s+ and gets the same failure three times. The comment deliberately avoids classifying failures (defensible), but the backoff makes misdiagnosis slow.
+- **Fix**: Capture the installer's output and include the last non-empty stderr line in the retry notice, or reduce the backoff; at minimum note that a non-network cause will fail identically each time.
+
+### Retry notice not surfaced in the failing-module-output section
+- **Location**: `scripts/gate/run-module-tests.sh:440-441`
+- **Problem**: The retry log is appended from inside `run_root_package_list` (running in the `run_wave` subshell), and the replay's output goes to stderr. On a *failing* run the retry notice appears only in the stderr stream, not in the `=== failing module output ===` section a CI reader sees first. Every other diagnostic in this script is surfaced in that section; this one is the exception.
+- **Fix**: Also append the retry notice to the root module's log path (or emit it into the failing-module-output section) so CI diagnostics stay in one place.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 38s | Total: 17m40s*
+
+
+### Coordinator rulings
+
+- **High (version verification always rejects): REFUTED, do not implement.** Evidence: on this machine `golangci-lint version` prints `golangci-lint has version 2.13.1 built with go1.27.0 from 6d2288e0 on 2026-08-20T14:28:34Z` — the token after `version` is `2.13.1`, no leading `v`, so `*" version 2.13.1 "*` matches. CI's `static` job at this very head ran `make tools-golangci` (ci.yml:85) through this script and passed. Only change: extend the existing comment above the `case` to quote the exact line the tool prints (`golangci-lint has version X built with …`) so the next reader does not assume a `v`. The coordinator posts the refutation on the PR.
+- **Medium 1 (`ps` failure read as "group gone"): real, fix.** `root_package_list_group_survivors` must distinguish "no live members" from "could not list processes". Fail closed: when `ps` itself fails, `stop_root_package_list_group` returns non-zero with a message that liveness could not be determined, and the caller does not retry. Verify the discriminating case the way round 2 verified the SIGKILL-survivor branch (a failing `ps` stub on PATH or an equivalent mutation), and record the run in the report and PR body.
+- **Medium 2 (unbounded Go work after root discovery fails): real, fix the smallest way.** Do NOT restructure the waves or skip WAVE2 — the other modules are independent and their failure is already the gate's failure. Route the agent module's bare `go list ./...` (the `subpkgs` loop, ~:487) and any other bare `go list` in the script through the same bounded package-list helper the root uses, so nothing in the gate can hang on a stalled `GOCACHE`/`GOMODCACHE` after the root bound has already been reported. If the helper is root-specific, generalise its name and arguments rather than copying it.
+- **Medium 3 (`set -m` on the shared shell): real, fix.** The monitor-mode toggle must never be visible to `run_wave`, `stop_children` or `cleanup`. Scope it to the subshell that spawns the one attempt (turn it on inside a subshell, spawn there, capture the pgid, wait there and return the status), or use `perl -e 'setpgrp(0,0); exec @ARGV' -- …` as the portable group spawn (perl is present on macOS and the CI image; `setsid` is not on macOS — keep that reason in the comment). Pick the smaller diff. State in the report, with the line numbers, why no `&` outside that scope can observe monitor mode.
+- **Medium 4 (hard-failure branches: artifacts and ordering): real, fix.** In both hard-failure branches print `root_package_list_timeout_diagnostic` (which names the retained log) FIRST, then the one-line explanation of why the run will not retry. The failure output must name exactly which files were retained: `$package_list_stderr` and the partial `$attempt_list` (retain it; do not delete `root.packages.attempt*` on a hard failure). Make sure those lines also land in the root module's log so they appear in the `=== failing module output ===` section.
+- **Low 1 (retry replay after the verdict summary): fix.** Emit the replay before the verdict summary, prefixed as a warning.
+- **Low 2 (~212s arithmetic): fix the doc and the script comment.** State the two cases separately: clean-stop timeouts cost ~61s per attempt and fail after three (~183s); a group that will not stop fails on that attempt after at most the stop grace and is not retried. Do not invent other numbers — derive them from the constants in the script and cite them.
+- **Low 3 (`pipefail` retry loop indistinguishable): fix minimally.** Capture the attempt's stderr and include its last non-empty line in the retry notice; keep the attempt count and backoff as they are; note in the comment that a non-network cause fails identically each attempt.
+- **Low 4 (retry notice not in failing-module-output): fix.** Also append the retry notice to the root module's log path.
+
+### Requirements
+
+1. Every fix RED-first where the script has a test harness (look under `scripts/gate/` and the Makefile for how the gate script is tested; if there is none, the round-2 style recorded mutation runs are the evidence — say which you used). No existing test weakened.
+2. One commit per finding or per tightly coupled pair, conventional `ci:`/`docs:` subjects, no trailers.
+3. Before pushing: merge `origin/main` (`git fetch origin main` on its own line — a bare `git fetch origin` currently exits non-zero on a tag clobber and will silently stop an `&&` chain — then `git merge --no-ff --no-edit origin/main`), run `bash -n` on both scripts and `shellcheck` if installed, and run the gate script once locally in the bounded-discovery path if it completes in reasonable time (report the elapsed time; if it does not, say so and run the smallest module).
+4. Push the branch; extend the PR body with a "Review round 3" section carrying the High refutation evidence (the exact `golangci-lint version` line and the green `static` job at 5496dcc), and one line per Medium/Low naming the commit.
+
+### Report
+
+Append "Round 3" to your existing report file. Reply with: status, commit SHAs in order, the pushed head, the mutation/verification output lines for Medium 1 and Medium 3, one-line test summary, concerns.
