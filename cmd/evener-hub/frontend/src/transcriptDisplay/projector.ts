@@ -219,10 +219,10 @@ function criticalEntry(
   if (item.type === "commandExecution") {
     summary = toolSummary(item);
   } else if (item.type === "reasoning") {
-    // A reasoning item's summary must never be its own text: a critical
-    // reasoning row is only ever reached with the content flag off, where any
-    // thought text would defeat the setting.
-    summary = "Thought not shown";
+    // Neutral, and never the thought's own text. A failed or interrupted
+    // thought says so; the renderer renders this verbatim (one source of
+    // truth for the redacted label).
+    summary = hasFailureStatus(item) ? "Thought failed" : "Thought not shown";
   } else {
     summary = itemSummary(item);
   }

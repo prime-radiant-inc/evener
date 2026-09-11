@@ -184,15 +184,16 @@ function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
 
 // The redacted counterpart for a critical reasoning row while the reasoning
 // content flag is off: a failed or interrupted turn still explains itself, but
-// never by showing the thought. Only the icon and a neutral failure summary
-// render - no preview, no disclosure, and no body.
-function RedactedThinkBlock({ item }: { item: ItemModel }) {
-  const failed = item.status === "failed" || item.status === "interrupted";
+// never by showing the thought. Only the icon and the projector's neutral
+// summary render - no preview, no disclosure, and no body. The summary text is
+// owned by the projector (criticalEntry), not re-derived here, so there is one
+// source of truth for it.
+function RedactedThinkBlock({ summary }: { summary: string }) {
   return (
     <div className={CLASS.block} data-testid="think-block" data-redacted="true">
       <span className={CLASS.label} data-testid="think-block-redacted">
         {thoughtIcon}
-        {failed ? "Thought failed" : "Thought not shown"}
+        {summary}
       </span>
     </div>
   );
@@ -232,6 +233,7 @@ export const ThinkBlock = memo(function ThinkBlock({
   sessionRef,
   contentFree,
   redacted,
+  projectedSummary,
 }: ItemRenderProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
@@ -243,9 +245,11 @@ export const ThinkBlock = memo(function ThinkBlock({
   // any early return: an entry that toggles contentFree on a mounted row would
   // otherwise change the hook order between renders.
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
-  // Neither content-free state reads the thought's text.
+  // Neither content-free state RENDERS the thought's text. The placeholder
+  // reads it only to estimate a length for its "~N tokens" label; the redacted
+  // state renders the projector's neutral summary and nothing else.
   if (contentFree) return <ContentFreeThinkBlock item={item} />;
-  if (redacted) return <RedactedThinkBlock item={item} />;
+  if (redacted) return <RedactedThinkBlock summary={projectedSummary ?? "Thought not shown"} />;
   const isLive = (live || item.status === "inProgress") && isCurrentThought(item, turn);
   if (isLive) return <LiveThinkBlock item={item} />;
 

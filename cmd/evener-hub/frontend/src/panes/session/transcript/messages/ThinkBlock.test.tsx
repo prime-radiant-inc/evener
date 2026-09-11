@@ -115,13 +115,14 @@ test("contentFree with no chunks yet shows the label alone, never a fabricated t
 
 // --- redacted: critical reasoning on a broken turn, no thought text ---------
 
-test("redacted renders a neutral failure summary and none of the thought text, preview, or body", () => {
+test("redacted renders the projector's summary and none of the thought text, preview, or body", () => {
   render(
     <ThinkBlock
       item={item({ status: "failed", reasoningSummaries: [["abcdefghijklmnop"]] })}
       turn={turn}
       live={false}
       redacted={true}
+      projectedSummary="Thought failed"
     />,
   );
   expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
@@ -130,9 +131,15 @@ test("redacted renders a neutral failure summary and none of the thought text, p
   expect(document.querySelector("details")).toBeNull();
 });
 
-test("redacted without a failed item status uses the neutral label", () => {
+test("redacted renders the neutral label the projector supplies", () => {
   render(
-    <ThinkBlock item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })} turn={turn} live={false} redacted={true} />,
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
+      turn={turn}
+      live={false}
+      redacted={true}
+      projectedSummary="Thought not shown"
+    />,
   );
   expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought not shown");
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();

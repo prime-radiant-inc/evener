@@ -31,8 +31,9 @@ export interface ItemRenderProps {
   // True when the projector chose a content-free entry for this item (the
   // "thinking" projection of a live current reasoning item while the reasoning
   // content flag is off). The renderer must render only a placeholder and must
-  // not read the item's own text. Set for every entry kind by TurnBlock, so a
-  // memoized renderer can compare it by value.
+  // not render the item's own text (it may read it for a length estimate). Set
+  // for every entry kind by TurnBlock, so a memoized renderer can compare it by
+  // value.
   contentFree?: boolean;
   // True when a critical reasoning row must render with no thought text at all
   // (the content flag is off and the row is only on the failure path). The
