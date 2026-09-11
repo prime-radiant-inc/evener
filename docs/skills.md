@@ -243,6 +243,41 @@ offers only skills that are both `available` and `userInvocable`, and the
 composer still requires the target's `skillInput` capability before
 submitting a selection.
 
+#### Mixed-version fail-closed and recovery
+
+The Hub is a separate process from the sessions it forwards to, so it never
+assumes a daemon supports skill input: before any input-bearing mutation
+carrying a selection is forwarded, the Hub reads the target's advertised
+capability — on the same connection as the mutation for daemon-sourced
+threads, and through the relay's own read for `turn/start` — and rejects the
+request when the capability is false. This is what keeps a mixed-version
+deployment honest:
+
+- **Hub newer than daemon.** An older daemon never sends `skillInput`, so an
+  absent capability reads exactly like a false one and every selection is
+  rejected with an `unsupported on this target` invalid-params error. The
+  daemon never sees the request, so no queue entry, journal payload, or turn
+  is created for it.
+- **Unreadable or unknown target.** A capability read that fails — an
+  unreachable endpoint, a dying daemon, a read error — is a rejection, never
+  permission. `thread/start`'s initial input is gated on the spawned session's
+  own read: when that read fails, the synthesized thread carries no
+  capabilities and the selection is refused. The hub's synthesized capability
+  sets (ended threads, roster projections) deliberately leave `skillInput`
+  false; a capability is only ever learned from a target that actually
+  reported it.
+- **Rejection shape.** A rejection preserves what the caller composed: the
+  selection is not degraded into `/skill` slash prose, stripped to its text
+  item, or partially delivered. The client keeps its input for an explicit
+  retry.
+- **Recovery.** A rejection means the running target does not consume
+  selections, so the fix is on the target side: upgrade or restart the
+  session's daemon (for a stopped session, resume spawns a current daemon) and
+  send the input again. The recheck runs on every attempt — including the
+  automatic resume inside `turn/start`, which re-reads the replacement daemon
+  before forwarding — so the same request succeeds once the target that
+  answers advertises `skillInput`.
+
 ### Reload selection at compaction
 
 Compaction can drop a loaded skill's instruction body, so both compaction
