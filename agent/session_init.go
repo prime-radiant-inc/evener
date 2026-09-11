@@ -939,6 +939,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if err := s.prepareRetainedScratch(); err != nil {
 			return nil, fmt.Errorf("prepare retained scratch: %w", err)
 		}
+		// Adopt the root consumer's own current binding onto the restored
+		// environment before it can mint or launch work, so a resumed root
+		// keeps its original scratch path (plan 654's root role).
+		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+			if _, err := s.adoptConsumerScratch(local, s.id); err != nil {
+				return nil, fmt.Errorf("adopt retained root scratch: %w", err)
+			}
+		}
 	}
 	s.initEnvContext(meta.EnvContext)
 	if err := s.bootstrapDelegateResources(); err != nil {

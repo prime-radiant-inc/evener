@@ -256,3 +256,128 @@ func TestScratchRetentionPinBeforeReferenceOrdering(t *testing.T) {
 		t.Fatalf("manifest references = %+v", manifest.References)
 	}
 }
+
+func retentionOwner(t *testing.T) ScratchOwner {
+	t.Helper()
+	return ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+}
+
+func pinnedScratch(t *testing.T, base, workspace string, owner ScratchOwner, kind string) *SessionScratch {
+	t.Helper()
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	if err := scratch.Pin(owner, ScratchReference{Dir: scratch.Dir, Kind: kind}); err != nil {
+		t.Fatal(err)
+	}
+	return scratch
+}
+
+func retentionBinding(bindingID, ownerSessionID, workingDir string, slots map[string]ScratchSlot) ScratchBinding {
+	cloned := make(map[string]ScratchSlot, len(slots))
+	for kind, slot := range slots {
+		cloned[kind] = slot
+	}
+	return ScratchBinding{BindingID: bindingID, OwnerSessionID: ownerSessionID, WorkingDir: workingDir, Slots: cloned}
+}
+
+func retentionBindingByID(t *testing.T, owner ScratchOwner, bindingID string) ScratchBinding {
+	t.Helper()
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == bindingID {
+			return binding
+		}
+	}
+	t.Fatalf("binding %q missing from manifest: %+v", bindingID, manifest.Bindings)
+	return ScratchBinding{}
+}
+
+// TestScratchRetentionStaleRetryKeepsConcurrentMint proves plan 648's rebase
+// rule: a stale retry that still names only the caller's observed slot must not
+// erase a slot a concurrent writer minted into the same binding.
+func TestScratchRetentionStaleRetryKeepsConcurrentMint(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	a := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	b := pinnedScratch(t, base, workspace, owner, ScratchKindUnsandboxed)
+	consumer := ScratchConsumerBinding{SessionID: "R", CurrentBindingID: "E0"}
+	observed := retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox: {Dir: a.Dir, OwnsLease: true},
+	})
+	if err := UpsertScratchBinding(owner, observed, consumer); err != nil {
+		t.Fatalf("seed E0/A: %v", err)
+	}
+	// A concurrent writer mints B into E0.
+	if err := UpsertScratchBinding(owner, retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox:     {Dir: a.Dir, OwnsLease: true},
+		ScratchKindUnsandboxed: {Dir: b.Dir, OwnsLease: true},
+	}), consumer); err != nil {
+		t.Fatalf("concurrent mint B: %v", err)
+	}
+	// The stale caller retries its observed record, which still names only A.
+	if err := UpsertScratchBinding(owner, observed, consumer); err != nil {
+		t.Fatalf("stale retry: %v", err)
+	}
+	e0 := retentionBindingByID(t, owner, "E0")
+	slot, ok := e0.Slots[ScratchKindUnsandboxed]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(b.Dir) || !slot.OwnsLease {
+		t.Fatalf("stale retry erased the concurrently minted slot: %+v", e0.Slots)
+	}
+	if slotA := e0.Slots[ScratchKindSandbox]; filepath.Clean(slotA.Dir) != filepath.Clean(a.Dir) {
+		t.Fatalf("stale retry changed A's slot: %+v", e0.Slots)
+	}
+}
+
+// TestScratchRetentionMergedMoveKeepsBothCurrentSlots proves plan 646/648's
+// single-transaction move is accepted and preserves both allocations: E0 keeps
+// B while E1 takes A's owning slot.
+func TestScratchRetentionMergedMoveKeepsBothCurrentSlots(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	a := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	b := pinnedScratch(t, base, workspace, owner, ScratchKindUnsandboxed)
+	consumer := ScratchConsumerBinding{SessionID: "R", CurrentBindingID: "E0"}
+	if err := UpsertScratchBinding(owner, retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox: {Dir: a.Dir, OwnsLease: true},
+	}), consumer); err != nil {
+		t.Fatalf("seed E0/A: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox:     {Dir: a.Dir, OwnsLease: true},
+		ScratchKindUnsandboxed: {Dir: b.Dir, OwnsLease: true},
+	}), consumer); err != nil {
+		t.Fatalf("concurrent mint B: %v", err)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = UpdateScratchBindings(owner, manifest.Revision, []ScratchBinding{
+		retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+			ScratchKindUnsandboxed: {Dir: b.Dir, OwnsLease: true},
+		}),
+		retentionBinding("E1", "R", workspace, map[string]ScratchSlot{
+			ScratchKindSandbox: {Dir: a.Dir, OwnsLease: true},
+		}),
+	}, []ScratchConsumerBinding{{SessionID: "R", CurrentBindingID: "E1"}})
+	if err != nil {
+		t.Fatalf("single-transaction move rejected: %v", err)
+	}
+	e0 := retentionBindingByID(t, owner, "E0")
+	e1 := retentionBindingByID(t, owner, "E1")
+	if slot := e0.Slots[ScratchKindUnsandboxed]; !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(b.Dir) {
+		t.Fatalf("E0 did not keep B: %+v", e0.Slots)
+	}
+	if _, stillOwns := e0.Slots[ScratchKindSandbox]; stillOwns {
+		t.Fatalf("E0 still owns A after the move: %+v", e0.Slots)
+	}
+	if slot := e1.Slots[ScratchKindSandbox]; !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(a.Dir) {
+		t.Fatalf("E1 did not take A's owning slot: %+v", e1.Slots)
+	}
+}

@@ -316,19 +316,26 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 	if manifest.Revision != expectedRevision {
 		return fmt.Errorf("%w: manifest %d does not match expected %d", ErrScratchRetentionStaleRevision, manifest.Revision, expectedRevision)
 	}
-	if err := validateScratchBindingUpdate(manifest, bindings, consumers); err != nil {
+	// Validate the MERGED result, not old+new: the plan's single-transaction
+	// move (E0 keeps B while E1 takes A's owning slot) is only legal once the
+	// stale E0 record is replaced.
+	mergedBindings := mergeScratchBindings(manifest.Bindings, bindings)
+	mergedConsumers := mergeScratchConsumers(manifest.Consumers, consumers)
+	if err := validateScratchBindingUpdate(manifest, mergedBindings, bindings, consumers); err != nil {
 		return err
 	}
-	manifest.Bindings = mergeScratchBindings(manifest.Bindings, bindings)
-	manifest.Consumers = mergeScratchConsumers(manifest.Consumers, consumers)
+	manifest.Bindings = mergedBindings
+	manifest.Consumers = mergedConsumers
 	manifest.Revision++
 	return writeScratchRetention(owner, manifest)
 }
 
-// UpsertScratchBinding inserts or replaces exactly one binding and its consumer
-// record in a revision-checked transaction, retrying a bounded number of times
-// when a concurrent writer advanced the manifest first. It is the writer a live
-// environment uses to publish its own binding before any exposure.
+// UpsertScratchBinding publishes one binding and its consumer record under the
+// manifest lock, rebasing the caller's observed record per slot onto whatever
+// the fresh manifest already holds. Slots the caller never named — a
+// concurrently minted allocation — are preserved, and a slot whose directory a
+// different binding already owns is demoted to a wrapper borrow. It never
+// replaces a whole stale record.
 func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding) error {
 	if err := owner.validate(); err != nil {
 		return err
@@ -336,23 +343,78 @@ func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer S
 	if strings.TrimSpace(binding.BindingID) == "" {
 		return errors.New("sandbox: scratch binding has no id")
 	}
-	for attempt := 0; attempt < 8; attempt++ {
-		manifest, err := LoadScratchRetention(owner)
-		if err != nil {
-			return err
-		}
-		err = UpdateScratchBindings(owner, manifest.Revision, []ScratchBinding{binding}, []ScratchConsumerBinding{consumer})
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, ErrScratchRetentionStaleRevision) {
-			return err
-		}
+	lock, err := acquireScratchRetentionLock(owner)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("%w: exhausted retries", ErrScratchRetentionStaleRevision)
+	defer func() { _ = lock.Release() }()
+	manifest, err := loadScratchRetention(owner)
+	if err != nil {
+		return err
+	}
+	merged := mergeScratchBindingSlots(manifest, binding)
+	mergedBindings := mergeScratchBindings(manifest.Bindings, []ScratchBinding{merged})
+	mergedConsumers := mergeScratchConsumers(manifest.Consumers, []ScratchConsumerBinding{consumer})
+	if err := validateScratchBindingUpdate(manifest, mergedBindings, []ScratchBinding{binding}, []ScratchConsumerBinding{consumer}); err != nil {
+		return err
+	}
+	manifest.Bindings = mergedBindings
+	manifest.Consumers = mergedConsumers
+	manifest.Revision++
+	return writeScratchRetention(owner, manifest)
 }
 
-func validateScratchBindingUpdate(manifest ScratchManifest, bindings []ScratchBinding, consumers []ScratchConsumerBinding) error {
+// mergeScratchBindingSlots rebases target onto the fresh manifest per slot:
+// every slot target names is applied (and demoted to a borrow when another
+// binding already owns its directory), while slots only the manifest holds are
+// preserved. Stored owner identity is never renamed by a caller.
+func mergeScratchBindingSlots(manifest ScratchManifest, target ScratchBinding) ScratchBinding {
+	merged := target
+	if stored, ok := scratchBindingByID(manifest.Bindings, target.BindingID); ok {
+		merged = stored
+	}
+	slots := make(map[string]ScratchSlot, len(merged.Slots)+len(target.Slots))
+	for kind, slot := range merged.Slots {
+		slots[kind] = slot
+	}
+	merged.Slots = slots
+	for kind, slot := range target.Slots {
+		if slot.OwnsLease {
+			if dir, err := canonicalScratchPath(slot.Dir); err == nil {
+				if owner, ok := leaseOwningBinding(manifest, dir); ok && owner != target.BindingID {
+					slot.OwnsLease = false
+				}
+			}
+		}
+		merged.Slots[kind] = slot
+	}
+	return merged
+}
+
+func scratchBindingByID(bindings []ScratchBinding, bindingID string) (ScratchBinding, bool) {
+	for _, binding := range bindings {
+		if binding.BindingID == bindingID {
+			return binding, true
+		}
+	}
+	return ScratchBinding{}, false
+}
+
+func leaseOwningBinding(manifest ScratchManifest, canonicalDir string) (string, bool) {
+	for _, binding := range manifest.Bindings {
+		for _, slot := range binding.Slots {
+			if !slot.OwnsLease {
+				continue
+			}
+			if dir, err := canonicalScratchPath(slot.Dir); err == nil && dir == canonicalDir {
+				return binding.BindingID, true
+			}
+		}
+	}
+	return "", false
+}
+
+func validateScratchBindingUpdate(manifest ScratchManifest, mergedBindings []ScratchBinding, suppliedBindings []ScratchBinding, suppliedConsumers []ScratchConsumerBinding) error {
 	refs := make(map[string]struct{}, len(manifest.References))
 	for _, ref := range manifest.References {
 		dir, err := canonicalScratchPath(ref.Dir)
@@ -361,8 +423,8 @@ func validateScratchBindingUpdate(manifest ScratchManifest, bindings []ScratchBi
 		}
 		refs[dir] = struct{}{}
 	}
-	seenBinding := make(map[string]struct{}, len(bindings))
-	for _, binding := range bindings {
+	seenBinding := make(map[string]struct{}, len(suppliedBindings))
+	for _, binding := range suppliedBindings {
 		if strings.TrimSpace(binding.BindingID) == "" {
 			return errors.New("sandbox: scratch binding has no id")
 		}
@@ -370,6 +432,8 @@ func validateScratchBindingUpdate(manifest ScratchManifest, bindings []ScratchBi
 			return fmt.Errorf("sandbox: duplicate scratch binding %q", binding.BindingID)
 		}
 		seenBinding[binding.BindingID] = struct{}{}
+	}
+	for _, binding := range mergedBindings {
 		for kind, slot := range binding.Slots {
 			dir, err := canonicalScratchPath(slot.Dir)
 			if err != nil {
@@ -380,8 +444,8 @@ func validateScratchBindingUpdate(manifest ScratchManifest, bindings []ScratchBi
 			}
 		}
 	}
-	seenConsumer := make(map[string]struct{}, len(consumers))
-	for _, consumer := range consumers {
+	seenConsumer := make(map[string]struct{}, len(suppliedConsumers))
+	for _, consumer := range suppliedConsumers {
 		if strings.TrimSpace(consumer.SessionID) == "" {
 			return errors.New("sandbox: scratch consumer has no session id")
 		}
@@ -391,9 +455,10 @@ func validateScratchBindingUpdate(manifest ScratchManifest, bindings []ScratchBi
 		seenConsumer[consumer.SessionID] = struct{}{}
 	}
 	// At most one current allocation per (BindingID, Kind) is guaranteed by the
-	// map key; across bindings, a directory has at most one lease-owning slot.
+	// map key; across bindings, the MERGED set may have a directory owned by at
+	// most one binding.
 	owners := make(map[string]string)
-	for _, binding := range append(append([]ScratchBinding(nil), manifest.Bindings...), bindings...) {
+	for _, binding := range mergedBindings {
 		for kind, slot := range binding.Slots {
 			if !slot.OwnsLease {
 				continue
@@ -522,6 +587,20 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 	manifest.Released = true
 	manifest.Revision++
 	return writeScratchRetention(owner, manifest)
+}
+
+// BorrowRetainedSessionScratch returns a lease-less handle to an already
+// retained directory so a distinct sharing consumer can point at the same
+// allocation without duplicating its lease. The directory must exist.
+func BorrowRetainedSessionScratch(dir string) (*SessionScratch, error) {
+	canonical, err := canonicalScratchPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		return nil, fmt.Errorf("sandbox: borrow retained scratch: %w", err)
+	}
+	return &SessionScratch{Dir: canonical, base: filepath.Dir(canonical)}, nil
 }
 
 // scratchDirectoryRetained decides whether the collector must skip dir. A

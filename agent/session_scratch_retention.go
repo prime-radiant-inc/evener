@@ -49,22 +49,27 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: stored.BindingID}
 		return sandbox.UpsertScratchBinding(owner, stored, consumer)
 	}
-	// No installed binding: reuse a stored binding that already owns one of
-	// env's allocations (a wrapper borrow), else mint a fresh one.
-	binding, ok, err := reuseScratchBindingForEnv(owner, env)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		minted, err := s.scratchRetentionBindingID(owner, sessionID)
+	// No installed binding. A distinct constructed environment gets its own new
+	// opaque binding id (plan 646); only this session's own current environment
+	// reuses its persisted consumer binding id, so a resume keeps its identity.
+	// A directory another binding already owns is demoted to a wrapper borrow by
+	// the manifest writer, not collapsed onto that binding's id.
+	bindingID := ""
+	if s.currentEnv() == env {
+		bindingID, err = s.scratchRetentionBindingID(owner, sessionID)
 		if err != nil {
 			return err
 		}
-		binding = sandbox.ScratchBinding{
-			BindingID:      minted,
-			OwnerSessionID: sessionID,
-			WorkingDir:     env.WorkingDirectory(),
+	} else {
+		bindingID, err = identifier.NewSessionID()
+		if err != nil {
+			return err
 		}
+	}
+	binding := sandbox.ScratchBinding{
+		BindingID:      bindingID,
+		OwnerSessionID: sessionID,
+		WorkingDir:     env.WorkingDirectory(),
 	}
 	if err := env.SetScratchRetentionBinding(owner, binding); err != nil {
 		return err
@@ -87,38 +92,6 @@ func findScratchBinding(manifest sandbox.ScratchManifest, bindingID string) (san
 		}
 	}
 	return sandbox.ScratchBinding{}, false
-}
-
-// reuseScratchBindingForEnv returns the binding id that already owns one of
-// env's current lease-owning allocations, or ok=false when none does.
-func reuseScratchBindingForEnv(owner sandbox.ScratchOwner, env *execenv.LocalExecutionEnvironment) (sandbox.ScratchBinding, bool, error) {
-	refs, err := env.ScratchRetentionReferences()
-	if err != nil || len(refs) == 0 {
-		return sandbox.ScratchBinding{}, false, err
-	}
-	dirs := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if dir, err := filepath.Abs(ref.Dir); err == nil {
-			dirs[filepath.Clean(dir)] = struct{}{}
-		}
-	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		return sandbox.ScratchBinding{}, false, err
-	}
-	for _, binding := range manifest.Bindings {
-		for _, slot := range binding.Slots {
-			if !slot.OwnsLease {
-				continue
-			}
-			if dir, err := filepath.Abs(slot.Dir); err == nil {
-				if _, ok := dirs[filepath.Clean(dir)]; ok {
-					return binding, true, nil
-				}
-			}
-		}
-	}
-	return sandbox.ScratchBinding{}, false, nil
 }
 
 // scratchRetentionBindingID returns this session's persisted current binding id,
@@ -181,19 +154,60 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 	restore := s.worktreeRestoreEnv
 	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
 	s.mu.Unlock()
-	if sameEnvironment(shared, env) {
-		consumer.ParentSharedBindingID = binding.BindingID
+	// Each role resolves its OWN environment's binding, which may differ from
+	// the published environment's binding (a shared or parked environment), so
+	// a Task 6 consumer can join every role to its exact binding.
+	if sharedEnv, ok := shared.(*execenv.LocalExecutionEnvironment); ok {
+		if id, ok := s.roleScratchBindingID(manifest, sharedEnv); ok {
+			consumer.ParentSharedBindingID = id
+		}
 	}
-	if restore == env {
-		consumer.WorktreeRestoreBindingID = binding.BindingID
+	if id, ok := s.roleScratchBindingID(manifest, restore); ok {
+		consumer.WorktreeRestoreBindingID = id
 	}
 	for _, candidate := range abandoned {
-		if candidate == env {
-			consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, binding.BindingID)
-			break
+		if id, ok := s.roleScratchBindingID(manifest, candidate); ok {
+			consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, id)
 		}
 	}
 	return sandbox.UpsertScratchBinding(owner, binding, consumer)
+}
+
+// roleScratchBindingID resolves one role environment's own binding id from the
+// manifest: its installed binding if that binding is this owner's, else a
+// stored binding that owns one of the role environment's allocations.
+func (s *Session) roleScratchBindingID(manifest sandbox.ScratchManifest, roleEnv *execenv.LocalExecutionEnvironment) (string, bool) {
+	if roleEnv == nil {
+		return "", false
+	}
+	if installed, err := roleEnv.ScratchRetentionBinding(); err == nil && installed.BindingID != "" {
+		if _, ok := findScratchBinding(manifest, installed.BindingID); ok {
+			return installed.BindingID, true
+		}
+	}
+	refs, err := roleEnv.ScratchRetentionReferences()
+	if err != nil || len(refs) == 0 {
+		return "", false
+	}
+	dirs := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if dir, err := filepath.Abs(ref.Dir); err == nil {
+			dirs[filepath.Clean(dir)] = struct{}{}
+		}
+	}
+	for _, stored := range manifest.Bindings {
+		for _, slot := range stored.Slots {
+			if !slot.OwnsLease {
+				continue
+			}
+			if dir, err := filepath.Abs(slot.Dir); err == nil {
+				if _, ok := dirs[filepath.Clean(dir)]; ok {
+					return stored.BindingID, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 // validateRetainedScratchPresent verifies every referenced allocation still
@@ -255,7 +269,10 @@ type retainedScratchPool struct {
 	// transferred to a consumer. Together they distinguish "leave with its
 	// holder" from "already transferred, refuse a second owner".
 	contended map[string]struct{}
-	adopted   map[string]struct{}
+	// adopted maps a transferred allocation's canonical dir to the consumer
+	// session that took it, so a distinct sharing consumer can borrow the same
+	// directory while a duplicate transfer by the same consumer is refused.
+	adopted map[string]string
 }
 
 // scratchRetentionOwner resolves this session's root retention authority. A
@@ -296,7 +313,7 @@ func (s *Session) prepareRetainedScratch() error {
 		bindings:  make(map[string]sandbox.ScratchBinding, len(manifest.Bindings)),
 		consumers: make(map[string]sandbox.ScratchConsumerBinding, len(manifest.Consumers)),
 		contended: make(map[string]struct{}),
-		adopted:   make(map[string]struct{}),
+		adopted:   make(map[string]string),
 	}
 	// A reference this session's own environment already holds live is not a
 	// restore target: its lease is owned, so reacquiring would self-contend.
@@ -353,6 +370,14 @@ func (s *Session) prepareRetainedScratch() error {
 // ownership, and verifies the binding identity. It is a no-op when no pool was
 // prepared, so a session with no retention manifest keeps its existing path.
 func (s *Session) adoptRetainedScratch(env *execenv.LocalExecutionEnvironment, bindingID string) error {
+	return s.adoptRetainedScratchFor(env, bindingID, s.id)
+}
+
+// adoptRetainedScratchFor is adoptRetainedScratch with an explicit adopter
+// identity: a distinct consumer sharing an allocation that another session
+// already adopted receives a lease-less borrow, while the same consumer asking
+// twice is refused.
+func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment, bindingID, adopterID string) error {
 	if env == nil {
 		return nil
 	}
@@ -367,12 +392,35 @@ func (s *Session) adoptRetainedScratch(env *execenv.LocalExecutionEnvironment, b
 	if err := env.SetScratchRetentionBinding(pool.owner, binding); err != nil {
 		return err
 	}
+	// A kind this environment already provisions (an eagerly provisioned
+	// sandbox scratch) is left exposed; only absent kinds are restored, so a
+	// retained wrapper never replaces a live allocation.
+	existingKinds := map[string]bool{}
+	if refs, err := env.ScratchRetentionReferences(); err == nil {
+		for _, ref := range refs {
+			existingKinds[ref.Kind] = true
+		}
+	}
 	for kind, slot := range binding.Slots {
+		if slot.OwnsLease && existingKinds[kind] {
+			continue
+		}
 		key := filepath.Clean(slot.Dir)
 		handle := pool.handles[key]
 		if handle == nil {
-			if _, already := pool.adopted[key]; already {
-				return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+			if prior, already := pool.adopted[key]; already {
+				if prior == adopterID {
+					return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+				}
+				borrow, err := sandbox.BorrowRetainedSessionScratch(slot.Dir)
+				if err != nil {
+					return err
+				}
+				ref := sandbox.ScratchReference{Dir: slot.Dir, Kind: kind}
+				if err := env.RestoreSessionScratch(bindingID, ref, borrow); err != nil {
+					return err
+				}
+				continue
 			}
 			if _, contended := pool.contended[key]; contended {
 				// The allocation's lease is still held in this process; it
@@ -391,7 +439,7 @@ func (s *Session) adoptRetainedScratch(env *execenv.LocalExecutionEnvironment, b
 			return err
 		}
 		delete(pool.handles, key)
-		pool.adopted[key] = struct{}{}
+		pool.adopted[key] = adopterID
 	}
 	return nil
 }
@@ -411,7 +459,7 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 	if !ok || consumer.CurrentBindingID == "" {
 		return false, nil
 	}
-	if err := s.adoptRetainedScratch(env, consumer.CurrentBindingID); err != nil {
+	if err := s.adoptRetainedScratchFor(env, consumer.CurrentBindingID, sessionID); err != nil {
 		return false, err
 	}
 	return true, nil

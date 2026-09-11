@@ -9,12 +9,13 @@ import (
 )
 
 // TestScratchRetentionBindingMoveConcurrentMint drives the supported
-// dual-allocation/clone topology: allocation A moves from E0 to E1 while a
-// command on the emptied source mints B in the scratch-move window. The
-// original manifest must end with two legitimate current slots — E1/sandbox=A
-// and E0/unsandboxed=B — under unchanged root/owner identities, with stale
-// revisions and a persistence failure refused without overwriting a fresh slot
-// or releasing a lease before its committed reference/mapping.
+// dual-allocation/clone topology against a manifest that already holds the
+// pre-move E0/A record. Allocation A moves from E0 to E1 through the real
+// update path while a racing writer mints B into E0; the move must preserve
+// both current slots — E1/sandbox=A and E0/unsandboxed=B — under unchanged
+// root/owner identities. Stale-revision and persistence-failure refusals must
+// leave a fresh slot untouched and no lease released before its committed
+// reference/mapping.
 func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 	base, workspace := t.TempDir(), t.TempDir()
 	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-test-session"}
@@ -75,6 +76,38 @@ func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 		t.Fatalf("E0 unsandboxed slot = %+v, want B", bindingE0.Slots)
 	}
 
+	// Seed the manifest with the pre-move E0/A record through the real writer.
+	seed := sandbox.ScratchBinding{
+		BindingID:      "E0",
+		OwnerSessionID: owner.RootSessionID,
+		WorkingDir:     workspace,
+		Slots:          map[string]sandbox.ScratchSlot{sandbox.ScratchKindSandbox: {Dir: a.Dir, OwnsLease: true}},
+	}
+	consumerR := sandbox.ScratchConsumerBinding{SessionID: "R", CurrentBindingID: "E0"}
+	if err := sandbox.UpsertScratchBinding(owner, seed, consumerR); err != nil {
+		t.Fatalf("seed E0/A: %v", err)
+	}
+	// A racing writer mints B into E0 before the move commits.
+	racer := sandbox.ScratchBinding{
+		BindingID:      "E0",
+		OwnerSessionID: owner.RootSessionID,
+		WorkingDir:     workspace,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox:     {Dir: a.Dir, OwnsLease: true},
+			sandbox.ScratchKindUnsandboxed: {Dir: b.Dir, OwnsLease: true},
+		},
+	}
+	if err := sandbox.UpsertScratchBinding(owner, racer, consumerR); err != nil {
+		t.Fatalf("racing mint B: %v", err)
+	}
+	// A stale record that still names only A must not erase the racing B.
+	if err := sandbox.UpsertScratchBinding(owner, seed, consumerR); err != nil {
+		t.Fatalf("stale retry: %v", err)
+	}
+	if got := manifestBinding(t, owner, "E0").Slots[sandbox.ScratchKindUnsandboxed]; filepath.Clean(got.Dir) != filepath.Clean(b.Dir) || !got.OwnsLease {
+		t.Fatalf("stale retry erased B: %+v", got)
+	}
+
 	manifest, err := sandbox.LoadScratchRetention(owner)
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +117,7 @@ func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 		{SessionID: "R", CurrentBindingID: "E1"},
 		{SessionID: "C", CurrentBindingID: "E0"},
 	}
+	// The plan's single-transaction move: E1 takes A's owning slot, E0 keeps B.
 	if err := sandbox.UpdateScratchBindings(owner, rev, []sandbox.ScratchBinding{bindingE1, bindingE0}, consumers); err != nil {
 		t.Fatalf("UpdateScratchBindings: %v", err)
 	}
@@ -131,6 +165,21 @@ func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 	if _, err := sandbox.OpenRetainedSessionScratch(owner, refB); err == nil {
 		t.Fatal("B's lease was released before its committed mapping")
 	}
+}
+
+func manifestBinding(t *testing.T, owner sandbox.ScratchOwner, bindingID string) sandbox.ScratchBinding {
+	t.Helper()
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == bindingID {
+			return binding
+		}
+	}
+	t.Fatalf("binding %q missing: %+v", bindingID, manifest.Bindings)
+	return sandbox.ScratchBinding{}
 }
 
 // TestScratchRetentionLiveEnvironmentPinsOnMint proves a live environment that

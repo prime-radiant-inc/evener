@@ -226,3 +226,153 @@ func TestRetirementAgedScratchRestoresAtOriginalPath(t *testing.T) {
 		t.Fatalf("restored child task store = %+v, want empty", tasks)
 	}
 }
+
+// TestRetirementRootScratchRestoresAtOriginalPath proves the ROOT's own
+// retained scratch is adopted on resume: a root mints scratch, crashes, is
+// restored, and must find its original directory (not a fresh replacement),
+// with the stored slot record preserved.
+func TestRetirementRootScratchRestoresAtOriginalPath(t *testing.T) {
+	dir := t.TempDir()
+	root1 := newQueuePersistTestSession(t, dir)
+	rootID := root1.ID()
+	env1, ok := root1.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("root has no local environment")
+	}
+	scratchDir := env1.SessionScratchDir()
+	if scratchDir == "" {
+		if _, err := env1.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
+			t.Fatalf("mint root scratch: %v", err)
+		}
+		scratchDir = env1.SessionScratchDir()
+	}
+	if scratchDir == "" {
+		t.Fatal("root minted no scratch")
+	}
+	artifact := filepath.Join(scratchDir, "root-required.bin")
+	want := []byte("root-aged-artifact")
+	if err := os.WriteFile(artifact, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := root1.installScratchRetention(env1); err != nil {
+		t.Fatalf("install root retention: %v", err)
+	}
+	meta := root1.Meta()
+
+	// Crash: release the scratch lease as process death would, close the store
+	// and transcript with no teardown appends.
+	env1.RetainSessionScratch()
+	_ = root1.jobManager.closeStoreOnly()
+	if err := root1.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	root2, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root2.Close()
+	if root2.ID() != rootID {
+		t.Fatalf("restored another root: %s", root2.ID())
+	}
+	env2, ok := root2.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("restored root has no local environment")
+	}
+	if got := env2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchDir) {
+		t.Fatalf("resumed root scratch = %q, want original %q", got, scratchDir)
+	}
+	got, err := os.ReadFile(artifact)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("root artifact lost at original path %q: bytes=%q err=%v", artifact, got, err)
+	}
+
+	// The stored slot record survives the restore-time republish.
+	owner, ok := root2.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("restored root has no retention owner")
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bindingID string
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == root2.id {
+			bindingID = consumer.CurrentBindingID
+		}
+	}
+	if bindingID == "" {
+		t.Fatalf("root consumer binding missing: %+v", manifest.Consumers)
+	}
+	found := false
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID != bindingID {
+			continue
+		}
+		for _, slot := range binding.Slots {
+			if filepath.Clean(slot.Dir) == filepath.Clean(scratchDir) && slot.OwnsLease {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("stored owning slot for %q was erased: %+v", scratchDir, manifest.Bindings)
+	}
+}
+
+// TestRetirementConsumerRolesRecordEachBinding proves a consumer whose current
+// binding is E1 and whose parent-shared environment is E0 records E0 for the
+// shared role, so Task 6 can resolve each role to its exact binding.
+func TestRetirementConsumerRolesRecordEachBinding(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no retention owner")
+	}
+	current, ok := root.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("root has no local environment")
+	}
+	// A distinct parent-shared environment owning its own allocation.
+	shared := execenv.NewLocalExecutionEnvironment(dir)
+	t.Cleanup(func() { shared.RetainSessionScratch() })
+	if err := shared.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{BindingID: "E0", OwnerSessionID: root.id, WorkingDir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shared.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
+		t.Fatalf("mint shared scratch: %v", err)
+	}
+	root.mu.Lock()
+	root.parentSharedEnv = shared
+	root.mu.Unlock()
+
+	if err := root.registerScratchConsumerRoles(current); err != nil {
+		t.Fatalf("register roles: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var consumer sandbox.ScratchConsumerBinding
+	found := false
+	for _, candidate := range manifest.Consumers {
+		if candidate.SessionID == root.id {
+			consumer = candidate
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("root consumer missing: %+v", manifest.Consumers)
+	}
+	if consumer.ParentSharedBindingID != "E0" {
+		t.Fatalf("parent-shared role = %q, want E0 (current %q)", consumer.ParentSharedBindingID, consumer.CurrentBindingID)
+	}
+	if consumer.ParentSharedBindingID == consumer.CurrentBindingID {
+		t.Fatalf("shared role collapsed onto the current binding %q", consumer.CurrentBindingID)
+	}
+}

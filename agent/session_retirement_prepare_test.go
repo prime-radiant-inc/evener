@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/sandbox"
@@ -274,5 +276,172 @@ func TestRetirementPreparationCapturesOccupiedLane(t *testing.T) {
 	lane := prep.lanes[0]
 	if lane.sessionID != r.s.id || lane.path != lanePath || lane.branch == "" || lane.owner == "" {
 		t.Fatalf("lane evidence = %+v (want session %q path %q with branch and owner)", lane, r.s.id, lanePath)
+	}
+}
+
+// TestRetirementPreparationFailureEmitsNoTerminalEventOrClose proves plan 572's
+// requirement that a preparation failure leaves the session resident: no
+// session-end event is emitted and the job and delegate stores stay open.
+func TestRetirementPreparationFailureEmitsNoTerminalEventOrClose(t *testing.T) {
+	root, c, claim := retirementPrepareFixture(t)
+	evs, mu, _ := collectEvents(root)
+	path := root.TranscriptPath()
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.WriteFile(path, original, 0o600) })
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a corrupt transcript")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.jobManager.store.Load(); err != nil {
+		t.Fatalf("preparation failure closed the job store: %v", err)
+	}
+	if _, err := root.delegateController.store.Load(); err != nil {
+		t.Fatalf("preparation failure closed the delegate store: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range *evs {
+		if ev.Kind == events.EventSessionEnd {
+			t.Fatalf("preparation failure emitted a session-end event: %+v", ev)
+		}
+	}
+	if root.state == SessionClosed {
+		t.Fatal("preparation failure closed the session")
+	}
+}
+
+// TestRetirementPreparationWrongOwnerLaneStaysResident exercises the lane
+// verification error branches: a foreign-locked and an unlocked occupied lane
+// both refuse preparation.
+func TestRetirementPreparationWrongOwnerLaneStaysResident(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, r *scriptedLaneRepo, lanePath string)
+		want   string
+	}{
+		{name: "foreign owner", mutate: func(t *testing.T, r *scriptedLaneRepo, lanePath string) {
+			r.setLaneLock(t, lanePath, "foreign-owner-marker")
+		}, want: "another owner"},
+		{name: "unlocked", mutate: func(t *testing.T, r *scriptedLaneRepo, lanePath string) {
+			r.unlockLane(t, lanePath)
+		}, want: "not locked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sr := newScriptedLaneRepo(t)
+			r := sr.wt()
+			res, err := r.create(t, map[string]any{"name": "lane"})
+			if err != nil {
+				t.Fatalf("create lane: %v", err)
+			}
+			lanePath := res["path"].(string)
+			tc.mutate(t, sr, lanePath)
+			c, err := NewRetirementController(0, clock.Real())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.AttachRoot(r.s); err != nil {
+				t.Fatal(err)
+			}
+			claim, state, err := c.TryClaim(true)
+			if err != nil || claim == nil {
+				t.Fatalf("lane fixture not claimable: %+v %v", state, err)
+			}
+			if _, err := c.Prepare(context.Background(), claim); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Prepare error = %v, want %q", err, tc.want)
+			}
+			if err := c.Abort(claim, "prepare_failed"); err != nil {
+				t.Fatal(err)
+			}
+			if got := c.Snapshot().Phase; got != "resident" {
+				t.Fatalf("phase = %s", got)
+			}
+		})
+	}
+}
+
+// TestRetirementPreparationMissingChildTranscriptStaysResident exercises a
+// missing child transcript through Prepare, not only the TryClaim predicate.
+func TestRetirementPreparationMissingChildTranscriptStaysResident(t *testing.T) {
+	root, _, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("idle delegate not claimable: %+v %v", state, err)
+	}
+	child := root.delegateController.residentDelegateRuntime(d.DelegateID)
+	if child == nil {
+		t.Fatal("resident delegate missing")
+	}
+	if err := os.Remove(child.TranscriptPath()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a missing child transcript")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRetirementPreparationMalformedDescriptorStaysResident exercises a
+// corrupt durable delegate descriptor through Prepare's strict store readiness.
+func TestRetirementPreparationMalformedDescriptorStaysResident(t *testing.T) {
+	root, _, c := newRetirementDelegateController(t)
+	defer root.Close()
+	_ = retirementIdleDelegate(t, root)
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("idle delegate not claimable: %+v %v", state, err)
+	}
+	journal := filepath.Join(jobsDir(root.stateDir, root.id), "delegates.jsonl")
+	original, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte("{not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.WriteFile(journal, original, 0o600) })
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a malformed delegate descriptor log")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRetirementPreparationUnreadableColdEvidenceStaysResident exercises a cold
+// delegate whose reconstruction evidence cannot be read, through Prepare.
+func TestRetirementPreparationUnreadableColdEvidenceStaysResident(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("idle delegate not claimable: %+v %v", state, err)
+	}
+	tree.mu.Lock()
+	if live := tree.live[d.DelegateID]; live != nil {
+		live.runtime = nil
+	}
+	tree.mu.Unlock()
+	jobs := filepath.Join(jobsDir(root.stateDir, d.ChildSessionID), "jobs.jsonl")
+	if err := os.Remove(jobs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted unreadable cold reconstruction evidence")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
 	}
 }
