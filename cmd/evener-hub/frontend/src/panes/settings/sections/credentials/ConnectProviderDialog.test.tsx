@@ -1,5 +1,6 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderComponent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { AuthStatusResponse, InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
@@ -8,6 +9,44 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
+
+// Existing cases exercise management, now reached explicitly from discovery.
+function render(element: ReactElement) {
+  const view = renderComponent(element);
+  if (element.type === ConnectProviderDialog) {
+    fireEvent.click(screen.getByText("Already configured access on this host?"));
+    fireEvent.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  }
+  return view;
+}
+
+test("opens compact discovery by default and keeps management and the full editor returnable", async () => {
+  const row = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
+  connectFakeClient({
+    instances: [row],
+    availableProviders: [
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        protocol: row.protocol,
+        auth: row.auth,
+        implicit: true,
+        authModes: ["apiKey"],
+        setup: row,
+      },
+    ],
+  });
+  renderComponent(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+  const user = userEvent.setup();
+  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+  await user.click(screen.getByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  expect(await screen.findByRole("button", { name: "Set API key" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Full provider settings" }));
+  expect(await screen.findByRole("button", { name: "+ Add provider instance" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
+  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+});
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {

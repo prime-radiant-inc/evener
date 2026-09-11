@@ -340,6 +340,8 @@ test("successful keyless testing refreshes availability without an auth notifica
     await user.click(connectProvider);
     await vi.dynamicImportSettled();
   });
+  await user.click(screen.getByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
   const testConnection = await screen.findByRole("button", { name: "Test connection" });
   available = true;
   await user.click(testConnection);

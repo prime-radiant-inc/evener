@@ -47,13 +47,19 @@ function nonEmptyVars(vars: Record<string, string>): Record<string, string> | un
 
 export interface AddInstanceDialogProps {
   availableProviders: ProviderDescriptor[];
+  initialBase?: string;
   onCancel: () => void;
-  onSuccess: () => void;
+  onSuccess: (name: string) => void;
 }
 
 /** The global "+ Add provider instance" form (parity-m7-settings.md §7f). */
-export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: AddInstanceDialogProps) {
-  const [base, setBase] = useState("");
+export function AddInstanceDialog({
+  availableProviders,
+  initialBase = "",
+  onCancel,
+  onSuccess,
+}: AddInstanceDialogProps) {
+  const [base, setBase] = useState(initialBase);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [protocol, setProtocol] = useState("");
@@ -112,7 +118,7 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
       });
       if (!active.current) return;
       toast.push("success", `Created instance ${trimmedName}`);
-      onSuccess();
+      onSuccess(trimmedName);
     } catch (err) {
       if (!active.current) return;
       const message = errorText(err);
