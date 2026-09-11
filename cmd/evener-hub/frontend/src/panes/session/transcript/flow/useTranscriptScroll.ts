@@ -837,24 +837,34 @@ export function useTranscriptScroll({
   //
   //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
   //     and marks only when the write moved it (its scrollPortBy).
-  //   wheel         - a sideways wheel scrolls nothing here and never marks, and
-  //     a vertical one only marks when verticalInputCanMovePort says it can
-  //     reach and move the port: not into a limit the port is already at, and
-  //     not when a nested scroller will answer it instead.
+  //   wheel         - a sideways wheel scrolls nothing here and never marks, nor
+  //     does a zoom gesture (ctrl-wheel) or one a descendant has already claimed
+  //     via preventDefault. A vertical one marks only when
+  //     verticalInputCanMovePort says it can reach and move the port: not into a
+  //     limit the port is already at, and not when a nested scroller will answer
+  //     it instead.
   //   touch         - the same predicate, on real vertical movement only, so a
   //     sideways swipe and a swipe a nested scroller answers are both ignored.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
-  //     from a scrollbar drag that does scroll. Ruled out are a finger (it has
-  //     the touch path, which is more exact), a secondary button, a drag that is
-  //     over (no button held), and one that has left the port.
+  //     from a scrollbar drag or a middle-button autoscroll that does scroll.
+  //     Ruled out are a finger (it has the touch path, which is more exact), a
+  //     secondary button, a drag that is over (no button held), and one that has
+  //     left the port.
   const startPointerDrag = useCallback((event: PointerEvent) => {
     // A finger produces BOTH event streams. The touch path knows about
     // direction and nested scrollers; adopting the same finger here as a drag
-    // would mark every sideways swipe and undo that exactness. Secondary
-    // buttons open menus, they do not drag.
+    // would mark every sideways swipe and undo that exactness.
+    //
+    // The primary button drags a scrollbar or a selection; the middle button is
+    // native autoscroll, which scrolls the port continuously for as long as it
+    // is held - so leaving it out costs a re-pin on every correction that lands
+    // during one, not a single frame. The secondary button opens a menu and
+    // never scrolls. Where the middle button does nothing at all, this marks a
+    // drag that moves nothing: the same trade the path already makes for a
+    // selection drag.
     if (event.pointerType === "touch") return;
-    if (event.button !== 0 || !event.isPrimary) return;
+    if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
     pointerDraggingRef.current = true;
   }, []);
   // A mouse pointer gets no implicit capture, so a drag released outside the
@@ -888,6 +898,10 @@ export function useTranscriptScroll({
   }, []);
   const markWheel = useCallback(
     (event: WheelEvent) => {
+      // Zoom, not scroll: ctrl-wheel is the browser's zoom gesture, and a macOS
+      // trackpad pinch arrives as one. A wheel a descendant already claimed will
+      // not reach the port either. Neither moves anything here.
+      if (event.ctrlKey || event.defaultPrevented) return;
       if (event.deltaY === 0) return;
       const port = event.currentTarget;
       if (!(port instanceof HTMLElement)) return;

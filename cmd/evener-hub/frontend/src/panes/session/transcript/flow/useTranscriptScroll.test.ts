@@ -143,6 +143,10 @@ function pointerEvent(type: string, init: PointerEventInit): PointerEvent {
 const MOUSE_DOWN: PointerEventInit = { pointerType: "mouse", button: 0, buttons: 1, isPrimary: true };
 const MOUSE_DRAG: PointerEventInit = { pointerType: "mouse", button: -1, buttons: 1, isPrimary: true };
 
+// Native middle-button autoscroll: press, then the port scrolls continuously.
+const MIDDLE_DOWN: PointerEventInit = { pointerType: "mouse", button: 1, buttons: 4, isPrimary: true };
+const MIDDLE_DRAG: PointerEventInit = { pointerType: "mouse", button: -1, buttons: 4, isPrimary: true };
+
 // jsdom computes no layout, so the port's own geometry is defined outright -
 // the marker predicate reads it from the DOM, not through the `measure` seam.
 // Kept in step with what `measure` reports, since a browser could not disagree.
@@ -1084,6 +1088,51 @@ describe("jumpToBottom landing reliability", () => {
       el.dispatchEvent(pointerEvent("pointerdown", finger));
       el.dispatchEvent(touchEvent("touchmove", 400));
       el.dispatchEvent(pointerEvent("pointermove", { ...finger, button: -1 }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a middle-button autoscroll marks, so a correction does not snap the reader back", () => {
+    // Middle-button autoscroll produces a STREAM of scroll events, so leaving it
+    // unmarked is not a one-frame cost: every correction that lands while the
+    // reader is autoscrolling re-pins over them.
+    const { el, set, result } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MIDDLE_DOWN));
+      el.dispatchEvent(pointerEvent("pointermove", MIDDLE_DRAG));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a ctrl-wheel is zoom, not a scroll - the correction still re-pins", () => {
+    // Browser zoom, and what a macOS trackpad pinch arrives as. It never moves
+    // the port, so marking it is pure over-marking.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, ctrlKey: true, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel a descendant already claimed does not reach the port - the correction still re-pins", () => {
+    const { el, set } = mountAtBottom();
+    // A plain child, deliberately not a scroller: the nested walk must not be
+    // what saves this, or the test would pass for the wrong reason.
+    const child = document.createElement("div");
+    el.appendChild(child);
+    child.addEventListener("wheel", (event) => event.preventDefault());
+
+    act(() => {
+      child.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }));
       landCorrection(el, set);
     });
 
