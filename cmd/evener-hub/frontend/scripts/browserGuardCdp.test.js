@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 // The WIRE half of the guards' plumbing (browserGuardCdp.mjs). Everything here
 // runs against a fake `send` and a fake socket: the module's contract with
 // Chrome is CDP request/response shapes, and none of these cases needs a
@@ -14,7 +16,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { afterEach, test, vi } from "vitest";
 
 import {
   applyViewport,
@@ -26,6 +28,10 @@ import {
   navigateTo,
   waitForHttp,
 } from "./browserGuardCdp.mjs";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 test("preserves the announced endpoint host when building HTTP URLs", () => {
   assert.equal(
@@ -42,14 +48,14 @@ test("preserves the announced endpoint host when building HTTP URLs", () => {
   );
 });
 
-test("one startup deadline aborts the pending HTTP readiness phase", async (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
+test("one startup deadline aborts the pending HTTP readiness phase", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const deadline = createStartupDeadline();
   const pending = waitForHttp("http://127.0.0.1:1/json/version", "chrome", () => null, {
     signal: deadline.signal,
   });
 
-  context.mock.timers.tick(30_000);
+  vi.advanceTimersByTime(30_000);
   await assert.rejects(pending, /browser startup deadline exceeded after 30000ms/);
   deadline.clear();
 });
@@ -144,9 +150,11 @@ test("no CDP call leaves a timeout timer holding the event loop", async () => {
 // this script took 30.044 seconds; spawnguard took 31.102 against 1.451
 // seconds of work. The bound is deliberately loose: it is here to catch a
 // 30-second hang, not to police startup jitter.
-test("a guard-shaped script exits as soon as its work is done", async (context) => {
+// Let the elapsed-time assertion judge the child after it exits, including
+// the 30-second timer-leak case, without a shorter runner deadline.
+test("a guard-shaped script exits as soon as its work is done", { timeout: 0 }, async (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "browser-guard-cdp-test-"));
-  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  context.onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const script = path.join(dir, "guardShaped.mjs");
   writeFileSync(
     script,
@@ -186,14 +194,14 @@ test("navigateTo stops listening for the load event once the page has loaded", a
 // a socket the guards reuse for every later case -- parsing every CDP message
 // that arrives for the rest of the run. Mock timers stand in for the 30 seconds
 // so this stays a millisecond test.
-test("navigateTo stops listening when the load event never arrives", async (context) => {
+test("navigateTo stops listening when the load event never arrives", async () => {
   const socket = fakeSocket();
   let announceNavigate;
   const navigateIssued = new Promise((resolve) => {
     announceNavigate = resolve;
   });
   const send = fakeSend(socket, { onNavigate: announceNavigate });
-  context.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 
   const navigation = navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/");
   const rejected = assert.rejects(navigation, /timeout calling navigateTo after 30000ms/);
@@ -203,7 +211,7 @@ test("navigateTo stops listening when the load event never arrives", async (cont
   // even armed is worse: nothing would ever fire it and this would hang.
   await navigateIssued;
   await drainMicrotasks();
-  context.mock.timers.tick(30_000);
+  vi.advanceTimersByTime(30_000);
   await rejected;
 
   assert.equal(socket.listenerCount("message"), 0);

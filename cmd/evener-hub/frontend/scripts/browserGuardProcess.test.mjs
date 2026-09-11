@@ -261,6 +261,34 @@ test("stores Chrome crash metadata inside the private browser profile", async ()
   }
 });
 
+test("spawns the Vite wrapper with its default config", async () => {
+  const { guard, children } = await startFakeGuard();
+  try {
+    assert.equal(children[0].command, process.execPath);
+    assert.deepEqual(children[0].args, ["scripts/browserguard-vite.mjs"]);
+  } finally {
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+  }
+});
+
+test("passes a guard's custom Vite config through to the wrapper", async () => {
+  const { guard, children } = await startFakeGuard({
+    viteConfigFile: "scripts/editorial-preview.vite.config.mjs",
+  });
+  try {
+    assert.deepEqual(children[0].args, [
+      "scripts/browserguard-vite.mjs",
+      "scripts/editorial-preview.vite.config.mjs",
+    ]);
+  } finally {
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+  }
+});
+
 test("lets Chrome exit after graceful close before falling back to a signal", async () => {
   let finishClose;
   const closePending = new Promise((resolve) => {
