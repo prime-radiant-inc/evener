@@ -23,13 +23,15 @@ import (
 func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 	var (
-		mu         sync.Mutex
-		childPath  string
-		userInputs []events.UserInputData
+		mu           sync.Mutex
+		childPath    string
+		childSession *Session
+		userInputs   []events.UserInputData
 	)
 	root.cfg.testOnly.delegateInitialInputAppend = func(child *Session) {
 		mu.Lock()
 		childPath = child.TranscriptPath()
+		childSession = child
 		mu.Unlock()
 		go func() {
 			for event := range child.Events() {
@@ -50,6 +52,7 @@ func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
 
 	mu.Lock()
 	path := childPath
+	child := childSession
 	emitted := append([]events.UserInputData(nil), userInputs...)
 	mu.Unlock()
 	if path == "" {
@@ -67,6 +70,18 @@ func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
 	}
 	if emitted[0].StableTurnID != entryID {
 		t.Fatalf("live USER_INPUT id = %q, persisted entry id = %q; the two projections would name the same turn differently", emitted[0].StableTurnID, entryID)
+	}
+	// The run is blocked inside its model call, so the turn is executing. The
+	// two checks above read only what acceptUserInput passed to the event;
+	// this one reads the session, which is what every OTHER record the run
+	// publishes -- round timings, steering, a fold's compaction records --
+	// gets its owner from. Without it, dropping acceptUserInput's adoption of
+	// the preseeded id leaves this case green while all of those go ownerless.
+	if child == nil {
+		t.Fatal("preseed never reported the child session")
+	}
+	if owner := child.activeTurnOwner(); owner != entryID {
+		t.Fatalf("executing delegate run owns turn %q, want the preseeded entry's id %q", owner, entryID)
 	}
 	if !selfMintedTurnID(entryID) {
 		t.Fatalf("preseeded turn id = %q, want a self-minted name (%s...)", entryID, directTurnIDPrefix)
