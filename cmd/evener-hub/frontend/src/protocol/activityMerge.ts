@@ -62,13 +62,24 @@ function maxActivity(current: string | undefined, incoming: string | undefined):
   return Number.isNaN(currentMillis) || incomingMillis > currentMillis ? incoming : current;
 }
 
-function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
-  const state =
-    current.type !== "delegate" || patch.type !== "delegate"
-      ? cloneDelegate(patch)
-      : (patch.projectionRevision ?? 0) > (current.projectionRevision ?? 0)
-        ? cloneDelegate(patch)
-        : cloneDelegate(current);
+// A stable delegate fences on its projection revision, which orders the two
+// snapshots. A turn container carries no revision, so nothing orders them and
+// authority has to come from elsewhere: patchIsAuthority says whether this
+// patch speaks for the container - a page that targets it, or a refresh whose
+// branch is a complete statement - or merely carries it as it stood when the
+// patch was cut. A patch that does not speak for it may still contribute what
+// is purely additive: turns the client has never seen, and a later timestamp.
+function revisionFencedDelegate(
+  current: ActivityDelegate,
+  patch: ActivityDelegate,
+  patchIsAuthority = true,
+): ActivityDelegate {
+  const turnContainer = current.type !== "delegate" || patch.type !== "delegate";
+  const authoritative = turnContainer
+    ? patchIsAuthority
+    : (patch.projectionRevision ?? 0) > (current.projectionRevision ?? 0);
+  const state = cloneDelegate(authoritative ? patch : current);
+  if (turnContainer && !patchIsAuthority) state.turns = unionTurns(current.turns, patch.turns);
   const latestActivityAt = maxActivity(current.latestActivityAt, patch.latestActivityAt);
   if (latestActivityAt !== state.latestActivityAt) state.latestActivityAt = latestActivityAt;
   return state;
@@ -81,14 +92,8 @@ function mergeDelegate(
   inTarget: boolean,
 ): ActivityDelegate {
   const withinTarget = inTarget || activityNodeID({ kind: "delegate", delegate: current }) === targetID;
-  const state = revisionFencedDelegate(current, patch);
-  // Turn containers carry no projection revision to fence on, so a page cut for
-  // a descendant session may not hand its snapshot of this container's turns to
-  // the screen wholesale. Only a page targeting the delegate itself replaces
-  // them; any other page still contributes the turns it alone has seen.
-  if (!withinTarget && (current.type !== "delegate" || patch.type !== "delegate")) {
-    state.turns = unionTurns(current.turns, patch.turns);
-  }
+  // A page speaks for this delegate only when it targets it.
+  const state = revisionFencedDelegate(current, patch, withinTarget);
   return {
     ...state,
     branch: withinTarget ? { ...patch.branch } : { ...current.branch },
@@ -116,7 +121,9 @@ function fenceSession(
     if (entry.kind === "shell") return cloneEntry(entry);
     const prior = currentByID.get(activityNodeID(entry));
     if (prior?.kind !== "delegate") return cloneEntry(entry);
-    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate);
+    // A refresh speaks for this delegate when its branch is a complete
+    // statement; a bounded one stopped somewhere and cannot overwrite it.
+    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate, completeBranch(entry.delegate.branch));
     delegate.branch = { ...entry.delegate.branch };
     if (
       prior.delegate.child &&

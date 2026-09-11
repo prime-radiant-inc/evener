@@ -173,6 +173,41 @@ test.each([
   expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-first"]);
 });
 
+test("a child-session continuation cannot regress its container's own state", () => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.status = "completed";
+  currentEntry.delegate.outcome = "completed";
+  currentEntry.delegate.terminal = true;
+  currentEntry.delegate.turns = [shell("turn-1").job];
+  const patchEntry = delegate(session("child", [shell("b")]));
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.status = "running";
+  patchEntry.delegate.outcome = undefined;
+  patchEntry.delegate.terminal = false;
+  patchEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate).toMatchObject({ status: "completed", outcome: "completed", terminal: true });
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+});
+
+test("a bounded refresh keeps the turns a continuation loaded into a container", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const incoming = delegate(session("child", [shell("a")]));
+  delete incoming.delegate.type;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.turns = [shell("turn-1").job];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+});
+
 test("a child-session continuation adopts unseen turns beside the ones on screen", () => {
   const currentEntry = delegate(session("child", [shell("a")], "next"));
   delete currentEntry.delegate.type;
