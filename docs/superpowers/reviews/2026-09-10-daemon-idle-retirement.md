@@ -592,6 +592,295 @@ must run again after maintenance; this permission does not waive failing tests.
 - Task 4 receives the accepted interfaces and both mandatory setter/source
   handoffs. Later blocker, preservation and activation tasks are still pending.
 
+### Task 4 environment-work ownership
+
+Ruling: Extend Task 4's `agent/session.go` ownership only to the `Session.envWork`
+field type, changing `map[envWorkID]string` to `map[envWorkID]envWorkRecord`. The
+label/release record belongs in already-owned `session_lifecycle.go`. Parent
+inspected the paired record paths and read the initial behavioral failure:
+beginEnvWork allowed retirement to enter preparing with no blockers. Retaining
+the lease in the original record is already required by the approved brief.
+Preserve handles, labels, rollback ownership, nil-controller behavior and close
+joins. Admission precedes locks; release follows settlement and unlocking. No
+parallel lifecycle or additional Session fields are authorized. If wrong, the
+cost is localized record/settlement churn or a lost lease, bounded by environment
+cases, both race orders, final retirement/EnvWork race gates and independent task
+review. Implementation and verification remain pending.
+
+### Task 4 routed-refusal goal fixture
+
+Ruling: Allow only the setup of `TestRetirementRoutedEngineEffectsRefused` and
+directly needed local provider helpers/imports in its existing file to complete
+the seeded goal through a real scripted-provider `update_goal` complete turn.
+Parent verified the active SetGoal write, the fixture's claim prerequisite and
+the independent design requirement that active goals block retirement. Preserve
+the original objective and terminal goal record, assert those preconditions after
+settlement, then take the metadata snapshot and claim. All existing refusal,
+metadata, queue, read and claim assertions remain unchanged; other fixture users
+retain their setup. No goal clearing or forged state. Record the old-fixture
+failure after the goal blocker lands, then focused and server-race GREEN.
+Separate active-goal and real-settlement safety cases remain required. If wrong,
+the cost is narrowed fixture coverage or a concealed setup regression, bounded
+by retained-goal preconditions, unchanged assertions, paired active-goal evidence
+and independent review. Fixture maintenance remains distinct from production TDD.
+
+### Task 4 shared-owner evidence integration
+
+Ruling: Extend ownership only to `delegateTreeController.retirementEvidence` in
+`agent/delegate_tree_retirement.go`, replacing narrow resident/root projections
+with local collection and calling a cold helper from the existing cold loop.
+Parent verified that this method owns enumeration and final version/fence/exact
+pointer revalidation. All additional evidence stays outside locks and before
+that final validation. Preserve ancestry, descriptor and cold transcript/attention
+checks, leaf-first pointers and all existing assertions. Helpers remain in the
+Task 4 evidence file, read-only and fail-closed, without another shared scan or
+validation algorithm. Existing TryClaim ownership covers a complete tree-less
+root path and avoids redundant root collection. No other delegate methods or
+existing tests are authorized. If wrong, the cost is weakened evidence or stale
+pointer acceptance, bounded by unchanged validation, new real resident/cold
+RED/GREEN cases, retirement and supplemental controller race gates, and task
+review. The supplement requires the final `^TestDelegateController` race gate.
+
+### Task 4 job-manager owner wiring
+
+Ruling: Allow only `jm.retirementOwner = s` in the two initial job-manager setup
+blocks of `agent/session_init.go`, before publication and subsequent restore
+effects. Parent verified those sites, constructor work, createShell's pre-lock
+output I/O and the mutable delegate-controller field's locked reassignment.
+Keep the new owner immutable and load its retirement controller atomically,
+including after late AttachRoot. Field/helper stay in owned jobs.go. Preserve
+accepted restore continuation, nil-controller behavior and error cleanup; no
+initialization algorithm changes or separate lifecycle authority. If wrong, the
+cost is a missing or stale admission owner, bounded by real new/restored-session
+and late-attachment tests, both job/watch admission orders, unchanged original
+effects/receipts on refusal, required race/full gates and independent review.
+
+### Task 4 disposal pending ownership
+
+Ruling: Allow only a `disposeRetirement []func()` field beside Session.disposeWG,
+guarded by s.mu, retaining one admission release per successful beginDispose and
+consuming one per paired end after unlock/Done. Keep the paired API, atomic
+closing check/Add and disposeWG close-join authority. Parent inspected the actual
+APIs/callers and controller lease accounting. The collection represents pending
+same-session/category work by count, without individual operation identity; it
+must also represent nil-controller admissions. No caller changes, other fields,
+separate lifecycle or swallowed unmatched settlement. If wrong, the cost is
+premature eligibility or leaked leases, bounded by both-order and overlapping
+out-of-order settlement tests, last-settlement eligibility, unchanged close-join
+regressions under race, required retirement/full gates and independent review.
+The new tests require observed RED before implementation.
+
+### Task 4 naming pending work
+
+Ruling: Allow only `pending int` in existing sessionName under Session.mu,
+registered before each actual naming goroutine and cleared after effects settle.
+Parent inspected both launches and the promptPending flag's sticky success
+semantics. Keep helpers in session_namer.go and preserve sendersWG join ownership,
+prompt semantics, provenance, quota handling, manual-name and compaction revision
+gates. Include pre-AttachRoot work. If wrong, the cost is missed work or permanent
+blocking, bounded by real scripted-provider RED/GREEN for both launch families
+and admission orders, overlap/last settlement, sticky-success evidence, unchanged
+naming regressions under race, full gates and independent review.
+
+Notification retry inspection remains test-only: verify whether a paused external
+retry wake can outlive actual source/turn settlement after active is cleared.
+No new notification-method edit scope has been granted, and no final acceptance
+is inferred from the writer's partial timer/watch evidence checkpoint.
+
+### Task 4 confirmed retry-wake repair
+
+Parent read the failing discriminator and its original-source test: the queued
+terminal generation reached the real notification provider turn and settled,
+while the external retry wake remained paused. TryClaim then incorrectly entered
+preparing with no blockers. The reported focused command exited 1; its retained
+output confirms the behavioral FAIL.
+
+Ruling: Allow only the AfterFunc callback body in
+scheduleJobNotificationRetryLocked to acquire admission before its queue lock and
+hold it through the unlocked notify return. No admission during locked timer
+registration or other notification-method edits. Preserve original source,
+generation, backoff and nil-controller behavior. Refusal must not strand active
+retry state after source settlement and later claim Abort; require real-owner
+pending/empty-source, generation and abort/rescheduling evidence. If wrong, the
+cost is a leaked wake lease or stranded retry, bounded by the original receipt
+and callback RED/GREEN/race, refusal-path evidence, notification regressions,
+required full gates and task review. Only this callback's prior test-only
+restriction is superseded.
+
+### Task 4 escalation cancel-before-join ordering
+
+Ruling: Keep the owned close repair moving the existing cancelAllEscalations call
+after cancelFunc, once closing is published and locks are dropped, before joining
+the escalation's environment work. Parent verified the guard and typed-denial
+implementation. This changes observable ordering. Preserve denial and other
+close ownership. If wrong, the cost is earlier denial relative to tree teardown,
+bounded by direct ordering/denial evidence, unchanged escalation/close regressions,
+full gates and independent review.
+
+The inspected new close test captures the ordering assertion, then cancels its
+own context before checking the result. Its result alone cannot attribute denial
+to Close. The writer must prove successful Close-driven denial and settlement
+without test-supplied cancellation, keeping bounded failure cleanup and original
+request/result assertions. Reported maintenance/escalation GREENs remain pending
+final evidence verification; the full Task 4 matrix is unfinished.
+
+Parent then inspected the corrected test: cancellation is failure-only, while
+success waits for actual Close and checks the caller context remains uncanceled.
+Original ordering and exact-denial assertions remain. This resolves the source
+attribution gap; the reported escalation race rerun and full Task 4 evidence still
+await final gate verification.
+
+### Task 4 detached-process eligibility
+
+Ruling: A live detached external process does not itself block retirement after
+its launching tool/turn and other session obligations settle. The approved design
+limits shell blockers to session-owned jobs and explicitly preserves independent
+detached lifetime without signals. Parent verified real launch and PID/Done
+warning bookkeeping outside job-manager/drain accounting. Keep launch admission
+and warnings; do not pin residency until external exit. If wrong, the cost is
+premature eligibility while an external dependency remains, bounded by actual
+registry launch, both admission orders, settled-launch/live exact-handle evidence,
+later release/exit tests and independent review.
+
+Task 4 TryClaim/Abort evidence establishes claim-stage eligibility and survival.
+It does not establish survival through actual non-terminal release or daemon exit;
+those proofs and no-signal assertions remain mandatory Tasks 6/13 handoffs. A live
+Done channel alone cannot establish zero signal attempts. No new signal API,
+fabricated runtime record or additional file ownership is authorized. The writer
+must name the existing launcher seam and exact needed path before an extension.
+Task 4 final gates, commit and independent review remain outstanding.
+
+### Task 4 attention callback ownership
+
+Parent read both actual pre-attach RED logs and the original-source regression.
+A real delegate result created attention, a failed provider turn armed retry,
+and its real callback paused in SetNotifyFunc. Pending attention first escaped;
+after that projection was added, real consumption of the same attention left
+the pre-attach wake unrepresented and TryClaim again entered preparing.
+
+Ruling: Allow only Session.attentionCallbacks int beside attentionMu, protected
+by that mutex. Helpers stay in session_attention.go, with admission before locks,
+actual callback registration before source changes, and decrement/release after
+all unlocked effects settle. Project the count under the same lock. Keep durable
+IDs/resolutions and retry generations authoritative; preserve nil-controller
+behavior and Close joins. If wrong, the cost is missed or leaked ownership,
+bounded by attached/pre-attach original-source RED/GREEN, overlapping callbacks
+through last settlement, stale-generation and claim/Abort/rescheduling evidence,
+the added unchanged Attention race gate, existing gates and independent review.
+No other field or unlisted path is granted. Task 4 remains unaccepted.
+
+### Task 4 test-only detached signal observer
+
+Parent retained and read the full feasibility report and primary successful
+probe output. The external-test/consumer/test-augmented-package import graph
+compiled; real Terminate and Kill controls each counted one attempt on the exact
+process handle and Done. This is infrastructure proof only. The initial scratch
+Go directive/toolchain mismatch was corrected and remains recorded separately.
+No product integration test or checkout edit occurred during that investigation.
+
+Ruling: Permit only new execenv/detached_retirement_export_test.go and
+execenv/detached_retirement_external_test.go under agent, implementing a test-only
+forwarding observer over the existing real system runtime and an external-package
+actual-agent test. No production API changes. Require exact successful launch
+capture, separate real positive controls, actual registered detached-shell launch,
+settled turn, successful TryClaim/Abort, live exact handle/Done and zero wrapped
+runtime Terminate/Kill calls. Keep cleanup outside the measured interval. If wrong,
+the cost is extra test coupling or incomplete signal evidence, bounded by product
+compilation, positive controls, focused race/full gates and independent review.
+
+The observer cannot capture direct PID signals or concrete-runtime self-calls;
+source review must establish their exclusion from the exercised path. A zero
+count is a runtime-boundary assertion, not syscall-wide proof. Actual release and
+daemon-exit survival/no-signal obligations remain with Tasks 6/13. Task 4 remains
+unaccepted, and the existing implementer remains the sole checkout writer.
+
+### Task 4 cold active-goal evidence
+
+Parent read the actual RED, current full test, owned collector diff and focused
+race PASS output. A real reclaimed delegate retained its active goal in primary
+metadata while TryClaim entered preparing. The added projection uses metadata
+already loaded in the cold branch, before final revalidation. Original source
+equality and absence of materialization remain asserted; real restore, provider
+work, update_goal, delivery and re-reclamation settle the same objective.
+
+Ruling: Keep only the new test's final runtime/persisted GoalSnapshot comparison
+through actual full schema JSON. Parent checked the independent schema and the
+failed diagnostic: scalar fields and timestamp values matched, with only the
+internal UpdatedAt UTC/Local representation differing. Preserve all fields and
+timestamps, earlier loaded-primary DeepEqual, objective/status, restoration and
+eligibility assertions. If wrong, the cost is a serialization-oracle blind spot,
+bounded by the all-field schema contract, unchanged primary assertions and review.
+No tolerance, field omission or prior-test weakening is authorized. Fixture and
+reference failures remain distinct from behavioral RED. Task 4 remains unfinished.
+
+### Task 4 pre-attachment job-notification callback
+
+Parent read the actual expanded retry RED and original-source test. The
+attached-first case passes; a callback begun before AttachRoot still pauses
+after real provider consumption of its original TerminalGen to NotifyDelivered
+and an empty queue. TryClaim then incorrectly enters preparing.
+
+Ruling: Allow only Session.jobNotifyCallbacks int beside jobNotifyRetry, protected
+by pendingJobNotifsMu. The approved callback body counts actual entry after
+pre-lock admission and before source transitions, keeps ownership through the
+unlocked notify return, then decrements under its mutex and releases after all
+locks. Project the count with existing pending/retry evidence. Preserve original
+source assertions, generations, nil-controller behavior and Close joins. If wrong,
+the cost is missed or leaked callback ownership, bounded by original-source
+RED/GREEN, pre/post-attach overlap with later-first settlement, last-return
+eligibility, unchanged stale/Abort/source cases, focused race and existing final
+gates plus independent review. No other field or leaf-entry scope is granted.
+
+### Task 4 delivered; independent review and fix round 1
+
+Independent review of `9fcfc911b..a46103009`: spec compliant, quality **Needs
+fixes**, no Critical findings, two Important and three Minor. Parent read the
+complete report and adjudicated every finding.
+
+I-1 (refused one-shot timer callbacks stranded) — confirmed real by source
+inspection at the committed SHA. `TryClaim` enters `preparing` unconditionally
+once `len(c.active)==0` and only then collects evidence, so `BeginMutation`
+refuses for the whole real-I/O window; the four one-shot callbacks newly fenced
+by Task 4 returned early on that refusal and consumed their only firing, leaving
+the armed flag set with no live timer. Fail-closed, but a liveness regression.
+Ruling: fix round 1 on the four refusal branches only, with no new fields or API.
+
+I-2 (final-gate evidence not retained) — partially refuted, partially actionable:
+the cited scratch logs did exist and the parent read them, but scratch is not
+durable. Actionable remainder: retain all fix-round gate logs in the run
+directory. Parent made this `task-4-final-gates/`.
+
+Minor disposition: M-1 (notification/attention leases record as "unsupported")
+deferred to final review, fail-closed and diagnostic-only; M-2 (pin-test retry
+does not discriminate the transient) deferred, the reviewer judging the
+correction legitimate and strictly stronger; M-3 (missing TRIPWIRE marker) taken
+into the fix round as a comment-only change.
+
+Fix round 1 was first dispatched to the same writer, whose activation died on a
+provider quota before any edit, then to a replacement writer after Jesse chose a
+working model over waiting out the quota reset. Delivered `b28b3c56`: exactly the
+four refusal branches, four new RED→GREEN cases, the M-3 comment, retained gate
+logs and a report appendix; +390/−0, no assertion deleted or loosened. Parent
+independently verified commit scope and parentage, the RED logs as genuine
+behavioral failures, the real-Git/real-owner fixtures, the closing-gated arming
+helpers, reran the four new tests (4/4 PASS) and the `^TestRetirementAutonomous`
+family under `-race` (ok 5.239s), and reran the canonical `make test` (exit 0,
+8 modules PASS).
+
+Scoped independent re-review on a different model: spec compliance **compliant**,
+quality **Approved**. The reviewer corroborated the stranding at FIX_BASE, re-ran
+the pre-existing and new families under `-race`, confirmed pure insertions,
+reconciled every gate log, verified no fixed sleeps or skips, judged the
+generation guard strengthening, and judged the one documented boundary (sweep
+re-arm while the controller is permanently `retiring`) reachable but bounded by
+`Session.Close` and spec §5.5's process exit, correctly deferred to Tasks 6/8.
+One Minor F-1 (`red-notify.log` cites a test line that predates later insertions
+above it; identical failure text, RED genuine) is accepted as a report-text-only
+inaccuracy; the writer's retained report is deliberately not edited post-hoc.
+
+Task 4 is accepted at `b28b3c56a9360f79213fef500e9fff3dc5c5c013` on base
+`a46103009`. Tasks 1–3 complete, 5–13 not started.
+
 ## Remaining workflow
 
 Subagent-driven TDD implementation with specification and quality review → fresh
