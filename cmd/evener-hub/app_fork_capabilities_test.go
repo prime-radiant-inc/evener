@@ -1769,3 +1769,83 @@ func TestHubForkReportsDeletionEvenWhenTheRefreshFails(t *testing.T) {
 		})
 	}
 }
+
+// A thread already fenced for deletion can never be forked: hubThreadFork reads
+// that fence before it does anything else. The capability projection is the one
+// place every surface funnels through, so it answers from the same unlocked
+// read — for the ref the client holds and, when a live daemon has moved the
+// session behind a stable ref, for the session the fork would actually branch.
+func TestHubForkCapabilityHidesADeletionFencedThread(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fence string // "" leaves the fixture unfenced
+		alias bool   // ask through the daemon's stable workspace ref
+	}{
+		{name: "unfenced"},
+		{name: "requested session is fenced", fence: "session"},
+		{name: "unfenced through a stable alias", alias: true},
+		{name: "alias is fenced", fence: "alias", alias: true},
+		{name: "the session the alias resolves to is fenced", fence: "session", alias: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			aliasID := buildRPCParentSession(t, stateDir)
+			sessionID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, sessionID, t.TempDir())
+			runDir := t.TempDir()
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir}
+			requestedID := sessionID
+			if tc.alias {
+				// The cleared-daemon shape: the client still holds the stable
+				// workspace ref while the daemon runs its replacement session.
+				requestedID = aliasID
+				writeRendezvous(t, runDir, rendezvous.Entry{
+					PID: os.Getpid(), SourceID: "local", ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
+					WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+					Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+				})
+				roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+				roster.Refresh()
+				cfg.Roster = roster
+			}
+			if tc.fence != "" {
+				fencedID := map[string]string{"alias": aliasID, "session": sessionID}[tc.fence]
+				store, err := hubcore.NewDeletionStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Begin("project-deletion-0000000000", []hubcore.DeletionTarget{{
+					Ref: localAppRef(fencedID), ThreadID: fencedID,
+				}}); err != nil {
+					t.Fatal(err)
+				}
+				cfg.DeletionStore = store
+			}
+
+			thread := appwire.Thread{
+				ID: sessionID, SessionID: sessionID,
+				Evener: appwire.EvenerThread{Ref: "local:" + requestedID, Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+			}
+			wantFork := tc.fence == ""
+			if got := applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn; got != wantFork {
+				t.Fatalf("projected forkFromTurn=%v, want %v", got, wantFork)
+			}
+			// What the projection advertises and what the RPC does must agree.
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + requestedID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if wantFork {
+				if err != nil {
+					t.Fatalf("advertised fork was refused: %v", err)
+				}
+				return
+			}
+			if !isTargetDeletedError(err) {
+				t.Fatalf("fork error=%v, want the deletion refusal the projection now hides", err)
+			}
+		})
+	}
+}

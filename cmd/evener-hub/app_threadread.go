@@ -500,8 +500,29 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 		}
 	}
 	thread.Evener.Capabilities.ForkFromTurn = storageAvailable && hubCanForkThread(cfg, thread) &&
-		!hubForkRecoveryFencedNow(cfg, thread)
+		!hubForkRecoveryFencedNow(cfg, thread) && !hubForkDeletionFenced(cfg, thread.Evener.Ref, ref.ThreadID)
 	return thread
+}
+
+// hubForkDeletionFenced reports whether the thread a client is holding, or the
+// session a fork of it would actually branch, is durably fenced for deletion.
+// It is the same unlocked deletion read hubThreadFork performs ahead of
+// everything else, so the capability cannot offer an action that refusal is
+// already waiting for.
+//
+// The resolved session is consulted second and only when the requested ref is
+// clear: resolving costs a roster lookup, and a client holding a stable
+// workspace ref whose daemon has moved on would otherwise be told it can fork a
+// session that is on its way out.
+func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID string) bool {
+	if cfg.DeletionStore == nil {
+		return false
+	}
+	if deletionFenceError(cfg, ref, threadID, "") != nil {
+		return true
+	}
+	sessionID := forkTargetSessionID(cfg, threadID)
+	return sessionID != threadID && deletionFenceError(cfg, "", sessionID, "") != nil
 }
 
 // pastThreadCapabilities is what the hub can carry out for a thread with no
