@@ -589,6 +589,99 @@ describe("jumpToBottom landing reliability", () => {
     expect(result.current.pillVisible).toBe(false);
   });
 
+  // The window round 1's geometry-only classifier left open (roborev, medium, on
+  // 448e8a4): a native scroll event can coalesce the reader's own upward delta
+  // with a virtualizer correction that EXCEEDS it, so the event's net geometry -
+  // more content, offset advanced - is byte-identical to a pure correction.
+  // Geometry cannot tell those apart at all; only the input that produced the
+  // event can, which is why the classifier now takes a reader gesture in the
+  // same frame as a veto.
+  test("an upward gesture coalesced with a larger forward correction leaves the reader where they scrolled", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+    expect(result.current.pillVisible).toBe(false);
+
+    act(() => {
+      el.dispatchEvent(new Event("wheel"));
+      // The same net geometry the pure-correction test above re-pins on.
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16374);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test.each([
+    ["a touch drag", (el: HTMLElement) => el.dispatchEvent(new Event("touchmove"))],
+    ["a scroll key", (el: HTMLElement) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" }))],
+    [
+      "a pointer drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(new Event("pointerdown"));
+        el.dispatchEvent(new Event("pointermove"));
+      },
+    ],
+  ])("%s in the same frame vetoes the correction re-pin too", (_label, gesture) => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      gesture(el);
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16374);
+  });
+
+  test("typing and a bare click are not gestures - the correction still re-pins", () => {
+    // The veto must stay narrow: a key that does not scroll, and a pointerdown
+    // with no movement (a click, or the start of a text selection), leave the
+    // mount fix working. A veto that fired on those would put the strand back.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+      el.dispatchEvent(new Event("pointerdown"));
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+  });
+
   test("a reader scrolling back while content is still measuring in keeps their position and gets the pill", () => {
     // The same growth, but the offset moved BACKWARDS - only the reader moves a
     // transcript away from the bottom, so this must not be re-pinned. This is
