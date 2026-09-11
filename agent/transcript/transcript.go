@@ -468,11 +468,11 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		}
 	}
 
-	line := append(data, '\n')
+	data = append(data, '\n')
 	previousDirty := w.dirty
-	if written, err := w.writeLineLocked(line); err != nil {
+	if written, err := w.writeLineLocked(data); err != nil {
 		if forceSync {
-			return w.appendFailureLocked("write transcript entry", err, startOffset, turn, written == len(line))
+			return w.appendFailureLocked("write transcript entry", err, startOffset, turn, written == len(data))
 		}
 		return fmt.Errorf("write transcript entry: %w", err)
 	}
