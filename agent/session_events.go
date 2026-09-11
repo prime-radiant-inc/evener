@@ -472,16 +472,25 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // hook fires unconditionally; the recursion regression tests (recursion_test.go,
 // TestNewSession_InvalidMatcherNotificationHookDoesNotRecurse) guard against a
 // future synchronous warning-emitter being introduced inside the dispatch path.
+//
+// The hook runs SYNCHRONOUSLY on whichever goroutine emitted the warning, and in
+// the daemon that goroutine is the input loop shutdown waits for before it closes
+// the session. So the base context is the session's own lifetime, not a
+// background one: a hook already running when shutdown starts is interrupted by
+// the same cancellation instead of holding the shutdown budget for its full
+// timeout. A close that has already published its budget supersedes that, and an
+// exhausted deadline of either kind declines the hook rather than launching one
+// nothing is left to wait for.
 func (s *Session) fireNotificationHook(message string) {
-	ctx := context.Background()
+	ctx := s.sessionContext()
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
 	s.closeCtxMu.RUnlock()
 	if closeCtx != nil {
-		if closeCtx.Err() != nil {
-			return
-		}
 		ctx = closeCtx
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	s.runNotificationHook(ctx, message)
 }

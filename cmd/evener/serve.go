@@ -538,6 +538,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return err
 	}
 	sessionCfg := agent.SessionConfig{
+		// The session tree lives exactly as long as this daemon does. Shutdown
+		// waits for the input loop before it closes the session, so work that
+		// runs synchronously on that loop -- a Notification hook, which runs
+		// for its own timeout -- is reached by nothing else: without this the
+		// only cancellation it ever sees arrives after the wait it is holding
+		// up. A turn is already cancelled directly (turnCtx derives from ctx).
+		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
 		ShareTasksWithChildren:      *shareTaskStore,
 		ResultToolName:              *resultToolName,
@@ -602,6 +609,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var sess *agent.Session
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,

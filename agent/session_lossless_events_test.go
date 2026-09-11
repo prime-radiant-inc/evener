@@ -144,6 +144,64 @@ func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
 	}
 }
 
+// A Notification hook that is ALREADY running when shutdown starts has to
+// observe the shutdown. The hook runs synchronously on the goroutine that
+// emitted the warning -- in the daemon that is the input loop shutdown waits
+// for before it closes the session (cmd/evener/serve.go) -- so a hook holding
+// a context nothing cancels spends its whole timeout inside the shutdown
+// budget, delaying session cleanup and the rendezvous removal behind it.
+func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 20 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	s := newSession(t, withoutGitSnapshot())
+	marker := t.TempDir() + "/hook-running"
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		// exec replaces the shell, so the process the hook's context kills IS
+		// the sleep. A forked sleep would outlive the killed shell still
+		// holding the command's output pipe, and the run would wait for it.
+		Command: "touch " + marker + " && exec sleep 30",
+		Timeout: 30,
+	})
+	s.hookRunner = runner
+
+	hookDone := make(chan struct{})
+	go func() {
+		defer close(hookDone)
+		s.fireNotificationHook("warning")
+	}()
+	waitFor(t, func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	}, "the notification hook command to start running")
+
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		s.CloseForShutdown()
+	}()
+	select {
+	case <-closeDone:
+	// TRIPWIRE: this ceiling only fires if shutdown parks behind the running
+	// hook; closeDone is the real completion signal, and the close budget
+	// above it is 20ms.
+	case <-time.After(10 * time.Second):
+		t.Fatal("CloseForShutdown remained blocked behind a running notification hook")
+	}
+	select {
+	case <-hookDone:
+	// TRIPWIRE: the hook's own timeout is 30s and its command sleeps for all
+	// of it, so nothing but shutdown cancelling the hook can meet a 10s
+	// ceiling; it is a discriminator, not a bound tuned to the real duration.
+	case <-time.After(10 * time.Second):
+		t.Fatal("notification hook running when shutdown started was not interrupted")
+	}
+}
+
 func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
 	s := newSession(t, withoutGitSnapshot())
 	runner := hooks.NewRunner(nil, "test-model")

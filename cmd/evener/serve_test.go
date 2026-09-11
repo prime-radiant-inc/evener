@@ -1590,3 +1590,106 @@ func TestRemoveRendezvousAtShutdownReportsAnExhaustedBudget(t *testing.T) {
 		t.Fatalf("reports = %d with err = %v, want exactly one carrying %v", reports, reported, wantErr)
 	}
 }
+
+// TestServeSessionLifetimeEndsWhenShutdownStarts pins what the daemon's
+// session tree is allowed to outlive. Shutdown waits for the input loop before
+// it closes the session, and work that runs synchronously on that loop -- a
+// Notification hook is the one that can run for its own timeout -- is reached
+// by nothing else. So the session's lifetime has to be the daemon's shutdown
+// context, cancelled the moment shutdown starts rather than after the wait it
+// is holding up.
+//
+// The HTTP server is closed by the shutdown goroutine before that wait, so
+// serveHTTP returning is the observation point: whatever the lifetime context
+// says there, it said at the start of shutdown.
+func TestServeSessionLifetimeEndsWhenShutdownStarts(t *testing.T) {
+	runDir := t.TempDir()
+	deps := defaultServeDeps()
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		return client, func() error { return nil }, nil
+	}
+	var lifetime context.Context
+	buildSession := deps.newSession
+	deps.newSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		lifetime = cfg.LifetimeContext
+		return buildSession(c, p, e, cfg)
+	}
+	var lifetimeAtShutdown error
+	var observedAtShutdown bool
+	runHTTP := deps.serveHTTP
+	deps.serveHTTP = func(s *http.Server, l net.Listener) error {
+		err := runHTTP(s, l)
+		if lifetime != nil {
+			observedAtShutdown = true
+			lifetimeAtShutdown = lifetime.Err()
+		}
+		return err
+	}
+
+	args := []string{
+		"--model", "openai/test",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", runDir,
+	}
+	done := make(chan error, 1)
+	go func() { done <- runServeWithDeps(args, deps) }()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runServeWithDeps: %v", err)
+	}
+
+	if !observedAtShutdown {
+		t.Fatal("the daemon's session was built with no lifetime context; nothing shutdown cancels reaches work parked outside a turn")
+	}
+	if lifetimeAtShutdown == nil {
+		t.Fatal("the session's lifetime context was still live when shutdown closed the listener; it does not end when shutdown starts")
+	}
+}
+
+// The resumed daemon owes the same thing: --resume builds its session through
+// RestoreSessionFromMetaWithConfig, which carries its own lifetime field.
+func TestServeResumedSessionLifetimeIsTheShutdownContext(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var lifetime context.Context
+	var liveAtRestore bool
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		lifetime = restoreCfg.LifetimeContext
+		liveAtRestore = lifetime != nil && lifetime.Err() == nil
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
+	}
+	if lifetime == nil {
+		t.Fatal("the resumed session was built with no lifetime context")
+	}
+	if !liveAtRestore {
+		t.Fatal("the resumed session's lifetime context was already over when the restore ran")
+	}
+	if lifetime.Err() == nil {
+		t.Fatal("the resumed session's lifetime context outlives the daemon; it is not the shutdown context")
+	}
+}
