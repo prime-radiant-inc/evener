@@ -20,7 +20,7 @@ All frontend paths below are relative to `cmd/evener-hub/frontend/`.
 - `docs/llm-provider-config-and-launch.md`: leading how-to link; corrected claim that every uncredentialed implicit preset appears in the launch-ready instance list.
 - `docs/design/provider-connection-study/README.md`: Jesse's Option A approval recorded separately; historical rankings/alternatives preserved.
 
-No backend, OAuth implementation, store, draft core, shared picker, or design-preview modifications. Port 43127/PID 1101883 untouched.
+No backend production, OAuth implementation, store, draft core, shared picker, or design-preview modifications. The later parent-approved Go test-helper correction is documented below. Port 43127/PID 1101883 untouched.
 
 ## TDD and failures resolved
 
@@ -119,6 +119,37 @@ Verification:
 - Test-only fix commit: `d19f78c24d2c9e6534b5306bf8df441b952ef27d`
   (`fix(web): separate onboarding test async act lifetimes`), normal named-path
   commit, exit 0. This correction report is committed separately afterward.
+
+## Follow-up: provider helper JSON-key lint
+
+Parent's full lint run supplied the red: exactly two `tagliatelle` errors in the
+Task1-added helper at `cmd/evener-hub/app_instances_test.go:2108,2115` for duplicate
+`json:"authModes"` and `json:"availableProviders"` tags. The hub package's naming
+rule is snake_case, while the canonical public appwire keys must remain camelCase.
+This parent-observed failure is the red evidence, not a newly claimed local run.
+
+Parent authorized only the test-helper file and a report. The helper now decodes
+raw JSON maps using explicit `availableProviders`, `id`, `authModes`, and `setup`
+keys. It directly requires the two additive public keys; absent/wrong spelling
+cannot pass through canonical type decoding. `setup` remains optional and uses
+canonical `appwire.InstanceEntry`. The helper's returned Go fields/types and all
+callers are unchanged. Existing identity/auth/destination/membership and secrecy
+assertions remain untouched. No actual public JSON key, production type, linter
+configuration, or suppression was changed.
+
+Verification:
+
+- `gofmt -w cmd/evener-hub/app_instances_test.go`: completed.
+- `go test ./cmd/evener-hub -run 'TestProviderSetup|TestZeroProviderOnboarding' -count=1`:
+  exit 0 — `ok primeradiant.com/evener/cmd/evener-hub 0.412s`.
+- `make lint-evenerfuzz`: exit 0 — `PASS lint-evenerfuzz (17s)`.
+- Test-only helper fix commit: `363dc34a367dcb3b63360867b4f0fcb332b66523`
+  (`fix(test): decode provider setup public keys without duplicate tags`), normal
+  named-path commit, exit 0. This report is committed separately afterward.
+
+Logs: `/tmp/evener-sandbox-1958759275/task3-provider-helper-test.log` and
+`/tmp/evener-sandbox-1958759275/task3-provider-helper-lint.log`.
+This is test-only; the parent's frozen production UI build remains unchanged.
 
 ## Boundaries and handoff
 
