@@ -111,7 +111,7 @@ type serveDeps struct {
 	resolvePlugins   func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
-	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
+	attachAPILogger  func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error)
 	buildProfile     func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
@@ -325,6 +325,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
 	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
 	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
+	apiLog := fs.String("api-log", "off", "durable API request logging on|off (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
@@ -377,6 +378,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	if _, err := agent.ParseProviderIdleTimeout(*providerIdleTimeout); err != nil {
 		return err
+	}
+	apiLogEnabled, apiLogErr := parseAPILog(*apiLog)
+	if apiLogErr != nil {
+		return apiLogErr
 	}
 	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
 
@@ -479,7 +484,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return err
 	}
 	defer closeClient() //nolint:errcheck
-	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr)
+	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr, apiLogEnabled)
 	if err != nil {
 		return err
 	}

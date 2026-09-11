@@ -15,7 +15,7 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer, re
 	if len(resumedSessionID) > 1 {
 		return nil, errors.New("attach API logger accepts at most one resumed session ID")
 	}
-	reserveSession, closeLog, err := AttachSessionAPILogger(client, stateDir, warnings)
+	reserveSession, closeLog, err := AttachSessionAPILogger(client, stateDir, warnings, true)
 	if err != nil {
 		return nil, err
 	}
@@ -33,8 +33,17 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer, re
 // ownership boundary that fresh-session creation must call as soon as it mints
 // an ID. Reserving before session persistence prevents a concurrent resume
 // from acquiring the same session while its original process is still idle.
-func AttachSessionAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (func(string) error, func() error, error) {
-	apiLog, err := llm.NewSessionAPILogger(stateDir)
+// recordAttempts selects durable canonical recording; false attaches the
+// ownership-only logger, which keeps the per-session lock but discards records
+// (the default, since API-request logging is opt-in).
+func AttachSessionAPILogger(client *llm.Client, stateDir string, warnings io.Writer, recordAttempts bool) (func(string) error, func() error, error) {
+	var apiLog *llm.APILogger
+	var err error
+	if recordAttempts {
+		apiLog, err = llm.NewSessionAPILogger(stateDir)
+	} else {
+		apiLog, err = llm.NewSessionOwnershipAPILogger(stateDir)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize canonical API log: %w", err)
 	}
