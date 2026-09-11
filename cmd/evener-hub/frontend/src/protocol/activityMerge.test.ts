@@ -197,6 +197,38 @@ test("a bounded root refresh keeps the pages already loaded past its window", ()
   expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 2, complete: false });
 });
 
+// Every projectStableActivityDelegate path that returns without a child marks
+// the delegate's own branch first - a child-unavailable or link-mismatch error,
+// or the depth cut-off's truncation - so an omission here says "could not
+// render it", never "there is none".
+test("a refresh that could not render a child keeps the subtree already loaded", () => {
+  const paged = graftContinuationTree(
+    tree([delegate(session("child", [shell("a")], "child-next"))]),
+    "session:child",
+    tree([delegate(session("child", [shell("b")]))]),
+  );
+  const fenced = fenceRootSession(paged.root, tree([delegate()]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("the loaded child subtree was dropped");
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+});
+
+test("a complete refresh drops a child the delegate no longer carries", () => {
+  const paged = graftContinuationTree(
+    tree([delegate(session("child", [shell("a")], "child-next"))]),
+    "session:child",
+    tree([delegate(session("child", [shell("b")]))]),
+  );
+  const childless = delegate();
+  childless.delegate.branch = {};
+  const fenced = fenceRootSession(paged.root, tree([childless]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing delegate");
+  expect(entry.delegate.child).toBeUndefined();
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 1, complete: true });
+});
+
 test("a complete root refresh drops the entries it no longer lists", () => {
   const paged = graftContinuationTree(tree([shell("a")], "next"), "session:root", tree([shell("b")]));
   const fenced = fenceRootSession(paged.root, tree([shell("a")]).root);

@@ -126,8 +126,18 @@ function fenceSession(
       const child = fenceSession(prior.delegate.child, entry.delegate.child);
       delegate.child = child.session;
       retainedBelow = retainedBelow || child.retained;
+    } else if (entry.delegate.child) {
+      delegate.child = cloneSession(entry.delegate.child);
+    } else if (prior.delegate.child && !completeBranch(entry.delegate.branch)) {
+      // The same rule on the child axis. Every projectStableActivityDelegate
+      // path that returns without a child marks this branch first - the
+      // child-unavailable and link-mismatch errors, and the depth cut-off's
+      // truncation - so an incomplete branch with no child says the daemon
+      // could not render the subtree, not that there is none to render.
+      delegate.child = cloneSession(prior.delegate.child);
+      retainedBelow = true;
     } else {
-      delegate.child = entry.delegate.child ? cloneSession(entry.delegate.child) : undefined;
+      delegate.child = undefined;
     }
     return { kind: "delegate", delegate };
   });
