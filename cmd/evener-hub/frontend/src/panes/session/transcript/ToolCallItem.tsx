@@ -7,7 +7,6 @@
 import { memo, useId, useLayoutEffect, useState } from "react";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
@@ -34,21 +33,20 @@ import { supersededBySuccess } from "./toolSupersession";
 import { parseArgs, parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
-  classifyJobStatus,
   effectiveRowKind,
   removeSubagentRow,
   rowKeyForDelegateItem,
-  type SubagentRow,
   turnScopeKey,
   upsertSubagentRow,
-  useSubagentRow,
 } from "./tools/subagentModuleStore";
+import delegateStyles from "./tools/subagentmodule.module.css";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
+  lifecycle: requireClass(delegateStyles.lifecycle, "subagentmodule.module.css", "lifecycle"),
 };
 
 type DelegateStatusKey = "running" | "done" | "stopped" | "failed" | "unknown";
@@ -58,7 +56,15 @@ const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
   done: "ended",
   stopped: "ended",
   failed: "failed",
-  unknown: "needs-you",
+  unknown: "idle",
+};
+
+const DELEGATE_LABEL: Record<DelegateStatusKey, string> = {
+  running: "Running",
+  done: "Idle · reported",
+  stopped: "Stopped",
+  failed: "Failed",
+  unknown: "Status unavailable",
 };
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
@@ -76,27 +82,6 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   // Transcripts recorded before the rename carry the brief under `task`.
   const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
-}
-
-// Both status readers take the delegate call's ALREADY-PARSED output envelope
-// rather than the item: three separate reads (delegate_id, transcript_ref,
-// status) want the same JSON string, and taking the item made each one parse
-// it again - the status read worst of all, since it ran on every tool row,
-// delegate or not, for a value only a delegate row ever displays.
-function delegateStatusFromOutput(parsedOutput: Record<string, unknown> | undefined): DelegateStatusKey {
-  return classifyJobStatus(parsedOutput === undefined ? undefined : str(parsedOutput, "status"));
-}
-
-function delegateStatusForOutput(
-  parsedOutput: Record<string, unknown> | undefined,
-  delegateRow: SubagentRow | undefined,
-  stableDelegate: EvenerDelegateInfo | undefined,
-  live: boolean,
-): DelegateStatusKey {
-  if (stableDelegate) return classifyJobStatus(stableDelegateDisplayStatus(stableDelegate));
-  const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
-  if (live && !hasSettledOutputStatus) return "running";
-  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromOutput(parsedOutput);
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -119,28 +104,41 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const isDelegate = item.toolName === "delegate";
   const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
   const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
-  const delegateRow = useSubagentRow(
-    isDelegate ? turnScopeKey(sessionRef, item.turnId) : "",
-    isDelegate ? rowKeyForDelegateItem(item) : "",
-  );
   const stableDelegate = thread?.delegates?.find((delegate) => {
     if (sessionRef === undefined || stableDelegateId === undefined) return false;
     return delegate.delegateId === stableDelegateId;
   });
-  const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
-  const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+  const delegateKind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stableDelegate);
+  const delegateStatus =
+    isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+  const lifecycleStatus = stableDelegate ? stableDelegateDisplayStatus(stableDelegate) : undefined;
+  const lifecycle = isDelegate ? (
+    <div
+      className={CLASS.lifecycle}
+      data-testid="delegate-lifecycle"
+      data-kind={delegateKind}
+      data-attention={stableDelegate?.needsAttention ? "true" : undefined}
+    >
+      {lifecycleStatus === "exhausted"
+        ? "Exhausted"
+        : lifecycleStatus === "idle"
+          ? "Idle"
+          : DELEGATE_LABEL[delegateKind]}
+      {stableDelegate?.needsAttention && <span>◆ Needs attention</span>}
+    </div>
+  ) : null;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
     if (!isDelegate) return;
-    const projected = rowFromDelegateItem(item);
+    const projected = rowFromDelegateItem(item, live);
     if (!projected) {
       removeSubagentRow(delegateScopeKey, rowKeyForDelegateItem(item));
       return;
     }
     const { rowKey, migrateFromRowKey, row } = projected;
     upsertSubagentRow(delegateScopeKey, { rowKey, ...row }, migrateFromRowKey);
-  }, [delegateScopeKey, isDelegate, item]);
+  }, [delegateScopeKey, isDelegate, item, live]);
 
   // A file-referencing tool (read_file/edit_file/write_file) exposes the file it
   // touches via descriptor.openBesidePath; ToolCallItem turns that into an "open
@@ -343,6 +341,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           trailingAfter={trailingAfter}
           title={detail}
         />
+        {lifecycle}
       </div>
     );
   }
@@ -397,6 +396,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         title={detail}
         bodyId={bodyId}
       />
+      {lifecycle}
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next

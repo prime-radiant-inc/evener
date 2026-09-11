@@ -60,6 +60,16 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
 const GEOMETRY_TOLERANCE = 0.5;
+const COMPOSER_SEND_STATES = [
+  { theme: "dark", fontSize: "m" },
+  { theme: "light", fontSize: "m" },
+  { theme: "dark", fontSize: "xl" },
+  { theme: "light", fontSize: "xl" },
+];
+const NARROW_DESKTOP_SEND_GEOMETRY = {
+  m: { width: 70.890625, height: 24 },
+  xl: { width: 82.109375, height: 24 },
+};
 
 async function measureAt(cdpEndpoint, url, width) {
   const page = await connectPage(cdpEndpoint);
@@ -169,6 +179,58 @@ async function measureAt(cdpEndpoint, url, width) {
       focus,
       viewport: { ...measurementViewport, mobile: realizedLayout.mobile },
     };
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+async function measureComposerSend(cdpEndpoint, url, width) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width, height: 900, mobile: width < 900 });
+    await send(
+      "Emulation.setTouchEmulationEnabled",
+      width < 900 ? { enabled: true, maxTouchPoints: 1 } : { enabled: false },
+    );
+    await navigateTo(page, url);
+    const host = await evaluate(send, "location.host");
+    if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+
+    const measurements = [];
+    for (const state of COMPOSER_SEND_STATES) {
+      measurements.push(
+        await evaluate(
+          send,
+          `(async () => {
+            document.documentElement.dataset.theme = ${JSON.stringify(state.theme)};
+            document.body.dataset.fontSize = ${JSON.stringify(state.fontSize)};
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const buttons = [...document.querySelectorAll('button[data-testid="composer-submit"][aria-label="Send"]')];
+            const button = buttons[0];
+            const label = button
+              ? [...button.querySelectorAll('span')].find((candidate) => candidate.textContent?.trim() === 'Send')
+              : null;
+            const box = button?.getBoundingClientRect();
+            return {
+              theme: ${JSON.stringify(state.theme)},
+              fontSize: ${JSON.stringify(state.fontSize)},
+              matchingButtons: buttons.length,
+              tag: button?.tagName.toLowerCase() ?? null,
+              accessibleName: button?.getAttribute('aria-label') ?? null,
+              width: box?.width ?? null,
+              height: box?.height ?? null,
+              labelDisplay: label ? getComputedStyle(label).display : null,
+            };
+          })()`,
+        ),
+      );
+    }
+    return measurements;
   } finally {
     await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
     await clearViewportOverride(send);
@@ -981,6 +1043,56 @@ async function main() {
       );
     } finally {
       startupDeadline.clear();
+    }
+
+    for (const width of sweep.filter((candidate) => candidate < 900 || candidate === 900)) {
+      const sendMeasurements = await measureComposerSend(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+        width,
+      );
+      const sendFailures = [];
+      for (const measurement of sendMeasurements) {
+        const label = `${measurement.theme}/${measurement.fontSize}`;
+        if (
+          measurement.matchingButtons !== 1 ||
+          measurement.tag !== "button" ||
+          measurement.accessibleName !== "Send"
+        ) {
+          sendFailures.push(`${label} accessible Send identity=${JSON.stringify(measurement)}`);
+        }
+        const shouldCollapseLabel = width <= 559;
+        if ((measurement.labelDisplay === "none") !== shouldCollapseLabel) {
+          sendFailures.push(
+            `${label} Send label display=${measurement.labelDisplay}, expected ${shouldCollapseLabel ? "compact" : "visible"}`,
+          );
+        }
+        if (
+          width < 900 &&
+          (measurement.width < 44 - GEOMETRY_TOLERANCE || measurement.height < 44 - GEOMETRY_TOLERANCE)
+        ) {
+          sendFailures.push(`${label} Send is ${measurement.width}x${measurement.height}px, expected at least 44x44px`);
+        }
+        if (width === 900) {
+          const expected = NARROW_DESKTOP_SEND_GEOMETRY[measurement.fontSize];
+          if (
+            !expected ||
+            !nearlyEqual(measurement.width, expected.width) ||
+            !nearlyEqual(measurement.height, expected.height)
+          ) {
+            sendFailures.push(
+              `${label} narrow desktop Send is ${measurement.width}x${measurement.height}px, ` +
+                `expected ${expected?.width ?? "unknown"}x${expected?.height ?? "unknown"}px`,
+            );
+          }
+        }
+      }
+      if (sendFailures.length > 0) {
+        failed++;
+        console.log(`${width}px composer Send ... FAIL - ${sendFailures.join("; ")}`);
+      } else {
+        console.log(`${width}px composer Send ... PASS - ${JSON.stringify(sendMeasurements)}`);
+      }
     }
 
     const paging = await verifyItemPaging(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?paging=1`);

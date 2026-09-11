@@ -599,6 +599,81 @@ describe("TranscriptBody", () => {
     expect(firstToolExpanded()).toBe("false");
   });
 
+  test("refreshes delegate attention, resumability, and run timing without status or outcome changes", async () => {
+    const delegateItem = {
+      id: "attention_delegate",
+      turnId: "attention_turn",
+      type: "commandExecution",
+      text: "",
+      toolName: "delegate",
+      description: "Inspect a settled child",
+      argumentsJSON: '{"prompt":"inspect"}',
+      output: JSON.stringify({ delegate_id: "dlg_attention", status: "done", transcript_ref: "local:child" }),
+      status: "completed",
+    };
+    const settledDelegate = {
+      delegateId: "dlg_attention",
+      status: "done",
+      outcome: "done",
+      terminal: true,
+      needsAttention: false,
+      projectionRevision: 1,
+    };
+    const attentionBefore = {
+      ...ordinaryToolFixture,
+      delegates: [settledDelegate],
+      turns: [{ id: "attention_turn", status: "completed", items: [delegateItem] }],
+    } as unknown as ThreadModel;
+    const { rerender } = render(
+      <TranscriptBody
+        model={attentionBefore}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:attention"
+        sessionRef="ordinary:attention"
+      />,
+    );
+    const settledLifecycle = screen.getByTestId("delegate-lifecycle");
+    expect(settledLifecycle.getAttribute("data-attention")).toBeNull();
+    expect(settledLifecycle.textContent).not.toContain("Needs attention");
+
+    // Every field the memoized delegate row renders but the old fingerprint
+    // omitted: attention, resumability, exhaustion evidence, failure reason,
+    // usage, run timing, and the reducer's own revision.
+    const onlyChange = (changes: Record<string, unknown>): ThreadModel =>
+      ({
+        ...attentionBefore,
+        delegates: [{ ...settledDelegate, ...changes }],
+      }) as unknown as ThreadModel;
+    const before = threadFingerprintForItem(delegateItem, attentionBefore);
+    for (const change of [
+      { needsAttention: true, projectionRevision: 2 },
+      { resumable: false, notResumableReason: "budget spent", projectionRevision: 2 },
+      { exhaustionResumable: true, exhaustionBudget: "0 of 3", exhaustionLimit: 3, projectionRevision: 2 },
+      { reason: "exhausted", projectionRevision: 2 },
+      { usage: { inputTokens: 100, outputTokens: 20 }, projectionRevision: 2 },
+      { runStartedAt: "2026-09-10T00:00:00Z", runEndedAt: "2026-09-10T00:01:00Z", projectionRevision: 2 },
+    ]) {
+      expect(threadFingerprintForItem(delegateItem, onlyChange(change))).not.toBe(before);
+    }
+
+    const attentionAfter = onlyChange({ needsAttention: true, projectionRevision: 2 });
+    rerender(
+      <TranscriptBody
+        model={attentionAfter}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:attention"
+        sessionRef="ordinary:attention"
+      />,
+    );
+    await waitFor(() => {
+      const alertedLifecycle = screen.getByTestId("delegate-lifecycle");
+      expect(alertedLifecycle.getAttribute("data-attention")).toBe("true");
+      expect(alertedLifecycle.textContent).toContain("Needs attention");
+    });
+  });
+
   test("Tools/Full previews mount item renderers without threadsStore or RPC access", () => {
     const getState = vi.spyOn(threadsStore, "getState");
     const subscribe = vi.spyOn(threadsStore, "subscribe");

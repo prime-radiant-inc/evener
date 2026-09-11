@@ -4,11 +4,16 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 
 ## Current
 
-- **[design-system.md](design-system.md)** — the design law as shipped: tokens,
-  type, space, motion, the cadence instrument, and the widget library under
+- **[design-system.md](design-system.md)** — the authoritative design law, starting with
+  the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
+  conversation for understanding, evidence for verification and controls for intervention.
+  It records behavioral consequences, tradeoffs and review questions, then tokens,
+  the editorial system (warm paper/ink, serif reading, flat structure), inline tool/delegate
+  grammar and provenance, source coverage, type, space, motion, the cadence instrument,
+  and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
-- **[decisions.md](decisions.md)** — what we chose out of the 2026-06 visual
-  brainstorm, and whether the code still does it. Read this before changing a
+- **[decisions.md](decisions.md)** — historical choices from the 2026-06 visual
+  brainstorm onward, with point-in-time source verdicts. Read this before changing a
   transcript or navigator behaviour: it distinguishes a reasoned departure from
   a regression, and several apparent regressions are neither.
 - **[ux-plan-2026-07.md](ux-plan-2026-07.md)** — the five-participant study of
@@ -16,7 +21,8 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
   it. Cited from live source comments.
 - **[typography-spacing-critique-2026-09-06.md](typography-spacing-critique-2026-09-06.md)** —
   measured critique of type scale, measure, rhythm and balance on desktop and
-  phone, with a proposed ramp and enforcement plan. Proposal, not shipped.
+  phone. The ramp, measure and rhythm work landed; the current editorial system
+  supersedes its two-face premise. See the canonical guide for shipped values.
 - **[keybindings.md](keybindings.md)** — the keybindings dispatcher: registry,
   scope stack, precedence layers, per-binding policy flags, and how to
   register an action or a chord, the shipped default binding map (including
@@ -43,12 +49,21 @@ There is no static example gallery to keep in sync. Run the dev server and open
 rendered from the real tokens. `src/dev/WidgetGallery.test.tsx` fails the build
 the day a widget has no section, so it cannot silently go stale.
 
-**`/dev/type`** does the same for the type system itself: the size ramp, the
+**`/dev/type`** does the same for the type system itself: Inter operations, Source Serif 4
+reading (normal and italic), JetBrains Mono evidence, the size ramp, the
 three line-heights, the eyebrow recipe, the four rhythm steps and a paragraph
 at each measure, in both themes, so a ramp change is reviewed as a picture
 rather than a diff.
 
-The gallery is dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
+**`/dev/surfaces`** renders real composite surfaces, including transcript evidence,
+for checking the implemented editorial system in context. The guide's
+[coverage summary](design-system.md#editorial-source-coverage) distinguishes direct
+transcript/shell/form/composer/ledger work from inherited shared surfaces.
+Source coverage is not browser acceptance. The guide's separate
+[acceptance snapshot](design-system.md#acceptance-and-limits) records the draft PR,
+automation, panel endorsements, pending native retest and preview refresh, and validation limits.
+
+The galleries are dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
 production build does not contain it and there is no link to it from the app.
 
 ## history/
@@ -62,8 +77,8 @@ built on. `history/examples/` holds the golden reference screen, a hard-cases
 screen, the three explored visual directions, and the brief all three had to
 render.
 
-These are kept for one reason: **they still look better than what shipped**, and
-`decisions.md` names the specific gaps. They are not maintained, their tokens
+These remain historical evidence of interaction and hierarchy decisions;
+`decisions.md` names their specific gaps and the superseding editorial direction. They are not maintained, their tokens
 share two names with the live ones, and the app they were built against was
 deleted in `660376f78`.
 
@@ -74,6 +89,6 @@ unedited; the filenames are unchanged, so the paths still resolve by search.
 ## Goal
 
 External-product polish for a power-user, dark-first agentic coding tool.
-Conversation-first, first-class subagents, honest liveness. The eight principles
-that govern all of it are reproduced in [decisions.md](decisions.md) — they
-outlived the mockups that tested them.
+Conversation-first, first-class subagents, honest liveness. The current rationale and
+tradeoffs live in the [design system](design-system.md#design-model-an-editorial-instrument);
+[decisions.md](decisions.md) preserves the original principles and their later departures.
