@@ -1542,10 +1542,12 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	if err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	// Skill input is not consumable here yet: the gate keeps every skill
-	// selection an unsupported-input error until per-endpoint consumption is
-	// wired, so the capability this thread advertises stays honestly false.
-	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
+	// Skill selections are consumed at the input's actual claim: this endpoint
+	// prepares them against the durable input identity and delivers the
+	// complete bodies at dispatch, so the support gate passes them through.
+	// Exact catalog identity and invocation policy remain consumption-time
+	// checks in the session.
+	if err := appwire.ValidateSkillInputSupport(input.Items, true); err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
@@ -1586,8 +1588,9 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	if err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
-	// Skill input is not consumable here yet: see the turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
+	// Skill selections are consumed at the steering's actual delivery: see the
+	// turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, true); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
@@ -1659,8 +1662,9 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	if err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
-	// Skill input is not consumable here yet: see the turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
+	// Skill selections ride the queued entry and are consumed at its actual
+	// claim: see the turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, true); err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
@@ -1690,8 +1694,9 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
-	// Skill input is not consumable here yet: see the turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
+	// Drained entries keep their selections, consumed with the combined
+	// steering at its actual delivery: see the turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, true); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	params.Input = input.Items
@@ -2600,11 +2605,15 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// the session is open. Like Goal it is NOT gated on !active: a human
 		// save may land mid-turn (it steers the running turn), unlike Send.
 		SharedNotes: s.notesHumanSetFunc != nil && s.urlsRemoveFunc != nil && !closed,
-		// SkillInput stays false until runtime consumption of skill input
-		// items is wired per endpoint; the input handlers gate skill items
-		// with appwire.ValidateSkillInputSupport, so a false here means every
-		// skill selection is an unsupported-input error.
-		SkillInput: false,
+		// SkillInput advertises that this thread's input-bearing turn mutations
+		// (turn/start, turn/steer, turn/queue, turn/drainAsSteer) consume skill
+		// selections at the input's actual claim. It is true exactly when every
+		// one of those retry-safe seams is wired: a server that wired none or
+		// only part of them has no consumable selection surface and must not
+		// advertise one. Cold/discovered threads and older daemons keep their
+		// own answers; this is the live daemon-sourced projection only.
+		SkillInput: s.retrySafeTurns.Start != nil && s.retrySafeTurns.Steer != nil &&
+			s.retrySafeTurns.Queue != nil && s.retrySafeTurns.Drain != nil,
 	}
 }
 

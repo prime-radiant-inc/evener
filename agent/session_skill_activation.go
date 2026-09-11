@@ -29,6 +29,116 @@ type preparedSkillActivation struct {
 
 type skillActivationBatch struct{ Items []preparedSkillActivation }
 
+// durableSkillSelection carries a claimed durable input's prepared skill
+// selection into the turn that consumes it. Err holds the preparation failure
+// for a selection that could not be prepared: the turn records a visible
+// failed input instead of dispatching dependent work, and the Selection still
+// keeps the names and original prose.
+type durableSkillSelection struct {
+	Selection *schema.SkillInputRecord
+	Batch     *skillActivationBatch
+	Err       error
+}
+
+type durableSkillSelectionContextKey struct{}
+
+func withDurableSkillSelection(ctx context.Context, selection *durableSkillSelection) context.Context {
+	return context.WithValue(ctx, durableSkillSelectionContextKey{}, selection)
+}
+
+func durableSkillSelectionFromContext(ctx context.Context) *durableSkillSelection {
+	selection, _ := ctx.Value(durableSkillSelectionContextKey{}).(*durableSkillSelection)
+	return selection
+}
+
+// durableSkillGroupID returns the durable identity one consumed input's
+// invocations are grouped under: the queue entry's stable ID when the input
+// was queued, otherwise the stable turn the mutation reserved (turn/start and
+// every steering mutation reserve one), and the mutation ID as a last resort.
+func durableSkillGroupID(input queuedInput) string {
+	if input.ID != "" {
+		return input.ID
+	}
+	if input.StableTurnID != "" {
+		return input.StableTurnID
+	}
+	return input.ClientMutationID
+}
+
+// skillInputRecordFromQueued builds the typed input record for a durable
+// selection: the user's original prose, the canonical names, and the atomic
+// group identity the consumption tied the invocations to.
+func skillInputRecordFromQueued(input queuedInput) *schema.SkillInputRecord {
+	return &schema.SkillInputRecord{
+		OriginalText:  input.Text,
+		Names:         append([]string(nil), input.SkillNames...),
+		AtomicGroupID: durableSkillGroupID(input),
+	}
+}
+
+// prepareSelectedInput prepares the skill activations a durable client input
+// selected, as ONE atomic group tied to the input's durable identity: every
+// invocation shares the input's group ID and carries the causal client
+// mutation. Catalog.ResolveExact pins the canonical identity the client named
+// -- a bare suffix or unknown name is a consumption-time failure, never a
+// silent retarget to a different collision winner. Route is supplied by the
+// trusted session caller. Preparation, policy, and combined final admission
+// are all-or-nothing: preparation publishes no inventory, so a failure needs
+// no rollback.
+func (s *Session) prepareSelectedInput(ctx context.Context, input queuedInput, route string) (*skillActivationBatch, error) {
+	if len(input.SkillNames) == 0 {
+		return nil, nil
+	}
+	inputID := durableSkillGroupID(input)
+	invocations := make([]skillInvocation, 0, len(input.SkillNames))
+	for _, name := range input.SkillNames {
+		descriptor, err := s.skills.ResolveExact(name)
+		if err != nil {
+			return nil, &skillActivationError{
+				Invocation: skillInvocation{Name: name, Route: route},
+				Code:       "source_missing",
+				Err:        err,
+			}
+		}
+		invocations = append(invocations, skillInvocation{
+			Name:             descriptor.CatalogName,
+			Route:            route,
+			InvocationID:     inputID + ":" + name,
+			ClientMutationID: input.ClientMutationID,
+			AtomicGroupID:    inputID,
+		})
+	}
+	return s.prepareSkillActivations(ctx, invocations)
+}
+
+// contextWithSelectedSkills prepares a claimed durable input's skill selection
+// and hands it to the consuming turn through the context. A preparation
+// failure rides the same value: the turn records the visible failed input and
+// dispatches no dependent work.
+func (s *Session) contextWithSelectedSkills(ctx context.Context, queued queuedInput) context.Context {
+	if len(queued.SkillNames) == 0 {
+		return ctx
+	}
+	batch, err := s.prepareSelectedInput(ctx, queued, "user_selection")
+	return withDurableSkillSelection(ctx, &durableSkillSelection{
+		Selection: skillInputRecordFromQueued(queued),
+		Batch:     batch,
+		Err:       err,
+	})
+}
+
+// admitSteeringSelectionBatch admits a prepared selection a consumed steering
+// message carried. Failure warns: the steering turn is already durably
+// delivered, and the obligation machinery revalidates at the next dispatch.
+func (s *Session) admitSteeringSelectionBatch(batch *skillActivationBatch) {
+	if batch == nil {
+		return
+	}
+	if err := s.admitSkillActivationBatch(batch); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("admitting steering skill selection failed", err))
+	}
+}
+
 // skillActivationError preserves machine-readable failure identity and the
 // original error for callers. Preparation never claims a successful delivery.
 type skillActivationError struct {
