@@ -260,10 +260,14 @@ operation slot and its selection are consumed, the cycle reopens for a new
 request, and the receipt flips to delivered. A crash between the winning
 publication and its metadata save is repaired on restart: transcript
 receipts are reconciled against the persisted snapshot before history is
-resumed, so a published operation resumes delivery-only (never re-armed), a
-delivered operation stays consumed, and a cancelled one stays retired. A
+resumed, and an interrupted delivery completes exactly as the live
+transaction would — the slot clears, the selection is consumed, and the
+publication's handoff advances to delivered, never re-armed — while a
+delivered operation stays consumed and a cancelled one stays retired. A
 receipt only ever advances its own generation, and a stale snapshot can
-never resurrect or repeat a claimed cycle.
+never resurrect or repeat a claimed cycle. Publication identities are minted
+from the persisted lifecycle revision stamped at the claim, so a restored
+session's later publications never collide with a restored handoff.
 
 The context-pressure nudge lists the loaded skills either way: with
 `compact_context` available it asks for the selection through `reload_skills`;

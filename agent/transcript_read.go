@@ -226,12 +226,16 @@ func applySkillCompactionReceipt(snapshot *schema.SkillLifecycleSnapshot, receip
 			snapshot.PendingCompaction = nil
 			snapshot.PendingSelection = nil
 		case skillCompactionReceiptPublished:
-			// The winning publication claimed the operation but delivery did
-			// not complete before the crash: it resumes delivery-only, and
-			// its selection was consumed by the publication that claimed it.
-			snapshot.PendingCompaction.Phase = skillCompactionPhasePublished
-			snapshot.PendingCompaction.PublicationID = receipt.Operation.PublicationID
+			// The winning publication claimed the operation. The live
+			// transaction defines delivery-complete as the slot cleared, the
+			// selection consumed, and that publication's coalesced handoff
+			// advanced to delivered (commitSkillCompactionPublication); a
+			// crash before the delivery save must not change the
+			// post-recovery state (R18), so reconciliation completes the
+			// same delivery here. The receipt coalesces below as delivered.
+			snapshot.PendingCompaction = nil
 			snapshot.PendingSelection = nil
+			receipt.Phase = skillCompactionReceiptDelivered
 		case skillCompactionReceiptCancelled:
 			// The retirement predates any metadata write that could have
 			// recorded it: redo it, and only for its own generation.
