@@ -34,6 +34,10 @@
 # instead of being retried. Each attempt writes its own package list and only a
 # completed one is used.
 #
+# Each of those attempts is exec'd through perl so it lands in its own process
+# group and can be stopped as one, so perl has to be on PATH. It is on macOS
+# and on the CI image; setsid(1), the usual tool for this, is not on macOS.
+#
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
 # failure.
@@ -329,11 +333,11 @@ root_package_list_group_survivors() {
 # list, still holding Go's build and module cache locks. A group signal reaches
 # every member however late it appeared.
 #
-# The group comes from bash's monitor mode, not setsid(1): setsid ships with
-# util-linux and is absent on macOS, which this script has to run on, while
-# `set -m` is a bash builtin and bash is already the shebang. Under monitor
-# mode a background job is its own process group whose id is the job's pid,
-# which is why the caller can pass the pid it already holds.
+# The group is made by the spawn, not here: the attempt is exec'd through
+# perl's setpgrp(0, 0), so the child becomes its own group leader and its pgid
+# is its pid — which is why the caller can pass the pid it already holds.
+# setsid(1) is the usual tool for that and is not present on macOS, which this
+# script has to run on; perl is, and so is the CI image's.
 stop_root_package_list_group() {
 	local pgid="$1" signal waited ticks alive
 	ticks=$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))
@@ -371,21 +375,32 @@ run_root_package_list() {
 		# names and nothing ever reads.
 		attempt_list="${package_list}.attempt${attempt}"
 		printf '=== go list ./... attempt %s of %s ===\n' "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" >>"$package_list_stderr"
-		# Monitor mode makes this job its own process group, which is what lets
-		# stop_root_package_list_group stop the whole attempt. It goes straight
-		# back off: the group is fixed at fork, and nothing else in this script
-		# wants job control.
-		set -m
-		( go list ./... >"$attempt_list" 2>>"$package_list_stderr" ) &
+		# The attempt is spawned into its own process group so that
+		# stop_root_package_list_group can stop it as one. perl's setpgrp(0, 0)
+		# does that inside the child, between fork and exec, where this shell
+		# cannot see it. `set -m` would also have made the job its own group, but
+		# only by turning job control on for the whole script: run_wave backgrounds
+		# every module and stream with `( ... ) &` and records the pids in
+		# active_pids, and stop_children and cleanup signal and wait on exactly
+		# those — all of it shaped by whether monitor mode is on. Nothing here is
+		# worth making the rest of the script run under different job semantics.
+		perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' \
+			-- go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
-		set +m
-		# Read the job's real process group before anything aims a signal at
-		# -PID. If monitor mode did not take, -PID names the runner's own group
-		# and the escalation below would be pointed at the gate itself.
-		list_pgid="$(ps -o pgid= -p "$list_pid" 2>/dev/null | tr -d '[:space:]')"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
+				if ! kill -0 "$list_pid" 2>/dev/null; then
+					# It finished inside the last poll interval. Nothing to
+					# stop; take the completion path below.
+					break
+				fi
+				# Read the job's real process group only now, and only for a
+				# process just confirmed alive. The child sets its own group
+				# after the fork, so a read taken at spawn time races it and
+				# would report the runner's own group — which is precisely the
+				# group no signal below may ever be aimed at.
+				list_pgid="$(ps -o pgid= -p "$list_pid" 2>/dev/null | tr -d '[:space:]')"
 				if [ "$list_pgid" != "$list_pid" ]; then
 					# No group to name, so signal what a snapshot shows and
 					# stop. Nothing is waited on here: a retry would race
@@ -397,7 +412,7 @@ run_root_package_list() {
 					done
 					kill -KILL "$list_pid" 2>/dev/null || :
 					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
-					printf 'run-module-tests.sh: attempt %s was not its own process group (pgid %s, pid %s), so it cannot be stopped as one. Not retrying.\n' \
+					printf 'run-module-tests.sh: attempt %s is not its own process group (pgid %s, pid %s), so it cannot be stopped as one. Not retrying.\n' \
 						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" >&2
 					return 1
 				fi
