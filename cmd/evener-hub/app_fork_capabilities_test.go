@@ -535,3 +535,98 @@ func TestHubForkFencesLiveDelegateFromOneSignal(t *testing.T) {
 		}
 	}
 }
+
+// Every recovery signal the hub's read projection fences fork on must also stop
+// the fork RPC. The projection reads the signals off a resolved thread; the RPC
+// re-derives them from the recovery locks and the roster, so this pins the two
+// derivations to the same answer for each signal that reaches a local thread.
+// The unfenced row keeps the fenced rows falsifiable: the same fixture without
+// a fence both advertises fork and branches a child.
+func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		fence       func(t *testing.T, cfg *hubcore.WebConfig, runDir, sessionID string)
+		wantRefusal func(error) bool
+	}{
+		{name: "unfenced"},
+		{
+			name: "explicit resume required",
+			fence: func(t *testing.T, cfg *hubcore.WebConfig, _, sessionID string) {
+				finish := cfg.ResumeLocks.BeginForceStop([]string{sessionID})
+				if err := cfg.ResumeLocks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+					t.Fatal(err)
+				}
+				finish(true)
+			},
+			wantRefusal: isSessionRecoveryAdmissionError,
+		},
+		{
+			name: "force stop in flight",
+			fence: func(t *testing.T, cfg *hubcore.WebConfig, _, sessionID string) {
+				finish := cfg.ResumeLocks.BeginForceStop([]string{sessionID})
+				t.Cleanup(func() { finish(false) })
+			},
+			wantRefusal: isSessionRecoveryAdmissionError,
+		},
+		{
+			name: "incompatible daemon restart required",
+			fence: func(t *testing.T, cfg *hubcore.WebConfig, runDir, sessionID string) {
+				writeRendezvous(t, runDir, rendezvous.Entry{
+					PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID,
+					Endpoint: protocolMismatchPeer(t),
+				})
+				cfg.Roster.Refresh()
+			},
+			wantRefusal: isDaemonRestartRequiredError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-fence-0000000000")
+			sessionID := buildRPCParentSession(t, stateDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			entry, ok := past.Find(sessionID)
+			if !ok {
+				t.Fatal("session is not indexed")
+			}
+			runDir := t.TempDir()
+			cfg := hubcore.WebConfig{
+				StateDir: root, Past: past, RunDir: runDir,
+				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
+			}
+			if tc.fence != nil {
+				tc.fence(t, &cfg, runDir, sessionID)
+			}
+
+			thread, err := pastEntryThreadForList(t.Context(), cfg, entry)
+			if err != nil {
+				t.Fatalf("project thread: %v", err)
+			}
+			if got := thread.Evener.Capabilities.ForkFromTurn; got != (tc.fence == nil) {
+				t.Errorf("projected forkFromTurn=%v, want %v", got, tc.fence == nil)
+			}
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			wantMetas := 1
+			if tc.fence == nil {
+				if err != nil {
+					t.Fatalf("unfenced fork: %v", err)
+				}
+				wantMetas++
+			} else if !tc.wantRefusal(err) {
+				t.Fatalf("fenced session fork error=%v, want the fence that hid the capability", err)
+			}
+			metas, err := schema.ListSessionMetas(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(metas) != wantMetas {
+				t.Fatalf("session metadata count=%d, want %d", len(metas), wantMetas)
+			}
+		})
+	}
+}
