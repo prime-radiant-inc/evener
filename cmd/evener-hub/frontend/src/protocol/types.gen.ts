@@ -1395,6 +1395,8 @@ export interface ProviderDescriptor {
   vars?: Record<string, string>;
   apiKeyEnv?: string[];
   implicit: boolean;
+  authModes?: string[];
+  setup?: InstanceEntry;
 }
 
 export interface QueueState {

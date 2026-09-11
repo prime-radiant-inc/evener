@@ -7,10 +7,12 @@ package hub
 // and environment, so nothing here reads the developer's machine.
 
 import (
+	"encoding/json"
 	"errors"
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -2097,4 +2099,144 @@ func TestInstances_EditSameNameIsNotARename(t *testing.T) {
 		t.Fatalf("Edit with NewName == Name must be a plain no-op edit: %v", err)
 	}
 	authoredEntry(t, f.tomlPath, "work")
+}
+
+// Decode the public JSON contract so missing additive fields fail at runtime,
+// and catalogue tests also prove the metadata actually crosses appwire.
+type providerSetupDescriptor struct {
+	ID        string                 `json:"id"`
+	AuthModes []string               `json:"authModes"`
+	Setup     *appwire.InstanceEntry `json:"setup"`
+}
+
+func providerSetup(t *testing.T, list appwire.InstanceListResponse, id string) providerSetupDescriptor {
+	t.Helper()
+	var wire struct {
+		AvailableProviders []providerSetupDescriptor `json:"availableProviders"`
+	}
+	if err := json.Unmarshal(mustMarshal(t, list), &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range wire.AvailableProviders {
+		if p.ID == id {
+			return p
+		}
+	}
+	t.Fatalf("catalogue has no provider %q", id)
+	return providerSetupDescriptor{}
+}
+
+func requireNoProviderSecrets(t *testing.T, value any, secrets ...string) {
+	t.Helper()
+	encoded := string(mustMarshal(t, value))
+	for _, secret := range secrets {
+		if strings.Contains(encoded, secret) {
+			t.Fatal("wire response contains credential or endpoint secret sentinel")
+		}
+	}
+}
+
+// Dropping setup metadata, conflating discovery with Instances, or replacing
+// transport-specific auth modes with a universal key form must fail here.
+func TestProviderSetup_DiscoveryWithoutCredentials(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{})
+	list := f.ctl.List()
+	for _, tc := range []struct {
+		id, auth, destination string
+		modes                 []string
+		hidden, member        bool
+	}{
+		{"anthropic", registry.AuthHeader, "https://api.anthropic.com/v1", []string{"apiKey"}, false, false},
+		{"openai", registry.AuthBearer, "https://api.openai.com/v1", []string{"apiKey"}, false, false},
+		{"openai-codex", registry.AuthOAuthOpenAICodex, "https://chatgpt.com/backend-api/codex", []string{"oauth"}, false, false},
+		{"ollama", registry.AuthOptionalBearer, "http://localhost:11434/v1", []string{"none", "apiKey"}, false, true},
+		{"google-vertex", registry.AuthGCPADC, "", []string{"adc", "credentialJson"}, true, false},
+		{"openai-compatible", registry.AuthOptionalBearer, "", []string{"none", "apiKey"}, true, false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			p := providerSetup(t, list, tc.id)
+			if !slices.Equal(p.AuthModes, tc.modes) {
+				t.Errorf("auth modes=%v, want %v", p.AuthModes, tc.modes)
+			}
+			if p.Setup == nil {
+				t.Fatal("missing discovery setup")
+			}
+			s := p.Setup
+			if s.Name != tc.id || s.ProviderID != tc.id || s.Auth != tc.auth || !s.Implicit || s.ActiveSource != "none" || !slices.Equal(s.AuthModes, tc.modes) {
+				t.Fatalf("incorrect setup identity/auth: %+v", s)
+			}
+			if s.BaseURL != tc.destination || s.Hidden != tc.hidden {
+				t.Fatalf("destination=%q hidden=%v; want %q hidden=%v", s.BaseURL, s.Hidden, tc.destination, tc.hidden)
+			}
+			if s.CredentialRequired != (tc.auth != registry.AuthOptionalBearer) {
+				t.Fatalf("credentialRequired=%v for auth %q", s.CredentialRequired, tc.auth)
+			}
+			member := slices.ContainsFunc(list.Instances, func(i appwire.InstanceEntry) bool { return i.Name == tc.id })
+			if member != tc.member {
+				t.Fatalf("launch-ready membership=%v, want %v", member, tc.member)
+			}
+		})
+	}
+	// Hidden implicit IDs are addressable discovery, not launch readiness.
+	// Nonimplicit providers have no setup until an instance addresses that ID.
+	for _, p := range list.AvailableProviders {
+		s := providerSetup(t, list, p.ID)
+		if !slices.Equal(s.AuthModes, authModesFor(p.Auth)) {
+			t.Errorf("%s modes=%v do not match descriptor auth %q", p.ID, s.AuthModes, p.Auth)
+		}
+		if !p.Implicit && s.Setup != nil {
+			t.Errorf("nonimplicit %s unexpectedly has setup", p.ID)
+		}
+	}
+}
+
+// Using the curated vendor record instead of the authored instance would
+// expose the wrong destination, credential source, and credential edit fields.
+func TestProviderSetup_AuthoredOverrideIsSafeResolvedView(t *testing.T) {
+	const key = "fixture-inline-key-sentinel"
+	const header = "fixture-header-secret-sentinel"
+	const stored = "fixture-stored-secret-sentinel"
+	const envKey = "fixture-env-secret-sentinel"
+	const endpoint = "https://user-sentinel:password-sentinel@gateway.test/v1?token=query-sentinel#fragment-sentinel"
+	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": envKey})
+	if err := f.store.Set("anthropic", stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.WriteConfigFile(f.tomlPath, &registry.Layer{Providers: map[string]registry.Provider{
+		"anthropic": {
+			APIKey: key, APIKeyEnv: []string{"OVERRIDE_KEY"},
+			Transport:         registry.Transport{BaseURL: endpoint},
+			CredentialHeaders: map[string]string{"X-Credential": header},
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	list := f.ctl.List()
+	p := providerSetup(t, list, "anthropic")
+	if p.Setup == nil {
+		t.Fatal("missing authored discovery setup")
+	}
+	actual := entry(t, list, "anthropic")
+	if !reflect.DeepEqual(*p.Setup, actual) {
+		t.Fatalf("setup differs from authored instance: setup=%+v instance=%+v", p.Setup, actual)
+	}
+	if p.Setup.BaseURL != "https://gateway.test/v1" || p.Setup.Implicit || p.Setup.APIKeyEnv != "OVERRIDE_KEY" || p.Setup.CredentialHeader != "" || p.Setup.ActiveSource != "api_key" {
+		t.Fatalf("incorrect safe override metadata: %+v", p.Setup)
+	}
+	requireNoProviderSecrets(t, list, key, header, stored, envKey, "user-sentinel", "password-sentinel", "query-sentinel", "fragment-sentinel")
+}
+
+func TestProviderSetup_EnvironmentDestinationIsSanitized(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{
+		"ANTHROPIC_BASE_URL": "https://user-sentinel:password-sentinel@proxy.test/v1?token=query-sentinel#fragment-sentinel",
+	})
+	list := f.ctl.List()
+	p := providerSetup(t, list, "anthropic")
+	if p.Setup == nil || p.Setup.BaseURL != "https://proxy.test/v1" || p.Setup.ActiveSource != "none" {
+		t.Fatalf("setup does not reflect sanitized resolved environment destination: %+v", p.Setup)
+	}
+	requireNoProviderSecrets(t, list, "user-sentinel", "password-sentinel", "query-sentinel", "fragment-sentinel")
 }

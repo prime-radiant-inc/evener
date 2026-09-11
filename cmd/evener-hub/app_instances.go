@@ -72,6 +72,36 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 			// rest of vars_env (a credential's own variable) has no
 			// instance-level meaning the add form could give it.
 			vars := r.TemplateVarsEnv(id)
+			var setup *appwire.InstanceEntry
+			inst, addressable := r.Instance(id)
+			if !addressable {
+				if resolved, err := r.ResolveInstance(id); err == nil {
+					// Resolve also addresses implicit providers with no credential
+					// or incomplete destination. Copy listing metadata only, never
+					// the resolved credential value or either headers map.
+					inst = registry.Instance{
+						Name: resolved.Instance, ProviderID: resolved.ProviderID,
+						Protocol: resolved.Protocol, Surface: resolved.Surface,
+						Auth: resolved.Transport.Auth, Implicit: true, Hidden: p.Hidden,
+						CredentialSource: resolved.Credential.Source,
+						ShadowedEnvVar:   resolved.ShadowedEnvVar, Warnings: resolved.Warnings,
+					}
+					if !p.Hidden {
+						inst.BaseURL = resolved.Transport.BaseURL
+					}
+					addressable = true
+				}
+			}
+			if addressable {
+				var authored *registry.Provider
+				if layer != nil {
+					if p, ok := layer.Providers[id]; ok {
+						authored = &p
+					}
+				}
+				entry := c.entryFor(inst, authored)
+				setup = &entry
+			}
 			providers = append(providers, appwire.ProviderDescriptor{
 				ID:        id,
 				Name:      p.Name,
@@ -81,6 +111,8 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 				Vars:      vars,
 				APIKeyEnv: append([]string(nil), p.APIKeyEnv...),
 				Implicit:  registry.BoolValue(p.Implicit),
+				AuthModes: authModesFor(p.Transport.Auth),
+				Setup:     setup,
 			})
 		}
 		userLayer = r.UserLayerNote()

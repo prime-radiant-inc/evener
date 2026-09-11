@@ -2795,6 +2795,12 @@ type ProviderDescriptor struct {
 	Vars      map[string]string `json:"vars,omitempty"`
 	APIKeyEnv []string          `json:"apiKeyEnv,omitempty"`
 	Implicit  bool              `json:"implicit"`
+	AuthModes []string          `json:"authModes,omitempty"`
+	// Setup is safe discovery metadata for an addressable implicit provider
+	// or existing instance, not membership in InstanceListResponse.Instances.
+	// Hidden implicit providers retain setup even before their destination is
+	// configured; nil means the ID is not yet addressable as an instance.
+	Setup *InstanceEntry `json:"setup,omitempty"`
 }
 
 // InstanceListResponse is the result of evener/instance/list. Diagnostics
