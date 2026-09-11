@@ -77,3 +77,34 @@ Existing full-editor/OAuth/store behavior is additionally exercised by the uncha
 - `33df1b7fe` — `feat(web): add compact provider connection flow`, nine explicitly named source/test paths, normal hooks; no merge or push.
 - This report is committed separately under its explicitly owned SDD path. `.superpowers/` is ignored by default, so only this named report is explicitly force-added, matching the existing tracked Task1 report; no other SDD artifacts are included.
 - No known unresolved Task2 defect. Browser/live-provider checks and Task3 entry points remain the next unit's boundaries. When changing Settings entry points in Task3, retain the full-editor escape from the connector rather than recursively reopening the guided flow.
+
+## Independent review cycle 1 — deferred draft isolation
+
+The independent review found an Important defect in the original implementation: if a newer listing discarded the create response, the created row was absent during `onSuccess`. Its callback-only clearing therefore missed a change from Anthropic to OpenAI. Later reload resolution kept the Anthropic draft in the OpenAI input. This supersedes the original self-review's no-known-defect statement above.
+
+### Reproduction and bounded fix
+
+- Preserved the independent reproduction from `task2-review-draft-isolation-repro.py` as a durable component test, including its final OpenAI-dialog and empty-value assertions.
+- Added same-provider preservation cases for both explicit Reload connection and ordinary listing resolution, plus cross-provider ordinary-listing resolution.
+- Only `ProviderConnection.tsx`, `ProviderConnection.test.tsx` and this report are changed in this cycle. No OAuth, store, full editor, widget, or Task3 edits.
+- Replaced the untagged local credential value with a local `{ providerId, value }` draft. Unknown created metadata leaves its origin intact. A resolved mismatching provider exposes an empty value immediately and clears the old draft; a matching provider keeps it. This applies wherever the row resolves, not only in the reload callback. Removed the incomplete callback-specific clearing rather than adding another special-case path.
+
+### Red and green evidence
+
+From `cmd/evener-hub/frontend`:
+
+1. `npx vitest run src/panes/settings/sections/credentials/ProviderConnection.test.tsx -t 'review regression:'`
+   - **RED**, exit 1: **2 failed / 2 passed / 36 skipped**. Both cross-provider paths expected `value: ""` but received `anthropic-private-draft`; both same-provider preservation cases passed before the fix. Observed at 04:01 UTC on 2026-09-11.
+   - **GREEN**, exit 0: **4 passed / 36 skipped**, including the unchanged independent reproduction. Repeated after formatting, also exit 0.
+2. `npx vitest run src/panes/settings/sections/credentials src/widgets/input/input.test.tsx`
+   - **14 files / 311 tests passed**, exit 0; ProviderConnection now has 40 cases.
+3. `npx biome check --write src/panes/settings/sections/credentials/ProviderConnection.tsx src/panes/settings/sections/credentials/ProviderConnection.test.tsx`
+   - **2 files checked**, exit 0.
+4. `git diff --check`: exit 0. Inspection of the changed production behavior confirmed that same-provider recovery is not blanket-cleared and both explicit and ordinary metadata resolution use the same origin check.
+5. Root `make test-web`: **PASS web-typecheck; PASS web-test; PASS web-lint**, exit 0. Evidence: `job:job_034MkC3zcMNUHDLkrgkB5q_St1PbtK0aohJ`.
+
+### Review-cycle submission
+
+- **DONE**: the Important draft-isolation finding is fixed; same-provider deferred recovery remains intact.
+- Fix commit: `37928c628` — `fix(web): isolate provider drafts across deferred setup recovery`, only the two named component/test paths, normal hooks, no amend.
+- This report update is committed separately under its named path. No merge or push. No further review sweep or changes outside the finding were performed.
