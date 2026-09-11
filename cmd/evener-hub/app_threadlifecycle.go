@@ -807,11 +807,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
 			return appwire.ThreadForkResponse{}, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
 		}
-		stateDir := cfg.StateDir
-		if cfg.Past != nil {
-			if pe, ok := cfg.Past.Find(ref.ThreadID); ok {
-				stateDir = pe.StateDir
-			}
+		stateDir := entry.StateDir
+		if stateDir == "" {
+			stateDir = cfg.StateDir
 		}
 		if stateDir == "" {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
@@ -844,11 +842,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if !params.DeferInput && strings.TrimSpace(params.EditedInput) == "" {
 		return appwire.ThreadForkResponse{}, appwire.InvalidParams("editedInput is required")
 	}
-	stateDir := cfg.StateDir
-	if cfg.Past != nil {
-		if pe, ok := cfg.Past.Find(ref.ThreadID); ok {
-			stateDir = pe.StateDir
-		}
+	stateDir := entry.StateDir
+	if stateDir == "" {
+		stateDir = cfg.StateDir
 	}
 	if stateDir == "" {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")

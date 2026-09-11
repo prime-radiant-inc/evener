@@ -372,3 +372,47 @@ func TestHubForkCapabilityFencesOnlyUnconfirmedTarget(t *testing.T) {
 		}
 	}
 }
+
+// A production hub is configured with the parent of `projects`, so a session
+// admitted by the project scan lives one directory deeper than cfg.StateDir.
+// Both fork modes must branch the child where its parent is stored.
+func TestHubForkBranchesInAdmittedEntryStateDir(t *testing.T) {
+	for _, mode := range []struct {
+		name   string
+		params appwire.ThreadForkParams
+	}{
+		{name: "aside", params: appwire.ThreadForkParams{Aside: true}},
+		{name: "fork from turn", params: appwire.ThreadForkParams{SourceTurnID: "turn_1", EditedInput: "forked input"}},
+	} {
+		for _, index := range []struct {
+			name string
+			past *hubcore.PastIndex
+		}{
+			{name: "past nil"},
+			{name: "past miss", past: hubcore.NewPastIndex("")},
+		} {
+			t.Run(mode.name+" "+index.name, func(t *testing.T) {
+				root := t.TempDir()
+				stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
+				parentID := buildRPCParentSession(t, stateDir)
+				if index.past != nil {
+					if _, ok := index.past.Find(parentID); ok {
+						t.Fatal("past index answered for the parent: the project scan is not exercised")
+					}
+				}
+				params := mode.params
+				params.Ref = "local:" + parentID
+				resp, err := hubThreadFork(t.Context(), hubcore.WebConfig{StateDir: root, Past: index.past}, nil, params)
+				if err != nil {
+					t.Fatalf("fork: %v", err)
+				}
+				if resp.Thread.ID == "" || resp.Thread.ID == parentID {
+					t.Fatalf("thread=%+v", resp.Thread)
+				}
+				if _, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID); err != nil {
+					t.Fatalf("child was not branched beside its parent: %v", err)
+				}
+			})
+		}
+	}
+}
