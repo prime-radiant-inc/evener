@@ -64,6 +64,50 @@
   flex: none;
   margin-left: var(--space-2);
   vertical-align: middle;
+  /* One full line box tall, with the slot centered in it. The shell inside
+   * (openbutton.module.css's .inline) is the 28/44px hit target handing
+   * exactly 1em back to layout via symmetric negative margin-block, and the
+   * tail's flex-end cross alignment pins whatever it receives against the
+   * container's BOTTOM - the line box's bottom, not the text's. Seating the
+   * bare 1em slot there parked the glyph half-leading ((line-height - 1em)/2,
+   * ~3.7px at caption size) below the words, and its box poked below the line.
+   * A 1lh wrapper centers the 1em slot on the final text line at every font
+   * and width, and the hit target paints symmetrically over it. */
+  height: 1lh;
+  align-items: center;
+}
+
+/* The head's one expand affordance (the native marker is suppressed above):
+ * the same trailing widgets/chevron idiom ThinkBlock's summary uses, a step
+ * firmer than the ink-mid words it opens. Inline after plain text the 14px
+ * glyph rides vertical-align: middle; inside the atomic tail unit it is a
+ * flex item under flex-end cross alignment, so it needs the same one-line-box
+ * wrapper as .openTrailing to center on the final text line. */
+.chevron {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: var(--space-2);
+  vertical-align: middle;
+  color: var(--ink-mid);
+}
+
+.secondaryTail .chevron {
+  height: 1lh;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chevron > svg {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+/* Down here, not inside the media block above: this selector outranks the
+ * transition selector, and biome's noDescendingSpecificity wants the lower-
+ * specificity rule first in source order (the same note ThinkBlock's own
+ * chevron rules carry). */
+.chevron[data-open="true"] > svg {
+  transform: rotate(90deg);
 }
 
 .metadata {
