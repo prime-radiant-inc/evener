@@ -13,8 +13,24 @@
 // from React's own empty initial state - there is no "leftover text from a
 // different ref" for a fresh mount to ever see. Restoring this ref's draft
 // on mount (Composer.tsx) is therefore unconditional, not guarded.
+//
+// Drafts are STRUCTURED (2026-09 skills lifecycle): one v2 record holds
+// {text, skillNames} as a single atomic localStorage value, so a draft's
+// canonical skill selections survive a reload next to its text. The v1 key
+// held plain text only; see readComposerDraft for the approved transition.
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
+const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
 const draftRevisions = new Map<string, number>();
+
+// A composer draft: the textarea's text plus the canonical names of the
+// skills selected for this request. skillNames are canonical catalog names
+// (never prose): the submit boundary assembles them as {type: "skill", name}
+// input items after the ordinary text/attachment items, and a chip change is
+// a draft edit even when the text is byte-identical.
+export interface ComposerDraft {
+  text: string;
+  skillNames: string[];
+}
 
 // A remount inherits the same draft revision. Editing or replacing its
 // contents changes ownership even when the resulting text is identical.
@@ -30,31 +46,78 @@ export function draftStorageKey(ref: string): string {
   return `${STORAGE_PREFIX}${ref}`;
 }
 
+export function composerDraftStorageKey(ref: string): string {
+  return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
+}
+
+function isStoredComposerDraft(value: unknown): value is ComposerDraft {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Partial<ComposerDraft>;
+  return (
+    typeof record.text === "string" &&
+    Array.isArray(record.skillNames) &&
+    record.skillNames.every((name) => typeof name === "string")
+  );
+}
+
 // Every localStorage access is guarded: private-mode/disabled/full storage
 // degrades silently to "no draft" rather than ever breaking the composer,
 // same convention as shell/rail/Rail.tsx's own collapsed-state persistence.
-export function readDraft(ref: string): string {
+//
+// Existing-draft transition (approved): when the v2 record is absent, the old
+// v1 PLAIN-TEXT value is read as literal text with skillNames: []. The v1
+// value is never JSON-decoded to guess selections and no slash mention in it
+// is ever inferred as a selection - an old draft is exactly the text it was.
+export function readComposerDraft(ref: string): ComposerDraft {
   try {
-    return localStorage.getItem(draftStorageKey(ref)) ?? "";
+    const structured = localStorage.getItem(composerDraftStorageKey(ref));
+    if (structured !== null) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(structured);
+      } catch {
+        parsed = null;
+      }
+      if (isStoredComposerDraft(parsed)) return parsed;
+    }
+    return { text: localStorage.getItem(draftStorageKey(ref)) ?? "", skillNames: [] };
   } catch {
-    return "";
+    return { text: "", skillNames: [] };
   }
 }
 
-// Blank/whitespace-only content removes the key rather than storing an
-// empty string - a draft that would never send is never persisted.
-export function writeDraft(ref: string, value: string): void {
+// The text half of the structured draft, for callers that only compose prose
+// (the dev harness's seeded panes, and tests reading back what they typed).
+export function readDraft(ref: string): string {
+  return readComposerDraft(ref).text;
+}
+
+// Writes the whole structured draft as ONE atomic v2 record, then removes any
+// old v1 value (never the reverse order - a v2 write that crashed before the
+// v1 removal still leaves one readable draft behind). Blank text with no
+// selections removes the draft outright rather than storing an empty record -
+// a draft that would never send is never persisted. A selection-only draft
+// DOES send, so it persists even with blank text.
+export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   markDraftEdited(ref);
   try {
-    if (value.trim() === "") {
+    if (value.text.trim() === "" && value.skillNames.length === 0) {
+      localStorage.removeItem(composerDraftStorageKey(ref));
       localStorage.removeItem(draftStorageKey(ref));
     } else {
-      localStorage.setItem(draftStorageKey(ref), value);
+      localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify(value));
+      localStorage.removeItem(draftStorageKey(ref));
     }
   } catch {
     // Best-effort: a full quota or Safari private-mode must never be fatal
     // to the composer itself, only to draft persistence across reloads.
   }
+}
+
+// A text edit preserves the draft's selections - chips apply to the request
+// independently of the prose, so editing words never drops a selected skill.
+export function writeDraft(ref: string, value: string): void {
+  writeComposerDraft(ref, { text: value, skillNames: readComposerDraft(ref).skillNames });
 }
 
 // clearDraft drops a ref's stored draft outright - called on every
@@ -69,8 +132,9 @@ export function clearDraft(ref: string): void {
 // localStorage copy does not represent a new edit of that draft.
 export function clearPersistedDraft(ref: string): void {
   try {
+    localStorage.removeItem(composerDraftStorageKey(ref));
     localStorage.removeItem(draftStorageKey(ref));
   } catch {
-    // See writeDraft's own comment.
+    // See writeComposerDraft's own comment.
   }
 }
