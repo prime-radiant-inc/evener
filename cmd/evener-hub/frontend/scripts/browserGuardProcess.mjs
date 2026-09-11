@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
+import { createStartupDeadline, devtoolsHttpURL, waitForHttp } from "./browserGuardCdp.mjs";
+
 const CHROME_CANDIDATES = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/usr/bin/google-chrome",
@@ -16,6 +18,25 @@ const CHILD_EXIT_GRACE_MS = 2_000;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
 const VITE_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * How long Chrome gets to print "DevTools listening" before the guard calls it
+ * an environment failure. Deliberately FAR larger than the 30s an endpoint gets
+ * to answer once announced, because the two waits fail for different reasons.
+ *
+ * Measured on the GitHub runner that failed run 34570447477: Chrome's first
+ * stderr byte arrived 21s after launch and it still had not announced at 30s,
+ * with its dbus retries running to 27s - a browser making progress, on a cold
+ * page cache, on a loaded two-core VM. The four guards after it on the SAME
+ * runner came up in seconds. 30s was simply under the cold-start floor.
+ *
+ * This is a tripwire and nothing else depends on its value: a Chrome that
+ * CANNOT start never reaches it, because the exit and spawn-error handlers
+ * below reject the readiness promise the moment either fires. What it bounds is
+ * the one case where the process is alive and silent, and four times the
+ * observed floor is the margin chosen for it.
+ */
+const CHROME_ANNOUNCEMENT_DEADLINE_MS = 120_000;
 const VITE_LOCAL_ANNOUNCEMENT = /Local:\s+http:\/\/(\[[^\]]+\]|[^/:\s]+):(\d+)(?:\/\s*)?$/;
 
 function isLoopbackHost(hostname) {
@@ -148,6 +169,66 @@ export function describeBrowserStartupFailure({
     "     library, a sandbox denial and an unwritable profile all report there.",
   );
   return lines.join("\n");
+}
+
+/**
+ * Take a started guard from "processes are running" to "there is a browser to
+ * drive", and frame anything that goes wrong as the environment problem it is.
+ *
+ * Every guard runner had a verbatim copy of this. It is one function because
+ * the two waits inside it have to be reasoned about together: the announcement
+ * and the endpoint answering are different failures with different causes, so
+ * they get SEPARATE budgets. Sharing one, as the copies did, let a cold Chrome
+ * that took 25 seconds to announce hand the endpoint wait five - the poll would
+ * then die of a deadline that had already been spent by the phase before it.
+ */
+export async function waitForBrowserReady(guard, { announcementTimeoutMs = CHROME_ANNOUNCEMENT_DEADLINE_MS } = {}) {
+  const announcement = createStartupDeadline(announcementTimeoutMs);
+  let endpointAnswer = null;
+  try {
+    let endpoint;
+    try {
+      endpoint = await guard.waitForChrome({ signal: announcement.signal });
+    } catch (error) {
+      // Name the phase, and say what the browser had managed to do. Run
+      // 34570447477 printed "browser startup deadline exceeded after 30000ms"
+      // and nothing else - the same sentence the endpoint poll after it would
+      // have printed - and which of the two had stalled had to be argued out
+      // of microtask ordering rather than read.
+      if (error !== announcement.signal.reason) throw error;
+      const firstStderr = guard.getChromeFirstStderrDelay();
+      throw new Error(
+        `${error.message} while waiting for Chrome's DevTools announcement on stderr ` +
+          `(${
+            firstStderr === null
+              ? "Chrome had written nothing to stderr"
+              : `Chrome's first stderr byte arrived ${firstStderr}ms after launch`
+          })`,
+      );
+    }
+    endpointAnswer = createStartupDeadline();
+    await waitForHttp(
+      devtoolsHttpURL(endpoint, "/json/version"),
+      "chrome devtools endpoint",
+      guard.getChromeLaunchError,
+      { signal: endpointAnswer.signal, failure: guard.getChromeFailure() },
+    );
+    return endpoint;
+  } catch (error) {
+    throw new Error(
+      describeBrowserStartupFailure({
+        error,
+        subsystem: "chrome",
+        chromeBinary: guard.chromeBinary,
+        chromeArgv: guard.getChromeArgv(),
+        chromeStderr: guard.getChromeError(),
+        viteStderr: guard.getViteError(),
+      }),
+    );
+  } finally {
+    announcement.clear();
+    endpointAnswer?.clear();
+  }
 }
 
 export function chromeProfileIsolationArgs(platform = process.platform) {
@@ -735,6 +816,8 @@ export async function startBrowserGuard({
   let viteLineBuffer = "";
   let chromeLaunchError = null;
   let chromeArgv = [];
+  let chromeSpawnedAt = 0;
+  let chromeFirstStderrAfterMs = null;
   let chromeEndpoint = null;
   let chromeLineBuffer = "";
   let resolveChromeReady;
@@ -860,6 +943,7 @@ export async function startBrowserGuard({
       ...chromeArgs,
       "about:blank",
     ];
+    chromeSpawnedAt = Date.now();
     chrome = spawnProcess(resolvedChrome, chromeArgv, {
       // Chrome's stderr is the only thing that says WHY it would not start (a
       // missing dylib, a sandbox denial, a profile it cannot write).
@@ -873,6 +957,7 @@ export async function startBrowserGuard({
       failChrome(error);
     });
     chrome.stderr?.on("data", (chunk) => {
+      chromeFirstStderrAfterMs ??= Date.now() - chromeSpawnedAt;
       chromeErr += chunk;
       chromeLineBuffer += chunk.toString();
       const lines = chromeLineBuffer.split(/\r\n|\r|\n/);
@@ -931,10 +1016,15 @@ export async function startBrowserGuard({
     getChromeFailure: () => chromeFailure,
     chromeBinary: resolvedChrome,
     getChromeArgv: () => chromeArgv,
-    // This promise is the process/devtools readiness handoff. The runner owns
-    // its single startup deadline and passes its abort signal through both the
-    // announcement and /json/version phases.
+    // This promise is the process/devtools readiness handoff. It rejects with
+    // the caller's own abort reason; waitForBrowserReady, which arms the
+    // announcement budget, is what says which phase that reason belongs to.
     waitForChrome: ({ signal } = {}) => withAbort(chromeReady, signal, chromeFailure),
+    // How long after launch Chrome first wrote ANYTHING, or null if it never
+    // did. The number that separates a browser which is slow from one which is
+    // not running: 21000ms of silence and then dbus retries, in run
+    // 34570447477, is a cold page cache, not a broken install.
+    getChromeFirstStderrDelay: () => chromeFirstStderrAfterMs,
     cleanup: lifecycle.cleanup,
   };
 }
