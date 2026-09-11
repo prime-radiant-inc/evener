@@ -287,6 +287,167 @@ successful startup with write restrictions intact. No TMPDIR workaround was used
   remains qualified as above; no per-subcase red result is inferred.
 - Task 1 accepted. Tasks 2–13 still require implementation and review.
 
+## Task 2: caller-scope correction
+
+Task 2 remains in progress. The implementer identified additional callers of the
+required steering/hook error-returning signatures; the parent inspected them.
+
+Ruling: Extend Task 2's sole-writer ownership to
+`agent/session_client_mutation_queue_test.go`,
+`agent/session_tools_worktree_covtest_test.go`, `agent/session_tools.go`,
+`agent/session_events.go`, and `agent/session_namer.go` for those caller and
+assertion updates only. This completes the approved in-place error contract.
+Existing boolean/state assertions and non-recursive hook diagnostics must remain.
+If wrong, the cost is localized caller churn or altered hook diagnostics, bounded
+by focused tests and independent task review. The added covering gate is
+`(cd agent && go test . -run 'TestCovTrySteer|Hook|Compaction' -count=1)`;
+its result is pending. No broader hook, naming, or tool changes are authorized.
+
+Ruling: Also authorize `agent/session_tool_registry.go`,
+`agent/session_tools_task.go`, and `agent/session_config.go` for the existing
+steering callback types, their consumers and the `parentSteer` field signature.
+Parent verified the corresponding fixture literals in
+`agent/session_tools_task_test.go`, `agent/cov_task_updated_test.go`,
+`agent/session_tool_repair_task_branch_test.go`, and `agent/serialization_test.go`;
+those paths are authorized for signature updates only. Preserve existing fallback
+branches, task assertions and serialization exclusions. If wrong, the cost is
+localized task-tool error-path or fixture churn, bounded by real refusal tests,
+`(cd agent && go test . -run 'Task|Config' -count=1)` and independent review.
+The gate is pending. Compiler migration failures are recorded separately from
+behavioral RED evidence. No unnamed fixture ownership is granted.
+
+Ruling: Authorize `server/appwire_mutation_test_helpers_test.go` only to forward
+the captured steering callback errors from `installProjectedMutationCallbacksForTest`.
+Parent verified both branches. Existing fixture effects and assertions remain;
+no new mock or redesign is authorized. If wrong, the cost is localized fixture
+error-path churn, covered by the required server mutation/retirement gates and
+independent review. This helper does not replace real-session retirement evidence.
+
+Ruling: Task 2 retains all routed name/goal-clear admission and its explicit
+direct setters. Direct `Session.Rename` and `Session.ClearGoal` admission plus
+their in-place error-returning caller chains are mandatory Task 4 work. The
+global inventory assigns this setter family jointly to Tasks 2 and 4; Task 2's
+explicit void-signature list omits these two methods. Parent verified both first
+effect boundaries. Task 4 must prove refusal before locks/effects, error
+propagation, unchanged original state/persistence and both race orders, while
+preserving existing no-op and event behavior. If wrong, the cost is an interim
+direct-call fence gap; automatic activation stays forbidden until Task 4 and
+preservation gates pass. Task 2's report must disclose this gap and retain actual
+routed refusal evidence. The mandatory handoff is recorded for Task 4 dispatch.
+
+Ruling: Include `Session.FollowUp(msg string) error` in Task 2's direct input
+fence. It appends to `followups`; the legacy enqueue inventory assigns it to
+Task 2 alone. Parent's caller search found only tests. Acquire before the session
+lock/effect, return the lifecycle sentinel, preserve accepted enqueue and existing
+empty/closed no-ops, and prove unchanged-queue refusal plus accepted-input blocking.
+Additional ownership is limited to FollowUp error assertions in
+`agent/session_queue_stream_tail_fuzz_test.go`, `agent/session_lifecycle_test.go`,
+`agent/delegate_resource_supervision_test.go`, `agent/session_workmillis_test.go`,
+`agent/events_queue_covtest_test.go`, `agent/session_tools_jobs_covtest2_test.go`,
+`agent/lifecycle_seqfuzz_test.go`, `agent/session_queue_lifecycle_program_fuzz_test.go`,
+and `agent/session_ask_test.go`. If wrong, the cost is localized input API/caller
+churn, bounded by direct TDD, retirement race/full-test gates and independent
+review. Private carrier/pop/turn-owned append admission remains within owned
+files. Refusal retains pending work and never acknowledges delivery; admission
+stays outside owner locks and diagnostics follow unlocking.
+
+## Task 2: implementation delivered, review pending
+
+- Commit: `4c7fac384d660eb881e06782d762ea9e03f762b9`, exactly 52 Go files.
+  Parent verified scope and read the full implementation report.
+- Final exact agent/server race and caller gates exited 0, verified from
+  `job:job_034MeqK0deGRzzW0T4qMYu_FWhEmH0MsCdY`.
+- Final `make test` exited 0 across all modules and web, verified from
+  `job:job_034MeqK0deGRzzW0T4qMYu_NCptHHb9AwqF`.
+- Full agent initially failed the new tests' deadline audit. TRIPWIRE rationale
+  comments were added without changing deadlines/assertions; the rerun passed.
+- RED evidence distinguishes actual behavioral failures from compiler migration
+  failures and already-green regression cases. Primary-journal barriers and the
+  replay test read original durable records; replay also decodes the primary
+  transcript and counts the scripted provider's main execution separately.
+- Independent review is underway. It identified a tagged-build source defect:
+  `exerciseResidualCallbacks` calls `t.Fatal` without a testing handle. Parent
+  confirmed the source; focused tagged compile evidence and the complete review
+  are pending. Standard gates did not compile that `evenerfuzz` file.
+
+Ruling: Correct confirmed existing empty-description fixture warnings before
+Task 2 acceptance, in a separate named-path commit. Parent reproduced the uncaptured
+`slow` registration warning in the existing concurrent-tool test and verified
+its registry condition. Limit edits to accidental missing description metadata in
+`agent/session_communicate_issue831_test.go`, `agent/session_config_test.go`,
+`agent/session_dod_definition_test.go`, and `agent/session_parity_test.go`.
+Preserve schemas, executors, assertions and intentional diagnostic tests;
+no registry/log suppression. If wrong, the cost is localized fixture metadata
+churn. Focused visible diagnostics must prove the warnings absent, and independent
+review must check the diff. The full agent and standard gates will run after the
+consolidated review fixes, covering both corrections on the final tree.
+
+### Independent Task 2 review and fix round 1
+
+The complete review reports specification issues and quality **Needs fixes**:
+no Critical findings, one Important tagged-build failure, and two Minor findings.
+The focused tagged command exited 1 with undefined `t` at lines 109, 112 and 139;
+parent verified `job:job_034Mg1V8UoH9TZOHjsNLCx_PeIkvehExSAP`.
+
+- Important: propagate the existing testing handle into `exerciseResidualCallbacks`
+  while retaining callback-error assertions. The original implementer owns this
+  fix; tagged seed execution, tagged agent compilation and final gates are pending.
+- Minor, deferred to source-owner integration in Tasks 3–4: the notification test
+  proves false/no-enqueue, and private-handoff fixtures preserve rejected-history
+  state. They contain no populated pending source receipt. Their evidence must
+  stay qualified until real source/receipt preservation is tested. Final branch
+  review must check this recorded limitation.
+- Minor warning correction: commit `b343710e95d0050ac4120e3f455ca01b2ce55852`
+  adds only descriptions in the four authorized fixture files. Parent inspected
+  the full diff and diagnostic checker. The baseline checker detected 16 warnings;
+  the corrected run passed all 13 required tests, no skips, zero warnings
+  (`job:job_034MeqK0deGRzzW0T4qMYu_DbNJjPRgTIa1`). Independent diff review and
+  the deferred full gates remain required.
+
+The review's remaining cannot-verify items map to unactivated later tasks:
+whole-tree evidence and source owners (3–4), preparation/preservation (5–6),
+descendant controller inheritance (3), lifecycle wire errors (7), live serve and
+clear-root ownership (8), and direct Rename/ClearGoal protection (4). None is
+claimed complete. Task 2 remains unaccepted until its blocking fix and scoped
+re-review finish.
+
+### Task 2 accepted after fix round 1
+
+- Tagged callback fix: `f535182995bbba6a0e04614636b639720a7300d6`. It passes
+  the existing subtest handle and preserves all three callback-error assertions.
+- Tagged seed execution passed (exit 0, actual seed and callbacks subtest),
+  `job:job_034MeqK0deGRzzW0T4qMYu_miZhdxpYkDzJ`. Tagged agent compilation
+  passed, `job:job_034MeqK0deGRzzW0T4qMYu_3XMjgA3uxoXs`; that gate executed
+  no tests and supplies compilation evidence only.
+- Consolidated diagnostic check passed all 13 covering tests, no skips and no
+  registration warnings, `job:job_034MeqK0deGRzzW0T4qMYu_YYFBUKclJUVF`.
+- Final full agent test exited 0 (204.062s),
+  `job:job_034MeqK0deGRzzW0T4qMYu_PQidi3rinG3z`. Final `make test` exited 0
+  across all modules and web, `job:job_034MeqK0deGRzzW0T4qMYu_8xxv8t57VX7q`.
+  Parent read actual outputs and verified the final commit scope and HEAD.
+- Independent scoped re-review: both fixes ADDRESSED, spec PASS, quality PASS,
+  no new breakage or new out-of-scope observations. It verified synchronous
+  testing-handle use and unchanged fixture schemas/executors/assertions.
+- Task 2 accepted. The populated-source evidence limitation remains mandatory
+  Task 3–4 work; direct Rename/ClearGoal admission remains mandatory Task 4
+  work. Both handoffs persist. Automatic retirement remains unactivated.
+- Reviewer reported a missing configured plugin-hook module while file reads
+  succeeded. This is an external review-tool diagnostic, not product-test
+  evidence; no plugin repair was attempted.
+
+### Task 3 construction and claim ownership
+
+Ruling: Extend Task 3 ownership to `agent/session_config.go` and
+`agent/session_init.go` only for inherited process-controller publication before
+child initialization effects, and `agent/retirement.go` only for the exact
+outer-claim/tree-fence handoff. Parent verified the missing config field, both
+construction sites and existing root-only claim boundary. This corrects file-list
+omissions for required behavior. If wrong, the cost is localized construction or
+claim churn, bounded by new/restore inheritance, exact-token, admission races and
+unchanged reclamation tests. Tests remain in the task's new test file. Preparation,
+release and timer activation remain later work. The Task 3 brief also carries
+the populated delegate-source/receipt preservation obligation from Task 2 review.
+
 ## Remaining workflow
 
 Subagent-driven TDD implementation with specification and quality review → fresh
