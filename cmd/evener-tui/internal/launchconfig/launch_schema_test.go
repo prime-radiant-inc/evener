@@ -138,6 +138,7 @@ func TestLaunchOptionValue_ResolvedDefaultLabels(t *testing.T) {
 		ReasoningEffort:  "high",
 		MaxRounds:        &twoHundred,
 		Verbose:          &tru,
+		APILog:           &tru,
 		SystemPromptText: "hello\nworld",
 		ModelFallbacks:   []string{"openai/gpt-5-mini", "openai/gpt-5-nano"},
 	}
@@ -150,6 +151,7 @@ func TestLaunchOptionValue_ResolvedDefaultLabels(t *testing.T) {
 		{"reasoning_effort", "high (default)", ""},
 		{"max_rounds", "200 (default)", "(default)"},
 		{"verbose", "true (default)", "(default)"},
+		{"api_log", "true (default)", "(default)"},
 		{"system_prompt_text", "11 chars, 2 lines (default)", ""},
 		{"model_fallbacks", "2 entries (default)", "(default)"},
 	}

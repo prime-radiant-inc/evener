@@ -741,6 +741,18 @@ func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeReq
 					Model: provider + "/" + pe.Meta.Model,
 				}}
 			}
+			// The resumed daemon still honors the api_log launch option
+			// (buildResumeArgs passes it through), so the session's launch
+			// layers must be consulted here or an explicit choice is
+			// silently dropped and the hub floor fills the gap. Only
+			// api_log is carried: the persisted session meta governs model
+			// and provider on resume. A resolve failure is swallowed — a
+			// broken launch.toml must not block resume; the unset value
+			// then falls through to the hub floor and the daemon's own
+			// default.
+			if resolved, resolveErr := hubResolveLaunch(hubLaunchConfigRoot(cfg), req.WorkingDir, launchconfig.Layer{}); resolveErr == nil {
+				req.Resolved.Effective.APILog = resolved.Effective.APILog
+			}
 		}
 	}
 	return req, nil

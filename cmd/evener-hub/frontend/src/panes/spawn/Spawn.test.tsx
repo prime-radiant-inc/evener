@@ -21,10 +21,11 @@ import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
-import { resetToastStoreForTests } from "../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
 
@@ -127,6 +128,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/dirs/create", ({ path }) => ({ path, created: true }));
   fake.on("evener/git/head", () => ({ head: "main" }));
   fake.on("evener/plugin/preview", () => ({ plugins: [] }));
+  fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
   return fake;
@@ -398,6 +400,7 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  resetThreadsStoreForTests();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
   resetToastStoreForTests();
@@ -2689,4 +2692,820 @@ test.each(["desktop", "mobile"])("%s directory picker follows route directory ch
   await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
   await user.click(confirm);
   expectWorkingDir("/home/other");
+});
+
+// --- spawn prompt-box inline slash menu (Task 5) ---------------------------
+//
+// The prompt box completes the same trailing-slash token the session composer
+// does, against the pre-session catalog (evener/spawn/slashCatalog) merged
+// with the spawn-scoped builtins (goal, model, reasoning-effort). Key
+// handling is ADAPTED for Spawn's submit model, not ported verbatim: plain
+// Enter is the newline key and commits the open menu, while only
+// Mod/Ctrl+Enter submits.
+
+function slashMenu() {
+  return screen.getByTestId("composer-slash-menu");
+}
+
+function slashOptions() {
+  return within(slashMenu()).getAllByRole("option");
+}
+
+function promptField(): HTMLTextAreaElement {
+  return screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+}
+
+// The slash catalog is debounced (useSpawnSlashCatalog): wait for the
+// stubbed response to land instead of sleeping a fixed window past the
+// settle time, which flakes under load.
+async function typeSlashQuery(user: ReturnType<typeof userEvent.setup>, fake: FakeClient, text: string): Promise<void> {
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/spawn/slashCatalog")).toBe(true));
+  await user.type(promptField(), text);
+}
+
+test("typing /re opens the menu with builtin and catalog matches but not /simplify", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [{ name: "simplify", description: "rewrite" }],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+
+  // /reasoning-effort (builtin) and /review (catalog) both match "re";
+  // "simplify" has no "r", so the embedding matcher needs every query char
+  // in the label and it must stay out. Asserted negatively on purpose so a
+  // future matcher change stays honest.
+  expect(slashOptions().map((el) => el.textContent)).toEqual([
+    expect.stringContaining("/reasoning-effort"),
+    expect.stringContaining("/review"),
+  ]);
+  expect(slashMenu().querySelectorAll('[role="option"]')).toHaveLength(2);
+});
+
+test("typing further narrows the spawn slash menu live", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [{ name: "simplify", description: "rewrite" }],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/rev");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+
+  await user.clear(promptField());
+  await user.type(promptField(), "/sim");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/simplify")]);
+});
+
+test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/rev");
+  await user.keyboard("{Tab}");
+
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect(promptField().selectionStart).toBe("/review ".length);
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect(document.activeElement).toBe(promptField());
+
+  // Plain Enter is Spawn's newline key: with the menu open it commits the
+  // highlighted item instead of submitting.
+  await user.clear(promptField());
+  await user.type(promptField(), "/rev");
+  await user.keyboard("{Enter}");
+
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+
+  // Mod+Enter ALWAYS submits, even with the menu open: commit nothing.
+  await user.clear(promptField());
+  await user.type(promptField(), "/rev");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  // The menu committed nothing: a successful Start clears the prompt (Spawn's
+  // own doSpawn reset), so the field must NOT hold the committed "/review ".
+  expect((promptField() as HTMLTextAreaElement).value).not.toBe("/review ");
+});
+
+test("a successful submit closes the slash menu with the cleared prompt", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  // Mod+Enter submits even with the menu open; the pane stays mounted behind
+  // the session pane, so the stale token must not survive the cleared prompt.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect((promptField() as HTMLTextAreaElement).value).toBe("");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("a same-cwd catalog refresh hides stale rows until the new response lands", async () => {
+  const user = userEvent.setup();
+  let resolveRefresh!: (response: { commands: { name: string; description: string }[]; skills: never[] }) => void;
+  let requests = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => {
+      requests += 1;
+      if (requests === 1) {
+        return { commands: [{ name: "review", description: "review the diff" }], skills: [] };
+      }
+      return new Promise((done) => {
+        resolveRefresh = done as (response: {
+          commands: { name: string; description: string }[];
+          skills: never[];
+        }) => void;
+      });
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/rev");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+
+  // A plugin change starts a same-cwd refresh; the v1 rows must not stay
+  // offered while the new config loads — the new session may no longer load
+  // them, and a picked stale entry would submit as literal text.
+  await act(async () => {
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} } as AnyNotification);
+  });
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  // Wait for the refresh request to go out (debounced) before resolving it.
+  await waitFor(() => {
+    expect(fake.calls.filter((c) => c.method === "evener/spawn/slashCatalog")).toHaveLength(2);
+  });
+  await act(async () => {
+    resolveRefresh({ commands: [{ name: "revamp", description: "revamp the turn" }], skills: [] });
+  });
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/revamp")]);
+});
+
+test("Shift+Tab does not commit the spawn menu", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  // Modified Tab falls through for focus navigation instead of committing:
+  // the prompt keeps its text and no completion is spliced in.
+  await user.keyboard("{Shift>}{Tab}{/Shift}");
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("reopening the identical token restarts the highlight at the first option", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // Move off the first option, dismiss, and reopen the identical token.
+  await user.keyboard("{ArrowDown}");
+  await user.keyboard("{Escape}");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  await user.type(promptField(), "e");
+  await user.clear(promptField());
+  await user.type(promptField(), "/re");
+
+  // Committing now must splice the FIRST option, not the previously
+  // highlighted one.
+  await user.keyboard("{Tab}");
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/reasoning-effort ");
+});
+
+test("catalog entries colliding with pre-session builtins are not offered twice", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [
+        { name: "goal", description: "project goal runner", source: "project" },
+        { name: "deploy", description: "deploy the thing", source: "project" },
+      ],
+      skills: [{ name: "model", description: "project model helper" }],
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  // "/goal" the project command and "/model" the project skill share their
+  // invocations with pre-session builtins, which always win at submit — so
+  // the menu offers each invocation exactly once (the builtin), while the
+  // non-colliding project command still appears.
+  await typeSlashQuery(user, fake, "/goal");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/goal")]);
+
+  await user.clear(promptField());
+  await typeSlashQuery(user, fake, "/model");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/model")]);
+
+  await user.clear(promptField());
+  await typeSlashQuery(user, fake, "/dep");
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/deploy")]);
+});
+
+test("a prefilled slash token opens its menu without waiting for a keystroke", async () => {
+  window.history.pushState({}, "", "/new?prompt=%2Frev");
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("/rev"),
+  );
+  // The catalog lands debounced; the menu for the prefilled token must open
+  // on its own once rows arrive — no keystroke needed.
+  await waitFor(() => expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull());
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
+test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+
+  await user.clear(promptField());
+  await user.type(promptField(), "/zzz");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  await user.clear(promptField());
+  await user.type(promptField(), "foo/bar");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  await user.clear(promptField());
+  await user.type(promptField(), "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+  fireEvent.blur(promptField());
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("a non-evener harness sends no slashCatalog call and typing /goal shows no menu", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Harness"), "external");
+
+  // From this commit on, no slashCatalog timer can be pending: the harness
+  // switch clears the mount timer via the hook's effect cleanup and the
+  // disabled hook schedules nothing. Drop any mount-window calls so the
+  // assertion below pins post-switch behavior only — a fixed sleep here
+  // flakes under load (it relies on beating the 250ms mount timer).
+  fake.calls.splice(0);
+
+  await user.type(promptField(), "/goal");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
+});
+
+test("the open spawn menu wires listbox roles and aria-activedescendant on the prompt", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+
+  expect(slashMenu().getAttribute("role")).toBe("listbox");
+  const activeId = promptField().getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  expect(document.getElementById(activeId ?? "")).toBe(slashOptions()[0]);
+
+  await user.keyboard("{Escape}");
+  expect(promptField().getAttribute("aria-activedescendant")).toBeNull();
+});
+
+// --- Task 6: submit interception for pre-session builtins --------------------
+//
+// A prompt parsing as /goal, /model, or /reasoning-effort starts the session
+// with the literal text, then applies the builtin against the new ref, then
+// navigates. Everything else spawns exactly as today.
+
+test("a /goal prompt starts a dormant session and applies goal/set on the new ref", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/goal build the widget");
+  // Dismiss the inline menu without altering the text: plain Enter commits
+  // the highlight here, and Mod+Enter is the submit under test.
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect((start?.params as { input?: unknown[] } | undefined)?.input ?? []).toEqual([]);
+  // The goal follow-up fires after navigation without blocking it, so wait
+  // for the call rather than assuming it landed.
+  let goal: { params?: unknown } | undefined;
+  await waitFor(() => {
+    goal = fake.calls.find((c) => c.method === "goal/set");
+    expect(goal).toBeTruthy();
+  });
+  expect(goal?.params).toMatchObject({ ref: "local:abc123", objective: "build the widget" });
+});
+
+test("a /model prompt starts a dormant session with the model on thread/start and no follow-up set", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  // The pre-start known-value check reads the pane-level modelCatalog, which
+  // lands on a 250ms settle after mount (CATALOG_SETTLE_MS) — settled() only
+  // waits for the Advanced-options toggle, not the catalog, so submitting
+  // immediately races it (resolveSpawnModelItems(null) is [] and the known
+  // value fail-closes). Setting a working directory and waiting for the
+  // cwd-scoped resolve to commit its state-derived trigger text guarantees
+  // the catalog commit happened first: the catalog effect is declared before
+  // the resolve effect and both share the one keyed model/list promise, so
+  // the resolve's Promise.all commit is strictly after the catalog's.
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  // No follow-up mutation: thread/model/set refuses mid-turn with Conflict
+  // once the non-empty first input reserves the turn, so the value rides the
+  // start call itself.
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+  expect(getToasts()).toEqual([]);
+});
+
+test("a /model prompt bootstraps past the required-model guard with the value on thread/start and no literal first turn", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+    f.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  // The hub has no default model, so Start is gated — but the prompt itself
+  // supplies the missing model. The bootstrap validates against the pane
+  // catalog, so the test waits for the catalog-backed trigger text the same
+  // way the known-value test does.
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/spawn/slashCatalog")).toBe(true));
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  await user.click(button);
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+});
+
+test("a /model prompt wins over a matching Advanced Options model override on thread/start with no literal first turn", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "model",
+          wireField: "model",
+          kind: "text",
+          label: "Model",
+          group: "general",
+          perLaunch: true,
+          driverSupport: { evener: true },
+        },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  // An Advanced Options model override loses to the typed slash value: the
+  // user typed the value as the submit itself, the most specific intent.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.type(screen.getByLabelText("Model"), "anthropic/other-model");
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+});
+
+test("a /model value from the previous cwd does not validate after switching directories", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+    // Scope-dependent catalog: gpt-5 exists only under /tmp/project. The
+    // /tmp/other response is delayed past the submit below so the pane
+    // catalog is deterministically STALE (old scope) at submit time — the
+    // window the fix closes. Without the fix, validation reads the stale
+    // snapshot and the submit goes through; with it, the scope mismatch
+    // fail-closes before any load state matters.
+    f.on("model/list", async (params) => {
+      if ((params as { cwd?: string }).cwd === "/tmp/other") {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        return {
+          data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+        };
+      }
+      return {
+        data: [
+          { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+          { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+        ],
+      };
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  // Switch directories: the pane catalog still holds the old scope until the
+  // new scoped load lands. A model valid only for the old scope must not
+  // validate against the stale snapshot.
+  await setWorkingDir(user, "/tmp/other");
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "openai\/gpt-5"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("a /reasoning-effort value from the previous cwd does not validate after switching directories", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+    // Delay the new scope's catalog past the submit below so validation
+    // runs in the stale window deterministically.
+    f.on("model/list", async (params) => {
+      if ((params as { cwd?: string }).cwd === "/tmp/other") {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+      return {
+        data: [
+          { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+          { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+        ],
+      };
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  // Set the chip to the same value: without the fix, the stale chip
+  // re-authorizes the typed value through `current` even with no levels.
+  await user.selectOptions(effortControl(), "high");
+
+  // Switch directories: the merged effort ladder still holds the old scope
+  // until the new scoped load lands. "high" validates against the stale
+  // ladder but must fail closed.
+  await setWorkingDir(user, "/tmp/other");
+
+  await user.type(promptField(), "/reasoning-effort high");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "high"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("a model picked after a failed background load validates for /model", async () => {
+  const user = userEvent.setup();
+  let listCalls = 0;
+  const fake = readyClient((f) => {
+    f.on("model/list", () => {
+      listCalls += 1;
+      // The pane's background load fails; the picker's on-demand load (a
+      // cache-cleared retry) succeeds.
+      if (listCalls === 1) throw new Error("list down");
+      return { data: [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] };
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
+
+  // The pick stamps the merged entry as a current-scope snapshot, so a typed
+  // /model for the just-picked model validates instead of fail-closing
+  // against the never-loaded background stamp.
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+});
+
+test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model nope");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "nope"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
+});
+
+test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/goal");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText("/goal needs a value")).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "goal/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
+});
+
+test("plain text spawns with no goal/set call", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "hello world");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "hello world" }] });
+  expect(fake.calls.some((c) => c.method === "goal/set")).toBe(false);
+});
+
+test("a /goal prompt on a non-evener harness spawns verbatim with no goal/set call", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Harness"), "external");
+
+  await user.type(promptField(), "/goal x");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/goal x" }] });
+  expect(fake.calls.some((c) => c.method === "goal/set")).toBe(false);
+});
+
+test("a bare /model with no catalog spawns with no model follow-up and no error toast", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect((start?.params as { input?: unknown[] } | undefined)?.input ?? []).toEqual([]);
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+  // No error toast: the fail-open path toasts nothing.
+  expect(getToasts()).toEqual([]);
+});
+
+test("a /reasoning-effort prompt starts a dormant session with the effort on thread/start and no follow-up set", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  // Wait for the pane catalog to commit with a matching scope stamp (the
+  // resolve-commit proxy: the catalog effect is declared before the resolve
+  // effect and both share the one keyed model/list promise, so the resolve's
+  // commit is strictly after the catalog's). The stubbed catalog lists the
+  // default model with no ladder metadata, so validation must fall back to
+  // the fallback ladder here — fail-closed is only for proven scope
+  // staleness, and "high" is on the fallback ladder.
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+
+  await user.type(promptField(), "/reasoning-effort high");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    reasoningEffort: "high",
+  });
+  // No follow-up mutation: the value rides the start call itself, so it
+  // applies even though the new thread is not yet in threadsStore.
+  expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
+  expect(getToasts()).toEqual([]);
+});
+
+test("an unknown /reasoning-effort value toasts, starts nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/reasoning-effort ultra");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "ultra"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
+});
+
+test("a bare /reasoning-effort toasts, starts nothing, applies nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/reasoning-effort");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText("/reasoning-effort needs a value")).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
 });
