@@ -1139,6 +1139,23 @@ describe("jumpToBottom landing reliability", () => {
     expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
   });
 
+  test("the same wheel from the same child, unclaimed, DOES mark", () => {
+    // The sibling of the case above, and what makes its point self-verifying:
+    // the child is not a scroller, so the nested walk is not what suppressed
+    // that one - preventDefault was.
+    const { el, set, result } = mountAtBottom();
+    const child = document.createElement("div");
+    el.appendChild(child);
+
+    act(() => {
+      child.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("a right-button drag marks nothing", () => {
     const { el, set } = mountAtBottom();
     const right: PointerEventInit = { pointerType: "mouse", button: 2, buttons: 2, isPrimary: true };

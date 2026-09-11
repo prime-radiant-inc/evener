@@ -848,9 +848,12 @@ export function useTranscriptScroll({
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
   //     from a scrollbar drag or a middle-button autoscroll that does scroll.
-  //     Ruled out are a finger (it has the touch path, which is more exact), a
-  //     secondary button, a drag that is over (no button held), and one that has
-  //     left the port.
+  //     It marks only while the pointer MOVES, so the stationary phase of an
+  //     autoscroll - held still off the anchor while the port keeps scrolling -
+  //     goes unmarked and a correction there re-pins over the reader. Ruled out
+  //     are a finger (it has the touch path, which is more exact), a secondary
+  //     button, a drag that is over (no button held), and one that has left the
+  //     port.
   const startPointerDrag = useCallback((event: PointerEvent) => {
     // A finger produces BOTH event streams. The touch path knows about
     // direction and nested scrollers; adopting the same finger here as a drag
@@ -859,10 +862,20 @@ export function useTranscriptScroll({
     // The primary button drags a scrollbar or a selection; the middle button is
     // native autoscroll, which scrolls the port continuously for as long as it
     // is held - so leaving it out costs a re-pin on every correction that lands
-    // during one, not a single frame. The secondary button opens a menu and
-    // never scrolls. Where the middle button does nothing at all, this marks a
-    // drag that moves nothing: the same trade the path already makes for a
+    // while it is moving, not a single frame. The secondary button opens a menu
+    // and never scrolls. Where the middle button does nothing at all, this marks
+    // a drag that moves nothing: the same trade the path already makes for a
     // selection drag.
+    //
+    // A mark comes from pointermove and lasts one frame, so this covers the
+    // MOVING phase only: an autoscroll held still off its anchor keeps scrolling
+    // the port while nothing marks, and a correction landing then re-pins over
+    // the reader. The alternative - letting the drag flag veto directly in the
+    // scroll listener - would make every held primary or middle button a
+    // standing veto, so a selection drag or a middle-button hold during content
+    // growth would produce the permanent false veto this design treats as the
+    // harmful direction. Under-marking the stationary phase is the safe side of
+    // that trade.
     if (event.pointerType === "touch") return;
     if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
     pointerDraggingRef.current = true;
