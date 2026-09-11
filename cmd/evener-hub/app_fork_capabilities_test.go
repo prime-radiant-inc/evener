@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
@@ -1539,6 +1540,108 @@ func TestHubForkRechecksItsTargetAgainstTheRendezvousNotTheRoster(t *testing.T) 
 			}
 			if err == nil {
 				t.Fatal("fork branched a session the rendezvous had already stopped naming")
+			}
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeUnavailable || isTargetDeletedError(err) {
+				t.Fatalf("fork error=%v, want a retryable structured unavailable", err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+			}
+		})
+	}
+}
+
+// Two local daemons can both claim one stable workspace alias — that is the
+// shape resumeClaimTarget's conflict check exists for. Taking whichever of them
+// the rendezvous directory happened to list first would branch a transcript
+// chosen by filename order, and nothing downstream catches it: ownershipEntry
+// refuses a session id found in two project directories, never a second daemon
+// claiming the same alias. Both orders are exercised, and the single-claim
+// control shows the fixture forks when the alias is unambiguous.
+func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		firstSession  string // the entry written as 1001.json, listed first
+		secondSession string // 1002.json
+		wantFork      bool
+	}{
+		{name: "resolved session listed first", firstSession: "a", secondSession: "b"},
+		{name: "resolved session listed second", firstSession: "b", secondSession: "a"},
+		{name: "single claim", firstSession: "a", wantFork: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			retiredID := buildRPCParentSession(t, stateDir)
+			ids := map[string]string{}
+			for _, key := range []string{"a", "b"} {
+				id, err := identifier.NewSessionID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids[key] = id
+				buildRPCSessionWithWorkingDir(t, stateDir, id, t.TempDir())
+			}
+			runDir := t.TempDir()
+			claim := func(pid int, sessionID string) {
+				writeRendezvous(t, runDir, rendezvous.Entry{
+					PID: pid, SourceID: "local", ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
+					WorkspaceRef: "local:" + retiredID, StateDir: stateDir,
+					Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+				})
+			}
+			claim(1001, ids[tc.firstSession])
+			if tc.secondSession != "" {
+				claim(1002, ids[tc.secondSession])
+			}
+
+			// The roster answers the alias with one of the claims, so the
+			// pre-lock resolution is stable and the recheck is deciding the
+			// ambiguity rather than a disagreement between the two resolvers.
+			previousList := hubRosterList
+			hubRosterList = func(*hubcore.Roster) []hubcore.LiveEntry {
+				return []hubcore.LiveEntry{{
+					Entry: rendezvous.Entry{
+						PID: 1001, SourceID: "local", ThreadID: ids["a"], SessionID: ids["a"],
+						WorkspaceRef: "local:" + retiredID, StateDir: stateDir, Protocol: appwire.ProtocolVersion,
+					},
+					SessionID: ids["a"], Status: appwire.ThreadStatusIdle,
+				}}
+			}
+			t.Cleanup(func() { hubRosterList = previousList })
+
+			cfg := hubcore.WebConfig{
+				StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries(),
+				DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+					return nil, daemonprocess.ErrExited
+				}),
+			}
+			before, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			after, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if tc.wantFork {
+				if err != nil {
+					t.Fatalf("fork of an alias one daemon claims: %v", err)
+				}
+				meta, metaErr := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+				if metaErr != nil {
+					t.Fatal(metaErr)
+				}
+				if meta.ParentSessionID != ids["a"] {
+					t.Fatalf("fork branched %q, want the one session claiming the alias %q", meta.ParentSessionID, ids["a"])
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("fork branched a transcript chosen by rendezvous directory order")
 			}
 			wire, ok := errors.AsType[appwire.WireError](err)
 			if !ok || wire.Code != appwire.CodeUnavailable || isTargetDeletedError(err) {

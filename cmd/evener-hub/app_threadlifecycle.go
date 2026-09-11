@@ -1006,15 +1006,19 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 // two resumeOwnershipStep reads, which is why resumeThread's recheck is not
 // fooled by a roster that has not caught up.
 //
-// It diverges from resumeOwnershipStep in two deliberate ways. A ListStrict
+// Every local claim on the alias is collected, not just the first the directory
+// listed: two daemons can claim one stable workspace ref, and nothing
+// downstream catches that — ownershipEntry refuses a session id found in two
+// project directories, never a second daemon claiming the same alias. So the
+// claims go through resumeClaimTarget, the conflict check the resume path
+// already uses for this shape, which settles them by liveness and refuses when
+// it cannot.
+//
+// It diverges from resumeOwnershipStep in one deliberate way: a ListStrict
 // failure refuses the fork as unverifiable, where resumeOwnershipStep degrades
-// to the roster: a recheck that fell back to the reading it exists to
+// to the roster. A recheck that fell back to the reading it exists to
 // second-guess would answer nothing, and a retryable refusal is the safe
-// direction for a mutation. And it takes the first matching entry in directory
-// order rather than running resumeClaimTarget's conflict check, because a
-// thread two daemons both claim is refused downstream by ownershipEntry's
-// ambiguous-ownership error, which
-// TestHubForkCapabilityAdvertisesAheadOfOwnershipResolution pins.
+// direction for a mutation.
 //
 // With no run dir configured, and for a thread nothing currently claims, it
 // answers the requested id — the same thing the roster-backed resolution
@@ -1025,16 +1029,20 @@ func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (strin
 		if err != nil {
 			return "", err
 		}
+		var claims []rendezvous.Entry
 		for _, entry := range entries {
 			if entry.SourceID != "" && entry.SourceID != "local" {
 				continue
 			}
-			if !slices.Contains(forceStopAliases(entry), threadID) {
-				continue
+			if slices.Contains(forceStopAliases(entry), threadID) {
+				claims = append(claims, entry)
 			}
-			if id := cmp.Or(entry.SessionID, entry.ThreadID); id != "" {
-				return id, nil
-			}
+		}
+		if len(claims) > 0 {
+			// The claims are the authority when any exist; the recovery
+			// redirect below is the fallback for an alias nothing claims, so
+			// neither target is passed in here.
+			return resumeClaimTarget(cfg, claims, "", "")
 		}
 	}
 	if cfg.ResumeLocks != nil {
