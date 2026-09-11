@@ -125,11 +125,30 @@ export function isInProgressStatus(status: string | undefined): boolean {
   return status === "inProgress";
 }
 
+// A live item can arrive without any status of its own while the turn that
+// contains it is still running — a sparse running tool/reasoning row would
+// otherwise read as settled. Such an item is active exactly when its turn
+// is; an item that carries its own status always keeps it. Exported so the
+// store's incremental projection applies the same rule against the turn
+// status it derives from the active turn.
+export function isActiveItem(
+  item: ThreadItem,
+  turnStatus: string | undefined,
+): boolean {
+  if (item.status !== undefined) return isInProgressStatus(item.status);
+  return isInProgressStatus(turnStatus);
+}
+
 // --- activity state ----------------------------------------------------------
 
-function activityState(item: ThreadItem): ActivityState {
+// Exported so the store's incremental projection settles a tool item exactly
+// as the canonical projector does, instead of keeping a second copy.
+export function activityState(
+  item: ThreadItem,
+  turnStatus: string | undefined,
+): ActivityState {
   if (toolCallFailed(item)) return "failed";
-  if (isInProgressStatus(item.status)) return "running";
+  if (isActiveItem(item, turnStatus)) return "running";
   return "completed";
 }
 
@@ -331,7 +350,7 @@ function projectItem(
   // "reasoning" regardless of any label text; a commandExecution whose
   // toolName is "Reasoning" is NOT routed here (it stays family "tool" below).
   if (isReasoning(item)) {
-    const state: ActivityState = isInProgressStatus(item.status)
+    const state: ActivityState = isActiveItem(item, turn.status)
       ? "running"
       : "completed";
     return {
@@ -392,7 +411,7 @@ function projectItem(
           id: item.id,
           label: toolLabel(item),
           family: "tool",
-          state: activityState(item),
+          state: activityState(item, turn.status),
           detail: activityDetail(item),
         },
       },
@@ -449,7 +468,7 @@ function projectItem(
     kind: "activity",
     pre: {
       family:
-        activityState(item) === "failed"
+        activityState(item, turn.status) === "failed"
           ? `failed:${item.id}`
           : `unknown:${item.type}`,
       item: {
@@ -457,7 +476,7 @@ function projectItem(
         id: item.id,
         label: "Activity",
         family: "unknown",
-        state: activityState(item),
+        state: activityState(item, turn.status),
         detail: { ...activityDetail(item), output: item.text ?? item.output },
       },
     },

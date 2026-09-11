@@ -39,12 +39,12 @@ import type {
   ActivityMember,
 } from "../conversation/model";
 import {
+  activityState,
   clusterActivities,
-  isInProgressStatus,
+  isActiveItem,
   projectApproval,
   projectItemAttachments,
   projectQueue,
-  toolCallFailed,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -646,10 +646,19 @@ function requireCap(
   }
 }
 
-function commandActivityState(item: ThreadItem): ActivityState {
-  if (toolCallFailed(item)) return "failed";
-  if (isInProgressStatus(item.status)) return "running";
-  return "completed";
+// The incremental path has no Turn object, so a sparse item's containing
+// turn status is derived from the store's active turn: that is the only turn
+// that can still be inProgress, and an item naming a different turn is not in
+// it. Items that carry their own status never consult this.
+function containingTurnStatus(
+  conv: MobileConversation,
+  item: ThreadItem,
+): string | undefined {
+  if (conv.activeTurnId === undefined) return undefined;
+  if (item.turnId !== undefined && item.turnId !== conv.activeTurnId) {
+    return undefined;
+  }
+  return "inProgress";
 }
 
 // Project a wire ThreadItem into a mobile timeline item for insertion from
@@ -667,6 +676,7 @@ function commandActivityState(item: ThreadItem): ActivityState {
 function projectSingleItem(
   item: ThreadItem,
   askPending: boolean,
+  turnStatus: string | undefined,
 ): MobileTimelineItem | null {
   if (item.type === "userMessage") {
     // Task 2A-Ops-5: if there's a pending ask_user, a user message is the
@@ -680,7 +690,7 @@ function projectSingleItem(
       kind: "assistant",
       id: item.id,
       markdown: `${item.text ?? ""}${item.delta ?? ""}`,
-      streaming: isInProgressStatus(item.status),
+      streaming: isActiveItem(item, turnStatus),
     };
   }
   // F6: ask_user is a commandExecution with toolName "ask_user". The canonical
@@ -697,7 +707,7 @@ function projectSingleItem(
       id: item.id,
       label: item.toolName ?? item.description?.trim() ?? "Tool",
       family: "tool",
-      state: commandActivityState(item),
+      state: activityState(item, turnStatus),
       detail: {
         arguments: item.argumentsJson,
         description: item.description,
@@ -715,7 +725,7 @@ function projectSingleItem(
       id: item.id,
       label: "Reasoning",
       family: "reasoning",
-      state: isInProgressStatus(item.status) ? "running" : "completed",
+      state: isActiveItem(item, turnStatus) ? "running" : "completed",
       detail: { output: item.text },
     };
   }
@@ -2701,6 +2711,7 @@ export function createConversationStore() {
             const projectedRaw = projectSingleItem(
               params.item,
               conv.askPending,
+              containingTurnStatus(conv, params.item),
             );
             const projected =
               projectedRaw === null

@@ -410,6 +410,18 @@ describe("projectThread", () => {
         if (a?.kind === "activity") expect(a.state).toBe("completed");
       },
     );
+
+    it("projects a status-less reasoning item in an in-progress turn as running", () => {
+      const t = thread([
+        turn("t1", [item({ id: "r1", type: "reasoning", text: "thinking" })], {
+          status: "inProgress",
+        }),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") expect(a.state).toBe("running");
+    });
   });
 
   describe("shell/tool/MCP call items", () => {
@@ -466,6 +478,34 @@ describe("projectThread", () => {
       const c = projectThread(t);
       const a = c.items[0];
       if (a?.kind === "activity") expect(a.state).toBe("running");
+    });
+
+    it("projects a status-less tool call in an in-progress turn as running", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "tool1", type: "commandExecution", toolName: "shell" })],
+          { status: "inProgress" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") expect(a.state).toBe("running");
+    });
+
+    it("projects a status-less tool call in a completed turn as completed", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "tool1", type: "commandExecution", toolName: "shell" })],
+          { status: "completed" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") expect(a.state).toBe("completed");
     });
 
     it("projects a failed tool call (error present) as failed state", () => {

@@ -12113,6 +12113,101 @@ describe("ConversationStore", () => {
       expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
     });
   });
+
+  // --- Task 2A-Cluster: sparse live items and clustered members as live targets ---
+
+  describe("Task 2A-Cluster: sparse live items inherit the active turn's status", () => {
+    async function openWithActiveTurn(): Promise<
+      ReturnType<typeof createConversationStore>
+    > {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", status: "inProgress" },
+        },
+      } as AnyNotification);
+      return store;
+    }
+
+    function startItem(
+      store: ReturnType<typeof createConversationStore>,
+      item: ThreadItem,
+    ): void {
+      store.getState().applyNotification({
+        method: "item/started",
+        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item },
+      } as AnyNotification);
+    }
+
+    it("projects a status-less tool item started in the active turn as running", async () => {
+      const store = await openWithActiveTurn();
+      startItem(store, {
+        type: "commandExecution",
+        id: "tool-1",
+        turnId: "t1",
+        toolName: "shell",
+        callId: "call-1",
+      });
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(row?.kind).toBe("activity");
+      expect(row?.kind === "activity" && row.state).toBe("running");
+    });
+
+    it("projects a status-less tool item as completed when no turn is active", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      startItem(store, {
+        type: "commandExecution",
+        id: "tool-1",
+        turnId: "t1",
+        toolName: "shell",
+        callId: "call-1",
+      });
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(row?.kind).toBe("activity");
+      expect(row?.kind === "activity" && row.state).toBe("completed");
+    });
+
+    it("projects a status-less reasoning item started in the active turn as running", async () => {
+      const store = await openWithActiveTurn();
+      startItem(store, {
+        type: "reasoning",
+        id: "reason-1",
+        turnId: "t1",
+        text: "thinking",
+      });
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "reason-1");
+      expect(row?.kind).toBe("activity");
+      expect(row?.kind === "activity" && row.state).toBe("running");
+    });
+
+    it("marks a status-less assistant item started in the active turn as streaming", async () => {
+      const store = await openWithActiveTurn();
+      startItem(store, {
+        type: "agentMessage",
+        id: "assistant-1",
+        turnId: "t1",
+        text: "partial",
+      });
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "assistant-1");
+      expect(row?.kind).toBe("assistant");
+      expect(row?.kind === "assistant" && row.streaming).toBe(true);
+    });
+  });
   // --- C1: Service-specific operation binding ---------------------------------------
 
   describe("C1: wrong service at entry => zero request/state change", () => {
