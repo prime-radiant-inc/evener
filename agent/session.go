@@ -576,6 +576,10 @@ type Session struct {
 	// skills discovered at session startup
 	skills skill.Catalog
 
+	// skillLifecycle is activation metadata, separate from the full catalog.
+	// Guarded by mu; ordinary instruction bodies are never stored here.
+	skillLifecycle schema.SkillLifecycleSnapshot
+
 	// MCP server connections
 	mcpMgr   *mcp.Manager
 	mcpTools []llm.ToolDefinition
@@ -1912,6 +1916,8 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) {
+	live.SkillState = live.SkillState.Clone()
+	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	s.history = append(s.history, live)
@@ -2106,19 +2112,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 // Writes only lightweight SessionMeta (~500 bytes), not the full history.
 // The conversation history is already durably recorded by the transcript JSONL.
 func (s *Session) maybeAutoSave() {
-	if s.stateDir == "" {
-		return
-	}
-	err := func() error {
-		s.metaSaveMu.Lock()
-		defer s.metaSaveMu.Unlock()
-		meta := s.Meta()
-		if fs := s.cfg.testOnly.metaFS; fs != nil {
-			return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
-		}
-		return schema.SaveSessionMeta(s.stateDir, meta)
-	}()
-	if err != nil {
+	if err := s.saveMeta(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})

@@ -88,6 +88,33 @@ These are advertisement views, not the runtime catalog: lookup retains every
 known winner for runtime validation and authorization. Neither hiding nor
 advertising a skill grants permissions or establishes activation history.
 
+### Activation identity and persistence
+
+Lifecycle metadata records future ordinary activations only. Existing sessions
+start with empty ordinary state when no lifecycle snapshot exists; old tool
+calls, copied history, transcript prose, and raw file reads are not evidence of
+activation. Metadata stores source identity, file/rendered digests, invocation
+controls, operation IDs, and delivery obligations, not ordinary skill bodies.
+
+Preparation loads the current source and checks its current invocation flags.
+Only a server-created genuine user slash or selection route can authorize an
+ordinary source. That authorization is scoped to the canonical name and exact
+source: replacing a same-name catalog winner does not inherit it. Model/tool
+and compaction reload routes may reuse same-source authorization, but it never
+overrides `user-invocable: false` on a new user invocation. Role preloads retain
+separate frozen provenance and their permanent-prompt/frozen-delegate lifetime;
+they do not grant ordinary authorization. Legacy preload provenance remains
+unknown rather than being backfilled from a newly discovered skill.
+
+Continuation reopens the recorded source and declared identity, even if that
+source is no longer the catalog winner. A missing source, including a vanished
+materialized builtin after restart, fails visibly rather than retargeting.
+Failed preparation preserves prior inventory. Preparation itself does not
+record delivery: `already_present` remains provisional until its delivery
+obligation is satisfied; unchanged-body satisfaction is not a new-body event.
+Snapshots preserve obligations and note generation across restart, while the
+existing pinned-note text and its generation remain authoritative.
+
 Portable directories have the same trust policy as other skills: metadata is
 discovered, activation reads inert instructions, and subsequent actions still
 require normal tool permissions and sandbox access. Skills remain untrusted
