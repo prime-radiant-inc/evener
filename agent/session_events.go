@@ -364,12 +364,22 @@ func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, d
 	// (Enqueue/DrainAsSteer, the ProcessInput loop), so the lock — not a recover()
 	// — is what guarantees we never send on a closed channel. Delivery of detached
 	// emitters' events before teardown is ensured separately by the WaitGroups.
-	s.closeCtxMu.Lock()
-	if s.closeSignal == nil {
-		s.closeSignal = make(chan struct{})
-	}
+
+	// closeSignal is minted once and never replaced, so the hot path only has
+	// to read it. Taking the exclusive lock on every event to find it already
+	// there serialized emission on the same lock close needs to publish the
+	// shared deadline; only a session's first emitter upgrades to mint it.
+	s.closeCtxMu.RLock()
 	closeSignal := s.closeSignal
-	s.closeCtxMu.Unlock()
+	s.closeCtxMu.RUnlock()
+	if closeSignal == nil {
+		s.closeCtxMu.Lock()
+		if s.closeSignal == nil {
+			s.closeSignal = make(chan struct{})
+		}
+		closeSignal = s.closeSignal
+		s.closeCtxMu.Unlock()
+	}
 	s.eventsMu.RLock()
 	open := !s.eventsClosed
 	delivered := false
