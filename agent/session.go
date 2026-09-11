@@ -1657,6 +1657,9 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 			s.logPairPersistedLocked(turn)
 			s.mu.Unlock()
 			committed = true
+		case environmentEntryUnknown:
+			// Neither established, so neither response is safe: keep the
+			// advanced tracker and claim nothing.
 		}
 	}
 	if committed {
@@ -1683,15 +1686,18 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 type environmentEntryOutcome int
 
 const (
+	// environmentEntryUnknown: reconciliation could not establish either, so
+	// neither re-rendering nor committing is safe. It takes the zero value
+	// because both of the others act on the session, and the one that acts
+	// against an entry that is really there duplicates the environment — an
+	// outcome nobody set must be the one that does nothing.
+	environmentEntryUnknown environmentEntryOutcome = iota
 	// environmentEntryAbsent: the transcript does not hold the entry, so the
 	// next turn must render the observation again.
-	environmentEntryAbsent environmentEntryOutcome = iota
+	environmentEntryAbsent
 	// environmentEntryDurable: the transcript holds the entry and it is synced,
 	// so the append committed late and owes its in-memory side effects.
 	environmentEntryDurable
-	// environmentEntryUnknown: reconciliation could not establish either, so
-	// neither re-rendering nor committing is safe.
-	environmentEntryUnknown
 )
 
 // reconcileEnvironmentEntryAfterFailedWriteLocked settles what a failed

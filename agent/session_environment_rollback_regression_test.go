@@ -579,3 +579,16 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 	sendOneUserInput(t, sess, "hello")
 	assertDurableSequenceStrictlyIncreases(t, sess)
 }
+
+// TestEnvironmentEntryOutcomeZeroValueIsConservative: reconciliation's outcome
+// decides whether the tracker rewinds, and a rewind against an entry that is
+// really there duplicates the environment. A future path that returns the
+// type's zero value — a bare declaration, a struct field, a failed decode —
+// must therefore land on the outcome that does nothing, not on the one that
+// re-renders.
+func TestEnvironmentEntryOutcomeZeroValueIsConservative(t *testing.T) {
+	var outcome environmentEntryOutcome
+	if outcome != environmentEntryUnknown {
+		t.Fatalf("zero-valued outcome = %d, want environmentEntryUnknown (%d) so an unset outcome cannot rewind the tracker", outcome, environmentEntryUnknown)
+	}
+}

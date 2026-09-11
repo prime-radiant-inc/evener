@@ -505,9 +505,11 @@ func (w *Writer) writeLineLocked(line []byte) error {
 }
 
 // appendFailureLocked reports a write that failed partway. What it leaves at
-// startOffset is at most a partial line, which a reader skips rather than
-// reading as an entry, so the entry's sequence number stays unspent whether or
-// not the rollback could remove those bytes.
+// startOffset is at most a partial line, and a reader never reads an entry out
+// of it either way: while those bytes are the file's tail the reader skips
+// them, and once a later append follows them the concatenation is a corrupt
+// complete line that rejects the whole file. So the entry's sequence number
+// stays unspent whether or not the rollback could remove the bytes.
 func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64) error {
 	if _, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
 		return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
