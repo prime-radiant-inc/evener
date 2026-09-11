@@ -17,13 +17,7 @@ import {
 } from "react";
 import { useStore } from "zustand";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type {
-  HarnessDescriptor,
-  LaunchConfigLayer,
-  LaunchOption,
-  ModelListResponse,
-  PluginSelectionError,
-} from "../../protocol/types.gen";
+import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import { slashCommandInvocation } from "../../shell/palette/catalogCommands";
 import { splitModelId } from "../../shell/palette/commands";
@@ -316,23 +310,33 @@ const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: 
   return <Loader label="Starting" startedAt={startedAt} now={now} />;
 });
 
-export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
+export default function Spawn({ focused }: PaneProps<SpawnPaneParams>) {
   const draft = useStore(spawnDraftsStore, (state) => state.current);
   const prefillRevision = useStore(spawnDraftsStore, (state) => state.prefillRevision);
+  const [onNewRoute, setOnNewRoute] = useState(() => window.location.pathname === "/new");
   useLayoutEffect(() => {
     applySpawnURL();
     function onPopState(): void {
+      setOnNewRoute(window.location.pathname === "/new");
       if (window.location.pathname === "/new") applySpawnURL(true);
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
-  return draft ? <SpawnForm draft={draft} prefillRevision={prefillRevision} /> : null;
+  return draft ? <SpawnForm draft={draft} prefillRevision={prefillRevision} focused={focused && onNewRoute} /> : null;
 }
 
 // Keep the singleton's controls mounted while changing their backing draft.
 // Store-bound setters and image continuations retain their originating scope.
-function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevision: number }) {
+function SpawnForm({
+  draft,
+  prefillRevision,
+  focused,
+}: {
+  draft: SpawnDraft;
+  prefillRevision: number;
+  focused: boolean;
+}) {
   const client = useClient();
   const toasts = useToasts();
   const providerSetup = useProviderSetup();
@@ -376,7 +380,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   const [advancedValues, setAdvancedValues] = useDraftField(draft, "advancedValues");
   const readAdvancedValues = useCallback(() => draft.fields.getState().advancedValues, [draft]);
   const [pluginSelection, setPluginSelection] = useDraftField(draft, "pluginSelection");
-  const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
+  const [knownSelectionIssues, setKnownSelectionIssues] = useDraftField(draft, "knownSelectionIssues");
   const pluginSelectionRef = useRef(pluginSelection);
   pluginSelectionRef.current = pluginSelection;
   const [staleNotice, setStaleNotice] = useDraftField(draft, "staleModelNotice");
@@ -454,9 +458,13 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   useEffect(() => {
     const text = draft.fields.getState().prompt;
     setSlashToken(parseSlashToken(text, text.length));
-    setKnownSelectionIssues([]);
     cursorRef.current = null;
   }, [draft, prefillRevision]);
+  // Completion can clear this draft through an older, unmounted form. Retire
+  // the token from the current prompt, not from that form's stale continuation.
+  useEffect(() => {
+    if (prompt === "") setSlashToken(null);
+  }, [prompt]);
   // The backend already resolved the selection for this cwd plus overrides
   // (evener/spawn/slashCatalog), so no plugin filtering applies here the
   // way Composer's visibleCatalogCommands filters its global catalog by
@@ -563,6 +571,42 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
 
   function isCurrentDraft(): boolean {
     return spawnDraftsStore.getState().current?.fields === draft.fields;
+  }
+
+  // A launch may finish its draft after departure, but it cannot take back the
+  // screen. Observe transitions, not just the final URL/current draft: a picker
+  // need not change the URL, and A -> B -> A must not revive A's old authority.
+  const viewOwnership = useRef({});
+  useLayoutEffect(() => {
+    const revoke = () => {
+      viewOwnership.current = {};
+    };
+    const unsubscribe = spawnDraftsStore.subscribe((state, previous) => {
+      if (state.current?.fields !== previous.current?.fields) revoke();
+    });
+    const onNavigation = () => {
+      if (window.location.pathname !== "/new") revoke();
+    };
+    window.addEventListener("popstate", onNavigation);
+    return () => {
+      revoke();
+      unsubscribe();
+      window.removeEventListener("popstate", onNavigation);
+    };
+  }, []);
+  // Focus can change without routing (for example, a contextual dock pane).
+  // Cleanup also permanently retires a launch when this form is unmounted.
+  useLayoutEffect(() => {
+    if (!focused) viewOwnership.current = {};
+    return () => {
+      viewOwnership.current = {};
+    };
+  }, [focused]);
+
+  function captureLaunchView(): () => boolean {
+    const owner = viewOwnership.current;
+    const active = focused && isCurrentDraft() && window.location.pathname === "/new";
+    return () => active && viewOwnership.current === owner && isCurrentDraft() && window.location.pathname === "/new";
   }
 
   function updatePrompt(next: string): void {
@@ -726,9 +770,9 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
     const nextSelection = reconcilePluginSelection(pluginSelectionRef.current, state.response);
     setPluginSelection(nextSelection);
     setKnownSelectionIssues(pluginSelectionIssues(nextSelection, state.response));
-    // A selection change clears the cached issues until its new preview settles.
-    // Re-running this effect for that selection change would restore old issues.
-  }, [pluginPreview.state, pluginSelectionSupported, setPluginSelection]);
+    // Selection edits retain issues only for still-selected names. Only a ready
+    // preview can reconcile those issues; a failed refresh cannot forgive them.
+  }, [pluginPreview.state, pluginSelectionSupported, setPluginSelection, setKnownSelectionIssues]);
 
   // A refresh triggered by a selection toggle keeps the previous response on
   // the loading state (see usePluginPreview), so the disclosure and its list
@@ -1139,7 +1183,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
         })()
       : null;
 
-  async function doSpawn(submittedPromptRevision: number): Promise<void> {
+  async function doSpawn(submittedPromptRevision: number, ownsLaunchView: () => boolean): Promise<void> {
     if (pluginSelectionBlocked) {
       busyRef.current = false;
       setBusy(false);
@@ -1316,16 +1360,13 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
     // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
-    if (draft.fields.getState().promptRevision === submittedPromptRevision) updatePrompt("");
+    if (draft.fields.getState().promptRevision === submittedPromptRevision) {
+      updatePrompt("");
+    }
     attachments.clearSubmitted(submittedMarkers);
     if (draft.fields.getState().pluginSelection === pluginSelection) {
       handlePluginSelectionChange({ mode: "default" });
     }
-    // The menu is token-driven, not text-driven: clearing the prompt does not
-    // recompute the token, so without this the stale menu stays open over the
-    // empty prompt on the still-mounted pane (and Enter would commit the
-    // stale completion into the next session's first line).
-    setSlashToken(null);
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
@@ -1334,7 +1375,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
     setBusy(false);
     setBusyStartedAt(null);
     const url = paneToURL("session", { ref });
-    if (url) navigate(url);
+    if (url && ownsLaunchView()) navigate(url);
   }
 
   async function handleSpawn(): Promise<void> {
@@ -1359,6 +1400,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
     setBusy(true);
     setBusyStartedAt(Date.now());
     const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const ownsLaunchView = captureLaunchView();
     try {
       const outcome = await preflightDir(client, cwd);
       if (outcome.kind === "abort") {
@@ -1375,7 +1417,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
         setBusyStartedAt(null);
         return;
       }
-      await doSpawn(submittedPromptRevision);
+      await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -1399,9 +1441,10 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
     setBusy(true);
     setBusyStartedAt(Date.now());
     const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const ownsLaunchView = captureLaunchView();
     try {
       await createDir(client, path);
-      await doSpawn(submittedPromptRevision);
+      await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -1820,7 +1863,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
       </div>
 
       <ConfirmDialog
-        open={createDialogPath !== null}
+        open={focused && createDialogPath !== null}
         title="Create directory?"
         confirmLabel="Create & start"
         destructive={false}

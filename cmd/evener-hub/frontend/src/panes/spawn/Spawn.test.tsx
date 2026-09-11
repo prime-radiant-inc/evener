@@ -21,6 +21,7 @@ import type {
   ThreadStartResponse,
 } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
+import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
@@ -31,7 +32,7 @@ import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
-import { resetSpawnDraftsForTests } from "./spawnDrafts";
+import { resetSpawnDraftsForTests, spawnDraftsStore } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -293,6 +294,220 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+function completionDraft(cwd: string) {
+  const draft = spawnDraftsStore.getState().drafts.get(cwd);
+  if (!draft) throw new Error(`missing draft ${cwd}`);
+  return draft;
+}
+
+async function completionNavigate(url: string): Promise<void> {
+  await act(async () => navigate(url));
+}
+
+// Removing the launch's view-ownership check must break these, even when
+// picker changes leave the URL unchanged or the user returns to the same view.
+test.each(["unchanged", "picker", "picker return", "away", "route return", "remount", "focus return"])(
+  "completion ownership: %s while thread/start is pending",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    const started = deferred<ThreadStartResponse>();
+    const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+    const mounted = renderSpawn(fake);
+    await user.type(promptField(), "submitted-a");
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+    const origin = completionDraft("/tmp/completion-a");
+    if (scenario.startsWith("picker")) {
+      await setWorkingDir(user, "/tmp/completion-b");
+      await user.type(promptField(), "unsent-b");
+      expect(window.location.search).toBe("?dir=/tmp/completion-a");
+      if (scenario === "picker return") await setWorkingDir(user, "/tmp/completion-a");
+    } else if (scenario === "away" || scenario === "route return") {
+      await completionNavigate("/settings");
+      if (scenario === "route return") await completionNavigate("/new?dir=/tmp/completion-a");
+    } else if (scenario === "remount") {
+      mounted.unmount();
+      await completionNavigate("/settings");
+      await completionNavigate("/new?dir=/tmp/completion-a");
+      renderSpawn(fake);
+    } else if (scenario === "focus return") {
+      for (const focused of [false, true]) {
+        mounted.rerender(
+          <ClientProvider client={fake}>
+            <Spawn params={{}} paneId="spawn-1" focused={focused} />
+            <Toast />
+          </ClientProvider>,
+        );
+      }
+    }
+    await act(async () => started.resolve(startResponse("local:completion-a")));
+    await waitFor(() => expect(origin.fields.getState().busy).toBe(false));
+    expect(origin.fields.getState().prompt).toBe("");
+    expect(origin.fields.getState().busyStartedAt).toBeNull();
+    expect(origin.busyRef.current).toBe(false);
+    if (scenario.startsWith("picker"))
+      expect(completionDraft("/tmp/completion-b").fields.getState().prompt).toBe("unsent-b");
+    expect(window.location.pathname).toBe(
+      scenario === "unchanged" ? "/s/local%3Acompletion-a" : scenario === "away" ? "/settings" : "/new",
+    );
+  },
+);
+
+test.each(["A first", "B first"])("completion ownership: concurrent launches finish %s", async (order) => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const startA = deferred<ThreadStartResponse>();
+  const startB = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) =>
+    f.on("thread/start", ({ cwd }) => (cwd === "/tmp/completion-a" ? startA.promise : startB.promise)),
+  );
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-a");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  await setWorkingDir(user, "/tmp/completion-b");
+  await user.type(promptField(), "submitted-b");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(2));
+  expect(fake.calls.filter((call) => call.method === "thread/start").map((call) => call.params)).toMatchObject([
+    { cwd: "/tmp/completion-a", input: [{ type: "text", text: "submitted-a" }] },
+    { cwd: "/tmp/completion-b", input: [{ type: "text", text: "submitted-b" }] },
+  ]);
+  if (order === "A first") {
+    await act(async () => startA.resolve(startResponse("local:completion-a")));
+    expect(window.location.pathname).toBe("/new");
+    expect(promptField().value).toBe("submitted-b");
+    await act(async () => startB.resolve(startResponse("local:completion-b")));
+  } else {
+    await act(async () => startB.resolve(startResponse("local:completion-b")));
+    expect(window.location.pathname).toBe("/s/local%3Acompletion-b");
+    await act(async () => startA.resolve(startResponse("local:completion-a")));
+  }
+  expect(window.location.pathname).toBe("/s/local%3Acompletion-b");
+  for (const cwd of ["/tmp/completion-a", "/tmp/completion-b"]) {
+    expect(completionDraft(cwd).fields.getState()).toMatchObject({ prompt: "", busy: false, busyStartedAt: null });
+  }
+});
+
+// Stamping only in doSpawn would incorrectly regain authority after these awaits.
+test.each(["preflight", "create confirmation"])(
+  "completion ownership: departure during %s cannot reacquire navigation on return",
+  async (boundary) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    const validation = deferred<{ path: string; valid: boolean }>();
+    const creation = deferred<{ path: string; created: boolean }>();
+    const fake = readyClient((f) => {
+      f.on("evener/path/validate", () =>
+        boundary === "preflight" ? validation.promise : { path: "/tmp/completion-a", valid: false },
+      );
+      f.on("evener/dirs/create", () => creation.promise);
+    });
+    renderSpawn(fake);
+    await user.type(promptField(), "submitted-a");
+    await user.click(screen.getByTestId("spawn-submit"));
+    if (boundary === "create confirmation")
+      await user.click(await screen.findByRole("button", { name: "Create & start" }));
+    await waitFor(() =>
+      expect(
+        fake.calls.some(
+          (call) => call.method === (boundary === "preflight" ? "evener/path/validate" : "evener/dirs/create"),
+        ),
+      ).toBe(true),
+    );
+    await completionNavigate("/settings");
+    await completionNavigate("/new?dir=/tmp/completion-a");
+    await act(async () => {
+      if (boundary === "preflight") validation.resolve({ path: "/tmp/completion-a", valid: true });
+      else creation.resolve({ path: "/tmp/completion-a", created: true });
+    });
+    await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+    expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+      cwd: "/tmp/completion-a",
+      input: [{ type: "text", text: "submitted-a" }],
+    });
+    expect(promptField().value).toBe("");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(window.location.pathname).toBe("/new");
+  },
+);
+
+test("completion ownership: late missing-directory preflight cannot open a dialog over settings", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const validation = deferred<{ path: string; valid: boolean }>();
+  const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-a");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
+  await completionNavigate("/settings");
+  await act(async () => validation.resolve({ path: "/tmp/completion-a", valid: false }));
+  expect(completionDraft("/tmp/completion-a").fields.getState()).toMatchObject({
+    busy: false,
+    createDialogPath: "/tmp/completion-a",
+    prompt: "submitted-a",
+  });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(window.location.pathname).toBe("/settings");
+  await completionNavigate("/new");
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+});
+
+test("completion menu ownership: a remounted prompt's cleared snapshot retires its menu", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => started.promise);
+    f.on("evener/spawn/slashCatalog", () => ({ commands: [{ name: "review", description: "Review" }], skills: [] }));
+  });
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "/re");
+  await screen.findByTestId("composer-slash-menu");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  mounted.unmount();
+  renderSpawn(fake);
+  await screen.findByTestId("composer-slash-menu");
+  await act(async () => started.resolve(startResponse("local:completion-a")));
+  expect(promptField().value).toBe("");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect(window.location.pathname).toBe("/new");
+});
+
+test.each(["unchanged", "newer prompt", "other draft"])("completion menu ownership: %s", async (scenario) => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => started.promise);
+    f.on("evener/spawn/slashCatalog", () => ({ commands: [{ name: "review", description: "Review" }], skills: [] }));
+  });
+  renderSpawn(fake);
+  await user.type(promptField(), "/re");
+  await screen.findByTestId("composer-slash-menu");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  if (scenario === "other draft") await setWorkingDir(user, "/tmp/completion-b");
+  if (scenario !== "unchanged") {
+    await user.clear(promptField());
+    await user.type(promptField(), "/rev");
+    await screen.findByTestId("composer-slash-menu");
+  }
+  await act(async () => started.resolve(startResponse("local:completion-a")));
+  await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+  expect(promptField().value).toBe(scenario === "unchanged" ? "" : "/rev");
+  if (scenario === "unchanged") expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  else {
+    expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+    expect(document.activeElement).toBe(promptField());
+    expect(slashOptions().map((option) => option.textContent)).toContainEqual(expect.stringContaining("/review"));
+  }
+});
 
 test("entering an in-memory draft validates its model after another draft swept its saved default", async () => {
   window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
@@ -1097,7 +1312,10 @@ afterEach(() => {
   resetExtensionsStoreForTests();
   resetThreadsStoreForTests();
   vi.unstubAllGlobals();
-  window.history.pushState({}, "", "/");
+  // The shell mounts the Spawn pane only at /new (shell/routing.ts), so a test
+  // that sets no route of its own exercises the real mounted state: the active
+  // New Session view.
+  window.history.pushState({}, "", "/new");
   resetToastStoreForTests();
 });
 
@@ -1503,6 +1721,170 @@ async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setu
   const disclosure = screen.getByTestId("spawn-plugin-disclosure") as HTMLDetailsElement;
   if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
 }
+
+// A known issue belongs to the selected plugin in this draft, not the mounted
+// form, current URL prefill revision, or whichever request finishes last.
+test.each(["bare return", "picker return", "remount", "unchanged"])(
+  "completion issue ownership: known-invalid selection survives %s and failed previews",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    let previewMode: "invalid" | "error" | "valid" = "invalid";
+    const fake = readyClient((f) => {
+      f.on("evener/plugin/preview", ({ cwd, launchOverrides }) => {
+        if (previewMode === "error") throw new Error("preview unavailable");
+        if (cwd === "/tmp/completion-a" && previewMode === "invalid" && launchOverrides?.enabledPlugins) {
+          return { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] };
+        }
+        return SPAWN_PLUGIN_PREVIEW;
+      });
+    });
+    let mounted = renderSpawn(fake);
+    await user.type(promptField(), "unsent-a");
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findByRole("button", { name: "Remove alpha" });
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    // An unrelated selection edit cannot forgive alpha when its refresh fails.
+    previewMode = "error";
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findAllByText("Couldn't inspect plugins");
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    if (scenario === "bare return") {
+      await completionNavigate("/settings");
+      await completionNavigate("/new");
+    } else if (scenario === "picker return") {
+      await setWorkingDir(user, "/tmp/completion-b");
+      await screen.findAllByText("Couldn't inspect plugins");
+      expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+      await setWorkingDir(user, "/tmp/completion-a");
+    } else if (scenario === "remount") {
+      mounted.unmount();
+      await completionNavigate("/settings");
+      await completionNavigate("/new");
+      mounted = renderSpawn(fake);
+    }
+    await screen.findAllByText("Couldn't inspect plugins");
+    expect(promptField().value).toBe("unsent-a");
+    expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual({
+      mode: "explicit",
+      names: ["alpha", "beta"],
+    });
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    await user.click(promptField());
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
+    // A genuinely valid preview of the SAME selection is authoritative.
+    previewMode = "valid";
+    await user.click(within(screen.getByTestId("spawn-plugin-summary")).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+    expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+      cwd: "/tmp/completion-a",
+      launchOverrides: { enabledPlugins: ["alpha", "beta"] },
+    });
+  },
+);
+
+test.each(["failed", "loading then failed", "ready invalid", "newer origin selection"])(
+  "completion issue ownership: late A preserves B's %s preview gate",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    const started = deferred<ThreadStartResponse>();
+    const refresh = deferred<PluginPreviewResponse>();
+    let refreshRequested = false;
+    const fake = readyClient((f) => {
+      f.on("thread/start", () => started.promise);
+      f.on("evener/plugin/preview", ({ cwd, launchOverrides }) => {
+        const names = launchOverrides?.enabledPlugins;
+        if (cwd === "/tmp/completion-b" && names?.length === 1) {
+          return { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] };
+        }
+        if (cwd === "/tmp/completion-b" && names?.length === 2) {
+          refreshRequested = true;
+          return refresh.promise;
+        }
+        return SPAWN_PLUGIN_PREVIEW;
+      });
+    });
+    renderSpawn(fake);
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+    await user.type(promptField(), "submitted-a");
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+    if (scenario === "newer origin selection") await user.click(screen.getByRole("button", { name: "None" }));
+    await setWorkingDir(user, "/tmp/completion-b");
+    await user.type(promptField(), "unsent-b");
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findByRole("button", { name: "Remove alpha" });
+    if (scenario !== "ready invalid") {
+      await user.click(screen.getByRole("switch", { name: "beta" }));
+      await waitFor(() => expect(refreshRequested).toBe(true));
+      if (scenario !== "loading then failed") {
+        await act(async () => refresh.reject(new Error("preview unavailable")));
+        await screen.findAllByText("Couldn't inspect plugins");
+      }
+    }
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => started.resolve(startResponse("local:completion-a")));
+    await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    if (scenario === "loading then failed") {
+      await act(async () => refresh.reject(new Error("preview unavailable")));
+      await screen.findAllByText("Couldn't inspect plugins");
+    }
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    expect(promptField().value).toBe("unsent-b");
+    expect(window.location.pathname).toBe("/new");
+    expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual(
+      scenario === "newer origin selection" ? { mode: "explicit", names: [] } : { mode: "default" },
+    );
+    await user.click(promptField());
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+  },
+);
+
+test.each(["remove plugin", "unsupported harness"])(
+  "completion issue ownership: %s retires known issues",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    let failPreview = false;
+    const fake = readyClient((f) =>
+      f.on("evener/plugin/preview", ({ launchOverrides }) => {
+        if (failPreview) throw new Error("preview unavailable");
+        return launchOverrides?.enabledPlugins
+          ? { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] }
+          : SPAWN_PLUGIN_PREVIEW;
+      }),
+    );
+    renderSpawn(fake);
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findByRole("button", { name: "Remove alpha" });
+    failPreview = true;
+    if (scenario === "remove plugin") {
+      await user.click(screen.getByRole("button", { name: "Remove alpha" }));
+      await screen.findAllByText("Couldn't inspect plugins");
+    } else {
+      await user.click(screen.getByRole("button", { name: "Advanced options" }));
+      await user.selectOptions(screen.getByLabelText("Harness"), "external");
+    }
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+    const call = fake.calls.find((call) => call.method === "thread/start");
+    if (!call) throw new Error("start was not issued");
+    if (scenario === "remove plugin") expect(call.params).toMatchObject({ launchOverrides: { enabledPlugins: [] } });
+    else expect((call.params as ThreadStartParams).launchOverrides?.enabledPlugins).toBeUndefined();
+  },
+);
 
 for (const navigation of ["picker", "URL"] as const) {
   const projectA = "/tmp/plugin-project-a";
@@ -2273,6 +2655,10 @@ test("aborts with the validator message for a non-fixable working dir, then a co
 // readyClient()'s validate stub, which (unlike the real daemon) answers
 // "valid" for any path including "".
 test("kata xkp2: Spawn with the working directory left at its placeholder aborts visibly, not silently", async () => {
+  // This test's pathname assertion below names the suite's original default
+  // route literally, so the test keeps that starting state explicitly; a
+  // validation abort never reaches navigation on any route.
+  window.history.pushState({}, "", "/");
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     // path: "" is the real wire shape too - ValidateLaunchPath's early

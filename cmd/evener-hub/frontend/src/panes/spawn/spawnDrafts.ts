@@ -4,7 +4,7 @@
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { LaunchConfigLayer } from "../../protocol/types.gen";
+import type { LaunchConfigLayer, PluginSelectionError } from "../../protocol/types.gen";
 import { createAttachmentStore } from "../session/composer/attachments/useAttachments";
 import type { PluginSelectionState } from "./pluginSelectionState";
 import type { AdvancedValues } from "./schema";
@@ -22,6 +22,7 @@ interface DraftFields {
   advancedOverrides: LaunchConfigLayer;
   advancedValues: AdvancedValues;
   pluginSelection: PluginSelectionState;
+  knownSelectionIssues: PluginSelectionError[];
   busy: boolean;
   busyStartedAt: number | null;
   createDialogPath: string | null;
@@ -42,6 +43,7 @@ function createDraft(cwd: string) {
       advancedOverrides: {},
       advancedValues: {},
       pluginSelection: { mode: "default" },
+      knownSelectionIssues: [],
       busy: false,
       busyStartedAt: null,
       createDialogPath: null,
