@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -41,17 +42,28 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	}
 	foldable := history[:cutoff]
 
-	fn := s.elicitNoteFn
-	if fn == nil {
+	inventory := s.skillInventorySnapshot()
+	var raw string
+	var err error
+	if fn := s.elicitNoteFn; fn != nil {
+		raw, err = fn(ctx, foldable)
+	} else {
 		if !s.contextMgr.HasClient() {
 			return // no elicitor available (no client) — skip silently
 		}
-		fn = s.contextMgr.ElicitNote
+		raw, err = s.contextMgr.ElicitNote(ctx, foldable, skillInventorySummaries(inventory))
 	}
-	note, err := fn(ctx, foldable)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "note elicitation failed: " + err.Error()})
 		return
+	}
+	// Split the selection block from the free-text note. An invalid selection
+	// preserves the note verbatim; only a concrete (non-absent) selection is
+	// recorded, so an earlier explicit selection for this cycle is never
+	// clobbered by an elicitation that made none.
+	note, selection := parseSkillReloadElicitation(raw, inventory)
+	if selection.State != "absent" {
+		s.setPendingSkillReloadSelection(selection)
 	}
 	if strings.TrimSpace(note) != "" {
 		s.setPinnedNote(note)
@@ -97,19 +109,41 @@ func (s *Session) claimPinnedNoteLocked(gen uint64) {
 
 // selfCompactNudge is the low-headroom warning. The pressure is real either
 // way; only the remedy is tool-dependent, so a session without compact_context
-// gets the same warning worded as something it can actually do.
-func selfCompactNudge(canCompact bool) string {
+// gets the same warning worded as something it can actually do. loaded lists
+// the session's successfully loaded skills: the compact-tool remedy asks which
+// to reload via reload_skills; the no-tool remedy lists them for awareness and
+// never requests a structured selection the model cannot submit.
+func selfCompactNudge(canCompact bool, loaded []schema.SkillInventorySummary) string {
+	list := ""
+	if len(loaded) > 0 {
+		var b strings.Builder
+		b.WriteString(" Skills loaded in this session:\n")
+		for _, sk := range loaded {
+			fmt.Fprintf(&b, "- %s — %s\n", sk.Name, sk.Description)
+		}
+		list = b.String()
+	}
 	if !canCompact {
-		return "You are running low on context-window headroom. Summarize and drop stale " +
+		advice := "You are running low on context-window headroom. Summarize and drop stale " +
 			"context in your next messages — restate the exact details that must survive " +
 			"(ids, paths, numbers, decisions, next steps) and stop carrying the rest " +
 			"forward. If you don't, an automatic compaction will run without your steering."
+		if list == "" {
+			return advice
+		}
+		return advice + list + "An automatic compaction may drop their instruction bodies; " +
+			"re-invoke the ones you still need afterward."
 	}
-	return "You are running low on context-window headroom. If you are " +
+	advice := "You are running low on context-window headroom. If you are " +
 		"at or near a clean stopping point, call the `compact_context` tool now to fold " +
 		"older history into a summary checkpoint and free headroom — include a note_to_self " +
 		"with the exact details that must survive (and optional compaction_instructions). " +
 		"If you don't, an automatic compaction will run without your steering."
+	if list == "" {
+		return advice
+	}
+	return advice + list + "Compaction drops their instruction bodies; pass the exact names " +
+		"you want restored as compact_context's reload_skills array ([] reloads none)."
 }
 
 // maybeNudgeSelfCompact injects a one-time steering nudge when pressure crosses
@@ -141,7 +175,7 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context")), events.SteeringKindCompactNudge)
+	s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventorySummaries(s.skillInventorySnapshot())), events.SteeringKindCompactNudge)
 	return true
 }
 
