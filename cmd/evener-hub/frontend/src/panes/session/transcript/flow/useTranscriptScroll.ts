@@ -785,7 +785,9 @@ export function useTranscriptScroll({
   // session switch cannot be that event: the first scroll a newly-opened session
   // gets is its own mount scroll-to-end, which no gesture aimed at the previous
   // transcript is responsible for, and which is the landing this correction
-  // exists to get right. So the per-ref reset below clears all three, alongside
+  // exists to get right. So the per-ref reset below clears them all - the three
+  // pieces of state and the pending clearing frame's handle, whose null is what
+  // lets the new session's first gesture schedule a frame of its own - alongside
   // every other piece of per-session state.
   const gesturePendingRef = useRef(false);
   const gestureClearFrameRef = useRef<number | null>(null);

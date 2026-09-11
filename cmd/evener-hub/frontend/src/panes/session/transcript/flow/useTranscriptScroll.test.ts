@@ -1185,6 +1185,76 @@ describe("jumpToBottom landing reliability", () => {
     }
   });
 
+  // The no-op stub the cases above use never schedules a frame, so it cannot see
+  // the other half of the switch's cleanup: cancelling the old session's
+  // clearing frame AND nulling its handle, so the new session's first gesture
+  // can schedule a frame of its own. Without the null, markGesture sees a
+  // non-null handle, returns early, and session B's marker is never cleared at
+  // all - a permanently pending veto, the failure this PR exists to prevent.
+  // This stub keeps the callbacks instead of dropping them, and only ever runs
+  // the ones scheduled in a named window, so React's own frames are left alone.
+  function captureFrames() {
+    const scheduled = new Map<number, FrameRequestCallback>();
+    const cancelled: number[] = [];
+    let nextHandle = 0;
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextHandle += 1;
+      scheduled.set(nextHandle, callback);
+      return nextHandle;
+    });
+    const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+      cancelled.push(handle);
+      scheduled.delete(handle);
+    });
+    const pending = () => [...scheduled.keys()];
+    return {
+      cancelled,
+      pending,
+      /** Handles that appeared while `schedule` ran and are still uncancelled. */
+      scheduledBy(schedule: () => void): number[] {
+        const before = pending();
+        schedule();
+        return pending().filter((handle) => !before.includes(handle));
+      },
+      run(handles: number[]) {
+        for (const handle of handles) {
+          const callback = scheduled.get(handle);
+          scheduled.delete(handle);
+          callback?.(0);
+        }
+      },
+      restore() {
+        raf.mockRestore();
+        caf.mockRestore();
+      },
+    };
+  }
+
+  test("a session switch cancels the old clearing frame and lets the new session schedule its own", () => {
+    const frames = captureFrames();
+    try {
+      const { el, set, rerender } = mountSwitchable();
+      const wheelUp = () => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+
+      const forA = frames.scheduledBy(() => act(() => wheelUp()));
+      expect(forA).toHaveLength(1);
+
+      act(() => rerender({ r: "ref_b" }));
+      expect(frames.cancelled).toContain(forA[0]);
+
+      // The handle was nulled too, so this gesture gets a frame of its own.
+      const forB = frames.scheduledBy(() => act(() => wheelUp()));
+      expect(forB).toHaveLength(1);
+
+      act(() => frames.run(forB));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      frames.restore();
+    }
+  });
+
   test("a session switch ends a drag in progress, so a later move marks nothing", () => {
     const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
