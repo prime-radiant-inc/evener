@@ -162,10 +162,12 @@ function isTerminalTurn(turn: TurnModel): boolean {
 // The renderer streams only the reasoning item that is still the turn's current
 // activity - the tail of turn.items (see ThinkBlock's isCurrentThought). The
 // content-free placeholder must match that exactly: a superseded thought must
-// not wear a "Thinking…" label, and a thought that is no longer the current one
-// has nothing content-free left to say.
+// not wear a "Thinking…" label, and neither must a thought on a turn that has
+// settled. The `turn.status` guard matters because a completed turn can still
+// carry a stale `inProgress` reasoning item in a snapshot or a race, and the
+// loader must not pulse for an agent that is no longer thinking.
 function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
-  return isActiveItem(item, turn) && turn.items[turn.items.length - 1] === item;
+  return turn.status === "inProgress" && isActiveItem(item, turn) && turn.items[turn.items.length - 1] === item;
 }
 
 function itemSummary(item: ItemModel): string {
@@ -291,12 +293,12 @@ function decisionFor(
     if (vector.reasoning) return "item";
     // With reasoning off, a live current thought becomes a content-free
     // placeholder: the reader sees that the agent is thinking without the
-    // stream itself. A terminal turn never takes the placeholder - the agent
-    // is not thinking any more - and an in-progress thought that is NOT the
-    // turn's tail is hidden (the renderer would not stream it either).
-    // Failure and terminal-turn visibility stay so a broken turn still
-    // explains itself.
-    if (isLiveCurrentReasoning(item, turn) && !isTerminalTurn(turn)) return "thinking";
+    // stream itself. Only an in-progress turn takes the placeholder - a
+    // terminal turn's agent is not thinking any more - and an in-progress
+    // thought that is NOT the turn's tail is hidden (the renderer would not
+    // stream it either). Failure and terminal-turn visibility stay so a broken
+    // turn still explains itself.
+    if (isLiveCurrentReasoning(item, turn)) return "thinking";
     return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
   }
 

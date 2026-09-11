@@ -384,6 +384,15 @@ describe("transcript projector", () => {
     expect(entriesFor(model, preset("tools")).map((entry) => entry.id)).toEqual(["agent"]);
   });
 
+  test("does not show the content-free placeholder on a completed turn with a stale in-progress item", () => {
+    const completed = turn([item("think", "reasoning", { status: "inProgress", text: "stale" })], {
+      status: "completed",
+    });
+    const model = { ...threadWith(), turns: [completed] } as ThreadModel;
+
+    expect(entriesFor(model, preset("tools"))).toEqual([]);
+  });
+
   test("never shows the content-free placeholder on a terminal turn", () => {
     const interrupted = turn([item("think", "reasoning", { status: "inProgress", text: "cut short" })], {
       status: "interrupted",
