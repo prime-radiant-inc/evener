@@ -1,8 +1,16 @@
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
+// startBrowserGuard may pass a guard-specific config file (the editorial
+// preview's fixture-only config) as the wrapper's one argument; it resolves
+// against the frontend cwd startBrowserGuard spawns the wrapper with. The
+// default stays the hermetic browser-guard config.
+const configFile = process.argv[2]
+  ? path.resolve(process.argv[2])
+  : fileURLToPath(new URL("./browserguard.vite.config.mjs", import.meta.url));
 const server = await createServer({
-  configFile: fileURLToPath(new URL("./browserguard.vite.config.mjs", import.meta.url)),
+  configFile,
   server: { host: "127.0.0.1", port: 0, strictPort: true },
 });
 // Vite normalizes port zero to its default in server.listen(). Its HTTP

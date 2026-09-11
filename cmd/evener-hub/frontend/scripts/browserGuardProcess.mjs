@@ -701,6 +701,10 @@ export async function startBrowserGuard({
   cancelEscalation = clearTimeout,
   signal = null,
   startupTimeoutMs = VITE_READY_TIMEOUT_MS,
+  // A guard that must serve a different Vite config (the editorial preview's
+  // fixture-only config) hands it to the wrapper here; the wrapper owns config
+  // resolution, so the path is frontend-relative.
+  viteConfigFile = null,
 }) {
   const resolvedChrome = chromeBinary ?? findChrome();
   const vitePort = 0;
@@ -774,7 +778,7 @@ export async function startBrowserGuard({
   });
 
   try {
-    vite = spawnProcess(process.execPath, ["scripts/browserguard-vite.mjs"], {
+    vite = spawnProcess(process.execPath, ["scripts/browserguard-vite.mjs", ...(viteConfigFile ? [viteConfigFile] : [])], {
       cwd: frontend,
       stdio: ["ignore", "pipe", "pipe"],
       detached: useProcessGroups,

@@ -12,10 +12,7 @@ import { connectPage, createStartupDeadline, waitForHttp, navigateTo, evaluate, 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const evidence = path.resolve(process.env.EDITORIAL_EVIDENCE ?? path.join(frontend, "../../..", ".superpowers/sdd/2026-09-09-tufte-webui/task-4-evidence"));
 fs.mkdirSync(evidence, { recursive: true });
-const run = await startBrowserGuard({ frontend, profilePrefix: "editorial-preview-", spawnProcess(command, args, options) {
-  if (command.endsWith("/vite")) {
-    args = args.map(arg => arg === "scripts/browserguard.vite.config.mjs" ? "scripts/editorial-preview.vite.config.mjs" : arg === "127.0.0.1" ? "0.0.0.0" : arg);
-  }
+const run = await startBrowserGuard({ frontend, profilePrefix: "editorial-preview-", viteConfigFile: "scripts/editorial-preview.vite.config.mjs", spawnProcess(command, args, options) {
   const child=spawn(command, args, options);
   fs.appendFileSync(path.join(evidence,"processes.jsonl"),JSON.stringify({command,args,pid:child.pid})+"\n");
   return child;

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createServer, resolveConfig } from "vite";
-import { findAvailablePort } from "./browserGuardProcess.mjs";
+import { findAvailablePort, parseViteReadyAnnouncement } from "./browserGuardProcess.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const configFile = fileURLToPath(new URL("./editorial-preview.vite.config.mjs", import.meta.url));
@@ -71,5 +72,53 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
     phase("close:done");
     await rm(scratch,{recursive:true,force:true});
     phase("scratch:removed");
+  }
+});
+
+test("browserguard wrapper serves a passed fixture config on its announced port", async () => {
+  // The editorial-preview runner goes through startBrowserGuard, which spawns
+  // the Node wrapper rather than a `vite` binary, so the fixture config must
+  // reach the wrapper as an argument (the runner's old spawn-argument rewrite
+  // matched a command ending in /vite and never fired - roborev finding).
+  const child = spawn(
+    process.execPath,
+    ["scripts/browserguard-vite.mjs", "scripts/editorial-preview.vite.config.mjs"],
+    { cwd: frontend, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let stdout = "";
+  const announced = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) =>
+      reject(new Error(`wrapper exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`)),
+    );
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      const lines = stdout.split(/\r\n|\r|\n/);
+      stdout = lines.pop() ?? "";
+      for (const line of lines) {
+        try {
+          const address = parseViteReadyAnnouncement(line);
+          if (address) resolve(address);
+        } catch (error) {
+          reject(error);
+        }
+      }
+    });
+  });
+  try {
+    const { port } = await announced;
+    const origin = `http://127.0.0.1:${port}`;
+    const html = await (await fetch(`${origin}/`, { headers: { accept: "text/html" } })).text();
+    assert(html.includes("/src/dev/editorial-preview-entry.tsx"));
+    assert(!html.includes("/src/main.tsx"));
+    assert.equal((await fetch(`${origin}/rpc`)).status, 403);
+  } finally {
+    child.stdout.removeAllListeners("data");
+    child.kill("SIGTERM");
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    if ((await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))])) === undefined) {
+      child.kill("SIGKILL");
+      await exited;
+    }
   }
 });
