@@ -258,9 +258,18 @@ type Turn struct {
 	// OwningTurnID identifies the logical turn that owns a steering or timing
 	// entry. It differs from StableTurnID, which identifies the client mutation.
 	OwningTurnID string `json:"owning_turn_id,omitempty"`
-	// ContextReplay marks a copy appended after compaction solely to restore
+	// ContextReplay marks a copy appended around compaction solely to restore
 	// model context. Its original transcript entry already owns the UI item.
 	ContextReplay bool `json:"context_replay,omitempty"`
+	// CompactionFoldID names the fold that wrote this record: its markers, the
+	// context-compaction records and injected steering around them, and the
+	// ContextReplay copies of the turns recorded while it ran. The copies go
+	// down BEFORE the markers so a crash between the two writes cannot leave
+	// an anchor that has discarded the originals with nothing to replace them,
+	// and this is what tells resume which copies the anchor it found is
+	// entitled to keep. Empty on every record written before the tag existed,
+	// where the copies follow their marker instead and need no claim.
+	CompactionFoldID string `json:"compaction_fold_id,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`
