@@ -282,7 +282,8 @@ package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
 # attempt that will not die ends the run on the spot, and claiming every attempt
 # timed out would misdescribe it.
 package_list_timeout_diagnostic() {
-	local package_list_log="$1" attempts_made="$2" module="$3" worktree gocache gomodcache
+	local package_list_log="$1" attempts_made="$2" module="$3"
+	local worktree gocache gomodcache kept attempt_file
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
@@ -297,6 +298,18 @@ package_list_timeout_diagnostic() {
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
 	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
+	# The partial lists each stopped attempt wrote are the other half of the
+	# evidence, and nothing else in the output names them: a stalled host's
+	# half-written package list is what says how far discovery got. They are
+	# kept, never removed, because a hard failure retains the whole log
+	# directory.
+	kept=""
+	for attempt_file in "${package_list_log%.stderr}".attempt*; do
+		[ -e "$attempt_file" ] || continue
+		kept="$kept $attempt_file"
+	done
+	kept="${kept# }"
+	printf 'run-module-tests.sh: retained partial package lists: %s\n' "${kept:-<none written>}" >&2
 	printf 'run-module-tests.sh: a stalled cache volume is one cause; a host slower than the per-attempt budget is the other.\n' >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
 	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
@@ -459,8 +472,11 @@ run_bounded_package_list() {
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					return 1
 				fi
-				printf 'go list ./... attempt %s of %s timed out after %ss; retrying.\n' \
-					"$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" "$ROOT_PACKAGE_LIST_TIMEOUT" \
+				# Written once, fully formed, so the copy in the module log
+				# and the copy the report replays are the same string to grep
+				# for.
+				printf 'run-module-tests.sh: %s: go list ./... attempt %s of %s timed out after %ss; retrying.\n' \
+					"$module" "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" "$ROOT_PACKAGE_LIST_TIMEOUT" \
 					| tee -a "$(package_list_retry_path "$module")" >&2
 				sleep 1
 				attempt=$((attempt + 1))
@@ -641,7 +657,7 @@ for m in $WAVE1 $WAVE2; do
 	retry_log="$(package_list_retry_path "$m")"
 	[ -s "$retry_log" ] || continue
 	while IFS= read -r retry_line; do
-		printf 'run-module-tests.sh: %s\n' "$retry_line" >&2
+		printf '%s\n' "$retry_line" >&2
 	done <"$retry_log"
 done
 
