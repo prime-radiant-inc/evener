@@ -236,6 +236,282 @@ function composerSteerButton(): HTMLButtonElement {
   return screen.getByTestId("composer-steer") as HTMLButtonElement;
 }
 
+test.each(["pointer", "keyboard"] as const)(
+  "ordinary %s Send returns focus to Message after successful submission",
+  async (activation) => {
+    const fake = await mountComposer("ref_a", {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: FULL_CAPABILITIES,
+        queue: { revision: 0 },
+      },
+      turns: [],
+    });
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_focus", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    }));
+    const user = userEvent.setup();
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    await user.type(message, "ordinary focus proof");
+    expect(document.activeElement).toBe(message);
+    expect(send.disabled).toBe(false);
+
+    if (activation === "pointer") {
+      await user.click(send);
+    } else {
+      // Navigate the real controls, stopping if Tab wraps without reaching Send.
+      do {
+        await user.tab();
+      } while (
+        document.activeElement !== send &&
+        document.activeElement !== message &&
+        document.activeElement !== document.body
+      );
+      expect(document.activeElement).toBe(send);
+      await user.keyboard("{Enter}");
+    }
+
+    await waitFor(() => {
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+        {
+          method: "turn/start",
+          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ordinary focus proof" }] }),
+        },
+      ]);
+      expect(message.value).toBe("");
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(message.disabled).toBe(false);
+    expect(send.disabled).toBe(true);
+    // The contract is usable composer focus, not a jsdom-specific BODY blur.
+    await waitFor(() => expect(document.activeElement).toBe(message));
+  },
+);
+
+function idleFocusThread(ref: string): Partial<Thread> {
+  return {
+    status: { type: "idle" },
+    evener: { ref, mutationStateAuthoritative: true, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  };
+}
+
+function acceptFocusSubmission(fake: FakeClient, method: "turn/start" | "turn/queue"): void {
+  if (method === "turn/start") {
+    fake.on(method, (params) => ({
+      turn: { id: "turn_focus", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    }));
+    return;
+  }
+  fake.on(method, (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thr_ref_a",
+      projectionState: "reflected",
+    },
+  }));
+}
+
+test.each(["pointer", "keyboard"] as const)(
+  "ordinary %s Send keeps Message focus when routing to Queue",
+  async (activation) => {
+    const fake = await mountComposer("ref_a");
+    acceptFocusSubmission(fake, "turn/queue");
+    const user = userEvent.setup();
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    await user.type(message, "queue focus proof");
+    expect(send.disabled).toBe(false);
+    if (activation === "pointer") {
+      await user.click(send);
+    } else {
+      do {
+        await user.tab();
+      } while (
+        document.activeElement !== send &&
+        document.activeElement !== message &&
+        document.activeElement !== document.body
+      );
+      expect(document.activeElement).toBe(send);
+      await user.keyboard("{Enter}");
+    }
+    await waitFor(() => {
+      expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([
+        {
+          method: "turn/queue",
+          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "queue focus proof" }] }),
+        },
+      ]);
+      expect(message.value).toBe("");
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    await flushPendingTurnsProjectionForTests();
+    expect(message.disabled).toBe(false);
+    expect(send.disabled).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(message));
+  },
+);
+
+test.each(["other control", "sibling Composer", "replacement Composer"] as const)(
+  "ordinary Send does not steal focus from %s after a delayed commit",
+  async (destination) => {
+    const storage = new PausedCommitStorage();
+    setMutationStorageForTests(storage);
+    const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+    acceptFocusSubmission(fake, "turn/start");
+    const user = userEvent.setup();
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    await user.type(message, "delayed focus proof");
+    try {
+      await user.click(send);
+      await storage.commitStarted;
+      expect(send.disabled).toBe(true);
+      expect(message.value).toBe("delayed focus proof");
+      expect(document.activeElement).toBe(message);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+      fireEvent.submit(message.closest("form")!);
+      expect(document.activeElement).toBe(message);
+
+      let destinationElement: HTMLElement;
+      if (destination === "other control") {
+        render(<button type="button">Elsewhere</button>);
+        destinationElement = screen.getByRole("button", { name: "Elsewhere" });
+        await user.click(destinationElement);
+      } else {
+        if (destination === "replacement Composer") cleanup();
+        fake.on("thread/read", () => readResponse("ref_b", idleFocusThread("ref_b")));
+        await threadsStore.getState().ensureThread("ref_b");
+        const second = render(<Composer ref="ref_b" />);
+        destinationElement = second
+          .getAllByRole("textbox", { name: "Message" })
+          .find((element) => element !== message)!;
+        await user.type(destinationElement, "other draft");
+      }
+      expect(document.activeElement).toBe(destinationElement);
+      await act(async () => storage.release());
+      await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+      await flushPendingTurnsProjectionForTests();
+      if (destination !== "replacement Composer") await waitFor(() => expect(message.value).toBe(""));
+      else expect(message.isConnected).toBe(false);
+      expect(document.activeElement).toBe(destinationElement);
+      if (destination !== "other control")
+        expect((destinationElement as HTMLTextAreaElement).value).toBe("other draft");
+    } finally {
+      storage.release();
+    }
+  },
+);
+
+test("ordinary Send does not take another control's focus on programmatic form submission", async () => {
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  acceptFocusSubmission(fake, "turn/start");
+  render(<button type="button">Elsewhere</button>);
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+  await user.type(message, "unfocused submission");
+  await user.click(elsewhere);
+  act(() => message.closest("form")!.requestSubmit(send));
+  expect(document.activeElement).toBe(elsewhere);
+  await waitFor(() => {
+    expect(message.value).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(document.activeElement).toBe(elsewhere);
+});
+
+test("ordinary Send preserves the textarea submission shortcut and next typing", async () => {
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  acceptFocusSubmission(fake, "turn/start");
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  await user.type(message, "shortcut focus proof");
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  await waitFor(() => {
+    expect(message.value).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(document.activeElement).toBe(message);
+  await user.keyboard("next draft");
+  expect(message.value).toBe("next draft");
+});
+
+test("ordinary Send retains draft and reports local failure without late focus theft", async () => {
+  const storage = new PausedCommitStorage();
+  setMutationStorageForTests(storage);
+  let failCommit: (() => void) | undefined;
+  const failure = new Promise<void>((resolve) => {
+    failCommit = resolve;
+  });
+  const enqueue = vi.spyOn(storage, "enqueueIntent").mockImplementationOnce(async () => {
+    await failure;
+    throw new Error("focus proof storage failure");
+  });
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  render(<button type="button">Elsewhere</button>);
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  try {
+    await user.type(message, "keep failed draft");
+    await user.click(send);
+    await waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect(send.disabled).toBe(true);
+    expect(document.activeElement).toBe(message);
+    await user.click(elsewhere);
+    await act(async () => failCommit?.());
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain(
+        "focus proof storage failure",
+      ),
+    );
+    await flushPendingTurnsProjectionForTests();
+    expect(message.value).toBe("keep failed draft");
+    expect(readDraft("ref_a")).toBe("keep failed draft");
+    expect(send.disabled).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(document.activeElement).toBe(elsewhere);
+  } finally {
+    failCommit?.();
+    storage.release();
+  }
+});
+
+test("ordinary Send empty form no-op leaves another control focused", async () => {
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  render(<button type="button">Elsewhere</button>);
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  await user.click(elsewhere);
+  fireEvent.submit(message.closest("form")!);
+  await flushPendingTurnsProjectionForTests();
+  expect(message.value).toBe("");
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/queue")).toHaveLength(0);
+  expect(document.activeElement).toBe(elsewhere);
+});
+
 test("an unconfirmed storage commit stays visible and repeated Steer clicks cannot duplicate it", async () => {
   const fake = await mountComposer("ref_a");
   let deliveryObserved: (() => void) | undefined;

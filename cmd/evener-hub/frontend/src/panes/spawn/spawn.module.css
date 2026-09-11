@@ -223,6 +223,7 @@
 
 .promptHeading {
   margin: 0;
+  font-family: var(--font-prose);
   color: var(--ink-hi);
   font-size: var(--font-size-page-title);
   font-weight: var(--font-weight-semibold);

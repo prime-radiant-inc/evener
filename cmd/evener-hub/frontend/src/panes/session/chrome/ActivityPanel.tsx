@@ -225,6 +225,9 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             </Button>
           </div>
         )}
+        {currentTree && !currentTree.root.counts.complete && (
+          <p className={CLASS.state}>Activity coverage is incomplete.</p>
+        )}
         {currentTree && currentTree.root.entries.length === 0 ? (
           <EmptyState
             title="No retained activity yet"

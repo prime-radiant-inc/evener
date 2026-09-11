@@ -5,6 +5,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import "../../panes/transcript";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { openTopLevelSession } from "../sessionPlacement";
@@ -370,6 +371,212 @@ test("a back tap does not push the pane it left onto the stack (no ping-pong)", 
   // ref_a is StackHost's own root here (it never observed anything before
   // ref_a - see the "falls all the way to welcome" test above) - a second
   // tap must go straight to welcome, not bounce forward to ref_b.
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+test("retained-parent Back: valid observed history wins over a retained transcript parent", async () => {
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+  const previous = workspace.openPane("doc", { ref: "previous" }, { slot: "secondary" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: previous/);
+  act(() => {
+    workspace.openPane("transcript", { ref: "local:leaf", parentRef: "local:owner" }, { slot: "secondary" });
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(previous);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+test.each([
+  { reason: "missing reference", parentRef: undefined },
+  { reason: "null reference", parentRef: null },
+  { reason: "non-string reference", parentRef: 42 },
+  { reason: "empty reference", parentRef: "" },
+  { reason: "absent pane", parentRef: "local:absent" },
+  { reason: "closed pane", parentRef: "local:closed" },
+  { reason: "self reference", parentRef: "local:leaf" },
+  { reason: "non-transcript/session pane", parentRef: "local:document" },
+])("retained-parent Back: $reason keeps the Welcome fallback without creating a parent", async ({ parentRef }) => {
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+  workspace.openPane("doc", { ref: "local:document" }, { slot: "secondary" });
+  const closed = workspace.openPane("session", { ref: "local:closed" }, { slot: "secondary" });
+  workspace.closePane(closed);
+  const leaf = workspace.openPane("transcript", { ref: "local:leaf", parentRef }, { slot: "secondary" });
+  const retained = workspaceStore.getState().panes;
+  render(<StackHost />);
+  expect(workspaceStore.getState().focusedPaneId).toBe(leaf);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+  const state = workspaceStore.getState();
+  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
+  expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+});
+
+test("retained-parent Back: a non-transcript's parentRef does not override the Welcome fallback", async () => {
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+  workspace.openPane("doc", { ref: "document", parentRef: "local:owner" }, { slot: "secondary" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: document/);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+test.each([false, true])(
+  "retained-parent Back: nested=%s walks to the owner without revisiting descendants",
+  async (nested) => {
+    const workspace = workspaceStore.getState();
+    const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+    const child = workspace.openPane(
+      "transcript",
+      { ref: "local:child", parentRef: "local:owner" },
+      { slot: "secondary" },
+    );
+    if (nested) {
+      workspace.openPane("transcript", { ref: "local:grandchild", parentRef: "local:child" }, { slot: "secondary" });
+    }
+    const retained = workspaceStore.getState().panes;
+    render(<StackHost />);
+    const user = userEvent.setup();
+    if (nested) {
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(child);
+      expect(workspaceStore.getState().panes).toEqual(retained);
+      expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+    }
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(workspaceStore.getState().focusedPaneId).toBe(owner);
+    expect(workspaceStore.getState().panes).toEqual(retained);
+    expect(workspaceStore.getState().mainPane()).toEqual({
+      id: owner,
+      type: "session",
+      params: { ref: "local:owner" },
+      slot: "main",
+    });
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+test("retained-parent Back: prefers the session pane when both session and transcript share a ref", async () => {
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+  // Open the transcript FIRST so it precedes the session in the pane array —
+  // a bare panes.find would match the transcript, not the session.
+  const sharedTranscript = workspace.openPane(
+    "transcript",
+    { ref: "local:shared", parentRef: "local:owner" },
+    { slot: "secondary" },
+  );
+  const sharedSession = workspace.openPane("session", { ref: "local:shared" }, { slot: "secondary" });
+  // The focused leaf's parentRef is "local:shared"; Back should focus the
+  // SESSION pane for that ref, not the transcript.
+  workspace.openPane("transcript", { ref: "local:leaf", parentRef: "local:shared" }, { slot: "secondary" });
+  render(<StackHost />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sharedSession);
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(sharedTranscript);
+  expect(workspaceStore.getState().panes).toHaveLength(4);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+});
+
+test.each([
+  {
+    shape: "reciprocal",
+    context: [
+      { ref: "local:a", parentRef: "local:b" },
+      { ref: "local:b", parentRef: "local:a" },
+    ],
+  },
+  {
+    shape: "three-pane",
+    context: [
+      { ref: "local:a", parentRef: "local:c" },
+      { ref: "local:b", parentRef: "local:a" },
+      { ref: "local:c", parentRef: "local:b" },
+    ],
+  },
+])(
+  "retained-parent cycle safety: $shape cycle terminates at Welcome without revisiting a descendant",
+  async ({ context }) => {
+    const workspace = workspaceStore.getState();
+    const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+    for (const params of context) workspace.openPane("transcript", params, { slot: "secondary" });
+    const retained = workspaceStore.getState().panes;
+    // All context predates this mount: the real host starts with empty history.
+    render(<StackHost />);
+    const user = userEvent.setup();
+    const visited = new Set([workspaceStore.getState().focusedPaneId]);
+    for (let step = 0; step < context.length; step++) {
+      const back = screen.queryByRole("button", { name: "Back" });
+      if (!back) break;
+      await user.click(back);
+      const next = workspaceStore.getState().focusedPaneId;
+      expect(visited.has(next), "Back must not revisit an abandoned descendant through cyclic parent context").toBe(
+        false,
+      );
+      visited.add(next);
+    }
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    const state = workspaceStore.getState();
+    expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
+    expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(state.mainPane()?.id).toBe(owner);
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+test.each([false, true])(
+  "retained-parent cycle safety: longer=%s missing farther ancestor still permits exact immediate parents",
+  async (longer) => {
+    const workspace = workspaceStore.getState();
+    const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+    // Paired with the cyclic contexts above: only the final link differs.
+    const a = workspace.openPane("transcript", { ref: "local:a", parentRef: "local:missing" }, { slot: "secondary" });
+    const b = workspace.openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
+    if (longer) workspace.openPane("transcript", { ref: "local:c", parentRef: "local:b" }, { slot: "secondary" });
+    const retained = workspaceStore.getState().panes;
+    render(<StackHost />);
+    const user = userEvent.setup();
+    for (const target of longer ? [b, a] : [a]) {
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(target);
+      expect(workspaceStore.getState().panes).toEqual(retained);
+      expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+    }
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+test("retained-parent cycle safety: valid observed history wins even when retained context is cyclic", async () => {
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+  workspace.openPane("transcript", { ref: "local:a", parentRef: "local:b" }, { slot: "secondary" });
+  const b = workspace.openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
+  const previous = workspace.openPane("doc", { ref: "previous" }, { slot: "secondary" });
+  const retained = workspaceStore.getState().panes;
+  render(<StackHost />);
+  await screen.findByText(/doc pane: previous/);
+  act(() => workspace.focusPane(b));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(previous);
+  expect(workspaceStore.getState().panes).toEqual(retained);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
   await user.click(screen.getByRole("button", { name: "Back" }));
   expect(await screen.findByText("No session open")).toBeTruthy();
 });
@@ -818,4 +1025,58 @@ test("a real session pane's scaffold-published title lands in the top bar", asyn
   // The session pane's own PaneScaffold publishes its title (model.name ||
   // ref fallback, Session.tsx) through the channel on mount.
   await vi.waitFor(() => expect(screen.getByTestId("topbar-title").textContent).toBe("local:ref_titled"));
+});
+
+test.each(["exact cycle", "mixed cycle", "session origin", "missing farther ancestor"])(
+  "exact Open origin Back: $0 follows the selected edge rather than a same-ref sibling",
+  async (shape) => {
+    const { recordTranscriptOpenOrigin } = await import("../workspace");
+    const workspace = workspaceStore.getState();
+    const owner = workspace.openPane("session", { ref: "local:owner" });
+    const siblingId = workspace.openPane("session", { ref: "local:b" });
+    const aId = workspace.openPane("transcript", { ref: "local:a", parentRef: "local:b" });
+    const bId = workspace.openPane("transcript", {
+      ref: "local:b",
+      parentRef: shape === "missing farther ancestor" ? "local:missing" : "local:a",
+    });
+    const retained = workspaceStore.getState().panes;
+    const a = retained.find((pane) => pane.id === aId)!;
+    const b = retained.find((pane) => pane.id === bId)!;
+    const sibling = retained.find((pane) => pane.id === siblingId)!;
+    recordTranscriptOpenOrigin(a, shape === "session origin" ? sibling : b);
+    if (shape !== "mixed cycle") recordTranscriptOpenOrigin(b, a);
+    workspace.focusPane(aId);
+    render(<StackHost />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    if (shape === "session origin" || shape === "missing farther ancestor") {
+      expect(workspaceStore.getState().focusedPaneId).toBe(shape === "session origin" ? siblingId : bId);
+      expect(workspaceStore.getState().panes).toEqual(retained);
+      await user.click(screen.getByRole("button", { name: "Back" }));
+    }
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+test("exact Open origin Back: valid local history wins over a recorded origin", async () => {
+  const { openTranscript } = await import("../../panes/session/transcript/openTranscript");
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" });
+  openTranscript("local:leaf", "local:owner");
+  const leaf = workspaceStore.getState().focusedPaneId!;
+  const previous = workspace.openPane("doc", { ref: "previous" });
+  const retained = workspaceStore.getState().panes;
+  render(<StackHost />);
+  await screen.findByText(/doc pane: previous/);
+  act(() => workspace.focusPane(leaf));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(previous);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+  expect(workspaceStore.getState().panes).toEqual(retained);
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
 });
