@@ -251,6 +251,17 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(bySess[id].Status))
 		_, _ = h.Write([]byte{0})
+		// A recovery flag raised while the status itself holds still is what
+		// hides the fork action, so it has to move the fingerprint. Sorted on a
+		// copy: which order a daemon happens to list its flags in is not a
+		// change, and the caller's slice is not this function's to reorder.
+		activeFlags := append([]string(nil), bySess[id].ActiveFlags...)
+		sort.Strings(activeFlags)
+		for _, flag := range activeFlags {
+			_, _ = h.Write([]byte(flag))
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0})
 		if bySess[id].Crashed {
 			_, _ = h.Write([]byte{1})
 		}

@@ -647,6 +647,31 @@ func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
 
 func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }
 
+// A daemon that raises a recovery flag while staying idle changes what the hub
+// may offer for that session — the fork capability is projected from these
+// flags — so the fingerprint has to move, or onChange never invalidates
+// navigation and clients keep an action the fork RPC would refuse. Order is not
+// part of the signal: a daemon that reports the same flags in a different order
+// has not changed anything.
+func TestRosterFingerprintIncludesStatusFlagsRegardlessOfOrder(t *testing.T) {
+	base := map[string]LiveEntry{"parent": {Status: "idle"}}
+	flagged := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"resumeRequired"}}}
+	if rosterFingerprint(base) == rosterFingerprint(flagged) {
+		t.Fatal("roster fingerprint must change when a daemon raises a status flag without changing status")
+	}
+	two := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"resumeRequired", "compacting"}}}
+	reordered := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"compacting", "resumeRequired"}}}
+	if rosterFingerprint(two) != rosterFingerprint(reordered) {
+		t.Fatal("roster fingerprint must not change when a daemon reports the same status flags in another order")
+	}
+	if rosterFingerprint(two) == rosterFingerprint(flagged) {
+		t.Fatal("roster fingerprint must change when a status flag is added")
+	}
+	if got := two["parent"].ActiveFlags; !slices.Equal(got, []string{"resumeRequired", "compacting"}) {
+		t.Fatalf("fingerprinting reordered its caller's flags in place: %v", got)
+	}
+}
+
 func TestRosterFingerprintIncludesRunningJobIdentityAndStatus(t *testing.T) {
 	base := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "running"}}}}
 	statusChanged := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "awaiting"}}}}
