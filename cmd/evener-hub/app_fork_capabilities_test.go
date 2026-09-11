@@ -1031,3 +1031,42 @@ func TestHubForkByStableRefBranchesTheCurrentSession(t *testing.T) {
 		})
 	}
 }
+
+// A malformed fork request is refused on its own terms, before the handler
+// refreshes daemon ownership or goes looking for the target's transcript. The
+// fixture makes that observable two ways at once: the target is unknown, and
+// <stateDir>/projects is a regular file, so ownershipEntry's scan of every
+// project directory cannot run without failing. Either way an InvalidParams
+// answer proves the request never got that far.
+func TestHubForkValidatesParamsBeforeOwnershipDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		params appwire.ThreadForkParams
+	}{
+		{name: "aside with a source turn", params: appwire.ThreadForkParams{Aside: true, SourceTurnID: "turn_1"}},
+		{name: "aside with edited input", params: appwire.ThreadForkParams{Aside: true, EditedInput: "forked input"}},
+		{name: "aside with a label", params: appwire.ThreadForkParams{Aside: true, Label: "side"}},
+		{name: "aside deferring input", params: appwire.ThreadForkParams{Aside: true, DeferInput: true}},
+		{name: "no source turn", params: appwire.ThreadForkParams{EditedInput: "forked input"}},
+		{name: "unparseable source turn", params: appwire.ThreadForkParams{SourceTurnID: "turn_zero", EditedInput: "forked input"}},
+		{name: "no edited input", params: appwire.ThreadForkParams{SourceTurnID: "turn_1"}},
+		{name: "edited input with deferred input", params: appwire.ThreadForkParams{SourceTurnID: "turn_1", EditedInput: "forked input", DeferInput: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			// Not a directory: ownershipEntry's os.ReadDir fails here rather
+			// than reporting absence, so reaching the scan cannot look like
+			// reaching nothing.
+			if err := os.WriteFile(filepath.Join(stateDir, "projects"), []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			params := tc.params
+			params.Ref = "local:02unknownForkTarget000"
+			_, err := hubThreadFork(t.Context(), hubcore.WebConfig{StateDir: stateDir}, nil, params)
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("fork error=%v, want structured invalid params before ownership discovery", err)
+			}
+		})
+	}
+}

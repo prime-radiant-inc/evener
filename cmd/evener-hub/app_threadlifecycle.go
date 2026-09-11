@@ -798,6 +798,15 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err := sessionActionRecoveryError(ctx, cfg, params.Ref, ref.ThreadID, epoch); err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
+	// A request that cannot be carried out however it is routed is answered
+	// before the roster refresh and the ownership scan below: neither belongs on
+	// the path of a malformed call, and an unreadable or unknown target must not
+	// turn "these parameters do not go together" into "that session is
+	// unavailable".
+	turn, err := validateThreadForkParams(params)
+	if err != nil {
+		return appwire.ThreadForkResponse{}, err
+	}
 	// One roster refresh serves every ownership fence below, and it has to land
 	// before them: a live-delegate fence read off the previous scan admits a
 	// delegate the parent daemon picked up since, and the incompatible-daemon
@@ -824,9 +833,6 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("a delegate running inside a live daemon cannot be forked")
 	}
 	if params.Aside {
-		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
-			return appwire.ThreadForkResponse{}, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
-		}
 		stateDir := entry.StateDir
 		if stateDir == "" {
 			stateDir = cfg.StateDir
@@ -848,16 +854,6 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			Source:    "local",
 			Evener:    appwire.EvenerThread{Ref: childRef},
 		}}, nil
-	}
-	turn, err := parseSourceTurnID(params.SourceTurnID)
-	if err != nil {
-		return appwire.ThreadForkResponse{}, appwire.InvalidParams(err.Error())
-	}
-	if params.DeferInput && strings.TrimSpace(params.EditedInput) != "" {
-		return appwire.ThreadForkResponse{}, appwire.InvalidParams("editedInput and deferInput are mutually exclusive")
-	}
-	if !params.DeferInput && strings.TrimSpace(params.EditedInput) == "" {
-		return appwire.ThreadForkResponse{}, appwire.InvalidParams("editedInput is required")
 	}
 	stateDir := entry.StateDir
 	if stateDir == "" {
@@ -888,6 +884,30 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		},
 		OriginalInput: originalInput,
 	}, nil
+}
+
+// validateThreadForkParams rejects the parameter combinations no fork can carry
+// out, and returns the source turn a divergent fork branches from. It reads only
+// the request, so the handler can answer a malformed one without refreshing
+// daemon ownership or resolving the target's transcript.
+func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
+	if params.Aside {
+		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
+			return 0, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
+		}
+		return 0, nil
+	}
+	turn, err := parseSourceTurnID(params.SourceTurnID)
+	if err != nil {
+		return 0, appwire.InvalidParams(err.Error())
+	}
+	if params.DeferInput && strings.TrimSpace(params.EditedInput) != "" {
+		return 0, appwire.InvalidParams("editedInput and deferInput are mutually exclusive")
+	}
+	if !params.DeferInput && strings.TrimSpace(params.EditedInput) == "" {
+		return 0, appwire.InvalidParams("editedInput is required")
+	}
+	return turn, nil
 }
 
 // hubForkLiveStatusFenced reports whether the daemon behind this thread is
