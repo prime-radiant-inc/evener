@@ -613,9 +613,19 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				// gone.
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
-					ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
-					notification = stampClosedThreadCapabilities(notification, ownsFork)
-					notification = stampForkCapability(notification, ownsFork)
+					// Both stampers return the frame untouched for any other
+					// method, so the method is checked before the answer is
+					// computed rather than after. This is the hottest path the
+					// projection sits on — every frame of every subscribed
+					// session — and the projection is not free: it scans the
+					// roster, resolves the target session and reads the
+					// deletion store. enrichOutputImageNotification above
+					// guards itself the same way.
+					if notification.Method == appwire.NotifyThreadStatusChanged {
+						ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
+						notification = stampClosedThreadCapabilities(notification, ownsFork)
+						notification = stampForkCapability(notification, ownsFork)
+					}
 				}
 				if cfg.RelayHooks.BeforeCanonicalPublish != nil {
 					cfg.RelayHooks.BeforeCanonicalPublish(target.relayKey, notification)

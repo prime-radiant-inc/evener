@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2472,4 +2473,85 @@ func TestHubForkFollowsARedirectChainToItsEnd(t *testing.T) {
 			t.Fatalf("redirect cycle resolved to %q, want one of the two ids in it", first)
 		}
 	})
+}
+
+// The relay stamps the fork capability onto one notification method, and both
+// stampers return the frame untouched for any other. Computing the answer for
+// every frame therefore spends roster scans and lock acquisitions per tool call
+// per subscribed client on a value that is then discarded — the publish path is
+// the hottest one the projection sits on. enrichOutputImageNotification on the
+// line above already checks its method first.
+func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
+	const sessionID = "hub-fork-relay-hot-path"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "hot-path-token"})
+	daemon.SetAppIdentity("local", sessionID)
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "hot-path-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	// Every projection of this thread reaches Roster.List: the roster's probe
+	// named no session, so Find misses and liveDaemonForThread falls through to
+	// the workspace-ref scan. Counting that seam counts projections.
+	var listCalls atomic.Int64
+	previousList := hubRosterList
+	hubRosterList = func(r *hubcore.Roster) []hubcore.LiveEntry {
+		listCalls.Add(1)
+		return previousList(r)
+	}
+	t.Cleanup(func() { hubRosterList = previousList })
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""),
+	})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true, ItemLimit: 40}); err != nil {
+		t.Fatal(err)
+	}
+	awaitMethod := func(method string) {
+		t.Helper()
+		deadline := time.After(3 * time.Second)
+		for {
+			select {
+			case notification := <-client.Notifications():
+				if notification.Method == method {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("hub did not relay a %s notification", method)
+			}
+		}
+	}
+	// One status transition, which the relay does stamp: the projection runs.
+	daemon.RecordAppEvent(events.SessionEvent{
+		Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: "open a turn"},
+	})
+	awaitMethod(appwire.NotifyThreadStatusChanged)
+	if listCalls.Load() == 0 {
+		t.Fatal("a relayed status notification did not project the fork capability; this test cannot detect the hot path")
+	}
+
+	// Now frames the stampers ignore. A tool call inside an open turn emits
+	// item/started and no status change.
+	settled := listCalls.Load()
+	for i := range 5 {
+		daemon.RecordAppEvent(events.SessionEvent{
+			Kind: events.EventToolCallStart, SessionID: sessionID,
+			Data: events.ToolCallStartData{ToolName: "bash", CallID: "call_" + strconv.Itoa(i)},
+		})
+		awaitMethod(appwire.NotifyItemStarted)
+	}
+	if got := listCalls.Load(); got != settled {
+		t.Fatalf("relaying 5 item notifications projected the fork capability %d more times, want 0", got-settled)
+	}
 }
