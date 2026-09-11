@@ -140,6 +140,7 @@ const TREE: ActivityTreeData = {
           jobId: "job_failed",
           description: "broken lint",
           status: "failed",
+          outcome: "failure",
           terminal: true,
           startedAt: "2026-08-05T14:00:00Z",
           endedAt: "2026-08-05T14:02:00Z",

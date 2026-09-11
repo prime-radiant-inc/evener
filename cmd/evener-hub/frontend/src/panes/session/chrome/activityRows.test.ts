@@ -170,7 +170,9 @@ test("live entries render in order; terminal entries fold behind one row", () =>
 });
 
 test("fold row counts failures separately", () => {
-  const rows = buildActivityRows(tree([shell("x", true, "failed"), shell("y", true)]), new Set());
+  const failed = shell("x", true, "failed") as ActivityShellEntry;
+  failed.job.outcome = "failure";
+  const rows = buildActivityRows(tree([failed, shell("y", true)]), new Set());
   const fold = rows.find((r) => r.kind === "fold");
   expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
 });
@@ -181,6 +183,22 @@ test("row failure state follows outcome when status is non-failure", () => {
   const rows = buildActivityRows(tree([failed]), new Set());
   expect(rows.find((row) => row.kind === "fold")).toMatchObject({ failedCount: 1 });
 });
+
+test.each(["error", "failed", "exhausted"])(
+  'terminal rows count status "%s" without a failure outcome as completed',
+  (status) => {
+    const job = shell("job", true, status);
+    const stable = delegate("dlg_stable", {});
+    stable.delegate.status = status;
+    stable.delegate.outcome = undefined;
+    const turns = delegate("dlg_turns", { type: "agent", turns: [turn("turn", true, status)] });
+    turns.delegate.outcome = undefined;
+    const rows = buildActivityRows(tree([job, stable, turns]), new Set());
+    expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 3, failedCount: 0 });
+    expect(activityDelegateState(stable.delegate)).toMatchObject({ failed: false });
+    expect(activityDelegateState(turns.delegate)).toMatchObject({ failed: false });
+  },
+);
 
 test("fold row counts a terminal delegate outcome when lifecycle status is idle", () => {
   const rows = buildActivityRows(tree([delegate("dlg_failed", { failed: true })]), new Set());

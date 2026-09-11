@@ -9,8 +9,15 @@ export interface ActivityCounts {
   complete: boolean;
 }
 
+// The backend's whole failure verdict for a terminal entry: agent/jobs_activity.go
+// derives every outcome from the record's status and then counts failures from
+// the outcome alone, so a terminal status carries no verdict of its own.
+export function isActivityFailureOutcome(outcome: string | undefined): boolean {
+  return outcome === "failure" || outcome === "failed" || outcome === "exhausted";
+}
+
 export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
-  if (outcome === "failure" || outcome === "failed" || outcome === "exhausted") return true;
+  if (isActivityFailureOutcome(outcome)) return true;
   const normalized = status?.trim().toLowerCase();
   return normalized === "failed" || normalized === "exhausted" || normalized === "error";
 }
