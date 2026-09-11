@@ -603,6 +603,7 @@ func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testin
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	unsubStarted := make(chan struct{})
+	captureResolved := make(chan error, 1)
 	server := NewServer(ServerConfig{
 		ServerName: "test-server", SourceID: "local",
 		SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
@@ -621,7 +622,17 @@ func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testin
 		<-release
 	}
 	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if !CaptureSubscription(ctx, false, func() string { return params.ThreadID }, func() uint64 { return 0 }, func() bool { return true }) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return params.ThreadID },
+			func() uint64 { return 0 },
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() { captureResolved <- nil },
+				Abort:  func() { captureResolved <- errors.New("the read capture was withdrawn") },
+			},
+		) {
 			return appwire.ThreadReadResponse{}, nil
 		}
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: params.ThreadID}}, nil
@@ -656,6 +667,14 @@ func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testin
 	}
 	if err := waitFor(t, "read after registration", readDone); err != nil {
 		t.Fatalf("read failed: %v", err)
+	}
+	// An unsubscribe that lands while the read's generation is still buffering
+	// marks that entry withdrawn and leaves the capture to drop it (see
+	// subscription.withdrawn). The capture resolves after its response reaches
+	// the send queue, so the client's read response is not an ordering signal
+	// for the registry; the capture handoff is.
+	if err := waitFor(t, "read capture resolution", captureResolved); err != nil {
+		t.Fatalf("read capture failed: %v", err)
 	}
 	server.subs.mu.RLock()
 	defer server.subs.mu.RUnlock()

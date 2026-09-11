@@ -14,6 +14,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test, vi } from "vitest";
@@ -26,6 +27,8 @@ import {
   evaluate,
   forcePseudoStates,
   navigateTo,
+  PROBE_ATTEMPT_TIMEOUT_MS,
+  STARTUP_DEADLINE_MS,
   waitForHttp,
 } from "./browserGuardCdp.mjs";
 
@@ -58,6 +61,202 @@ test("one startup deadline aborts the pending HTTP readiness phase", async () =>
   vi.advanceTimersByTime(30_000);
   await assert.rejects(pending, /browser startup deadline exceeded after 30000ms/);
   deadline.clear();
+});
+
+/**
+ * A loopback endpoint that ACCEPTS connections and answers nothing for its
+ * first `ignoredRequests` requests, then answers every request after them.
+ * That is the shape of a Chrome which has bound - and therefore announced -
+ * its DevTools port while the browser thread behind it is still too busy to
+ * serve /json/version.
+ *
+ * What it answers is decided by that COUNT and never by a clock, so the retry
+ * these tests pin does not ride on scheduler timing. Requests are counted by
+ * parsing complete request heads rather than by counting "data" events or
+ * accepted connections: one request split across two TCP reads, or a
+ * connection undici opens without sending on, must not read as two attempts
+ * and let a poll that never retried pass.
+ */
+function silentEndpoint(ignoredRequests) {
+  let requests = 0;
+  let announceRequest;
+  let announceClose;
+  const firstRequest = new Promise((resolve) => {
+    announceRequest = resolve;
+  });
+  const firstConnectionClosed = new Promise((resolve) => {
+    announceClose = resolve;
+  });
+  // A net.Server stays a live handle on the event loop until every connection
+  // it accepted is gone, and an abandoned attempt leaves its socket on this
+  // side too - so they are destroyed by hand when the test ends.
+  const sockets = new Set();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => {
+      sockets.delete(socket);
+      announceClose();
+    });
+    socket.on("error", () => {});
+    let received = "";
+    socket.on("data", (chunk) => {
+      received += chunk;
+      // Every probe is a GET with no body, so the blank line ends the request.
+      for (let head = received.indexOf("\r\n\r\n"); head >= 0; head = received.indexOf("\r\n\r\n")) {
+        received = received.slice(head + 4);
+        requests++;
+        announceRequest();
+        if (requests > ignoredRequests) {
+          socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        }
+      }
+    });
+  });
+  return {
+    requestCount: () => requests,
+    firstRequest: () => firstRequest,
+    firstConnectionClosed: () => firstConnectionClosed,
+    listen: () =>
+      new Promise((resolve) => {
+        server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}/json/version`));
+      }),
+    close: () => {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
+}
+
+// The flake this pins (run 34257184696): Chrome announced its DevTools endpoint
+// and the guard still died on "browser startup deadline exceeded after
+// 30000ms". A probe attempt had no bound of its own, so the ONE request that
+// landed while the browser was still unresponsive held the whole startup
+// budget open - fetch does not give up on a connected socket - and the
+// poll-every-100ms loop below it never ran a second time. The loop only ever
+// advanced when an attempt failed FAST, which after the announcement it cannot:
+// the port is bound, so the connection is accepted and then simply ignored.
+//
+// The endpoint is a real socket on purpose: what has to hold is that fetch
+// honours the abort and the NEXT request goes out, which no fake transport can
+// stand in for. Nothing here is timed, though - the endpoint ignores its first
+// request and answers the second, so a slow machine changes when this test
+// finishes and never whether it passes.
+test("a probe attempt that never answers is abandoned so the poll keeps going", async (context) => {
+  const endpoint = silentEndpoint(1);
+  context.onTestFinished(() => endpoint.close());
+  const url = await endpoint.listen();
+  const deadline = createStartupDeadline(3_000);
+  context.onTestFinished(() => deadline.clear());
+  const before = liveTimers();
+
+  // Before the fix this rejected with the deadline, having spent all 3000ms
+  // of it inside the first attempt.
+  await waitForHttp(url, "chrome devtools endpoint", () => null, {
+    signal: deadline.signal,
+    attemptTimeoutMs: 150,
+  });
+
+  assert.equal(deadline.signal.aborted, false, "the poll did not finish inside its own startup budget");
+  assert.ok(
+    endpoint.requestCount() >= 2,
+    `the endpoint parsed ${endpoint.requestCount()} request(s): the poll never retried after the first went unanswered`,
+  );
+  // A leak here shows up as GROWTH - one armed timer per abandoned attempt.
+  // The count is not asserted equal because it is process-wide: unrelated
+  // timers belonging to the runner expire while this test is running, and a
+  // test that fails when one of those happens to fire is not a test.
+  assert.ok(
+    liveTimers() <= before,
+    `live timers went from ${before} to ${liveTimers()}: an attempt's own timer outlived the attempt it was bounding`,
+  );
+});
+
+// A startup deadline that names neither the phase it died in nor what its
+// attempts were doing is why the CI log above could not be read: waiting for
+// the stderr announcement and waiting for the endpoint to answer share one
+// budget and, until now, one indistinguishable message.
+test("the startup deadline says which endpoint it was polling and how often", async (context) => {
+  const endpoint = silentEndpoint(Number.MAX_SAFE_INTEGER);
+  context.onTestFinished(() => endpoint.close());
+  const url = await endpoint.listen();
+  const deadline = createStartupDeadline(600);
+  context.onTestFinished(() => deadline.clear());
+
+  await assert.rejects(
+    waitForHttp(url, "chrome devtools endpoint", () => null, { signal: deadline.signal, attemptTimeoutMs: 100 }),
+    (error) => {
+      assert.match(error.message, /browser startup deadline exceeded after 600ms/);
+      assert.match(error.message, /chrome devtools endpoint/);
+      assert.match(error.message, new RegExp(`polling ${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      assert.match(error.message, /after \d+ attempts?/);
+      return true;
+    },
+  );
+});
+
+// Every test above hands waitForHttp its own attemptTimeoutMs so it can run in
+// milliseconds, which means none of them would notice an edit that put the
+// PRODUCTION bound back above the deadline it has to retry inside - restoring
+// the flake with this whole file still green. This is the only thing holding
+// the two constants in a workable relationship.
+test("the shipped attempt bound leaves room to retry inside the startup deadline", () => {
+  assert.ok(
+    PROBE_ATTEMPT_TIMEOUT_MS * 5 <= STARTUP_DEADLINE_MS,
+    `one attempt may hold ${PROBE_ATTEMPT_TIMEOUT_MS}ms of a ${STARTUP_DEADLINE_MS}ms phase: too few fit for a poll to be a poll`,
+  );
+});
+
+// An attempt is not always what ends its own race. A Chrome that exits
+// mid-probe settles the failure promise, waitForHttp rejects with it, and the
+// request that was racing is still connected - to an endpoint nobody is waiting
+// on any more. Clearing the attempt's timer on the way out does not take that
+// socket down; only aborting its controller does.
+test("a probe abandoned because the browser died does not leave its request running", async (context) => {
+  const endpoint = silentEndpoint(Number.MAX_SAFE_INTEGER);
+  context.onTestFinished(() => endpoint.close());
+  const url = await endpoint.listen();
+  const deadline = createStartupDeadline(30_000);
+  context.onTestFinished(() => deadline.clear());
+  const died = new Error("Chrome exited before DevTools readiness (code 1, signal none)");
+
+  await assert.rejects(
+    waitForHttp(url, "chrome devtools endpoint", () => null, {
+      signal: deadline.signal,
+      // Chrome dies only once its request is on the wire, so this pins the
+      // abandoned-mid-flight case and not a race with connection setup.
+      failure: endpoint.firstRequest().then(() => died),
+      // Far longer than this test can run: the attempt's own bound must not be
+      // what eventually closes the socket, or it would pass without the fix.
+      attemptTimeoutMs: 600_000,
+    }),
+    /Chrome exited before DevTools readiness/,
+  );
+
+  // Without the abort this never resolves and the test dies of its own timeout.
+  await endpoint.firstConnectionClosed();
+});
+
+// waitForHttp's total bound is the caller's deadline, and for most of this
+// module's life a caller could simply not pass one - 300 attempts at their own
+// bound apiece, ten minutes of polling, with nothing to stop it. Callers now
+// get a deadline whether they bring one or not.
+test("a poll with no caller deadline arms one of its own", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const before = liveTimers();
+  const pending = waitForHttp("http://127.0.0.1:1/json/version", "vite dev server", () => null, {
+    fetchImpl: () => new Promise(() => {}),
+  });
+  const rejected = assert.rejects(pending, (error) => {
+    assert.match(error.message, new RegExp(`browser startup deadline exceeded after ${STARTUP_DEADLINE_MS}ms`));
+    assert.match(error.message, /vite dev server/);
+    return true;
+  });
+
+  await vi.advanceTimersByTimeAsync(STARTUP_DEADLINE_MS);
+  await rejected;
+  // The fallback is a timer this module armed itself; leaving it behind would
+  // hold a guard's event loop open for the rest of its budget.
+  assert.ok(liveTimers() <= before, `live timers went from ${before} to ${liveTimers()}: the fallback deadline outlived its poll`);
 });
 
 const cdpModuleUrl = new URL("./browserGuardCdp.mjs", import.meta.url).href;
