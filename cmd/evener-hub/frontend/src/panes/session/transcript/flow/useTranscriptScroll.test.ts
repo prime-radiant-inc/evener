@@ -738,10 +738,12 @@ describe("jumpToBottom landing reliability", () => {
     expect(el.scrollTop).toBe(17221 - 702);
   });
 
-  test("typing and a bare click are not gestures - the correction still re-pins", () => {
-    // The veto must stay narrow: a key that does not scroll, and a pointerdown
-    // with no movement (a click, or the start of a text selection), leave the
-    // mount fix working. A veto that fired on those would put the strand back.
+  test("a bare click is not a gesture - the correction still re-pins", () => {
+    // The veto must stay narrow: a pointerdown with no movement - a click, or
+    // the start of a text selection - leaves the mount fix working. A veto that
+    // fired on it would put the strand back. (Keystrokes are no longer part of
+    // this: the port has no keydown listener at all since the marker moved to
+    // useTranscriptScrollKeys, which the Space test above pins.)
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
     renderHook(() =>
@@ -756,7 +758,6 @@ describe("jumpToBottom landing reliability", () => {
     el.scrollTop = 16374;
 
     act(() => {
-      el.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
       el.dispatchEvent(new Event("pointerdown"));
       el.scrollTop = 16432;
       set({ scrollTop: 16432, scrollHeight: 17221 });

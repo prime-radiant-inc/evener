@@ -690,6 +690,12 @@ export function useTranscriptScroll({
   // Reader-gesture state for the bottom-hold correction (see the scroll
   // listener). Hook-level rather than effect-local so markGesture can be handed
   // out with a stable identity.
+  //
+  // Unlike the per-ref state below, these are NOT reset when the pane switches
+  // session: a gesture is a fact about the reader's hands, not about the thread
+  // on screen, and the switch cannot outrun it - the flag is consumed by the
+  // next scroll event or the next animation frame, so at most one event of the
+  // new session could ever see a gesture aimed at the old one.
   const gesturePendingRef = useRef(false);
   const gestureClearFrameRef = useRef<number | null>(null);
   const pointerDraggingRef = useRef(false);
@@ -1268,7 +1274,24 @@ export function useTranscriptScroll({
     // all - it exists purely to force a re-run at the "VirtualList mounts
     // for the first time" transition (a ref becoming non-null triggers no
     // re-render/effect on its own; hasContent flipping does).
-  }, [ref, listRef, measure, clearPill, hasContent]);
+    //
+    // The gesture handlers ARE listed, rather than left to the ignore above:
+    // every one is useCallback-stable, so naming them costs no extra effect
+    // runs, and it keeps this rule's silence scoped to the two flags it was
+    // written for.
+  }, [
+    ref,
+    listRef,
+    measure,
+    clearPill,
+    hasContent,
+    markWheel,
+    startTouch,
+    continueTouch,
+    startPointerDrag,
+    continuePointerDrag,
+    endPointerDrag,
+  ]);
 
   // A mode change commits a different row set into the same VirtualList. This
   // layout effect runs after that commit and after the list's own layout work,
