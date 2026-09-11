@@ -438,6 +438,20 @@ func (w *Writer) EstablishDurability() error {
 	return nil
 }
 
+// Poisoned reports whether this writer has stopped accepting appends after an
+// append it could not resolve. Nil-safe, like the append doors themselves: a
+// session with no state directory has no writer and so has nothing to refuse.
+// Callers use it to fail closed before doing work whose records would be lost —
+// see ErrWriterPoisoned.
+func (w *Writer) Poisoned() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.poisoned
+}
+
 func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w == nil || w.closed.Load() {
 		return nil

@@ -695,3 +695,48 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 		t.Fatalf("transcript-failure warnings = %d, want one for the write that poisoned the writer and one for the turn it then refused", warnings)
 	}
 }
+
+// TestPoisonedWriterRefusesTheNextInput: a poisoned writer has stopped
+// accepting records for the rest of the session, so a turn that runs against it
+// cannot be persisted at all — every record it makes is lost on the next
+// restart, while the session reports only warnings and carries on. The
+// environment path already fails loudly under this condition, but only when an
+// environment block is due; with an unchanged environment there is nothing to
+// append and the turn used to proceed. Admission has to refuse instead: the
+// session stops accepting input until it is restarted against the records the
+// file still holds, which is the failure that can be seen.
+func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
+	var requests atomic.Int32
+	step := func(llm.Request) llm.Response {
+		requests.Add(1)
+		return finalResponse("ok")
+	}
+	sess := newTestSessionForEnvctx(t, withSteps(step, step, step, step))
+	sendOneUserInput(t, sess, "first")
+	if requests.Load() != 1 {
+		t.Fatalf("model requests after the first turn = %d, want 1", requests.Load())
+	}
+
+	// Poison the writer through the buffered door recordTurn itself uses: a
+	// write that stops partway with no rollback behind it.
+	fs := attachEnvironmentFailureFS(t, sess)
+	fs.mu.Lock()
+	fs.writeFailure = errors.New("injected transcript write failure")
+	fs.transferBeforeWriteFailure = 12
+	fs.mu.Unlock()
+	if err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
+		t.Fatal("partial transcript write reported success")
+	}
+
+	before := len(sessionHistoryText(sess))
+	_, err := sess.ProcessInput(t.Context(), "second", nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("input against a poisoned transcript = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("model requests after the refused input = %d, want the turn never to have run", got)
+	}
+	if after := len(sessionHistoryText(sess)); after != before {
+		t.Fatal("the refused input changed model history")
+	}
+}

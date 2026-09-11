@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -951,6 +952,18 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return "", errors.New("session is closed")
+	}
+	// Fail closed on a transcript that has stopped accepting records. Every
+	// turn from here would run in memory and be lost on the next restart, with
+	// only a warning per dropped record to show for it; recordTurn's
+	// warn-and-continue is right for a transient write failure and wrong for a
+	// writer that will refuse everything. Refusing admission stops the session
+	// until it is restarted against the records the file still holds, which is
+	// the same visible failure the environment path already produces when a
+	// block is due.
+	if s.transcript.Poisoned() {
+		s.mu.Unlock()
+		return "", fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
 	}
 	// Entry gate (spec §5.3): while a question is pending, an autonomous wake —
 	// EntryNotification or EntryContinuation — is refused here,
