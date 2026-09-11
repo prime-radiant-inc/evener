@@ -15,6 +15,7 @@
 
 .count {
   font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
   white-space: nowrap;
@@ -41,8 +42,8 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   color: var(--ink-mid);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--edge);
 }
 
 .groupCount {
@@ -94,6 +95,7 @@
 
 .time {
   font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
   color: var(--ink-low);
   white-space: nowrap;

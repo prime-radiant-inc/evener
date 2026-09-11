@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import {
   beginDisclosureBaseline,
@@ -10,13 +10,16 @@ import {
   toggleDisclosure,
 } from "./disclosureStore";
 
-afterEach(() => resetDisclosureStoreForTests());
+afterEach(() => {
+  cleanup();
+  resetDisclosureStoreForTests();
+});
 
 // isDisclosureOpen is a reactive hook (it rides useStore, mirroring
 // subagentModuleStore.ts's useSubagentRows), so it must be read inside a
 // render context - renderHook is exactly how that sibling store's own test
-// reads its reactive selector. setDisclosureOpen/toggleDisclosure are plain
-// getState/setState mutators and are called directly.
+// reads its reactive selector. Mutations after a read need act because those
+// hook subscribers remain mounted until cleanup.
 const readOpen = (id: string, fallback: boolean): boolean =>
   renderHook(() => isDisclosureOpen(id, fallback)).result.current;
 
@@ -25,17 +28,21 @@ test("unset id reports the fallback", () => {
   expect(readOpen("a", true)).toBe(true);
 });
 
-test("setDisclosureOpen overrides the fallback and persists", () => {
+test("setDisclosureOpen overrides the fallback and persists", async () => {
   setDisclosureOpen("a", true);
   expect(readOpen("a", false)).toBe(true);
-  setDisclosureOpen("a", false);
+  await act(async () => {
+    setDisclosureOpen("a", false);
+  });
   expect(readOpen("a", true)).toBe(false);
 });
 
-test("toggle flips from the fallback then from stored state", () => {
+test("toggle flips from the fallback then from stored state", async () => {
   toggleDisclosure("a", false); // fallback false -> true
   expect(readOpen("a", false)).toBe(true);
-  toggleDisclosure("a", false); // stored true -> false
+  await act(async () => {
+    toggleDisclosure("a", false); // stored true -> false
+  });
   expect(readOpen("a", false)).toBe(false);
 });
 

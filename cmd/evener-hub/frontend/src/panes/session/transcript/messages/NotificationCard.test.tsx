@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { navigationStore } from "../../../../stores/navigation/store";
+import { keyID } from "../../../../stores/navigation/types";
 import { makeTranscriptDisplayConfig } from "../../../../transcriptDisplay/config";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
@@ -20,7 +22,32 @@ afterEach(() => {
   cleanup();
   resetWorkspaceStoreForTests();
   resetDisclosureStoreForTests();
+  navigationStore.setState({ resources: new Map() });
 });
+
+function seedLocation(ref: string, topLevelRef: string) {
+  const key = { kind: "location", ref } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: {
+      generation_id: "generation_test",
+      revision: 1,
+      ref,
+      top_level_ref: topLevelRef,
+      top_level: ref === topLevelRef,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  navigationStore.setState({ resources });
+}
 
 function notif(overrides: Partial<ParsedNotification> = {}): ParsedNotification {
   return {
@@ -239,6 +266,7 @@ test("binds Open to the final notification text fragment instead of permitting a
 });
 
 test("opening a child restores the notification owner as main when an unrelated session is focused", async () => {
+  seedLocation("local:owner", "local:owner");
   workspaceStore.setState({
     panes: [
       { id: "unrelated", type: "session", params: { ref: "local:unrelated" }, slot: "main" },

@@ -526,7 +526,7 @@
   z-index: var(--z-raised);
 }
 
-/* The expanded body: hairline-framed, --surface-1, no heavy fill. */
+/* Flat evidence wrapper; native renderers own useful output boundaries. */
 .body {
   margin-top: var(--space-1);
 }

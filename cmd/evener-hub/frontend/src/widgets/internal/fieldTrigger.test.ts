@@ -29,7 +29,8 @@ test("the shared recipe declares the control-shaped box", () => {
   expect(trigger).toContain("width: 100%");
   expect(trigger).toContain("height: 32px");
   expect(trigger).toContain("padding: 0 var(--space-3)");
-  expect(trigger).toContain("border: 1px solid var(--edge)");
+  // Approved editorial-instrument spec (2026-09-09): flat pages, visible fields.
+  expect(trigger).toContain("border: 1px solid var(--edge-strong)");
   expect(trigger).toContain("border-radius: var(--radius-control)");
 });
 
