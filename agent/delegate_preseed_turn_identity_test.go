@@ -28,6 +28,18 @@ func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
 		childSession *Session
 		userInputs   []events.UserInputData
 	)
+	// The reader is a goroutine draining the child's stream, so the run
+	// reaching its model call says nothing about whether the reader has
+	// consumed the USER_INPUT event that preceded it. Closing this once the
+	// reader has recorded that event is the completion the assertions below
+	// await; without it they read the slice on scheduling luck and see it
+	// empty (CI, agent shard 4 at 73186a7).
+	//
+	// ConsumeEventsLossless would order this too, and is deliberately not used:
+	// it makes the session daemon-served, which is the opposite of the unserved
+	// preseed this case is about.
+	userInputRecorded := make(chan struct{})
+	var recordOnce sync.Once
 	root.cfg.testOnly.delegateInitialInputAppend = func(child *Session) {
 		mu.Lock()
 		childPath = child.TranscriptPath()
@@ -39,6 +51,7 @@ func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
 					mu.Lock()
 					userInputs = append(userInputs, data)
 					mu.Unlock()
+					recordOnce.Do(func() { close(userInputRecorded) })
 				}
 			}
 		}()
@@ -49,6 +62,7 @@ func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
 	}
 	<-entered
 	defer close(release)
+	<-userInputRecorded
 
 	mu.Lock()
 	path := childPath
