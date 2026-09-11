@@ -315,7 +315,7 @@ test("renders a scaffold loading state before the session model hydrates", () =>
   expect(screen.getByText("Loading session panel…")).toBeTruthy();
 });
 
-test("keeps the scaffold heading consistent with the registered title after rename", () => {
+test("keeps the scaffold heading consistent with the registered title after rename", async () => {
   const model = testModel({ name: "Initial name" });
   seedModel(model);
   const { rerender } = render(
@@ -324,7 +324,9 @@ test("keeps the scaffold heading consistent with the registered title after rena
   expect(screen.getByRole("heading", { name: sessionPanelTitle("details", model.ref, model.name) })).toBeTruthy();
 
   const renamed = testModel({ name: "Renamed session" });
-  seedModel(renamed);
+  await act(async () => {
+    seedModel(renamed);
+  });
   rerender(<SessionPanelPane params={{ ref: renamed.ref }} paneId="panel-title" focused kind="details" />);
   expect(screen.getByRole("heading", { name: sessionPanelTitle("details", renamed.ref, renamed.name) })).toBeTruthy();
 });

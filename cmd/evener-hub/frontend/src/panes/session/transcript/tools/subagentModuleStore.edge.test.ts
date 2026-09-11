@@ -21,7 +21,6 @@ afterEach(() => {
 function makeRow(rowKey: string, overrides: Partial<SubagentRow> = {}): SubagentRow {
   return {
     rowKey,
-    kind: "running",
     resultPreview: "",
     ...overrides,
   };
@@ -47,7 +46,7 @@ test("removeSubagentRow removes only the requested row", () => {
 test("removing an unknown row preserves the existing row", () => {
   const scopeKey = turnScopeKey("session_a", "turn_1");
   const existing = renderHook(() => useSubagentRow(scopeKey, "dlg:existing"));
-  const row = makeRow("dlg:existing", { kind: "done", resultPreview: "complete" });
+  const row = makeRow("dlg:existing", { resultPreview: "complete" });
 
   act(() => upsertSubagentRow(scopeKey, row));
   act(() => removeSubagentRow(scopeKey, "dlg:missing"));
@@ -56,7 +55,7 @@ test("removing an unknown row preserves the existing row", () => {
 });
 
 test("classifyJobStatus maps protocol synonyms to presentation states", () => {
-  expect(classifyJobStatus(undefined)).toBe("running");
+  expect(classifyJobStatus(undefined)).toBe("unknown");
   expect(classifyJobStatus("failed")).toBe("failed");
   expect(classifyJobStatus("errored")).toBe("failed");
   expect(classifyJobStatus("error")).toBe("failed");
@@ -68,7 +67,7 @@ test("classifyJobStatus maps protocol synonyms to presentation states", () => {
   expect(classifyJobStatus("succeeded")).toBe("done");
   expect(classifyJobStatus("unknown")).toBe("unknown");
   expect(classifyJobStatus("running")).toBe("running");
-  expect(classifyJobStatus("")).toBe("running");
+  expect(classifyJobStatus("")).toBe("unknown");
 });
 
 test("resolveRowKey gives durable identities precedence over call identities", () => {
