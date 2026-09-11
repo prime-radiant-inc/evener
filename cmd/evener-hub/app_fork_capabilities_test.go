@@ -1276,23 +1276,29 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 // exercised: the alias is deleted and the session the fork resolves to is
 // recovery-fenced, whichever of the two sorts first.
 func TestHubForkReportsDeletionBeforeRecoveryWhicheverIdentitySortsFirst(t *testing.T) {
-	first, err := identifier.NewSessionID()
-	if err != nil {
-		t.Fatal(err)
+	// Sorted, not assumed sorted: session ids are UUIDv7-based, so two taken in
+	// the same millisecond order by random low bits rather than by generation.
+	// The rows are about which of the two identities the fence loop reaches
+	// first, which the sorted pair still puts both ways round.
+	ids := make([]string, 2)
+	for i := range ids {
+		id, err := identifier.NewSessionID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
 	}
-	second, err := identifier.NewSessionID()
-	if err != nil {
-		t.Fatal(err)
+	if ids[0] == ids[1] {
+		t.Fatalf("session ids are not distinct: %q", ids[0])
 	}
-	if first >= second {
-		t.Fatalf("session ids are not increasing: %q, %q", first, second)
-	}
+	slices.Sort(ids)
+	lower, higher := ids[0], ids[1]
 	for _, tc := range []struct {
 		name            string
 		aliasID, liveID string
 	}{
-		{name: "deleted alias sorts first", aliasID: first, liveID: second},
-		{name: "deleted alias sorts second", aliasID: second, liveID: first},
+		{name: "deleted alias sorts first", aliasID: lower, liveID: higher},
+		{name: "deleted alias sorts second", aliasID: higher, liveID: lower},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir := t.TempDir()
