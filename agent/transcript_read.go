@@ -157,8 +157,10 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 //     stretch of conversation — tool calls and their results included — to the
 //     model twice. They are dropped.
 //
-// The flag is cleared on what is returned either way: it describes a durable
-// transcript entry's role, not a turn in the resumed session's history.
+// Nothing returned carries the flag: the anchored branch clears it on the
+// copies it keeps, and the no-anchor branch keeps only entries that never had
+// it. Either way it describes a durable transcript entry's role, not a turn in
+// the resumed session's history.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1

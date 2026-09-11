@@ -426,6 +426,13 @@ func (s *Session) nameSessionFromCompactionTurnGated(ctx context.Context, turn s
 	return s.nameSessionFromTextGated(ctx, sessionNameSourceCompaction, text, publishedRevision)
 }
 
+// isSessionNameCompactionTurn reports the artifact kinds a compaction names the
+// session from. Two things outside naming read the same answer, so narrowing it
+// for a naming reason changes resume: publishFoldTransaction writes its replay
+// tail only when one of these landed (session_compaction.go), and ResumeHistory
+// anchors on exactly these kinds (transcript_read.go). All three must agree —
+// a kind that stops counting here stops anchoring there, and the tail it would
+// have carried past a marker goes unwritten.
 func isSessionNameCompactionTurn(turn schema.Turn) bool {
 	return turn.Kind == schema.TurnSummary || turn.Kind == schema.TurnCheckpoint
 }
