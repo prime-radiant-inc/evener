@@ -65,7 +65,7 @@ Other failures were fixed rather than hidden:
 npx vitest run src/panes/settings/Settings.test.tsx src/panes/settings/sections/credentials/CredentialsSection.test.tsx src/panes/spawn/Spawn.test.tsx src/panes/session/chrome/ModelSwitchTrigger.test.tsx src/panes/settings/sections/credentials/ConnectProviderDialog.test.tsx src/panes/session/chrome/ModelSwitch.test.tsx
 ```
 
-**6 files passed; 251 tests passed**, exit 0 (`task3-final-focused.log`). The existing keyless test's `act(...)` environment warnings were also present in the baseline-only run; no assertions were muted.
+**6 files passed; 251 tests passed**, exit 0 (`task3-final-focused.log`), but this original run was **not pristine**: it emitted act-environment warnings in both new onboarding tests and the existing keyless test. The earlier report incorrectly treated the baseline occurrence as sufficient; it was not. The bounded test-lifetime remediation below supersedes that acceptance claim.
 
 - Focused `TMPDIR=/tmp node scripts/spawnguard/run.mjs`: exit 0 at **320, 390, 899, 900, 1440px**. Retained directory/breakpoint/control-row/accessibility/eight-attachment/overflow checks plus onboarding masks, focused missing-key validation, collapsed advanced, cancel/draft, explicit Continue, actual model choice and explicit Start with exact model/workdir.
 - Final `make test-web`: exit 0 — `PASS web-typecheck`, `PASS web-test`, `PASS web-lint`.
@@ -74,6 +74,51 @@ npx vitest run src/panes/settings/Settings.test.tsx src/panes/settings/sections/
 - `git diff --check`: exit 0 before submission and after implementation commit. `git status --short` was empty after implementation commit (this not-yet-added report was ignored until explicitly staged).
 
 Evidence logs are retained outside source under `/tmp/evener-sandbox-1958759275/`: `task3-red.log`, `task3-guided-red.log`, `task3-session-cache-red.log`, `task3-session-cache-green.log`, `task3-final-focused.log`, `task3-spawnguard.log`, `task3-final-test-web.log`, and `task3-final-browser.log`. Implementation/debug scripts and temporary Spawn copy were removed.
+
+## Follow-up: pristine async-act output
+
+Parent required correction of the warning-bearing focused run. Scope remained
+`Spawn.test.tsx` and this report only; production source and the parent's frozen
+real-proof build were unchanged.
+
+Minimal reproduction before repair:
+
+```sh
+npx vitest run src/panes/spawn/Spawn.test.tsx -t 'connection handoff|fresh guided connection|successful keyless testing'
+```
+
+The three behavior tests passed, but all three emitted
+`The current testing environment is not configured to support act(...)`.
+The separate raw-output gate failed (exit 1); evidence:
+`/tmp/evener-sandbox-1958759275/task3-act-repro.log`.
+
+Concrete cause: Testing Library's `act-compat.js` keeps the act-environment flag
+true until an outer async `act` settles, while `pure.js`'s `asyncWrapper` sets it
+false while awaiting a user-event operation. Nesting `await user.click(...)`
+inside the explicit lazy-import `act` scope let React's mounting/refresh work
+encounter the false flag inside an active act queue. This was a test async-scope
+ownership error, not a production failure.
+
+Repair: move the four connector-opening `await user.click(...)` calls before the
+separate `act` that awaits `vi.dynamicImportSettled()`. Every behavior assertion
+and every explicit import-completion await remains. No console spy, warning
+filter, environment-flag override, sleeps, or deadline changes were introduced.
+
+Verification:
+
+- Same minimal command: **3 passed, 117 skipped**, exit 0; separate raw-output
+  check for `stderr|not configured to support act` also exit 0, with no matches
+  (`task3-act-minimal-green.log`).
+- Biome `check --write src/panes/spawn/Spawn.test.tsx`: exit 0.
+- Exact six-file focused command above: **6 passed, 251 tests passed**, exit 0;
+  raw-output check for `stderr|not configured to support act|Warning:` exit 0,
+  with no matches (`task3-act-final-focused.log`). Raw output is retained, not
+  suppressed.
+- Full `make test-web`: exit 0 — `PASS web-typecheck`, `PASS web-test`,
+  `PASS web-lint` (`task3-act-test-web.log`).
+- Test-only fix commit: `d19f78c24d2c9e6534b5306bf8df441b952ef27d`
+  (`fix(web): separate onboarding test async act lifetimes`), normal named-path
+  commit, exit 0. This correction report is committed separately afterward.
 
 ## Boundaries and handoff
 
