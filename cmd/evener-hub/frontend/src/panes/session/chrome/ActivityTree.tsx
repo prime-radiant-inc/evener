@@ -416,7 +416,10 @@ const DenseRowView = memo(function DenseRowView({
   const target = transcriptTarget(row);
   const statusState = jobStatusDotState(statusText, true);
   const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;
-  const kindState = failed ? "failed" : row.live && statusState !== "needs-you" ? "working" : statusState;
+  // Work that has ended says so through its outcome, the verdict the fold and
+  // the badge already count; only live work still reads its status.
+  const liveState = statusState !== "needs-you" ? "working" : statusState;
+  const kindState = failed ? "failed" : row.live ? liveState : "ended";
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>

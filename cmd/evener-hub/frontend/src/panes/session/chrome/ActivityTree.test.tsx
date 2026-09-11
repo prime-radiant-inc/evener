@@ -451,6 +451,37 @@ describe("ActivityTree", () => {
     expect(failedGlyph.className).toContain("kindDanger");
   });
 
+  test("a terminal status with no failure outcome keeps the ended glyph", () => {
+    const tree = {
+      ...TREE,
+      root: {
+        ...TREE.root,
+        entries: [
+          {
+            kind: "shell" as const,
+            job: shellJob({
+              jobId: "job_status_only",
+              description: "status only",
+              status: "failed",
+              terminal: true,
+              startedAt: "2026-08-05T14:00:00Z",
+            }),
+          },
+        ],
+      },
+    } as ActivityTreeData;
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+
+    // The fold counts this entry as completed - no "· 1 failed" - so the row's
+    // own glyph may not contradict it.
+    expect(screen.getByRole("treeitem", { name: "1 inactive" })).toBeTruthy();
+    const row = screen.getByRole("treeitem", { name: "status only" });
+    const glyph = within(row).getByText("$");
+    expect(glyph.getAttribute("aria-label")).toBe("Ended");
+    expect(glyph.className).not.toContain("kindDanger");
+  });
+
   test("opening the fold reveals rows with their detail strips collapsed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
