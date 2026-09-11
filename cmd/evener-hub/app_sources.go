@@ -121,18 +121,27 @@ func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {
 }
 
 func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string) error {
+	return deletionFenceErrorNaming(cfg, ref, threadID, ref, clientMutationID)
+}
+
+// deletionFenceErrorNaming looks the fence up under (ref, threadID) and names
+// reportRef in the refusal. Fork resolves a stable workspace ref to the session
+// that ref currently names, so the fence belongs to the resolved session while
+// the message belongs to the ref the client asked about — naming the resolved
+// id would report an identity the request never mentioned.
+func deletionFenceErrorNaming(cfg hubcore.WebConfig, ref, threadID, reportRef, clientMutationID string) error {
 	if cfg.DeletionStore == nil {
 		return nil
 	}
 	if _, deleted := cfg.DeletionStore.TargetState(ref, threadID); !deleted {
 		return nil
 	}
-	if ref == "" {
-		ref = localAppRef(threadID)
+	if reportRef == "" {
+		reportRef = localAppRef(threadID)
 	}
 	return appwire.WireError{
 		Code:    appwire.CodeUnavailable,
-		Message: "target has been deleted: " + ref,
+		Message: "target has been deleted: " + reportRef,
 		Data: appwire.ErrorData{
 			EvenerErrorInfo:  appwire.ErrorActionUnavailable,
 			ClientMutationID: clientMutationID,

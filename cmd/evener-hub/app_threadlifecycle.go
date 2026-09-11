@@ -842,7 +842,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	// once the session is resumed — so which one a client is told about must
 	// not depend on the order the locks above happened to need.
 	for _, id := range targets {
-		if err := deletionFenceError(cfg, refFor(id), id, ""); err != nil {
+		if err := deletionFenceErrorNaming(cfg, refFor(id), id, params.Ref, ""); err != nil {
 			return appwire.ThreadForkResponse{}, err
 		}
 	}

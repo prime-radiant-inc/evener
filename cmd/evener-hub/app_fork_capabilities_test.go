@@ -1174,8 +1174,13 @@ func TestHubForkCapabilityHonoursDaemonReportedRecoveryFlags(t *testing.T) {
 // live-delegate check the same admission already performs.
 func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		fence func(t *testing.T, cfg *hubcore.WebConfig, fencedID string)
+		name string
+		// namesRef is set for a fence whose refusal carries an identity. It
+		// must be the ref the client asked about: the resolved session id is
+		// the hub's own answer to that ref, and naming it would report an
+		// identity the request never mentioned.
+		namesRef bool
+		fence    func(t *testing.T, cfg *hubcore.WebConfig, fencedID string)
 	}{
 		{
 			name: "resolved session needs an explicit resume",
@@ -1188,7 +1193,8 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 			},
 		},
 		{
-			name: "resolved session is deleted",
+			name:     "resolved session is deleted",
+			namesRef: true,
 			fence: func(t *testing.T, cfg *hubcore.WebConfig, fencedID string) {
 				store, err := hubcore.NewDeletionStore(t.TempDir())
 				if err != nil {
@@ -1241,6 +1247,14 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 				wire, ok := errors.AsType[appwire.WireError](err)
 				if !ok || wire.Code != appwire.CodeUnavailable {
 					t.Fatalf("fork error=%v, want structured unavailable", err)
+				}
+				if tc.namesRef {
+					if !strings.Contains(wire.Message, "local:"+retiredID) {
+						t.Errorf("refusal %q does not name the ref the client asked about (local:%s)", wire.Message, retiredID)
+					}
+					if fenceCurrent && strings.Contains(wire.Message, currentID) {
+						t.Errorf("refusal %q names the session the hub resolved to, which the client never mentioned", wire.Message)
+					}
 				}
 				after, err := schema.ListSessionMetas(stateDir)
 				if err != nil {
