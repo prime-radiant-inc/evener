@@ -268,10 +268,12 @@ function decisionFor(
     if (vector.reasoning) return "item";
     // With reasoning off, a live current thought becomes a content-free
     // placeholder: the reader sees that the agent is thinking without the
-    // stream itself. An in-progress thought that is NOT the turn's tail is
-    // deliberately hidden (the renderer would not stream it either). Failure
-    // and terminal-turn visibility stay so a broken turn still explains itself.
-    if (isLiveCurrentReasoning(item, turn)) return "thinking";
+    // stream itself. A terminal turn never takes the placeholder - the agent
+    // is not thinking any more - and an in-progress thought that is NOT the
+    // turn's tail is hidden (the renderer would not stream it either).
+    // Failure and terminal-turn visibility stay so a broken turn still
+    // explains itself.
+    if (isLiveCurrentReasoning(item, turn) && !isTerminalTurn(turn)) return "thinking";
     return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
   }
 

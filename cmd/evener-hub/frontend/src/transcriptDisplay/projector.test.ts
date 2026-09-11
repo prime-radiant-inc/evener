@@ -384,6 +384,15 @@ describe("transcript projector", () => {
     expect(entriesFor(model, preset("tools")).map((entry) => entry.id)).toEqual(["agent"]);
   });
 
+  test("never shows the content-free placeholder on a terminal turn", () => {
+    const interrupted = turn([item("think", "reasoning", { status: "inProgress", text: "cut short" })], {
+      status: "interrupted",
+    });
+    const model = { ...threadWith(), turns: [interrupted] } as ThreadModel;
+
+    expect(entriesFor(model, preset("tools"))).toEqual([expect.objectContaining({ kind: "critical", id: "think" })]);
+  });
+
   test("keeps the typed failure marker for failed and interrupted turns", () => {
     const model = {
       ...threadWith(),
