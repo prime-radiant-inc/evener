@@ -155,7 +155,17 @@ function SelectedConnection({
   const row = findSetup(name);
   const effectiveProvider = store.availableProviders.find((candidate) => candidate.id === row?.providerId) ?? provider;
   const [baseline, setBaseline] = useState(row);
-  const [value, setValue] = useState("");
+  const resolvedProviderId = row?.providerId;
+  const [draft, setDraft] = useState({ providerId: resolvedProviderId ?? provider.id, value: "" });
+  // Keep the origin while create metadata is unresolved. Never expose or
+  // submit its value for a different provider, even before the effect runs.
+  const value = resolvedProviderId && resolvedProviderId !== draft.providerId ? "" : draft.value;
+  useEffect(() => {
+    if (!resolvedProviderId) return;
+    setDraft((current) =>
+      current.providerId === resolvedProviderId ? current : { providerId: resolvedProviderId, value: "" },
+    );
+  }, [resolvedProviderId]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -233,7 +243,7 @@ function SelectedConnection({
   }
   function changeValue(next: string) {
     operation.current += 1;
-    setValue(next);
+    setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: next });
     setMissingCredential(false);
     setSaved(false);
     setResult(null);
@@ -390,7 +400,6 @@ function SelectedConnection({
         onSuccess={(createdName) => {
           operation.current += 1;
           const created = findSetup(createdName);
-          if (created && created.providerId !== effectiveProvider.id) setValue("");
           setName(createdName);
           setBaseline(created);
           setConfigured(true);

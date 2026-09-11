@@ -671,3 +671,67 @@ test("switching to existing host access does not send the new key or claim authe
     false,
   );
 });
+
+test("review regression: discarded cross-provider create clears the old credential draft on reload", async () => {
+  const { user, client } = setup();
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
+  await user.click(screen.getByText("Advanced settings"));
+  await user.click(screen.getByRole("button", { name: "Configure another instance" }));
+  await user.selectOptions(screen.getByLabelText("Base provider"), "openai");
+  await user.type(screen.getByLabelText("Name"), "openai-team");
+  const pending = deferred<InstanceListResponse>();
+  const row = { ...catalogue[1]!.setup!, name: "openai-team", implicit: false };
+  client.on("evener/instance/create", () => pending.promise);
+  await user.click(screen.getByRole("button", { name: "Create" }));
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+    pending.resolve({ instances: [row], availableProviders: structuredClone(catalogue) });
+    await pending.promise;
+  });
+  expect(await screen.findByRole("button", { name: "Reload connection" })).toBeTruthy();
+  client.on("evener/instance/list", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
+  await user.click(screen.getByRole("button", { name: "Reload connection" }));
+  expect(await screen.findByRole("dialog", { name: "Connect OpenAI" })).toBeTruthy();
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+});
+
+test.each([
+  { base: "anthropic", label: "Anthropic", via: "reload", expected: "anthropic-private-draft" },
+  { base: "anthropic", label: "Anthropic", via: "listing", expected: "anthropic-private-draft" },
+  { base: "openai", label: "OpenAI", via: "listing", expected: "" },
+])(
+  "review regression: deferred $base recovery via $via preserves only same-provider drafts",
+  async ({ base, label, via, expected }) => {
+    const { user, client } = setup();
+    await choose(user, "Anthropic");
+    await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
+    await user.click(screen.getByText("Advanced settings"));
+    await user.click(screen.getByRole("button", { name: "Configure another instance" }));
+    await user.selectOptions(screen.getByLabelText("Base provider"), base);
+    await user.type(screen.getByLabelText("Name"), "recovered-team");
+    const pending = deferred<InstanceListResponse>();
+    const row = {
+      ...catalogue.find((candidate) => candidate.id === base)!.setup!,
+      name: "recovered-team",
+      implicit: false,
+    };
+    client.on("evener/instance/create", () => pending.promise);
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+      pending.resolve({ instances: [row], availableProviders: structuredClone(catalogue) });
+      await pending.promise;
+    });
+    expect(await screen.findByRole("button", { name: "Reload connection" })).toBeTruthy();
+    client.on("evener/instance/list", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
+    if (via === "reload") await user.click(screen.getByRole("button", { name: "Reload connection" }));
+    else
+      await act(async () => {
+        await credentialsStore.getState().fetch();
+      });
+    expect(await screen.findByRole("dialog", { name: `Connect ${label}` })).toBeTruthy();
+    expect(screen.getByLabelText("API key")).toHaveProperty("value", expected);
+    expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
+  },
+);
