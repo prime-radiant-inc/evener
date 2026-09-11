@@ -24,7 +24,9 @@
 #     scripts/gate/run-module-tests.sh -race -short -count=1
 #     WEB=0 scripts/gate/run-module-tests.sh -short -count=1   # Go modules only
 #
-# The root module's `go list ./...` is bounded: EVENER_ROOT_PACKAGE_LIST_TIMEOUT
+# Every `go list ./...` this script runs to enumerate a module's packages — the
+# root module's, and the agent module's subpackage list — is bounded:
+# EVENER_ROOT_PACKAGE_LIST_TIMEOUT
 # seconds per attempt (default 60) over EVENER_ROOT_PACKAGE_LIST_ATTEMPTS
 # attempts (default 3), a timed-out attempt being the only one retried. Raise
 # the per-attempt budget on a host slower than that; the failure diagnostic
@@ -255,22 +257,32 @@ scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()
 
-# A retried root package list has to outlive the wave subshell that saw it: its
+# A retried package list has to outlive the wave subshell that saw it: its
 # stderr goes to the module log, which a green run deletes, so a run that only
 # passed because of the retry would report a clean PASS and say nothing about
-# the host that needed it. Each retry appends its line here and the report
-# replays them after the waves.
-root_package_list_retry_log="$logdir/root.packages.retries"
-
+# the host that needed it. Each retry appends its line to the module's retry
+# file and the report replays it.
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
-# root_package_list_timeout_diagnostic LOG ATTEMPTS_MADE — the failure report.
+# Where a module's enumerated package list lives, and where the notices from
+# any retried attempt at producing it are recorded. Both the producer
+# (run_bounded_package_list) and the reporter need the same mapping, so it is
+# spelled once. The root module keeps the name it has always had.
+package_list_path() {
+	case "$1" in
+	.) printf '%s/root.packages' "$logdir" ;;
+	*) printf '%s/%s.packages' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')" ;;
+	esac
+}
+package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
+
+# package_list_timeout_diagnostic LOG ATTEMPTS_MADE MODULE — the failure report.
 # ATTEMPTS_MADE is spelled out because the run can stop short of the budget: an
 # attempt that will not die ends the run on the spot, and claiming every attempt
 # timed out would misdescribe it.
-root_package_list_timeout_diagnostic() {
-	local package_list_log="$1" attempts_made="$2" worktree gocache gomodcache
+package_list_timeout_diagnostic() {
+	local package_list_log="$1" attempts_made="$2" module="$3" worktree gocache gomodcache
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
@@ -281,7 +293,7 @@ root_package_list_timeout_diagnostic() {
 		printf 'run-module-tests.sh: go list ./... timed out after %ss on attempt %s of %s.\n' \
 			"$ROOT_PACKAGE_LIST_TIMEOUT" "$attempts_made" "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
 	fi
-	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
+	printf 'run-module-tests.sh: worktree/module: %s (%s)\n' "$worktree" "$module" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
 	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
@@ -294,7 +306,7 @@ root_package_list_timeout_diagnostic() {
 		"$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
-# root_package_list_group_survivors PGID — print `pid(state)` for every live
+# package_list_group_survivors PGID — print `pid(state)` for every live
 # member of PGID, zombies excluded. Exit status 0 means the printed answer is
 # trustworthy; 2 means the process listing itself failed, so nothing is known
 # about the group and an empty answer must NOT be read as "gone".
@@ -312,7 +324,7 @@ root_package_list_timeout_diagnostic() {
 # reading that as "no live members" starts the next attempt while the timed-out
 # one is still writing its package list and holding Go's cache locks — the
 # exact race the stop exists to prevent.
-root_package_list_group_survivors() {
+package_list_group_survivors() {
 	local pgid="$1" listing
 	if ! listing="$(ps -axo pid=,pgid=,state= 2>/dev/null)" || [ -z "$listing" ]; then
 		return 2
@@ -321,7 +333,7 @@ root_package_list_group_survivors() {
 		awk -v pgid="$pgid" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
 }
 
-# stop_root_package_list_group PGID — stop one package-list attempt and prove
+# stop_package_list_group PGID — stop one package-list attempt and prove
 # nothing of it is still running. Returns 0 when the group is confirmed empty,
 # 1 when it still has a live member after the escalation, and 2 when liveness
 # could not be determined at all. Only 0 permits a retry: both non-zero answers
@@ -338,14 +350,14 @@ root_package_list_group_survivors() {
 # is its pid — which is why the caller can pass the pid it already holds.
 # setsid(1) is the usual tool for that and is not present on macOS, which this
 # script has to run on; perl is, and so is the CI image's.
-stop_root_package_list_group() {
+stop_package_list_group() {
 	local pgid="$1" signal waited ticks alive
 	ticks=$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))
 	for signal in TERM KILL; do
 		kill -"$signal" -- -"$pgid" 2>/dev/null || :
 		waited=0
 		while [ "$waited" -lt "$ticks" ]; do
-			alive="$(root_package_list_group_survivors "$pgid")" || return 2
+			alive="$(package_list_group_survivors "$pgid")" || return 2
 			if [ -z "$alive" ]; then
 				return 0
 			fi
@@ -353,15 +365,20 @@ stop_root_package_list_group() {
 			waited=$((waited + 1))
 		done
 	done
-	alive="$(root_package_list_group_survivors "$pgid")" || return 2
+	alive="$(package_list_group_survivors "$pgid")" || return 2
 	if [ -z "$alive" ]; then
 		return 0
 	fi
 	return 1
 }
 
-run_root_package_list() {
-	local package_list="$1" package_list_stderr attempt attempt_list
+# run_bounded_package_list MODULE OUTPUT — enumerate MODULE's packages into
+# OUTPUT under the bound. MODULE is the runner's name for the module (".", or a
+# directory) and is used for the retry file and the diagnostic; the enumeration
+# itself is `go list ./...` in the current directory, which the caller has
+# already changed to that module.
+run_bounded_package_list() {
+	local module="$1" package_list="$2" package_list_stderr attempt attempt_list
 	local list_pid list_pgid started_at list_status descendant survivors stop_status
 	package_list_stderr="${package_list}.stderr"
 	# Every attempt appends under its own heading, so the diagnostic still names
@@ -376,7 +393,7 @@ run_root_package_list() {
 		attempt_list="${package_list}.attempt${attempt}"
 		printf '=== go list ./... attempt %s of %s ===\n' "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" >>"$package_list_stderr"
 		# The attempt is spawned into its own process group so that
-		# stop_root_package_list_group can stop it as one. perl's setpgrp(0, 0)
+		# stop_package_list_group can stop it as one. perl's setpgrp(0, 0)
 		# does that inside the child, between fork and exec, where this shell
 		# cannot see it. `set -m` would also have made the job its own group, but
 		# only by turning job control on for the whole script: run_wave backgrounds
@@ -411,25 +428,25 @@ run_root_package_list() {
 						kill -KILL "$descendant" 2>/dev/null || :
 					done
 					kill -KILL "$list_pid" 2>/dev/null || :
-					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
+					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					printf 'run-module-tests.sh: attempt %s is not its own process group (pgid %s, pid %s), so it cannot be stopped as one. Not retrying.\n' \
 						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" >&2
 					return 1
 				fi
 				stop_status=0
-				stop_root_package_list_group "$list_pid" || stop_status=$?
+				stop_package_list_group "$list_pid" || stop_status=$?
 				if [ "$stop_status" -ne 0 ]; then
 					# Deliberately no wait: SIGKILL does not land on a
 					# process in uninterruptible sleep, which is exactly the
 					# stalled-volume case this bound exists for, and waiting
 					# on it would replace the bound with an indefinite hang.
 					# Name what is known instead and fail.
-					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
+					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					if [ "$stop_status" -eq 2 ]; then
 						printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: the process listing that answers "is process group %s empty" would not run. Not retrying, because a retry that cannot see the previous attempt would race it.\n' \
 							"$attempt" "$list_pid" >&2
 					else
-						survivors="$(root_package_list_group_survivors "$list_pid")" || survivors=""
+						survivors="$(package_list_group_survivors "$list_pid")" || survivors=""
 						printf 'run-module-tests.sh: attempt %s would not stop: process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and not waiting on it.\n' \
 							"$attempt" "$list_pid" "${survivors:-<none at the final probe>}" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
 					fi
@@ -439,12 +456,12 @@ run_root_package_list() {
 				# already reaped and this reap cannot block.
 				wait "$list_pid" 2>/dev/null || :
 				if [ "$attempt" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
-					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
+					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					return 1
 				fi
 				printf 'go list ./... attempt %s of %s timed out after %ss; retrying.\n' \
 					"$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" "$ROOT_PACKAGE_LIST_TIMEOUT" \
-					| tee -a "$root_package_list_retry_log" >&2
+					| tee -a "$(package_list_retry_path "$module")" >&2
 				sleep 1
 				attempt=$((attempt + 1))
 				continue 2
@@ -480,8 +497,8 @@ run_module() {
 	if [ "$m" = "." ]; then
 		local -a packages=()
 		local pkg package_list
-		package_list="$logdir/root.packages"
-		run_root_package_list "$package_list" || return $?
+		package_list="$(package_list_path "$m")"
+		run_bounded_package_list "$m" "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
@@ -518,10 +535,17 @@ run_module() {
 		# zero-vs-nonzero is read below, so nothing here depends on them.
 		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
-		local pkg
+		local pkg subpkg_list
+		# Through the same bound as the root module's: this `go list` reads the
+		# same GOCACHE/GOMODCACHE, so a stalled volume would hang it exactly as
+		# it hangs root discovery — and it runs after the root bound has already
+		# been reported, where an unbounded hang is the one thing that bound
+		# cannot help with.
+		subpkg_list="$(package_list_path "$m")"
+		run_bounded_package_list "$m" "$subpkg_list" || return 1
 		while IFS= read -r pkg; do
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
-		done < <(go list ./...)
+		done <"$subpkg_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
@@ -613,11 +637,13 @@ run_wave $WAVE2
 
 [ -n "$web_pid" ] && finish_stream web "$web_pid"
 
-if [ -s "$root_package_list_retry_log" ]; then
+for m in $WAVE1 $WAVE2; do
+	retry_log="$(package_list_retry_path "$m")"
+	[ -s "$retry_log" ] || continue
 	while IFS= read -r retry_line; do
 		printf 'run-module-tests.sh: %s\n' "$retry_line" >&2
-	done <"$root_package_list_retry_log"
-fi
+	done <"$retry_log"
+done
 
 # A -run pattern that matches no test name is not an error to `go test`: every
 # package reports "[no tests to run]" and exits 0, so every module reports PASS

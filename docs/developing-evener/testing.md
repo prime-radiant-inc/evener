@@ -314,7 +314,11 @@ temporary cleanup.
 
 Before the root wave runs anything, the runner enumerates the root module's
 packages with `go list ./...`, and that step is bounded because it can block
-forever when the configured Go caches sit on a stalled volume. The bound is a
+forever when the configured Go caches sit on a stalled volume. The agent
+module's subpackage enumeration goes through the same bound, for the same
+reason: it reads the same caches, and it runs after the root bound has already
+been reported, where an unbounded hang is exactly what that bound cannot help
+with. The bound is a
 tripwire on a stall, not a budget for the work: `EVENER_ROOT_PACKAGE_LIST_TIMEOUT`
 seconds per attempt (default 60) over `EVENER_ROOT_PACKAGE_LIST_ATTEMPTS`
 attempts (default 3, one second apart), so a run that never lists its packages
