@@ -676,8 +676,8 @@ func TestHubForkCapabilityAdvertisesAheadOfOwnershipResolution(t *testing.T) {
 // cannot silently start missing a signal the protocol began carrying.
 func TestThreadStatusChangedParamsDeclareNoTopLevelRecoveryFlag(t *testing.T) {
 	params := reflect.TypeFor[appwire.ThreadStatusChangedParams]()
-	for i := range params.NumField() {
-		name, _, _ := strings.Cut(params.Field(i).Tag.Get("json"), ",")
+	for field := range params.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 		if slices.ContainsFunc([]string{"resume", "restart", "recovery"}, func(word string) bool {
 			return strings.Contains(strings.ToLower(name), word)
 		}) {
