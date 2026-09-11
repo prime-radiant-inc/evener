@@ -28,7 +28,8 @@ type SkillMeta struct {
 	SkillFile    string         // absolute path to SKILL.md
 }
 
-// DiscoverSkills walks from git root to cwd looking for skills/ directories.
+// DiscoverSkills walks from git root to cwd looking for .agents/skills/ and
+// skills/ directories. Live sessions use Discover for the full diagnostic catalog.
 // Extra directories are scanned after the root→cwd walk, so they shadow
 // project skills with the same name.
 // Returns a deduplicated map[name]SkillMeta (later entries shadow earlier).
@@ -37,24 +38,12 @@ func DiscoverSkills(env execenv.ExecutionEnvironment, extraDirs ...string) map[s
 		return nil
 	}
 
-	cwd := strings.TrimSpace(env.WorkingDirectory())
-	if cwd == "" {
+	if strings.TrimSpace(env.WorkingDirectory()) == "" {
 		return nil
 	}
-	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
-		cwd = resolved
-	}
-
-	root := cwd
-	if gr := execenv.GitRootOrEmpty(env, cwd); gr != "" {
-		root = gr
-	}
-
-	dirs := execenv.DirsFromRootToCwd(root, cwd)
 	out := map[string]SkillMeta{}
-
-	for _, dir := range dirs {
-		ScanSkillsDir(filepath.Join(dir, "skills"), out)
+	for _, dir := range projectSkillDirs(env) {
+		ScanSkillsDir(dir, out)
 	}
 	for _, dir := range extraDirs {
 		if strings.TrimSpace(dir) == "" {

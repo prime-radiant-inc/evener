@@ -40,7 +40,7 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 	tests := []struct {
 		name       string
 		input      string
-		skills     map[string]skill.SkillMeta
+		skills     skill.Catalog
 		want       string
 		wantOK     bool
 		wantActive string
@@ -48,9 +48,9 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 		{
 			name:  "body and context",
 			input: "/simplify this diff",
-			skills: map[string]skill.SkillMeta{
-				"simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")},
-			},
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"simplify": {CatalogName: "simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")}},
+			}},
 			want:       "follow these steps\n\nUser context:\nthis diff",
 			wantOK:     true,
 			wantActive: "simplify",
@@ -58,9 +58,9 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 		{
 			name:  "plugin qualified",
 			input: "/plugin:simplify",
-			skills: map[string]skill.SkillMeta{
-				"plugin:simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")},
-			},
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"plugin:simplify": {CatalogName: "plugin:simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")}},
+			}},
 			want:       "plugin steps",
 			wantOK:     true,
 			wantActive: "plugin:simplify",
@@ -68,9 +68,9 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 		{
 			name:  "tabs and newlines around context",
 			input: " \n/simplify \t this diff \n ",
-			skills: map[string]skill.SkillMeta{
-				"simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")},
-			},
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"simplify": {CatalogName: "simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")}},
+			}},
 			want:       "follow these steps\n\nUser context:\nthis diff",
 			wantOK:     true,
 			wantActive: "simplify",
@@ -106,9 +106,9 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 
 func TestExpandSlashCommandStandalonePreservesCommandPrecedence(t *testing.T) {
 	s := newTestSession(t)
-	s.skills = map[string]skill.SkillMeta{
-		"review": {Name: "review", SkillFile: writeSkillBodyFile(t, "skill body")},
-	}
+	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
+		"review": {CatalogName: "review", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "review", SkillFile: writeSkillBodyFile(t, "skill body")}},
+	}}
 	s.pluginCommands = map[string]plugin.Command{
 		"review": {Name: "review", Body: "command $ARGUMENTS", Source: "project"},
 	}
@@ -128,16 +128,16 @@ func TestExpandSlashCommandStandalonePreservesCommandPrecedence(t *testing.T) {
 func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T) {
 	tests := []struct {
 		name   string
-		skills map[string]skill.SkillMeta
+		skills skill.Catalog
 		input  string
 	}{
-		{name: "unknown", skills: nil, input: "/missing context"},
+		{name: "unknown", skills: skill.Catalog{}, input: "/missing context"},
 		{
 			name: "ambiguous suffix",
-			skills: map[string]skill.SkillMeta{
-				"one:review": {Name: "review", SkillFile: writeSkillBodyFile(t, "one")},
-				"two:review": {Name: "review", SkillFile: writeSkillBodyFile(t, "two")},
-			},
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"one:review": {CatalogName: "one:review", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "review", SkillFile: writeSkillBodyFile(t, "one")}},
+				"two:review": {CatalogName: "two:review", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "review", SkillFile: writeSkillBodyFile(t, "two")}},
+			}},
 			input: "/review context",
 		},
 	}
@@ -161,9 +161,9 @@ func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T
 
 func TestExpandSlashCommandStandaloneBodyLoadFailureWarnsWithoutActivation(t *testing.T) {
 	s := newTestSession(t)
-	s.skills = map[string]skill.SkillMeta{
-		"simplify": {Name: "simplify", SkillFile: filepath.Join(t.TempDir(), "missing", "SKILL.md")},
-	}
+	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
+		"simplify": {CatalogName: "simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: filepath.Join(t.TempDir(), "missing", "SKILL.md")}},
+	}}
 	_ = drainSlashEvents(s)
 
 	got, ok := s.expandSlashCommand(context.Background(), "/simplify context")
@@ -581,8 +581,8 @@ func TestInitPlugins_BrokenPluginDoesNotBlockHealthyPlugins(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if _, ok := sess.skills["healthy-plugin:my-skill"]; !ok {
-		t.Errorf("expected healthy-plugin's skill to load despite the broken dir, got skills: %v", keys(sess.skills))
+	if _, ok := sess.skills.Entries["healthy-plugin:my-skill"]; !ok {
+		t.Errorf("expected healthy-plugin's skill to load despite the broken dir, got skills: %v", keys(sess.skills.Entries))
 	}
 }
 

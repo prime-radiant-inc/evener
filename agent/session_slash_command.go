@@ -54,18 +54,18 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) (string,
 		return expanded, true
 	}
 
-	catalogName, meta, ok := skill.ResolveSkill(s.skills, name)
-	if !ok {
+	descriptor, resolveErr := s.skills.Resolve(name)
+	if resolveErr != nil {
 		return input, false
 	}
-	body, err := skill.LoadSkillBody(meta)
+	body, err := skill.LoadSkillBody(descriptor.Meta)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("loading slash skill /%s failed: %v", name, err),
 		})
 		return input, false
 	}
-	s.emit(events.EventSkillActivated, events.SkillActivatedData{Name: catalogName})
+	s.emit(events.EventSkillActivated, events.SkillActivatedData{Name: descriptor.CatalogName})
 	if args != "" {
 		body += "\n\nUser context:\n" + args
 	}

@@ -219,7 +219,7 @@ func (a *miscModelAdapter) LiveModels(context.Context) ([]registry.Model, error)
 func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 	t.Helper()
 	s, _ := statusSupportSession(t, provider.NewOpenAIProfile("status"), "openai", nil)
-	s.skills = map[string]skill.SkillMeta{"z": {Name: "z"}, "a": {Name: "a"}}
+	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{"z": {CatalogName: "z", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "z"}}, "a": {CatalogName: "a", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "a"}}}}
 	s.plugins = []plugin.Instance{{Manifest: plugin.Manifest{Name: "p", Version: "1"}, Skills: map[string]skill.SkillMeta{"s": {Name: "s"}}, Agents: map[string]plugin.Agent{"a": {}}, Hooks: map[plugin.HookEvent][]plugin.RegisteredHook{plugin.HookPreToolUse: {{Type: "command", Command: "true"}}}}}
 	s.unsupportedPluginHookEvents = map[plugin.HookEvent]bool{plugin.HookEvent("WorktreeCreate"): true}
 	runner := hooks.NewRunner(nil, "")

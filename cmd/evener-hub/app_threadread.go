@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -341,12 +340,9 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	return live, nil
 }
 
-// discoverPastThreadSkillCatalog reconstructs the metadata a session had at
-// start without loading any skill bodies. The order mirrors session startup:
-// embedded skills first, automatic user skills next, project and configured
-// extra directories after that, and finally the skills exposed by configured
-// plugins. Later layers overwrite an earlier canonical key, just as they do
-// during session initialization. Plugin directories use the shared
+// discoverPastThreadSkillCatalog discovers the current user advertisement view
+// without activating any skill bodies. It shares session startup's portable
+// discovery and filtering policy. Plugin directories use the shared
 // first-manifest-wins selection policy; a later duplicate is skipped even if
 // the selected plugin fails component loading.
 //
@@ -356,52 +352,24 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 var discoverPastThreadSkillCatalog = discoverPastThreadSkills
 
 func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo {
-	all := make(map[string]skill.SkillMeta)
-	if embedded, err := skill.EmbeddedSkills(); err == nil {
-		maps.Copy(all, embedded)
+	home, _ := os.UserHomeDir()
+	sources, _ := plugin.SkillSources(entry.Meta.Config.PluginDirs)
+	var env execenv.ExecutionEnvironment
+	if cwd := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir); cwd != "" {
+		env = execenv.NewLocalExecutionEnvironment(cwd)
 	}
-	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
-		skill.ScanSkillsDir(userSkillsDir, all)
-	}
-
-	workingDir := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir)
-	if workingDir != "" {
-		env := execenv.NewLocalExecutionEnvironment(workingDir)
-		maps.Copy(all, skill.DiscoverSkills(env, entry.Meta.Config.SkillsDirs...))
-	}
-
-	seenPluginNames := make(map[string]struct{}, len(entry.Meta.Config.PluginDirs))
-	for _, dir := range entry.Meta.Config.PluginDirs {
-		pluginName, ok := pastThreadPluginName(dir)
-		if !ok {
-			continue
-		}
-		if _, seen := seenPluginNames[pluginName]; seen {
-			continue
-		}
-		seenPluginNames[pluginName] = struct{}{}
-		pluginSkills := make(map[string]skill.SkillMeta)
-		skill.ScanSkillsDir(filepath.Join(dir, "skills"), pluginSkills)
-		for name, meta := range pluginSkills {
-			all[pluginName+":"+name] = meta
-		}
-	}
-
-	entries := skill.CatalogEntries(all)
+	catalog := skill.Discover(env, skill.DiscoverOptions{
+		HomeDir:       home,
+		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		ExtraDirs:     entry.Meta.Config.SkillsDirs,
+		Plugins:       sources,
+	})
+	entries := catalog.UserEntries()
 	result := make([]appwire.EvenerSkillInfo, 0, len(entries))
 	for _, entry := range entries {
-		result = append(result, appwire.EvenerSkillInfo{Name: entry.Name, Description: entry.Description})
+		result = append(result, appwire.EvenerSkillInfo{Name: entry.CatalogName, Description: entry.Meta.Description})
 	}
 	return result
-}
-
-// pastThreadPluginName reads only the plugin manifest fields needed to locate
-// its skill directory. In particular, this does not load agents, commands,
-// hooks, or MCP configuration: a malformed unrelated component must not hide
-// otherwise valid plugin skills from a cold thread read.
-func pastThreadPluginName(dir string) (string, bool) {
-	name, err := plugin.ManifestName(dir)
-	return name, err == nil
 }
 
 func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
