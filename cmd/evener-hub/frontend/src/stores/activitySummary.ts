@@ -10,7 +10,7 @@ import {
   sessionActionHeadline,
 } from "../protocol/errors";
 import { isActionUnavailable, isThreadNotFound } from "../protocol/sessionErrors";
-import { type ActivityFetchResult, activityPanelStore } from "./activityPanel";
+import { type ActivityFetchResult, activityPanelStore, retainedActivityTree } from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
 // A refresh that arrived while a root fetch was in flight. Nothing re-runs
@@ -212,8 +212,12 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
           issuePendingBump();
           return;
         }
-        get().publishRootFetch(ref, requestID, parsed.root.counts);
         activityPanelStore.getState().publishFetch(ref, panelRequestID, { kind: "ready", tree: parsed });
+        // A bounded refresh does not re-list the pages already loaded, and the
+        // panel keeps them, so the badge counts the tree that is on screen
+        // rather than the page as it was sent.
+        const published = retainedActivityTree(activityPanelStore.getState().entries.get(ref)) ?? parsed;
+        get().publishRootFetch(ref, requestID, published.root.counts);
         issuePendingBump();
       })
       .catch((err) => {

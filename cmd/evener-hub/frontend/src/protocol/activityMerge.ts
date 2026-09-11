@@ -1,6 +1,7 @@
 import {
   type ActivityDelegate,
   type ActivityEntry,
+  type ActivityJob,
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
@@ -36,6 +37,22 @@ function cloneDelegate(delegate: ActivityDelegate): ActivityDelegate {
   };
 }
 
+// The backend's own activityBranchComplete: a branch is a complete statement
+// only when nothing cut it short.
+function completeBranch(branch: ActivitySessionNode["branch"]): boolean {
+  return !branch.error && !branch.truncated && !branch.continuation;
+}
+
+// An off-target page carries this container only as it stood when that page was
+// cut, so a turn both lists describe keeps the projection already on screen,
+// while a turn only the page carries is one the client has never seen and
+// follows in the page's own order. Neither side loses a turn.
+function unionTurns(current: ActivityJob[] | undefined, patch: ActivityJob[] | undefined): ActivityJob[] | undefined {
+  if (!current?.length) return patch?.map((turn) => ({ ...turn }));
+  const seen = new Set(current.map((turn) => turn.jobId));
+  return [...current, ...(patch ?? []).filter((turn) => !seen.has(turn.jobId))].map((turn) => ({ ...turn }));
+}
+
 function maxActivity(current: string | undefined, incoming: string | undefined): string | undefined {
   if (!incoming) return current;
   if (!current) return incoming;
@@ -65,14 +82,12 @@ function mergeDelegate(
 ): ActivityDelegate {
   const withinTarget = inTarget || activityNodeID({ kind: "delegate", delegate: current }) === targetID;
   const state = revisionFencedDelegate(current, patch);
-  // Turn containers carry no projection revision to fence on. A page cut for a
-  // descendant session still ships this container as it stood when the page was
-  // cut, so only a page that targets the delegate itself may replace its turns.
-  // Turns the client never had are new information, not a regression: keep the
-  // patch's when there is nothing on screen to protect. The wire always sends
-  // the field, so an empty list stands for none rather than for absent.
-  if (!withinTarget && current.turns?.length && (current.type !== "delegate" || patch.type !== "delegate")) {
-    state.turns = current.turns.map((turn) => ({ ...turn }));
+  // Turn containers carry no projection revision to fence on, so a page cut for
+  // a descendant session may not hand its snapshot of this container's turns to
+  // the screen wholesale. Only a page targeting the delegate itself replaces
+  // them; any other page still contributes the turns it alone has seen.
+  if (!withinTarget && (current.type !== "delegate" || patch.type !== "delegate")) {
+    state.turns = unionTurns(current.turns, patch.turns);
   }
   return {
     ...state,
@@ -88,33 +103,61 @@ function mergeDelegate(
   };
 }
 
-export function fenceRootSession(current: ActivitySessionNode, incoming: ActivitySessionNode): ActivitySessionNode {
+// fenceSession reports whether anything was retained anywhere beneath it, so a
+// session whose descendant kept a loaded page recomputes its own counts too -
+// the same bottom-up pass the daemon's recomputeActivitySession makes.
+function fenceSession(
+  current: ActivitySessionNode,
+  incoming: ActivitySessionNode,
+): { session: ActivitySessionNode; retained: boolean } {
   const currentByID = new Map(current.entries.map((entry) => [activityNodeID(entry), entry]));
+  let retainedBelow = false;
   const entries = incoming.entries.map((entry): ActivityEntry => {
     if (entry.kind === "shell") return cloneEntry(entry);
     const prior = currentByID.get(activityNodeID(entry));
     if (prior?.kind !== "delegate") return cloneEntry(entry);
     const delegate = revisionFencedDelegate(prior.delegate, entry.delegate);
     delegate.branch = { ...entry.delegate.branch };
-    delegate.child =
-      prior.delegate.child && entry.delegate.child && prior.delegate.child.sessionId === entry.delegate.child.sessionId
-        ? fenceRootSession(prior.delegate.child, entry.delegate.child)
-        : entry.delegate.child
-          ? cloneSession(entry.delegate.child)
-          : undefined;
+    if (
+      prior.delegate.child &&
+      entry.delegate.child &&
+      prior.delegate.child.sessionId === entry.delegate.child.sessionId
+    ) {
+      const child = fenceSession(prior.delegate.child, entry.delegate.child);
+      delegate.child = child.session;
+      retainedBelow = retainedBelow || child.retained;
+    } else {
+      delegate.child = entry.delegate.child ? cloneSession(entry.delegate.child) : undefined;
+    }
     return { kind: "delegate", delegate };
   });
-  return {
+  // A bounded page is a prefix of this session's entry order (projectActivitySessionAt
+  // renders owned shell jobs, then sorted stable delegates, and a continuation
+  // resumes at the exact index it stopped on), so it makes no claim at all about
+  // what lies past its cutoff: entries loaded from later pages stay. A complete
+  // page is the whole statement, and what it leaves out is genuinely gone - that
+  // is how an evicted delegate reaches the screen.
+  const incomingIDs = new Set(incoming.entries.map(activityNodeID));
+  const kept = completeBranch(incoming.branch)
+    ? []
+    : current.entries.filter((entry) => !incomingIDs.has(activityNodeID(entry))).map(cloneEntry);
+  const session = {
     ...incoming,
     counts: { ...incoming.counts },
     branch: { ...incoming.branch },
-    entries,
+    entries: [...entries, ...kept],
   };
+  const retained = kept.length > 0 || retainedBelow;
+  // The server's counts describe the page it sent. Anything kept beyond it is
+  // ours to account for, the same way a grafted page is.
+  return { session: retained ? summarizeSession(session) : session, retained };
+}
+
+export function fenceRootSession(current: ActivitySessionNode, incoming: ActivitySessionNode): ActivitySessionNode {
+  return fenceSession(current, incoming).session;
 }
 
 function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
-  const completeBranch = (branch: ActivitySessionNode["branch"]) =>
-    !branch.error && !branch.truncated && !branch.continuation;
   const counts = { active: 0, failed: 0, completed: 0, complete: completeBranch(session.branch) };
   const add = (terminal: boolean, failed: boolean) => {
     if (!terminal) counts.active++;

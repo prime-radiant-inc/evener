@@ -8,7 +8,7 @@ import {
   activityNodeID,
   parseActivityTree,
 } from "./activityData";
-import { graftContinuationTree } from "./activityMerge";
+import { fenceRootSession, graftContinuationTree } from "./activityMerge";
 
 const shell = (jobId: string, outputBytes = 0): ActivityShellEntry => ({
   kind: "shell",
@@ -171,6 +171,49 @@ test.each([
   const entry = result.root.entries[0];
   if (entry?.kind !== "delegate") throw new Error("missing turn container");
   expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-first"]);
+});
+
+test("a child-session continuation adopts unseen turns beside the ones on screen", () => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.turns = [shell("turn-1").job];
+  const patchEntry = delegate(session("child", [shell("b")]));
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+});
+
+// A bounded page is a prefix of the session's entry order and says nothing
+// about what lies past its cutoff, so pages already loaded from beyond it stay.
+test("a bounded root refresh keeps the pages already loaded past its window", () => {
+  const paged = graftContinuationTree(tree([shell("a")], "next"), "session:root", tree([shell("b")]));
+  const fenced = fenceRootSession(paged.root, tree([shell("a", 40)], "next-2").root);
+  expect(ids(fenced)).toEqual(["job:a", "job:b"]);
+  expect(fenced.entries[0]).toEqual(shell("a", 40));
+  expect(fenced.branch).toEqual({ truncated: true, continuation: "next-2" });
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 2, complete: false });
+});
+
+test("a complete root refresh drops the entries it no longer lists", () => {
+  const paged = graftContinuationTree(tree([shell("a")], "next"), "session:root", tree([shell("b")]));
+  const fenced = fenceRootSession(paged.root, tree([shell("a")]).root);
+  expect(ids(fenced)).toEqual(["job:a"]);
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 1, complete: true });
+});
+
+test("a bounded root refresh keeps the pages loaded inside a delegate's child", () => {
+  const paged = graftContinuationTree(
+    tree([delegate(session("child", [shell("a")], "child-next"))]),
+    "session:child",
+    tree([delegate(session("child", [shell("b")]))]),
+  );
+  const fenced = fenceRootSession(paged.root, tree([delegate(session("child", [shell("a")], "child-next-2"))]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
 });
 
 test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
