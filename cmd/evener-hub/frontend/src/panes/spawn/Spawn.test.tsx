@@ -4964,3 +4964,89 @@ test("a bare /reasoning-effort toasts, starts nothing, applies nothing, and leav
   expect(button.disabled).toBe(false);
   expect(button.textContent).toBe("Start");
 });
+
+// RoboRev PR1131 finding 3: model/list can serialize an empty Go slice as
+// `data: null` (appwire's ModelListResponse.Data carries no omitempty); the
+// sweep and validation callbacks passed r.data straight into helpers that
+// iterate it, so a null payload rejected the callback and skipped its work.
+test("a null model/list payload does not reject the defaults sweep", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/null-catalog-sweep");
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/null-catalog-sweep",
+    JSON.stringify({ model: "openai/gpt-5", access_mode: "plan" }),
+  );
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({ data: null }) as unknown as ModelListResponse);
+  });
+  renderSpawn(fake);
+  await settled();
+  // The sweep ran to completion instead of throwing: an unenumerated provider's
+  // model is left alone (verdict "unknown"), so the blob is untouched.
+  const raw = localStorage.getItem("evener-hub.spawn-defaults./tmp/null-catalog-sweep");
+  expect(raw).not.toBeNull();
+  expect(JSON.parse(raw as string)).toEqual({ model: "openai/gpt-5", access_mode: "plan" });
+});
+
+// RoboRev PR1131 finding 8: `branch` stayed component-local while SpawnForm
+// persists across draft switches, so project B showed project A's branch until
+// B's evener/git/head completed - and indefinitely whenever it failed.
+test("the branch readout never shows the previous project's branch after a draft switch", async () => {
+  const headA = deferred<{ head: string }>();
+  const headB = deferred<{ head: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/git/head", ({ cwd }) => (cwd === "/tmp/branch-project-a" ? headA.promise : headB.promise));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/branch-project-a");
+  renderSpawn(fake);
+  await settled();
+  await act(async () => headA.resolve({ head: "feature-a" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("feature-a"));
+
+  await visitSpawnURL("/new?dir=/tmp/branch-project-b");
+  // B's HEAD is still in flight: A's branch must not linger under B.
+  expect(screen.queryByTestId("spawn-branch")).toBeNull();
+
+  await act(async () => headB.resolve({ head: "feature-b" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("feature-b"));
+});
+
+// RoboRev PR1131 finding 5: draft ownership was keyed on the readValues callback
+// identity, which Spawn recreates via useCallback(..., [draft]) on every draft
+// change. Returning to a draft after visiting another (A -> B -> A) yields a NEW
+// callback identity for the SAME draft, so an in-flight path validation's error
+// was dropped even though its field value still lives in A's own draft (the
+// validation still wrote its `invalid` flag, silently hiding the message).
+test("a draft re-entered after another keeps its late path-validation error", async () => {
+  const user = userEvent.setup();
+  const validation = deferred<{ path: string; valid: boolean; error: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => (path === "review-agent" ? validation.promise : { path, valid: true }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/reentry-validation-a");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+
+  // Visit another draft and come back: A's draft is the SAME object, but Spawn's
+  // readValues useCallback produces a new identity for it.
+  await visitSpawnURL("/new?dir=/tmp/reentry-validation-b");
+  await visitSpawnURL("/new?dir=/tmp/reentry-validation-a");
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
+
+  await act(async () => validation.resolve({ path: "review-agent", valid: false, error: "reentry-a-invalid" }));
+  expect(await screen.findByText("reentry-a-invalid")).toBeTruthy();
+});

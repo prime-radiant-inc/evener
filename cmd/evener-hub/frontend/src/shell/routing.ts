@@ -124,8 +124,16 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
 // (only real back/forward navigation does), so this dispatches one itself -
 // the single event AppShell listens for to cover both programmatic
 // navigation (this function) and the browser's own back/forward buttons.
+//
+// Identity is the COMPLETE target URL (path + query + hash), not just its
+// path: a target with a query differs from the bare path of the current URL
+// (so navigating from /new?dir=A to /new must clear the query and notify), and
+// an identical path+query must not push a duplicate entry or re-notify
+// listeners. The argument is always a path (optionally with search/hash) - the
+// app never constructs an absolute URL here.
 export function navigate(pathname: string, options: { replace?: boolean } = {}): void {
-  if (window.location.pathname === pathname) return;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (current === pathname) return;
   if (options.replace) window.history.replaceState({}, "", pathname);
   else window.history.pushState({}, "", pathname);
   window.dispatchEvent(new PopStateEvent("popstate"));

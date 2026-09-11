@@ -31,7 +31,12 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     state: SpawnSlashCatalogLoadState;
   } | null>(null);
   const latestKey = useRef("");
-  const lastResponse = useRef<{ cwd: string; logicalKey: string; response: SpawnSlashCatalogResponse } | null>(null);
+  const lastResponse = useRef<{
+    client: AppwireClientLike;
+    cwd: string;
+    logicalKey: string;
+    response: SpawnSlashCatalogResponse;
+  } | null>(null);
   const launchOverridesRef = useRef(launchOverrides);
   const harnessRef = useRef(harness);
   // Latest-value sync for the debounced callback below: assigned in an effect,
@@ -72,11 +77,13 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     const setState = (state: SpawnSlashCatalogLoadState) => setResult({ client, requestKey, state });
     // Keep the previous response mounted while a same-cwd refresh (a selection
     // toggle, a revision bump, a retry) is in flight, so the panel doesn't
-    // collapse to an empty loading state and back. A cwd change drops it: the
-    // stale list belongs to another directory.
+    // collapse to an empty loading state and back. Another client or cwd has no
+    // authority to reuse the stale list (mirrors usePluginPreview).
     const cached = lastResponse.current;
     setState(
-      cached !== null && cached.cwd === cwd ? { status: "loading", response: cached.response } : { status: "loading" },
+      cached !== null && cached.client === client && cached.cwd === cwd
+        ? { status: "loading", response: cached.response }
+        : { status: "loading" },
     );
 
     const timer = setTimeout(() => {
@@ -92,14 +99,17 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
       void client.request("evener/spawn/slashCatalog", params).then(
         (response) => {
           if (latestKey.current === requestKey && clientGenerationRef.current === requestGeneration) {
-            lastResponse.current = { cwd, logicalKey, response };
+            lastResponse.current = { client, cwd, logicalKey, response };
             setState({ status: "ready", response });
           }
         },
         (error) => {
           if (latestKey.current !== requestKey || clientGenerationRef.current !== requestGeneration) return;
           const cachedResponse = lastResponse.current;
-          const response = cachedResponse?.logicalKey === logicalKey ? cachedResponse.response : undefined;
+          const response =
+            cachedResponse?.client === client && cachedResponse.logicalKey === logicalKey
+              ? cachedResponse.response
+              : undefined;
           setState(
             response
               ? { status: "error", message: errorText(error), response }
@@ -123,7 +133,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     ? { status: "ready", response: { commands: [], skills: [] } }
     : result?.client === client && result.requestKey === requestKey
       ? result.state
-      : cached !== null && cached.cwd === cwd
+      : cached !== null && cached.client === client && cached.cwd === cwd
         ? { status: "loading", response: cached.response }
         : { status: "loading" };
   return { state, retry };

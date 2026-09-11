@@ -51,6 +51,12 @@ export interface AdvancedOptionsProps {
   onValuesChange?: (values: AdvancedValues) => void;
   /** Reads the originating draft after an asynchronous validation or remount. */
   readValues?: () => AdvancedValues;
+  /** Stable identity of the draft these values belong to. Async validation and
+   * resolve results are dropped when it changes, but a same-draft remount -
+   * which recreates readValues' own identity - must NOT drop them. Defaults to
+   * readValues when absent, preserving callback-identity behavior for callers
+   * that do not own a durable draft object. */
+  draftId?: unknown;
   /** evener/path/validate. Both the scalar path fields' live validation and the
    * pathList add rows go through it; `path` (the server-canonicalized spelling)
    * is used by an add when the caller's closure forwards it. */
@@ -80,6 +86,7 @@ export function AdvancedOptions({
   values: draftValues,
   onValuesChange,
   readValues,
+  draftId,
   validatePath,
   createDirectory,
   resolveConfig,
@@ -94,16 +101,24 @@ export function AdvancedOptions({
   const setValues = onValuesChange ?? setLocalValues;
   const valuesRef = useRef(values);
   valuesRef.current = values;
-  const activeReader = useRef(readValues);
-  activeReader.current = readValues;
+  // A draft's identity is durable (the draft object itself); readValues is a
+  // callback the parent recreates whenever the draft changes - and, for the
+  // same draft, whenever it remounts. Key ownership on the durable identity so
+  // an in-flight result for the SAME draft is not dropped on remount, while a
+  // different draft still resets feedback.
+  const ownerKey = draftId !== undefined ? draftId : readValues;
+  const activeOwner = useRef(ownerKey);
+  activeOwner.current = ownerKey;
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [resolved, setResolved] = useState<string | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
-  const [owner, setOwner] = useState({ readValues });
-  // The draft reader identifies the project. Reset only transient feedback,
+  // useState(ownerKey) would treat a function ownerKey (readValues) as a lazy
+  // initializer and CALL it, so the identity is carried inside a wrapper object.
+  const [owner, setOwner] = useState({ key: ownerKey });
+  // The draft identity identifies the project. Reset only transient feedback,
   // before rendering children; keep the disclosure and picker controls mounted.
-  if (owner.readValues !== readValues) {
-    setOwner({ readValues });
+  if (owner.key !== ownerKey) {
+    setOwner({ key: ownerKey });
     setErrors({});
     setResolved(null);
     setResolveError(null);
@@ -130,7 +145,7 @@ export function AdvancedOptions({
           // A later edit owns this field now, even if it returned to the same
           // text. Other fields may have changed too: update merges live state.
           if (currentValues()[opt.wireField] !== field) return;
-          if (activeReader.current === readValues) {
+          if (activeOwner.current === ownerKey) {
             setErrors((prev) => ({ ...prev, [opt.wireField]: result.valid ? "" : (result.error ?? "invalid path") }));
           }
           // Re-mark the stored value invalid so collect drops it (floor §1.11).
@@ -138,7 +153,7 @@ export function AdvancedOptions({
         },
         () => {
           // A failing validator never blocks (fail-open), matching preflight.
-          if (currentValues()[opt.wireField] === field && activeReader.current === readValues) {
+          if (currentValues()[opt.wireField] === field && activeOwner.current === ownerKey) {
             setErrors((prev) => ({ ...prev, [opt.wireField]: "" }));
           }
         },
@@ -151,11 +166,14 @@ export function AdvancedOptions({
   async function showResolved(): Promise<void> {
     setResolveError(null);
     try {
-      const result = await resolveConfig(collectAdvancedOverrides(options, values));
-      if (activeReader.current !== readValues) return;
+      // Resolve from the CURRENT draft values (readValues), not the render
+      // snapshot: an edit merged by a just-settled async validation would
+      // otherwise be missing from the preview.
+      const result = await resolveConfig(collectAdvancedOverrides(options, currentValues()));
+      if (activeOwner.current !== ownerKey) return;
       setResolved(JSON.stringify(result.effective, null, 2));
     } catch (err) {
-      if (activeReader.current !== readValues) return;
+      if (activeOwner.current !== ownerKey) return;
       setResolveError(err instanceof Error ? err.message : String(err));
     }
   }

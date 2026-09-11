@@ -369,3 +369,33 @@ test("drops a late response from a replaced client", async () => {
   });
   expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
 });
+
+// RoboRev PR1131 finding 7: the cached-reuse guard checked only cwd, not client
+// identity (usePluginPreview requires both). After a reconnect swaps the client
+// object, the hook exposes the previous client's catalog as the loading state's
+// response instead of loading clean for the new client.
+test("does not reuse the previous client's catalog as the loading response after a client swap", async () => {
+  vi.useFakeTimers();
+  const clientA = new FakeClient();
+  const clientB = new FakeClient();
+  const responseA: SpawnSlashCatalogResponse = {
+    commands: [{ name: "stale-client-a", source: "test" }],
+    skills: [],
+  };
+  clientA.on("evener/spawn/slashCatalog", () => responseA);
+  clientB.on("evener/spawn/slashCatalog", () => new Promise<SpawnSlashCatalogResponse>(() => {}));
+  const { result, rerender } = renderHook(
+    ({ client }: { client: FakeClient }) =>
+      useSpawnSlashCatalog({ client, cwd: "/repo", harness: "evener", launchOverrides: {}, pluginRevision: 0 }),
+    { initialProps: { client: clientA } },
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(250);
+    await flush();
+  });
+  expect(result.current.state).toEqual({ status: "ready", response: responseA });
+
+  rerender({ client: clientB });
+  // B's own request is still in flight: A's catalog has no authority to stand in.
+  expect(result.current.state).toEqual({ status: "loading" });
+});

@@ -372,7 +372,11 @@ function SpawnForm({
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   const [directoryOpen, setDirectoryOpen] = useState(false);
-  const [branch, setBranch] = useState(""); // display-only (floor §1.7)
+  // Scoped by cwd so a draft switch can never show the previous project's
+  // branch while the new HEAD request is in flight - or indefinitely after it
+  // fails (resolveHeadBranch fails soft to "").
+  const [branchHead, setBranchHead] = useState<{ cwd: string; head: string } | null>(null);
+  const branch = branchHead !== null && branchHead.cwd === cwd ? branchHead.head : ""; // display-only (floor §1.7)
   const [accessMode, setAccessMode] = useDraftField(draft, "accessMode");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
@@ -832,7 +836,10 @@ function SpawnForm({
     setGlobalModelRequest(request);
     request.promise.then(
       (r) => {
-        if (request.active) sweepStaleModels(r.data);
+        // model/list can serialize an empty Go slice as `data: null`
+        // (appwire.ModelListResponse.Data carries no omitempty). Normalize here
+        // so the sweep never iterates a non-iterable and skips its work.
+        if (request.active) sweepStaleModels(r.data ?? []);
       },
       () => {},
     );
@@ -853,7 +860,7 @@ function SpawnForm({
         const current = draft.fields.getState();
         if (!globalModelRequest.active || current.model !== initial.model || current.harness !== initial.harness)
           return;
-        const verdict = modelValidityAgainstList(initial.model, r.data);
+        const verdict = modelValidityAgainstList(initial.model, r.data ?? []);
         if (verdict === "stale" || verdict === "malformed") {
           draft.fields.setState({ model: "", staleModelNotice: initial.model });
         }
@@ -922,7 +929,7 @@ function SpawnForm({
     if (cwd.trim() === "") return undefined;
     let active = true;
     resolveHeadBranch(client, cwd).then((head) => {
-      if (active) setBranch(head);
+      if (active) setBranchHead({ cwd, head });
     });
     return () => {
       active = false;
@@ -1845,6 +1852,7 @@ function SpawnForm({
           values={advancedValues}
           onValuesChange={setAdvancedValues}
           readValues={readAdvancedValues}
+          draftId={draft}
           validatePath={validatePath}
           resolveConfig={resolveConfig}
           loadCatalog={loadCatalog}

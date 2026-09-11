@@ -274,11 +274,24 @@ export function useAttachments(editor: TextEditor, backingStore?: AttachmentStor
       }
       setItems((prev) => {
         const next = prev.filter((item) => !submittedMarkers.has(item.marker));
-        if (next.length === 0) nextMarkerRef.current = 0;
+        if (next.length === 0) {
+          // Restarting numbering at 1 lets a later attachment reuse marker 1.
+          // Any retired marker still recorded in removedWhilePendingRef must not
+          // survive that reuse: removeItem records EVERY removed marker (a
+          // settled one's entry is never drained by a continuation), so a reused
+          // marker's successful encode would be discarded as "already removed"
+          // and the item would stay pending forever. Clear the retired set, and
+          // retire the continuations that referenced it by advancing the
+          // generation, so neither an old removal nor an old settle can touch
+          // the reused marker. Older invalidation (reset) does the same.
+          nextMarkerRef.current = 0;
+          removedWhilePendingRef.current.clear();
+          generationRef.current += 1;
+        }
         return next;
       });
     },
-    [editor, nextMarkerRef, setItems],
+    [editor, nextMarkerRef, removedWhilePendingRef, generationRef, setItems],
   );
 
   const toInputAttachments = useCallback((): InputAttachment[] => {
