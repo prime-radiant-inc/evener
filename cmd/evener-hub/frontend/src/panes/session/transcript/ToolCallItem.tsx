@@ -224,7 +224,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // ToolSummaryContext so shell's own descriptor can strip a redundant
   // "cd <cwd> && " prefix from its summary.
   const statedIntent = statedIntentOf(item);
-  const useProjectedSummary = projectedSummary !== undefined && statedIntent === undefined;
+  // The descriptor's own summary (read_file's "Read <path> · lines N-M", shell's
+  // "Ran <cmd>", …) is the row's summary at every verbosity level. The projected
+  // summary is only a fallback for a descriptor that renders nothing — never a
+  // replacement for a real one. Overriding a real summary with the projected
+  // neutral text is what showed "Action summary unavailable" for every
+  // intent-less tool call, including read_file rows that clearly read a file.
+  const descriptorSummary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+  const useProjectedSummary = projectedSummary !== undefined && descriptorSummary.trim() === "";
   let intent = item.description;
   if (isDelegate) {
     intent = delegateIntentOf(item);
@@ -292,16 +299,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // summary line itself stays - hiding it lifted the disclosure chevron off
   // the line it rides (onto the intent line, or adrift on an intent-less
   // row) - and the swap keeps the call from appearing twice. The placeholder
-  // also supersedes a projected summary while expanded: the intent-level
-  // neutral fallback ("Action summary unavailable") would deny the reader
-  // the call's kind while the open body below shows the command whole.
+  // outranks the projected fallback the same way the descriptor's own summary
+  // does: a real line about the call beats a neutral "unavailable" one
+  // while the open body below shows the command whole.
   const expandedSummary = expanded ? descriptor.summaryWhenExpanded : undefined;
   const summary =
-    expandedSummary !== undefined
-      ? expandedSummary
-      : useProjectedSummary
-        ? projectedSummary
-        : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+    expandedSummary !== undefined ? expandedSummary : useProjectedSummary ? projectedSummary : descriptorSummary;
 
   // Two-level disclosure: the summary line has its own open/closed state,
   // independent of the body disclosure. At verbosity levels where toolCalls is

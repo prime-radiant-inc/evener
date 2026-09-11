@@ -229,17 +229,16 @@ function decisionFor(
 
     // Questions and approvals are interaction rows at every regular level.
     if (interaction) return "critical";
-    // The ordinary item shape has no projected summary field. At tool-call
-    // levels, keep an intent-less call on the critical path so its renderer
-    // receives the exact neutral summary instead of inventing one from the
-    // tool name. Intent-only levels use the proxy's rationale field instead.
-    if (vector.toolCalls && missingIntent) return "critical";
+    // At tool-call levels an intent-less call is an ordinary tool row: its
+    // renderer derives the summary from the call's own arguments (read_file's
+    // "Read <path> · lines N-M", shell's "Ran <cmd>", …). It is not routed to
+    // the critical path, which used to force the neutral placeholder summary.
     if (vector.toolCalls) return "item";
     if (vector.toolIntent) return "intent";
     if (failure || active || (isTerminalTurn(turn) && !vector.toolCalls)) return "critical";
-    // A Custom vector may disable both calls and intent. Even there, a call
-    // with no intent is not routine-readable content: keep its neutral
-    // critical contract rather than inventing a summary from the tool name.
+    // A Custom vector may disable both calls and intent. Even there, an
+    // intent-less call is not routine-readable content: keep it visible as a
+    // critical row (its renderer still derives a summary from the arguments).
     return missingIntent ? "critical" : "hidden";
   }
 

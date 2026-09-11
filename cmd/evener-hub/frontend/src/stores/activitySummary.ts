@@ -1,8 +1,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { ActivityCounts } from "../panes/session/chrome/activityData";
-import { parseActivityTree } from "../panes/session/chrome/activityData";
-import { isActionUnavailable, isThreadNotFound } from "../panes/session/chrome/sessionErrors";
+import type { ActivityCounts } from "../protocol/activityData";
+import { parseActivityTree } from "../protocol/activityData";
 import {
   errorKind,
   errorText,
@@ -10,7 +9,8 @@ import {
   sessionActionError,
   sessionActionHeadline,
 } from "../protocol/errors";
-import { type ActivityFetchResult, activityPanelStore } from "./activityPanel";
+import { isActionUnavailable, isThreadNotFound } from "../protocol/sessionErrors";
+import { type ActivityFetchResult, activityPanelStore, retainedActivityTree } from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
 // A refresh that arrived while a root fetch was in flight. Nothing re-runs
@@ -31,6 +31,10 @@ export interface ActivitySummaryEntry {
   mountedBodies: number;
   loading: boolean;
   lastFetchedBump?: number | null;
+  // Keep the request's ordering value when a continuation invalidates freshness.
+  requestedBump?: number | null;
+  // A published root or continuation satisfies this request generation.
+  hasPublishedResult?: boolean;
   requestID: number;
   pendingBump?: PendingRootFetch;
 }
@@ -47,7 +51,10 @@ export interface ActivitySummaryStoreState {
     onFailure?: (sentence: string) => void,
     force?: boolean,
   ): number | null;
+  issuePendingRootFetch(ref: string): void;
   publishRootFetch(ref: string, requestID: number, counts: ActivityCounts): void;
+  publishContinuationCounts(ref: string, requestID: number, counts: ActivityCounts): void;
+  publishContinuationFailure(ref: string, requestID: number): void;
   failRootFetch(ref: string, requestID: number): void;
   resetForTests(): void;
 }
@@ -94,6 +101,13 @@ function failureFor(err: unknown): { headline: string; detail?: string; sentence
   return detail ? { headline, detail, sentence } : { headline, sentence };
 }
 
+// A continuation owns the panel's request ID until its page merges. Any root
+// fetch started meanwhile replaces that ID, and publishFetch then drops the
+// page the reader already asked for - so a refresh waits instead.
+function continuationPending(ref: string): boolean {
+  return activityPanelStore.getState().entries.get(ref)?.pending?.kind === "continuation";
+}
+
 export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set, get) => ({
   entries: new Map(),
 
@@ -128,6 +142,8 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         established: true,
         loading: true,
         lastFetchedBump: bump,
+        requestedBump: bump,
+        hasPublishedResult: false,
         requestID,
         pendingBump: undefined,
       });
@@ -137,23 +153,29 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
   },
 
   refreshRoot(ref, bump, fetch, onFailure, force = false) {
-    const requestID = get().beginRootFetch(ref, bump, force);
+    const deferred = continuationPending(ref);
+    const requestID = deferred ? null : get().beginRootFetch(ref, bump, force);
     if (requestID === null) {
-      // Refused because a fetch is in flight? Queue this call - with its own
-      // fetch/onFailure - for re-issue on completion. Newest bump wins, both
-      // against the IN-FLIGHT bump and anything already queued (bumps are
+      // Refused because a fetch is in flight, or deferred behind a
+      // continuation? Queue this call - with its own fetch/onFailure - for
+      // re-issue on completion. Newest bump wins, both against the bump the
+      // last root requested and anything already queued (bumps are
       // reducer-side Date.now() stamps, so larger is newer; a null bump
       // carries no ordering claim and yields to a number); force survives
-      // whichever record wins. A non-forced call that is not provably newer
-      // than the fetch already running queues nothing - reissuing an older
-      // bump would regress lastFetchedBump and could replace a good result.
+      // whichever record wins. A failed continuation also permits a retry of
+      // the same bump. Older non-forced calls queue nothing: reissuing one
+      // would regress lastFetchedBump and could replace a good result.
       set((state) => {
-        const entry = state.entries.get(ref);
-        if (!entry?.loading) return state;
-        const newerThanInFlight =
+        // Deferred with no entry of our own: the panel still holds the page the
+        // bump is waiting behind, so the queue has somewhere to live. Start an
+        // entry rather than dropping the bump and its freshness with it.
+        const entry = state.entries.get(ref) ?? (deferred ? { ...EMPTY_ACTIVITY_SUMMARY_ENTRY } : undefined);
+        if (!entry || (!entry.loading && !deferred)) return state;
+        const newerThanRequested =
           bump !== null &&
-          (entry.lastFetchedBump === null || entry.lastFetchedBump === undefined || bump > entry.lastFetchedBump);
-        if (!force && !newerThanInFlight) return state;
+          (entry.requestedBump === null || entry.requestedBump === undefined || bump > entry.requestedBump);
+        const retryInvalidated = entry.lastFetchedBump === undefined && bump === entry.requestedBump;
+        if (!force && !newerThanRequested && !retryInvalidated) return state;
         const incoming: PendingRootFetch = { bump, force, fetch, onFailure };
         const previous = entry.pendingBump;
         const incomingWins = !previous || previous.bump === null || (bump !== null && bump >= previous.bump);
@@ -167,21 +189,25 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     }
     const panelRequestID = activityPanelStore.getState().beginFetch(ref);
     // Re-issues whatever refresh was queued while this request was in flight,
-    // through the queued caller's own fetch/onFailure.
+    // unless a continuation now owns the panel. The panel store drains the
+    // queue once that continuation settles and merges.
     const issuePendingBump = () => {
-      let pending: PendingRootFetch | undefined;
-      set((state) => {
-        const entry = state.entries.get(ref);
-        if (!entry?.pendingBump) return state;
-        pending = entry.pendingBump;
-        const entries = new Map(state.entries);
-        entries.set(ref, { ...entry, pendingBump: undefined });
-        return { entries };
-      });
-      if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
+      if (continuationPending(ref)) return;
+      get().issuePendingRootFetch(ref);
+    };
+    const ownsPanel = () => activityPanelStore.getState().entries.get(ref)?.requestID === panelRequestID;
+    const settleSupersededRoot = () => {
+      // The continuation owns freshness: failure permits another root,
+      // while success must retain loaded pages when the panel closes.
+      get().failRootFetch(ref, requestID);
+      issuePendingBump();
     };
     void fetch(ref)
       .then((data) => {
+        if (!ownsPanel()) {
+          settleSupersededRoot();
+          return;
+        }
         const parsed = parseActivityTree(data);
         if (parsed === null) {
           get().failRootFetch(ref, requestID);
@@ -189,12 +215,16 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
           issuePendingBump();
           return;
         }
-        get().publishRootFetch(ref, requestID, parsed.root.counts);
         activityPanelStore.getState().publishFetch(ref, panelRequestID, { kind: "ready", tree: parsed });
+        // A bounded refresh does not re-list the pages already loaded, and the
+        // panel keeps them, so the badge counts the tree that is on screen
+        // rather than the page as it was sent.
+        const published = retainedActivityTree(activityPanelStore.getState().entries.get(ref)) ?? parsed;
+        get().publishRootFetch(ref, requestID, published.root.counts);
         issuePendingBump();
       })
       .catch((err) => {
-        const currentRequest = get().entries.get(ref)?.requestID === requestID;
+        const currentRequest = get().entries.get(ref)?.requestID === requestID && ownsPanel();
         get().failRootFetch(ref, requestID);
         let result: ActivityFetchResult;
         if (isActionUnavailable(err)) result = { kind: "unsupported" };
@@ -210,12 +240,46 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     return requestID;
   },
 
+  // Re-issues a queued refresh through the queued caller's own fetch/onFailure.
+  issuePendingRootFetch(ref) {
+    let pending: PendingRootFetch | undefined;
+    set((state) => {
+      const entry = state.entries.get(ref);
+      if (!entry?.pendingBump) return state;
+      pending = entry.pendingBump;
+      const entries = new Map(state.entries);
+      entries.set(ref, { ...entry, pendingBump: undefined });
+      return { entries };
+    });
+    if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
+  },
+
   publishRootFetch(ref, requestID, counts) {
     set((state) => {
       const entry = state.entries.get(ref);
       if (!entry || entry.requestID !== requestID) return state;
       const entries = new Map(state.entries);
-      entries.set(ref, { ...entry, counts, loading: false });
+      entries.set(ref, { ...entry, counts, loading: false, hasPublishedResult: true });
+      return { entries };
+    });
+  },
+
+  publishContinuationCounts(ref, requestID, counts) {
+    set((state) => {
+      const entry = state.entries.get(ref);
+      if (!entry || entry.requestID !== requestID) return state;
+      const entries = new Map(state.entries);
+      entries.set(ref, { ...entry, counts, lastFetchedBump: entry.requestedBump, hasPublishedResult: true });
+      return { entries };
+    });
+  },
+
+  publishContinuationFailure(ref, requestID) {
+    set((state) => {
+      const entry = state.entries.get(ref);
+      if (!entry || entry.requestID !== requestID || entry.hasPublishedResult) return state;
+      const entries = new Map(state.entries);
+      entries.set(ref, { ...entry, lastFetchedBump: undefined });
       return { entries };
     });
   },
