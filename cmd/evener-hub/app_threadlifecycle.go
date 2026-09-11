@@ -400,6 +400,10 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 					resumeErr = appwire.Unavailable("persist completed session recovery: " + err.Error())
 					return
 				}
+				// The response was projected while this resume still held the
+				// recovery fence. Re-project so it reports the fork authority a
+				// read issued after the clear reports.
+				response.Thread = applyHubForkCapability(cfg, response.Thread)
 			}
 			cfg.ResumeLocks.RecordResolvedSession(requestedID, sessionID, epoch)
 		}()

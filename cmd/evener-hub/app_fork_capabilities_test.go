@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
 )
@@ -414,5 +416,60 @@ func TestHubForkBranchesInAdmittedEntryStateDir(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// An explicit thread/resume clears the session's recovery fence as it returns.
+// Its own response must carry the fork capability a read issued straight after
+// it reports, or a client is told fork is unavailable on a session it can fork.
+func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
+	var sessionID string
+	cfg, id, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		thread := func(ref string) appwire.Thread {
+			return appwire.Thread{
+				ID: sessionID, SessionID: sessionID, Source: "local",
+				Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+				Evener: appwire.EvenerThread{Ref: ref, InstanceID: sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			}
+		}
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: thread(params.Ref)}, nil
+		})
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+			return appwire.ThreadListResponse{Data: []appwire.Thread{thread(localAppRef(sessionID))}}, nil
+		})
+	})
+	sessionID = id
+	locks := hubcore.NewResumeLocks()
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	cfg.ResumeLocks = locks
+
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Thread.Evener.Capabilities.ForkFromTurn {
+		t.Fatalf("read after explicit resume did not advertise fork: %+v", read.Thread.Evener.Capabilities)
+	}
+	if !resumed.Thread.Evener.Capabilities.ForkFromTurn {
+		t.Fatalf("resume response fork=%v, want the capability the following read reports", resumed.Thread.Evener.Capabilities.ForkFromTurn)
+	}
+	if *resumeCalls != 1 {
+		t.Fatalf("resume launches=%d", *resumeCalls)
 	}
 }
