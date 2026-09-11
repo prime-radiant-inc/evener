@@ -253,3 +253,91 @@ func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 		t.Fatalf("retained entry seq = %d, want the 0 the next append must not reuse", entry.Seq)
 	}
 }
+
+// The buffered door attempts no rollback, so whatever a failed write left at
+// the tail simply stays. That is harmless only while nothing follows it: the
+// next append would run its record onto the remains of this one and make the
+// file unreadable whole, so the writer has to stop here too.
+func TestAppend_PartialLineFailurePoisonsWriter(t *testing.T) {
+	w, fs := armPartialWriteFailure(t, 12)
+
+	err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("interrupted")))
+	if err == nil || errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("buffered append error = %v, want the write failure itself", err)
+	}
+	if w.seq != 0 {
+		t.Fatalf("next sequence = %d, want 0: a partial line is no entry", w.seq)
+	}
+
+	before, err := afero.ReadFile(fs, faultTranscriptPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("would weld onto the partial line"))); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("buffered append after an unresolved partial write = %v, want ErrWriterPoisoned", err)
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("the durable door too"))); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("durable append after an unresolved partial write = %v, want ErrWriterPoisoned", err)
+	}
+	after, err := afero.ReadFile(fs, faultTranscriptPath)
+	if err != nil {
+		t.Fatalf("read back after refusals: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("refused appends changed the file: %q then %q", before, after)
+	}
+}
+
+// A buffered write that transferred the whole line before failing left a record
+// a reader will see, so it spends its sequence number and counts the failures it
+// settles — the same accounting the durable door does for a retained line.
+func TestAppend_WholeLineFailureSpendsSequence(t *testing.T) {
+	w, _ := armPartialWriteFailure(t, math.MaxInt32)
+
+	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
+	if err := w.Append(retained); err == nil {
+		t.Fatal("buffered append reported success over an injected write failure")
+	}
+	if w.seq != 1 {
+		t.Fatalf("next sequence = %d, want 1: a whole line a reader sees spends its sequence", w.seq)
+	}
+	if count, ok := w.FailedToolCalls(); !ok || count != 1 {
+		t.Fatalf("failure count = %d (counted=%v), want the 1 a reader of the transcript counts", count, ok)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("append after an unresolved write = %v, want ErrWriterPoisoned", err)
+	}
+}
+
+// A write that transferred nothing is the shape every pre-existing
+// write-failure fixture produces, and it leaves the file and the writer's
+// position exactly as they were. There is nothing at the tail to guard, so the
+// writer stays usable and a retry still lands.
+func TestAppend_NoBytesWrittenLeavesWriterUsable(t *testing.T) {
+	w, fs := armPartialWriteFailure(t, 0)
+
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); err == nil {
+		t.Fatal("buffered append reported success over an injected write failure")
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("retry"))); err != nil {
+		t.Fatalf("retry after a write that transferred nothing: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	data, err := afero.ReadFile(fs, faultTranscriptPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d, want the header and the landed retry", len(lines))
+	}
+	entry, err := DecodeEntry(lines[1])
+	if err != nil {
+		t.Fatalf("decode retry entry: %v", err)
+	}
+	if entry.Seq != 0 {
+		t.Fatalf("retry entry seq = %d, want the 0 the failed append never spent", entry.Seq)
+	}
+}
