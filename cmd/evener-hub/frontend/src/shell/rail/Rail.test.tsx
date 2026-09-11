@@ -1045,10 +1045,12 @@ describe("resource-backed Rail", () => {
         [keyID(location.key), location],
         [keyID(live.key), live],
       ]);
-      navigationStore.setState({ resources: nextResources });
-      await act(async () => undefined);
-      navigationStore.setState({ attention: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } } });
-      await act(async () => undefined);
+      await act(async () => {
+        navigationStore.setState({ resources: nextResources });
+      });
+      await act(async () => {
+        navigationStore.setState({ attention: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } } });
+      });
       expect(scroll).toHaveBeenCalledTimes(1);
       expect(consumed).toHaveBeenCalledTimes(1);
       view.rerender(<Rail revealTarget="target" onRevealConsumed={consumed} />);

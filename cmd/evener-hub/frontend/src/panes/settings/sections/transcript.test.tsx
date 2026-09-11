@@ -205,7 +205,11 @@ test("keeps browser-storage failure inline without a failure notification", asyn
   transcriptDisplayStore.setState({ hubSupport: "supported" });
   renderWithToasts();
   vi.stubGlobal("localStorage", new FailingStorage());
-  transcriptDisplayStore.getState().setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  act(() => {
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  });
 
   expect(transcriptDisplayStore.getState().storageWarning).toMatch(/may not survive restart/);
   await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
@@ -400,11 +404,16 @@ test("acknowledges a notification received before its matching save response", a
   client.on("evener/settings/transcriptDisplay/patch", () => response.promise);
   await mountReadySection(client);
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
-  client.emitNotification({
-    method: "evener/settings/transcriptDisplay/changed",
-    params: { layout: "desktop", revision: 2, config: toWireConfig(draft) },
-  } as AnyNotification);
-  response.resolve({ layout: "desktop", revision: 2, config: toWireConfig(draft) });
+  act(() => {
+    client.emitNotification({
+      method: "evener/settings/transcriptDisplay/changed",
+      params: { layout: "desktop", revision: 2, config: toWireConfig(draft) },
+    } as AnyNotification);
+  });
+  await act(async () => {
+    response.resolve({ layout: "desktop", revision: 2, config: toWireConfig(draft) });
+    await response.promise;
+  });
 
   expect(await screen.findByText("Settings saved")).toBeTruthy();
   expect(screen.getAllByText("Settings saved")).toHaveLength(1);
@@ -434,8 +443,12 @@ test("does not acknowledge a save from a stale client generation", async () => {
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
   const refreshCountBeforeReconnect = refreshes;
   reconnecting = true;
-  client.emitStateChange("idle");
-  client.emitReady();
+  const request = vi.spyOn(client, "request");
+  await act(async () => {
+    client.emitStateChange("idle");
+    client.emitReady();
+    await Promise.all(request.mock.results.map((result) => result.value));
+  });
   await waitFor(() =>
     expect(
       client.calls.filter((call) => call.method === "evener/settings/transcriptDisplay/get").length,
@@ -509,7 +522,10 @@ test("does not toast when an overlapping PATCH conflicts with the committed winn
 
   await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
   await waitFor(() => expect(responses).toHaveLength(1));
-  const competingPatch = transcriptDisplayStore.getState().patchHubDefault("desktop", newerDraft);
+  let competingPatch!: ReturnType<ReturnType<typeof transcriptDisplayStore.getState>["patchHubDefault"]>;
+  act(() => {
+    competingPatch = transcriptDisplayStore.getState().patchHubDefault("desktop", newerDraft);
+  });
   await waitFor(() => expect(responses).toHaveLength(2));
 
   responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
@@ -517,14 +533,16 @@ test("does not toast when an overlapping PATCH conflicts with the committed winn
   expect(screen.queryByText("Settings saved")).toBeNull();
   expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(newerDraft);
 
-  responses[1]?.reject(
-    new WireError("revision conflict", -32013, {
-      evenerErrorInfo: "conflict",
-      layout: "desktop",
-      current: { revision: 2, config: toWireConfig(firstDraft) },
-    }),
-  );
-  await expect(competingPatch).rejects.toThrow("revision conflict");
+  await act(async () => {
+    responses[1]?.reject(
+      new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "desktop",
+        current: { revision: 2, config: toWireConfig(firstDraft) },
+      }),
+    );
+    await expect(competingPatch).rejects.toThrow("revision conflict");
+  });
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(screen.queryByText("Settings saved")).toBeNull();

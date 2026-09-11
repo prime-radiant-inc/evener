@@ -177,6 +177,9 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
       <Composer ref={ref} />
     </ClientProvider>,
   );
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
   return fake;
 }
 
@@ -490,7 +493,13 @@ test.each(["storage", "composer"] as const)(
   async (source) => {
     const subscribe = source === "storage" ? subscribeMutationPersistence : subscribeComposerSubmissionCommitted;
     const failure = new Error("subscriber failed");
-    const report = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const expectedMessage =
+      source === "storage" ? "Mutation persistence listener failed" : "Composer submission listener failed";
+    const realConsoleError = console.error.bind(console);
+    const report = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      if (args.length === 2 && args[0] === expectedMessage && args[1] === failure) return;
+      realConsoleError(...args);
+    });
     const unsubscribeFailure = subscribe(() => {
       throw failure;
     });
@@ -512,6 +521,7 @@ test.each(["storage", "composer"] as const)(
     } finally {
       unsubscribeFailure();
       unsubscribeObserved();
+      report.mockRestore();
     }
   },
 );
@@ -563,9 +573,11 @@ function askArgs(questions: Array<Record<string, unknown>>): string {
 const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
 
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
-  fake.emitNotification({
-    method: "turn/started",
-    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    });
   });
 }
 
@@ -590,13 +602,17 @@ function ackAskUserCall(
       argumentsJson: askArgs(questions),
     },
   };
-  fake.emitNotification({
-    method: "item/started",
-    params: { ...base, item: { ...base.item, status: "inProgress" } },
+  act(() => {
+    fake.emitNotification({
+      method: "item/started",
+      params: { ...base, item: { ...base.item, status: "inProgress" } },
+    });
   });
-  fake.emitNotification({
-    method: "item/completed",
-    params: { ...base, item: { ...base.item, status: "completed" } },
+  act(() => {
+    fake.emitNotification({
+      method: "item/completed",
+      params: { ...base, item: { ...base.item, status: "completed" } },
+    });
   });
 }
 
@@ -1039,6 +1055,8 @@ test("the composer un-hides once the pending ask resolves through the normal sen
 
   await act(async () => {
     await askDockStore.getState().sendBatch("ref_a", batchId);
+    await turnStarted;
+    await flushPendingTurnsProjectionForTests();
   });
 
   await expect(turnStarted).resolves.toMatchObject({

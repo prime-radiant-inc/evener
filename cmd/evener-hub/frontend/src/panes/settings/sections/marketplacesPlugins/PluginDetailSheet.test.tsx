@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -52,12 +52,13 @@ test("renders nothing when target is null", () => {
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("renders name, state chips, version, marketplace, and source", () => {
+test("renders name, state chips, version, marketplace, and source", async () => {
   connectFakeClient();
   extensionsStore.setState({
     plugins: [{ ...LINTER, broken: true, enabled: false, autoUpgrade: true }],
     marketplaces: [ACME],
   });
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
   expect(screen.getByText("broken")).toBeTruthy();
@@ -66,22 +67,33 @@ test("renders name, state chips, version, marketplace, and source", () => {
   expect(screen.getByText("v1.2.0")).toBeTruthy();
   expect(screen.getByText("acme-plugins")).toBeTruthy();
   expect(screen.getByText("github: acme/plugins")).toBeTruthy();
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  await act(() => browse.value);
 });
 
-test("omits the source row when the marketplace is not registered", () => {
+test("omits the source row when the marketplace is not registered", async () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [] });
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
   expect(screen.queryByText("github: acme/plugins")).toBeNull();
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  await act(() => browse.value);
 });
 
-test("the Enabled and Auto-upgrade switches reflect the entry's state", () => {
+test("the Enabled and Auto-upgrade switches reflect the entry's state", async () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.getByRole("switch", { name: "Enabled" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("switch", { name: "Auto-upgrade" }).getAttribute("aria-checked")).toBe("false");
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  await act(() => browse.value);
 });
 
 test("the Enabled switch calls pluginDisable on an enabled plugin, pluginEnable on a disabled one", async () => {
@@ -339,8 +351,12 @@ test("closes itself when the entry disappears from the store (removed elsewhere)
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const onClose = vi.fn();
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
-  extensionsStore.setState({ plugins: [] });
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  act(() => extensionsStore.setState({ plugins: [] }));
+  await act(() => browse.value);
   await waitFor(() => expect(onClose).toHaveBeenCalled());
 });

@@ -549,11 +549,22 @@ test("mounts and renders the welcome pane", async () => {
   expect(await screen.findByText("No session open")).toBeTruthy();
 });
 
-test("wires the injected client into connectionStore (connects on mount)", () => {
+test("wires the injected client into connectionStore (connects on mount)", async () => {
   const fake = new FakeClient("ready");
-  render(<AppShell client={fake} />);
-  expect(connectionStore.getState().client).toBe(fake);
-  expect(connectionStore.getState().state).toBe("ready");
+  const connect = vi.spyOn(fake, "connect");
+  try {
+    render(<AppShell client={fake} />);
+    expect(connectionStore.getState().client).toBe(fake);
+    expect(connectionStore.getState().state).toBe("ready");
+    expect(connect).toHaveBeenCalled();
+    const connectionResult = connect.mock.results[0];
+    if (connectionResult?.type !== "return") throw new Error("AppShell did not start the handshake");
+    await act(async () => {
+      await connectionResult.value;
+    });
+  } finally {
+    connect.mockRestore();
+  }
 });
 
 test("shows no banner while the injected client is ready", async () => {
@@ -913,19 +924,21 @@ function seedColdModJPage(ref = "local:late") {
 }
 
 function setColdModJState(loadSection: NavigationStoreState["loadSection"]) {
-  navigationStore.setState({
-    mode: "v2",
-    manifest: {
-      data: {
-        generation_id: "generation_test",
-        revision: 1,
-        sources: [],
-        attentionSummary: { needsYou: 1, error: 0, working: 0 },
-        catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-        sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
-      },
-    } as never,
-    loadSection,
+  act(() => {
+    navigationStore.setState({
+      mode: "v2",
+      manifest: {
+        data: {
+          generation_id: "generation_test",
+          revision: 1,
+          sources: [],
+          attentionSummary: { needsYou: 1, error: 0, working: 0 },
+          catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        },
+      } as never,
+      loadSection,
+    });
   });
 }
 
@@ -938,10 +951,13 @@ test("late Mod-J page success does not navigate after focus moves to Settings", 
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
   act(() => workspaceStore.getState().replacePrimary("settings", {}));
-  seedColdModJPage();
-  resolveLoad(undefined as never);
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    seedColdModJPage();
+    resolveLoad(undefined as never);
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(window.location.pathname).toBe("/");
   expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
 });
@@ -957,10 +973,13 @@ test("late Mod-J page success does not navigate after a modal opens", async () =
   const modal = document.createElement("div");
   modal.setAttribute("aria-modal", "true");
   document.body.appendChild(modal);
-  seedColdModJPage("local:modal-late");
-  resolveLoad(undefined as never);
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    seedColdModJPage("local:modal-late");
+    resolveLoad(undefined as never);
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(window.location.pathname).toBe("/");
   modal.remove();
 });
@@ -975,8 +994,12 @@ test("v1 Mod-J does not re-request an in-flight needs-you page", async () => {
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
-  resolveLoad(undefined as never);
-  await Promise.resolve();
+  await act(async () => {
+    resolveLoad(undefined as never);
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(loadSection).toHaveBeenCalledTimes(1);
 });
 
@@ -989,8 +1012,11 @@ test("v1 Mod-J does not re-request a failed needs-you page", async () => {
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   fireEvent.keyDown(window, { key: "j", metaKey: true });
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await expect(loadResult.value).rejects.toThrow("network failed");
+  });
   expect(loadSection).toHaveBeenCalledTimes(1);
 });
 
@@ -1020,8 +1046,11 @@ test("v1 Mod-J does not re-request an empty needs-you page", async () => {
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   fireEvent.keyDown(window, { key: "j", metaKey: true });
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(loadSection).toHaveBeenCalledTimes(1);
 });
 
@@ -1864,7 +1893,7 @@ test("a deferred deep link beats a restored active session panel", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(paneFor("local:child")).toBeUndefined();
-  installLocationForRoute("local:child");
+  act(() => installLocationForRoute("local:child"));
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
 });
@@ -2443,7 +2472,7 @@ test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of b
   await screen.findByText("No session open");
   expect(window.location.pathname).toBe("/s/local%3As1");
 
-  installLocationForRoute("local:s1");
+  act(() => installLocationForRoute("local:s1"));
 
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   // And the address bar now names it in paneToURL's own canonical form.
@@ -2465,7 +2494,7 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   await screen.findByText("Loading session panel…");
   await waitFor(() => expect(getDockviewApi()?.panels.some((panel) => panel.id === panelId)).toBe(true));
 
-  setMobile(true);
+  act(() => setMobile(true));
   expect(await screen.findByText("Loading session panel…")).toBeTruthy();
   expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
   // The scaffold header is display:none below 900px - StackHost's top-bar
@@ -2473,13 +2502,17 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   // panel panes.
   expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
 
-  setMobile(false);
-  await waitFor(() => expect(getDockviewApi()).toBeNull());
+  act(() => {
+    setMobile(false);
+    // Still the mobile host, after the event but before React commits it.
+    // DockRegion's shared lazy payload mounts DockHost immediately at commit.
+    expect(getDockviewApi()).toBeNull();
+  });
   await waitFor(() => expect(getDockviewApi()?.panels.some((panel) => panel.id === panelId)).toBe(true));
   expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
   expect(getDockviewApi()).not.toBeNull();
 
-  setMobile(true);
+  act(() => setMobile(true));
   await screen.findByText("Loading session panel…");
   await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).not.toBe(panelId));
@@ -3556,7 +3589,7 @@ test("an in-flight live demand-load goes inert after leaving the session and ret
   // The route-placement effect re-focuses the session pane on the return
   // leg only when the location resource is present, so the test installs
   // it exactly as the app's own location lookup would have.
-  installLocationForRoute("local:live-a");
+  act(() => installLocationForRoute("local:live-a"));
 
   // Demand in flight from A (the last loaded live row). The leave/return
   // must be a round trip the OLD guards cannot see: going to "/" opens the
@@ -3630,7 +3663,7 @@ test("a second press adopts an in-flight demand whose guards went stale", async 
   // The route-placement effect re-focuses the session pane on the return
   // leg only when the location resource is present, so the test installs it
   // exactly as the app's own location lookup would have.
-  installLocationForRoute("local:live-a");
+  act(() => installLocationForRoute("local:live-a"));
 
   // Press one: demand in flight from A (the last loaded live row).
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
