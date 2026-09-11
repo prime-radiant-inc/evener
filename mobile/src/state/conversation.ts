@@ -1229,6 +1229,15 @@ export function createConversationStore() {
     supersededFrozenIds: Set<string> = new Set(),
   ): void {
     const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
+    // An identity that was already frozen before this call (or by a
+    // superseded live version) keeps its freeze while it remains in the final
+    // set — its content is already truncated, so the byte check alone would
+    // unfreeze it. Members go through the same check as top-level rows:
+    // otherwise an already-truncated member lost its freeze on the next
+    // loadOlder/rehydrate and admitted deltas against truncated content.
+    const staysFrozen = (identity: string): boolean =>
+      (priorFrozenIds.has(identity) || supersededFrozenIds.has(identity)) &&
+      retainedIds.has(identity);
     truncatedItemIds.clear();
     for (const item of items) {
       let needsTruncation = false;
@@ -1237,16 +1246,7 @@ export function createConversationStore() {
       } else if (item.kind === "activity") {
         needsTruncation = exceedsActivityDetailLimit(item.detail);
       }
-      // Freeze if: original content is oversized, OR the item was already
-      // frozen and remains in the final set (priorFrozenIds), OR the item
-      // is a superseded live version still frozen (supersededFrozenIds).
-      if (
-        needsTruncation ||
-        (priorFrozenIds.has(timelineIdentity(item)) &&
-          retainedIds.has(timelineIdentity(item))) ||
-        (supersededFrozenIds.has(timelineIdentity(item)) &&
-          retainedIds.has(timelineIdentity(item)))
-      ) {
+      if (needsTruncation || staysFrozen(timelineIdentity(item))) {
         truncatedItemIds.add(timelineIdentity(item));
       }
       // A clustered member's own oversized detail freezes under the
@@ -1255,8 +1255,9 @@ export function createConversationStore() {
       // its own.
       if (item.kind === "activity" && item.members) {
         for (const member of item.members) {
-          if (exceedsActivityDetailLimit(member.detail)) {
-            truncatedItemIds.add(member.transcriptKey ?? member.id);
+          const identity = activityIdentity(member);
+          if (exceedsActivityDetailLimit(member.detail) || staysFrozen(identity)) {
+            truncatedItemIds.add(identity);
           }
         }
       }

@@ -12377,6 +12377,31 @@ describe("ConversationStore", () => {
       expect(memberB?.detail.output).toBe("accumulated");
       expect(memberA?.detail.output).toBe("first");
     });
+
+    it("keeps an already-truncated member frozen when a page reconciles truncation", async () => {
+      const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
+      const { store, service } = await openProjectedWithItems([
+        toolItem("wire-a", "key-a", "call-a", "first"),
+        toolItem("wire-b", "key-b", "call-b", oversized),
+      ]);
+      // The stored member is now SHORT — it was truncated on the way in — so
+      // only the carried-over freeze can keep it frozen.
+      const truncatedOutput = clusterMembers(store, "wire-a")[1]?.detail.output;
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [{ kind: "user", id: "older", text: "older" }],
+      };
+      await store.getState().loadOlder(service);
+
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+      // The freeze still refuses a delta against the truncated member.
+      toolOutputDelta(store, "wire-b", "call-b", " MORE");
+      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
+        truncatedOutput,
+      );
+    });
   });
   // --- C1: Service-specific operation binding ---------------------------------------
 
