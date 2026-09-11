@@ -153,7 +153,12 @@ class FakeConversationService implements LiveConversationService {
   ref: string | null = null;
   openConv: MobileConversation = makeConversation();
   olderCursor: string | null = null;
-  olderItems: { items: MobileConversation["items"]; nextCursor?: string } = {
+  olderItems: {
+    items: MobileConversation["items"];
+    nextCursor?: string;
+    hasEarlierItems?: boolean;
+    hasLaterItems?: boolean;
+  } = {
     items: [],
   };
   receipt: MutationReceipt = makeReceipt();
@@ -207,9 +212,12 @@ class FakeConversationService implements LiveConversationService {
     this.refreshCapsCallCount += 1;
     return this.refreshCapsResult ?? { ...ALL_TRUE_CAPS };
   }
-  async loadOlder(
-    _cursor: string,
-  ): Promise<{ items: MobileConversation["items"]; nextCursor?: string }> {
+  async loadOlder(_cursor: string): Promise<{
+    items: MobileConversation["items"];
+    nextCursor?: string;
+    hasEarlierItems?: boolean;
+    hasLaterItems?: boolean;
+  }> {
     // Support hanging for stale-safety tests: if olderItems is a Promise,
     // await it so it resolves when the test wants.
     if (this.olderItems instanceof Promise) {
@@ -3644,6 +3652,39 @@ describe("ConversationStore", () => {
       // F8: When at cap, further paging should be disabled honestly —
       // olderCursor set to null so we don't repeatedly load discarded rows.
       expect(store.getState().olderCursor).toBeNull();
+    });
+
+    it("stops offering earlier items once the cap nulls the cursor", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const items: MobileConversation["items"] = [];
+      for (let i = 100; i < 500; i++) {
+        items.push({ kind: "user", id: `item-${i}`, text: "" });
+      }
+      service.openConv = makeConversation({ items });
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      const olderItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 200; i++) {
+        olderItems.push({ kind: "user", id: `item-old-${i}`, text: "" });
+      }
+      // The server still reports earlier items — the cap, not the server, is
+      // what ends paging here.
+      service.olderItems = {
+        items: olderItems,
+        nextCursor: "more",
+        hasEarlierItems: true,
+      };
+      await store.getState().loadOlder(service);
+
+      expect(store.getState().olderCursor).toBeNull();
+      // The flag must agree with the cursor: offering a load that
+      // early-returns "ignored" is a button that can never add a row.
+      expect(store.getState().hasEarlierItems).toBe(false);
+      expect(await store.getState().loadOlder(service)).toEqual({
+        status: "ignored",
+      });
     });
   });
 

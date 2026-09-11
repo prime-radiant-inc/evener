@@ -2181,12 +2181,19 @@ export function createConversationStore() {
             // F8: If we're at the cap and the merge trimmed older items,
             // disable further paging honestly — set cursor to null so
             // we don't repeatedly load rows that will be discarded.
+            // capItems keeps the newest RETAINED_ITEM_CAP rows, so the older
+            // page this call prepended is exactly what the cap discards: once
+            // at cap, no further page can retain a row. The cap therefore ends
+            // paging, and hasEarlierItems must say so — a cursor of null with
+            // the flag still true offers a load that early-returns "ignored".
             const atCap = merged.length >= RETAINED_ITEM_CAP;
             const nextCursor = atCap ? null : (result.nextCursor ?? null);
             set({
               conversation: { ...currentConv, items: merged },
               olderCursor: nextCursor,
-              hasEarlierItems: result.hasEarlierItems ?? get().hasEarlierItems,
+              hasEarlierItems: atCap
+                ? false
+                : (result.hasEarlierItems ?? get().hasEarlierItems),
               hasLaterItems: result.hasLaterItems ?? get().hasLaterItems,
               loadingOlder: false,
             });
