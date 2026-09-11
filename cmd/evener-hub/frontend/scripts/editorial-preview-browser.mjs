@@ -329,8 +329,14 @@ try {
   assert.deepEqual(observations.geometryFailures, [], "Full-AppShell geometry matrix");
   console.log("PASS editorial-preview full-AppShell workflows and geometry matrix");
 } finally {
-  if(page) (observations.pointerTrace ??= []).push(...await evaluate(page.send,"window.nativeTrace??[]"));
+  try {
+    if (page) (observations.pointerTrace ??= []).push(...await evaluate(page.send, "window.nativeTrace??[]"));
+  } catch {
+    // The page or Chrome may have disconnected during the run; pointer-trace
+    // collection is best-effort and must not prevent evidence writing,
+    // page closure, or process cleanup.
+  }
   fs.writeFileSync(path.join(evidence, "browser.json"), JSON.stringify(observations, null, 2));
-  page?.close();
+  try { page?.close(); } catch { /* page already gone */ }
   await run.cleanup();
 }
