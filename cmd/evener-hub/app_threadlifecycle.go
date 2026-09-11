@@ -799,6 +799,16 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
+	// A target the hub already knows is gone is answered before daemon
+	// discovery, which is the one fence below that can fail for its own
+	// reasons: deletion is terminal and tells the client to stop, a discovery
+	// failure is transient and tells it to retry, so letting the transient
+	// answer mask the terminal one keeps a client retrying a fork that can
+	// never succeed. This read takes no lock; the locked pass below still
+	// re-reads both identities under theirs.
+	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return appwire.ThreadForkResponse{}, err
+	}
 	// One roster refresh serves every fence below, and it has to land before
 	// them: a live-delegate fence read off the previous scan admits a delegate
 	// the parent daemon picked up since, and this is also the scan that resolves

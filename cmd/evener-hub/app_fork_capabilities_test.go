@@ -1710,3 +1710,62 @@ func TestHubForkFollowsTheRecoveryRedirectForAStoppedAlias(t *testing.T) {
 		t.Fatalf("fork branched %q, want the session the resume settled on %q", meta.ParentSessionID, currentID)
 	}
 }
+
+// A deleted target is terminal: the client is told the target is gone and must
+// not retry. Daemon discovery failing is transient and retryable. Refreshing
+// ownership before reading the deletion state let the transient answer mask the
+// terminal one — a deleted session whose refresh happened to fail came back as
+// a generic unavailable, so the client kept retrying a fork that can never
+// succeed. The durable deletion state is read first; a target that is not
+// deleted still gets the refresh failure.
+func TestHubForkReportsDeletionEvenWhenTheRefreshFails(t *testing.T) {
+	for _, deleted := range []bool{false, true} {
+		name := map[bool]string{false: "live target, refresh fails", true: "deleted target, refresh fails"}[deleted]
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			sessionID := buildRPCParentSession(t, stateDir)
+			store, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deleted {
+				if _, err := store.Begin("project-deleted-0123456789", []hubcore.DeletionTarget{{
+					Ref: localAppRef(sessionID), ThreadID: sessionID,
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runDir := t.TempDir()
+			previousRefresh := hubRosterRefresh
+			hubRosterRefresh = func(context.Context, *hubcore.Roster) error {
+				return errors.New("daemon discovery is incomplete")
+			}
+			t.Cleanup(func() { hubRosterRefresh = previousRefresh })
+
+			cfg := hubcore.WebConfig{
+				StateDir: stateDir, RunDir: runDir, DeletionStore: store,
+				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
+			}
+			before, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if err == nil {
+				t.Fatal("fork proceeded while daemon discovery was failing")
+			}
+			if got := isTargetDeletedError(err); got != deleted {
+				t.Fatalf("fork error=%v reports a deleted target=%v, want %v", err, got, deleted)
+			}
+			after, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+			}
+		})
+	}
+}
