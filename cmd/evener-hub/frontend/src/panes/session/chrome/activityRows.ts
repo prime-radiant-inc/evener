@@ -14,6 +14,9 @@ import {
   activityNodeID,
   delegateHasActiveWork,
   isActivityFailure,
+  isFailedDelegateOutcome,
+  isFailedJobOutcome,
+  isTurnContainer,
 } from "../../../protocol/activityData";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 
@@ -63,17 +66,27 @@ export interface ActivityDelegateState {
   status: string;
 }
 
+// A terminal entry's failure is the outcome the daemon already decided, so the
+// rows, the fold's failure count, and the merged badge counts stay one number.
+// Work that has not ended carries no outcome and can only say so through its
+// current status.
+export function jobIsFailed(job: ActivityJob): boolean {
+  return job.terminal ? isFailedJobOutcome(job.outcome) : isActivityFailure(job.outcome, job.status);
+}
+
 // Stable delegates describe one reusable resource; other delegate types are
 // turn containers. Keep this in one place so row visibility, fold failure
 // counts, and the status shown by the row all use the protocol's same truth.
 export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
   const childActive = delegate.child ? sessionIsActive(delegate.child) : false;
   const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
-  if (delegate.type === "delegate") {
+  if (!isTurnContainer(delegate)) {
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+    const ownFailure =
+      delegate.terminal === true ? isFailedDelegateOutcome(delegate.outcome) : isActivityFailure(undefined, status);
     return {
       active: delegateHasActiveWork(delegate),
-      failed: isActivityFailure(delegate.terminal === true ? delegate.outcome : undefined, status) || childFailed,
+      failed: ownFailure || childFailed,
       status,
     };
   }
@@ -90,7 +103,7 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
       status: delegate.child?.aggregate ?? "unknown",
     };
   }
-  const failed = childFailed || turns.some((turn) => isActivityFailure(turn.outcome, turn.status));
+  const failed = childFailed || turns.some(jobIsFailed);
   const active = delegateHasActiveWork(delegate);
   return {
     active,
@@ -121,7 +134,7 @@ function entryIsActive(entry: ActivityEntry): boolean {
 }
 
 function entryIsFailed(entry: ActivityEntry): boolean {
-  if (entry.kind === "shell") return isActivityFailure(entry.job.outcome, entry.job.status);
+  if (entry.kind === "shell") return jobIsFailed(entry.job);
   const delegate: ActivityDelegate = entry.delegate;
   const state = activityDelegateState(delegate);
   return state.failed;

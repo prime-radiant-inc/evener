@@ -22,6 +22,22 @@ function tree(revision = 1) {
 }
 
 describe("activityPanelStore", () => {
+  test("a second branch cannot replace the continuation already in flight", () => {
+    resetActivityPanelStoreForTests();
+    resetActivitySummaryStoreForTests();
+    const root = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", root, { kind: "ready", tree: tree() });
+    const first = activityPanelStore.getState().beginContinuationFetch("ref_a", "session:sess_a");
+    if (first === null) throw new Error("the first page was refused");
+    const second = activityPanelStore.getState().beginContinuationFetch("ref_a", "delegate:dlg_other");
+    activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree(2) });
+    expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
+      kind: "ready",
+      tree: { revision: 2 },
+    });
+    expect(second).toBeNull();
+  });
+
   test("stable delegate selection survives reconnect and keeps the child transcript target", () => {
     resetActivityPanelStoreForTests();
     const stableTree = (revision: number, status: string): ActivityTree => {

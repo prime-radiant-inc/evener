@@ -140,6 +140,7 @@ const TREE: ActivityTreeData = {
           jobId: "job_failed",
           description: "broken lint",
           status: "failed",
+          outcome: "failure",
           terminal: true,
           startedAt: "2026-08-05T14:00:00Z",
           endedAt: "2026-08-05T14:02:00Z",
@@ -450,6 +451,37 @@ describe("ActivityTree", () => {
     expect(failedGlyph.className).toContain("kindDanger");
   });
 
+  test("a terminal status with no failure outcome keeps the ended glyph", () => {
+    const tree = {
+      ...TREE,
+      root: {
+        ...TREE.root,
+        entries: [
+          {
+            kind: "shell" as const,
+            job: shellJob({
+              jobId: "job_status_only",
+              description: "status only",
+              status: "failed",
+              terminal: true,
+              startedAt: "2026-08-05T14:00:00Z",
+            }),
+          },
+        ],
+      },
+    } as ActivityTreeData;
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+
+    // The fold counts this entry as completed - no "· 1 failed" - so the row's
+    // own glyph may not contradict it.
+    expect(screen.getByRole("treeitem", { name: "1 inactive" })).toBeTruthy();
+    const row = screen.getByRole("treeitem", { name: "status only" });
+    const glyph = within(row).getByText("$");
+    expect(glyph.getAttribute("aria-label")).toBe("Ended");
+    expect(glyph.className).not.toContain("kindDanger");
+  });
+
   test("opening the fold reveals rows with their detail strips collapsed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
@@ -664,7 +696,7 @@ describe("ActivityTree", () => {
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
     const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
 
-    shellRow.focus();
+    act(() => shellRow.focus());
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(delegateRow);
     await user.keyboard("{ArrowDown}");
@@ -689,7 +721,7 @@ describe("ActivityTree", () => {
     expect(screen.getByText("npm test")).toBeTruthy();
 
     // Enter on the fold row toggles the fold.
-    foldRow.focus();
+    act(() => foldRow.focus());
     await user.keyboard("{Enter}");
     expect(onToggleFold).toHaveBeenCalledWith(FOLD_ID);
     expect(openTranscript).not.toHaveBeenCalled();
@@ -707,7 +739,7 @@ describe("ActivityTree", () => {
     // #884 round 3). Modified arrows must neither move row focus nor be
     // preventDefaulted here.
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
-    shellRow.focus();
+    act(() => shellRow.focus());
     for (const event of [
       { key: "ArrowDown", altKey: true },
       { key: "ArrowUp", ctrlKey: true },
@@ -738,7 +770,7 @@ describe("ActivityTree", () => {
 
     // Enter on the chevron remains the chevron's own activation (the detail
     // strip), never the row's transcript activation.
-    chevron.focus();
+    act(() => chevron.focus());
     await user.keyboard("{Enter}");
     expect(openTranscript).not.toHaveBeenCalled();
   });
@@ -829,6 +861,27 @@ describe("ActivityTree", () => {
     await user.click(screen.getByRole("button", { name: "Load more" }));
     expect(onContinue).toHaveBeenCalledWith("session:sess_root", "tok_root");
     expect(openTranscript).not.toHaveBeenCalled();
+  });
+
+  test("every continuation control waits while another branch is loading", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const continuedTree: ActivityTreeData = {
+      revision: 1,
+      root: { ...TREE.root, branch: { continuation: "tok_root" } },
+    };
+    render(
+      <ActivityTree
+        tree={continuedTree}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+        onContinue={vi.fn()}
+        loadingContinuationID="delegate:dlg_other"
+      />,
+    );
+    // The panel carries one page at a time, so a branch that is not the one
+    // loading still cannot start a second.
+    expect(screen.getByRole("button", { name: "Load more" }).hasAttribute("disabled")).toBe(true);
   });
 
   test("continuation failure message renders when the load failed", () => {

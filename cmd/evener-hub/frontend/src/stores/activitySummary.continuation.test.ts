@@ -181,3 +181,58 @@ test("a later continuation failure keeps successful pages fresh while the old ro
   expect(backgroundFetch).not.toHaveBeenCalled();
   expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(2);
 });
+
+test("a queued root refresh waits for the continuation it would otherwise discard", async () => {
+  const settleRoot = heldRoot();
+  const queued = vi.fn(async () => tree(["first", "second", "third"]));
+  expect(activitySummaryStore.getState().refreshRoot(ref, 30, queued)).toBeNull();
+  const page = activityPanelStore.getState().beginFetch(ref, { nodeID });
+  await settleRoot();
+  expect(queued).not.toHaveBeenCalled();
+  activityPanelStore.getState().publishFetch(ref, page, { kind: "ready", tree: tree(["second"]) });
+  expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(2);
+  expect(queued).toHaveBeenCalledOnce();
+  await rootSettled();
+  expect(activitySummaryStore.getState().entries.get(ref)).toMatchObject({
+    lastFetchedBump: 30,
+    loading: false,
+    counts: { active: 3 },
+  });
+});
+
+test("a jobs bump with no root in flight waits for the continuation it would otherwise discard", async () => {
+  const page = activityPanelStore.getState().beginFetch(ref, { nodeID });
+  const bumped = vi.fn(async () => tree(["first", "second", "third"]));
+  const requestID = activitySummaryStore.getState().refreshRoot(ref, 30, bumped);
+  expect(bumped).not.toHaveBeenCalled();
+  expect(requestID).toBeNull();
+  activityPanelStore.getState().publishFetch(ref, page, { kind: "ready", tree: tree(["second"]) });
+  expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(2);
+  expect(bumped).toHaveBeenCalledOnce();
+  await rootSettled();
+  expect(activitySummaryStore.getState().entries.get(ref)).toMatchObject({
+    lastFetchedBump: 30,
+    loading: false,
+    counts: { active: 3 },
+  });
+});
+
+test("a continuation cannot start while a root refresh owns the panel", async () => {
+  const settleRoot = heldRoot();
+  expect(activityPanelStore.getState().beginContinuationFetch(ref, nodeID)).toBeNull();
+  await settleRoot();
+  expect(activitySummaryStore.getState().entries.get(ref)).toMatchObject({ lastFetchedBump: 20, loading: false });
+  expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(1);
+  expect(activityPanelStore.getState().beginContinuationFetch(ref, nodeID)).not.toBeNull();
+});
+
+test("a bump deferred behind a continuation survives a missing summary entry", () => {
+  const page = activityPanelStore.getState().beginContinuationFetch(ref, nodeID);
+  if (page === null) throw new Error("the page was refused");
+  activitySummaryStore.getState().resetForTests();
+  const queued = vi.fn(async () => tree(["first", "second"]));
+  expect(activitySummaryStore.getState().refreshRoot(ref, 30, queued)).toBeNull();
+  expect(activitySummaryStore.getState().entries.get(ref)?.pendingBump).toMatchObject({ bump: 30 });
+  activityPanelStore.getState().publishFetch(ref, page, { kind: "ready", tree: tree(["second"]) });
+  expect(queued).toHaveBeenCalledOnce();
+});

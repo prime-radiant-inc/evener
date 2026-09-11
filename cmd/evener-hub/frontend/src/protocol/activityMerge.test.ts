@@ -8,7 +8,7 @@ import {
   activityNodeID,
   parseActivityTree,
 } from "./activityData";
-import { graftContinuationTree } from "./activityMerge";
+import { fenceRootSession, graftContinuationTree } from "./activityMerge";
 
 const shell = (jobId: string, outputBytes = 0): ActivityShellEntry => ({
   kind: "shell",
@@ -56,6 +56,15 @@ const delegate = (child?: ActivitySessionNode, revision = 2): ActivityDelegateEn
   },
 });
 const ids = (node: ActivitySessionNode) => node.entries.map(activityNodeID);
+// A delegate that says it is something other than the stable "delegate" shape.
+// The daemon emits no such type today, so this names the fixture's intent
+// rather than a wire value; activityRows.test.ts uses the same one.
+const TURN_CONTAINER = "agent";
+const turnJob = (jobId: string, running: boolean) => ({
+  ...shell(jobId).job,
+  status: running ? "running" : "completed",
+  terminal: !running,
+});
 
 test("root continuation retains its prefix and deduplicates overlapping entries", () => {
   const current = tree([shell("a"), shell("b")], "next");
@@ -100,7 +109,7 @@ test("delegate continuation expands child data at an unchanged projection revisi
 test("turn-based delegates aggregate their work without becoming unavailable", () => {
   const current = tree([shell("earlier")], "next");
   const withTurns = delegate(undefined, 2);
-  delete withTurns.delegate.type;
+  withTurns.delegate.type = TURN_CONTAINER;
   withTurns.delegate.branch = {};
   withTurns.delegate.turns = [shell("turn").job];
   const parsed = parseActivityTree(tree([withTurns]));
@@ -112,10 +121,10 @@ test("turn-based delegates aggregate their work without becoming unavailable", (
 
 test("turn-container continuation refresh is not blocked by stable projection fencing", () => {
   const currentEntry = delegate();
-  delete currentEntry.delegate.type;
+  currentEntry.delegate.type = TURN_CONTAINER;
   currentEntry.delegate.turns = [shell("old-turn").job];
   const patchEntry = delegate();
-  delete patchEntry.delegate.type;
+  patchEntry.delegate.type = TURN_CONTAINER;
   patchEntry.delegate.turns = [shell("new-turn").job];
   const result = graftContinuationTree(tree([currentEntry], "next"), "session:root", tree([patchEntry]));
   const entry = result.root.entries[0];
@@ -125,17 +134,225 @@ test("turn-container continuation refresh is not blocked by stable projection fe
 
 test("turn-container refresh retains the latest activity timestamp", () => {
   const currentEntry = delegate();
-  delete currentEntry.delegate.type;
+  currentEntry.delegate.type = TURN_CONTAINER;
   currentEntry.delegate.latestActivityAt = "2026-09-10T00:02:00Z";
   currentEntry.delegate.turns = [shell("old-turn").job];
   const patchEntry = delegate();
-  delete patchEntry.delegate.type;
+  patchEntry.delegate.type = TURN_CONTAINER;
   patchEntry.delegate.latestActivityAt = "2026-09-10T00:01:00Z";
   patchEntry.delegate.turns = [shell("new-turn").job];
   const result = graftContinuationTree(tree([currentEntry], "next"), "session:root", tree([patchEntry]));
   const entry = result.root.entries[0];
   if (entry?.kind !== "delegate") throw new Error("missing turn container");
   expect(entry.delegate.latestActivityAt).toBe("2026-09-10T00:02:00Z");
+});
+
+test("a child-session continuation keeps the turn container's own newer turns", () => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.latestActivityAt = "2026-09-10T00:01:00Z";
+  currentEntry.delegate.turns = [shell("turn-old").job, shell("turn-new").job];
+  const patchEntry = delegate(session("child", [shell("b")]));
+  patchEntry.delegate.type = TURN_CONTAINER;
+  patchEntry.delegate.latestActivityAt = "2026-09-10T00:03:00Z";
+  patchEntry.delegate.turns = [shell("turn-old").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-old", "turn-new"]);
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(entry.delegate.latestActivityAt).toBe("2026-09-10T00:03:00Z");
+});
+
+// The wire always sends turns (appwire/types.go has no omitempty on the field),
+// so an empty list is the daemon saying "none", the same standing as absent.
+test.each([
+  { held: "no turn list", turns: undefined },
+  { held: "an empty turn list", turns: [] },
+])("a child-session continuation adopts turns a client holding $held had never seen", ({ turns }) => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.turns = turns;
+  const patchEntry = delegate(session("child", [shell("b")]));
+  patchEntry.delegate.type = TURN_CONTAINER;
+  patchEntry.delegate.turns = [shell("turn-first").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-first"]);
+});
+
+test("a child-session continuation cannot regress its container's own state", () => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.status = "completed";
+  currentEntry.delegate.outcome = "completed";
+  currentEntry.delegate.terminal = true;
+  currentEntry.delegate.turns = [shell("turn-1").job];
+  const patchEntry = delegate(session("child", [shell("b")]));
+  patchEntry.delegate.type = TURN_CONTAINER;
+  patchEntry.delegate.status = "running";
+  patchEntry.delegate.outcome = undefined;
+  patchEntry.delegate.terminal = false;
+  patchEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate).toMatchObject({ status: "completed", outcome: "completed", terminal: true });
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+});
+
+test("a bounded refresh keeps the turns a continuation loaded into a container", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const incoming = delegate(session("child", [shell("a")]));
+  incoming.delegate.type = TURN_CONTAINER;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.turns = [shell("turn-1").job];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+  // A retained turn is work the session still holds, so it has to be counted.
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+});
+
+// A bounded page is a prefix of the turn list too: it speaks for every turn it
+// reaches, and says nothing about the ones past where it stopped.
+test("a bounded refresh replaces the turns it lists and keeps only those past its cutoff", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.turns = [turnJob("turn-1", true), turnJob("turn-2", false)];
+  const incoming = delegate(session("child", [shell("a")]));
+  incoming.delegate.type = TURN_CONTAINER;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.turns = [turnJob("turn-1", false)];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((t) => [t.jobId, t.status, t.terminal])).toEqual([
+    ["turn-1", "completed", true],
+    ["turn-2", "completed", true],
+  ]);
+  // The counts describe the turns on screen: the retained one counted, the
+  // listed one counted in the state the refresh gave it.
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+});
+
+test("a bounded refresh that lists every turn leaves the server's counts alone", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.turns = [turnJob("turn-1", true), turnJob("turn-2", false)];
+  const incoming = delegate(session("child", [shell("a")]));
+  incoming.delegate.type = TURN_CONTAINER;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.turns = [turnJob("turn-1", false), turnJob("turn-2", false)];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns).toEqual(incoming.delegate.turns);
+  expect(fenced.counts).toEqual(tree([incoming]).root.counts);
+});
+
+test("a bounded refresh still updates the container state it does list", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.status = "running";
+  currentEntry.delegate.outcome = undefined;
+  currentEntry.delegate.terminal = false;
+  currentEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const incoming = delegate(session("child", [shell("a")]));
+  incoming.delegate.type = TURN_CONTAINER;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.status = "completed";
+  incoming.delegate.outcome = "completed";
+  incoming.delegate.terminal = true;
+  incoming.delegate.turns = [shell("turn-1").job];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate).toMatchObject({ status: "completed", outcome: "completed", terminal: true });
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+});
+
+test("a child-session continuation adopts unseen turns beside the ones on screen", () => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.turns = [shell("turn-1").job];
+  const patchEntry = delegate(session("child", [shell("b")]));
+  patchEntry.delegate.type = TURN_CONTAINER;
+  patchEntry.delegate.turns = [shell("turn-1").job, shell("turn-2").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
+});
+
+// A bounded page is a prefix of the session's entry order and says nothing
+// about what lies past its cutoff, so pages already loaded from beyond it stay.
+test("a bounded root refresh keeps the pages already loaded past its window", () => {
+  const paged = graftContinuationTree(tree([shell("a")], "next"), "session:root", tree([shell("b")]));
+  const fenced = fenceRootSession(paged.root, tree([shell("a", 40)], "next-2").root);
+  expect(ids(fenced)).toEqual(["job:a", "job:b"]);
+  expect(fenced.entries[0]).toEqual(shell("a", 40));
+  expect(fenced.branch).toEqual({ truncated: true, continuation: "next-2" });
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 2, complete: false });
+});
+
+// Every projectStableActivityDelegate path that returns without a child marks
+// the delegate's own branch first - a child-unavailable or link-mismatch error,
+// or the depth cut-off's truncation - so an omission here says "could not
+// render it", never "there is none".
+test("a refresh that could not render a child keeps the subtree already loaded", () => {
+  const paged = graftContinuationTree(
+    tree([delegate(session("child", [shell("a")], "child-next"))]),
+    "session:child",
+    tree([delegate(session("child", [shell("b")]))]),
+  );
+  const fenced = fenceRootSession(paged.root, tree([delegate()]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("the loaded child subtree was dropped");
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+});
+
+test("a complete refresh drops a child the delegate no longer carries", () => {
+  const paged = graftContinuationTree(
+    tree([delegate(session("child", [shell("a")], "child-next"))]),
+    "session:child",
+    tree([delegate(session("child", [shell("b")]))]),
+  );
+  const childless = delegate();
+  childless.delegate.branch = {};
+  const fenced = fenceRootSession(paged.root, tree([childless]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing delegate");
+  expect(entry.delegate.child).toBeUndefined();
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 1, complete: true });
+});
+
+test("a complete root refresh drops the entries it no longer lists", () => {
+  const paged = graftContinuationTree(tree([shell("a")], "next"), "session:root", tree([shell("b")]));
+  const fenced = fenceRootSession(paged.root, tree([shell("a")]).root);
+  expect(ids(fenced)).toEqual(["job:a"]);
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 1, complete: true });
+});
+
+test("a bounded root refresh keeps the pages loaded inside a delegate's child", () => {
+  const paged = graftContinuationTree(
+    tree([delegate(session("child", [shell("a")], "child-next"))]),
+    "session:child",
+    tree([delegate(session("child", [shell("b")]))]),
+  );
+  const fenced = fenceRootSession(paged.root, tree([delegate(session("child", [shell("a")], "child-next-2"))]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
 });
 
 test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
@@ -201,7 +418,7 @@ test.each([
     entry.delegate.terminal = true;
   } else {
     if (entry.kind !== "delegate") throw new Error("unexpected turn fixture");
-    delete entry.delegate.type;
+    entry.delegate.type = TURN_CONTAINER;
     entry.delegate.turns = [{ ...shell("failed").job, outcome, terminal: true }];
   }
   if (entry.kind === "delegate") entry.delegate.branch = {};
@@ -222,7 +439,7 @@ test.each(["error", "failed", "exhausted"])(
     stable.delegate.outcome = undefined;
     stable.delegate.terminal = true;
     const turns = delegate();
-    delete turns.delegate.type;
+    turns.delegate.type = TURN_CONTAINER;
     turns.delegate.branch = {};
     turns.delegate.turns = [{ ...shell(`turn-${status}`).job, status, outcome: undefined }];
     const result = graftContinuationTree(tree([]), "session:root", tree([job, stable, turns]));
@@ -231,10 +448,35 @@ test.each(["error", "failed", "exhausted"])(
   },
 );
 
+// appwire/types.go gives Type `json:"type,omitempty"`, so a stable delegate
+// whose type is empty arrives with the field absent. The daemon's only
+// construction site sets "delegate", but the wire permits the omission and the
+// absent form must not be mistaken for a turn container.
+test("a stable delegate whose type the wire omitted still counts as one", () => {
+  const typeless = delegate();
+  delete typeless.delegate.type;
+  typeless.delegate.branch = {};
+  typeless.delegate.terminal = true;
+  typeless.delegate.outcome = "failed";
+  const result = graftContinuationTree(tree([]), "session:root", tree([typeless]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 1, completed: 0 });
+  expect(result.root.aggregate).toBe("failed");
+});
+
+test("a stable delegate whose type the wire omitted keeps its revision fence", () => {
+  const current = delegate(session("child", [shell("a")], "next"), 2);
+  delete current.delegate.type;
+  const patch = delegate(session("child", [shell("b")]), 3);
+  delete patch.delegate.type;
+  const result = graftContinuationTree(tree([current]), "session:child", tree([patch]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing delegate");
+  expect(entry.delegate).toMatchObject({ projectionRevision: 3, status: "running" });
+});
+
 test("merged summaries count empty turn-container delegates as one entry", () => {
   const emptyTurns = delegate();
-  if (emptyTurns.delegate.type !== "delegate") throw new Error("unexpected delegate type");
-  delete emptyTurns.delegate.type;
+  emptyTurns.delegate.type = TURN_CONTAINER;
   emptyTurns.delegate.status = "completed";
   emptyTurns.delegate.outcome = "completed";
   emptyTurns.delegate.branch = {};

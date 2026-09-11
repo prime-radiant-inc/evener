@@ -9,8 +9,23 @@ export interface ActivityCounts {
   complete: boolean;
 }
 
+// A terminal entry's failure is the outcome the daemon already decided
+// (agent/jobs_activity.go's aggregateActivity counts nothing else), and each
+// kind states it in its own vocabulary. activityOutcome derives a shell job's
+// and a delegate turn's outcome from its jobstore status, so a failure arrives
+// as "failure"; a stable delegate carries its delegatestore outcome verbatim,
+// so a failure arrives as "failed" or "exhausted". These are the one definition
+// per kind, shared by the rows and by the merged summaries.
+export function isFailedJobOutcome(outcome: string | undefined): boolean {
+  return outcome === "failure";
+}
+
+export function isFailedDelegateOutcome(outcome: string | undefined): boolean {
+  return outcome === "failed" || outcome === "exhausted";
+}
+
 export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
-  if (outcome === "failure" || outcome === "failed" || outcome === "exhausted") return true;
+  if (isFailedJobOutcome(outcome) || isFailedDelegateOutcome(outcome)) return true;
   const normalized = status?.trim().toLowerCase();
   return normalized === "failed" || normalized === "exhausted" || normalized === "error";
 }
@@ -113,6 +128,24 @@ export interface ActivityDelegate {
   turns?: ActivityJob[];
   child?: ActivitySessionNode;
   branch: ActivityBranchState;
+}
+
+// The one place that decides which shape a delegate is. `type` is optional on
+// the wire (appwire/types.go gives it `json:"type,omitempty"`, and the
+// generated types.gen.ts declares `type?: string`), so an empty value arrives
+// as no field at all - and the daemon's only delegate construction site sets
+// "delegate" (agent/jobs_activity.go:988). A turn container is therefore a
+// delegate that says it is something else; silence means the stable form, the
+// only shape the daemon actually emits.
+//
+// No turn-container type exists yet, so this knowingly sends an unrecognized
+// one down the container path - no count of its own, no projection fence -
+// rather than the milder stable default. Listing recognized values instead
+// would mean writing today's fixture string into the protocol, and an empty
+// list would leave the container path unreachable. When a real
+// turn-container type is defined, narrow this to that value.
+export function isTurnContainer(delegate: Pick<ActivityDelegate, "type">): boolean {
+  return !!delegate.type && delegate.type !== "delegate";
 }
 
 export interface ActivityWorktree {
@@ -567,7 +600,7 @@ function jobIsActive(job: ActivityJob): boolean {
 
 export function delegateHasActiveWork(delegate: ActivityDelegate): boolean {
   const childActive = delegate.child ? sessionHasActiveWork(delegate.child) : false;
-  if (delegate.type === "delegate") return delegate.terminal !== true || childActive;
+  if (!isTurnContainer(delegate)) return delegate.terminal !== true || childActive;
   return (delegate.turns ?? []).some((turn) => !turn.terminal) || childActive;
 }
 

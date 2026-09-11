@@ -14,7 +14,7 @@ import { expect, test } from "vitest";
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function rule(path: string, selector: string): string {
-  const css = readFileSync(join(SRC, path), "utf8");
+  const css = readFileSync(join(SRC, path), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const escaped = selector.replace(/[.[\]]/g, (c) => `\\${c}`);
   const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css);
   if (!match) throw new Error(`${path}: no rule ${selector}`);
@@ -35,4 +35,20 @@ test.each([
 test("the status row no longer offers a mono class for figures", () => {
   const css = readFileSync(join(SRC, "panes/session/chrome/statusrow.module.css"), "utf8");
   expect(css).not.toMatch(/(?:^|\n)\.mono\s*\{/);
+});
+
+test("editorial prose has a distinct serif face and body-scaled size", () => {
+  const palette = rule("styles/tokens.css", '[data-theme="dark"]');
+  expect(palette).toMatch(/--font-prose:\s*"Source Serif 4 Variable", Georgia, "Times New Roman", serif;/);
+  expect(palette).toMatch(/--font-mono:\s*"JetBrains Mono Variable"/);
+  expect(palette).not.toMatch(/--font-size-prose:/);
+  expect(rule("styles/tokens.css", "body")).toMatch(/--font-size-prose:\s*calc\(18px \* var\(--font-scale\)\);/);
+});
+
+test("Markdown reads in serif while code retains its machine face", () => {
+  const prose = rule("widgets/markdown/markdown.module.css", ".root");
+  expect(prose).toMatch(/font-family:\s*var\(--font-prose\);/);
+  expect(prose).toMatch(/font-size:\s*var\(--prose-font-size, var\(--font-size-prose\)\);/);
+  expect(rule("widgets/markdown/markdown.module.css", ".inlineCode")).toMatch(/font-family:\s*var\(--font-mono\);/);
+  expect(rule("widgets/codeblock/codeblock.module.css", ".pre")).toMatch(/font-family:\s*var\(--font-mono\);/);
 });

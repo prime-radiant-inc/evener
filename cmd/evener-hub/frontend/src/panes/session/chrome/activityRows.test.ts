@@ -170,7 +170,9 @@ test("live entries render in order; terminal entries fold behind one row", () =>
 });
 
 test("fold row counts failures separately", () => {
-  const rows = buildActivityRows(tree([shell("x", true, "failed"), shell("y", true)]), new Set());
+  const failed = shell("x", true, "failed") as ActivityShellEntry;
+  failed.job.outcome = "failure";
+  const rows = buildActivityRows(tree([failed, shell("y", true)]), new Set());
   const fold = rows.find((r) => r.kind === "fold");
   expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
 });
@@ -180,6 +182,45 @@ test("row failure state follows outcome when status is non-failure", () => {
   failed.job.outcome = "failure";
   const rows = buildActivityRows(tree([failed]), new Set());
   expect(rows.find((row) => row.kind === "fold")).toMatchObject({ failedCount: 1 });
+});
+
+test.each(["error", "failed", "exhausted"])(
+  'terminal rows count status "%s" without a failure outcome as completed',
+  (status) => {
+    const job = shell("job", true, status);
+    const stable = delegate("dlg_stable", {});
+    stable.delegate.status = status;
+    stable.delegate.outcome = undefined;
+    const turns = delegate("dlg_turns", { type: "agent", turns: [turn("turn", true, status)] });
+    turns.delegate.outcome = undefined;
+    const rows = buildActivityRows(tree([job, stable, turns]), new Set());
+    expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 3, failedCount: 0 });
+    expect(activityDelegateState(stable.delegate)).toMatchObject({ failed: false });
+    expect(activityDelegateState(turns.delegate)).toMatchObject({ failed: false });
+  },
+);
+
+// The daemon derives a shell job's or turn's outcome from its status, so a
+// failure reaches the client as "failure"; a stable delegate carries its
+// delegatestore outcome verbatim, so a failure reaches it as "failed" or
+// "exhausted". Neither kind's word means failure in the other's vocabulary,
+// and summarizeSession has always counted them that way.
+test("terminal rows read each entry kind's own failure vocabulary", () => {
+  const job = shell("job", true, "completed") as ActivityShellEntry;
+  job.job.outcome = "failed";
+  const stable = delegate("dlg_stable", {});
+  stable.delegate.outcome = "failure";
+  const rows = buildActivityRows(tree([job, stable]), new Set());
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 2, failedCount: 0 });
+  expect(activityDelegateState(stable.delegate)).toMatchObject({ failed: false });
+});
+
+test("a terminal delegate whose type the wire omitted rows and counts as a stable one", () => {
+  const entry = delegate("dlg_typeless", { failed: true });
+  delete (entry.delegate as { type?: string }).type;
+  const rows = buildActivityRows(tree([entry]), new Set());
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 1, failedCount: 1 });
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failed" });
 });
 
 test("fold row counts a terminal delegate outcome when lifecycle status is idle", () => {
@@ -266,11 +307,11 @@ test("running stable delegate ignores stale failure outcome", () => {
   const entry = delegate("dlg_resumed", {});
   entry.delegate.terminal = false;
   entry.delegate.status = "running";
-  entry.delegate.outcome = "failure";
+  entry.delegate.outcome = "failed";
   expect(activityDelegateState(entry.delegate)).toMatchObject({ active: true, failed: false, status: "running" });
 
   entry.delegate.terminal = true;
-  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failure" });
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failed" });
 
   entry.delegate.terminal = false;
   entry.delegate.status = "error";

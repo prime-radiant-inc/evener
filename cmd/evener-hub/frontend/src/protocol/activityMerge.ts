@@ -1,9 +1,13 @@
 import {
   type ActivityDelegate,
   type ActivityEntry,
+  type ActivityJob,
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
+  isFailedDelegateOutcome,
+  isFailedJobOutcome,
+  isTurnContainer,
 } from "./activityData";
 
 function cloneEntry(entry: ActivityEntry): ActivityEntry {
@@ -34,6 +38,22 @@ function cloneDelegate(delegate: ActivityDelegate): ActivityDelegate {
   };
 }
 
+// The backend's own activityBranchComplete: a branch is a complete statement
+// only when nothing cut it short.
+function completeBranch(branch: ActivitySessionNode["branch"]): boolean {
+  return !branch.error && !branch.truncated && !branch.continuation;
+}
+
+// Turns by identity: `speaks` is the list whose word is taken, so its object
+// wins for every job it carries, and jobs only `rest` knows follow in `rest`'s
+// own order. Neither side loses a turn. Which list speaks is the caller's to
+// decide - the two callers here answer it differently.
+function unionTurns(speaks: ActivityJob[] | undefined, rest: ActivityJob[] | undefined): ActivityJob[] | undefined {
+  if (!speaks?.length) return rest?.map((turn) => ({ ...turn }));
+  const seen = new Set(speaks.map((turn) => turn.jobId));
+  return [...speaks, ...(rest ?? []).filter((turn) => !seen.has(turn.jobId))].map((turn) => ({ ...turn }));
+}
+
 function maxActivity(current: string | undefined, incoming: string | undefined): string | undefined {
   if (!incoming) return current;
   if (!current) return incoming;
@@ -43,13 +63,27 @@ function maxActivity(current: string | undefined, incoming: string | undefined):
   return Number.isNaN(currentMillis) || incomingMillis > currentMillis ? incoming : current;
 }
 
-function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
-  const state =
-    current.type !== "delegate" || patch.type !== "delegate"
-      ? cloneDelegate(patch)
-      : (patch.projectionRevision ?? 0) > (current.projectionRevision ?? 0)
-        ? cloneDelegate(patch)
-        : cloneDelegate(current);
+// A stable delegate fences on its projection revision, which orders the two
+// snapshots. A turn container carries no revision, so nothing orders them and
+// authority has to come from elsewhere: patchIsAuthority says whether this
+// patch speaks for the container or merely carries it as a by-product. Only a
+// continuation page aimed at a descendant is the latter - a root refresh is a
+// whole freshly fetched tree, and rounds 1-2 keep one from overlapping a page,
+// so whatever it lists is strictly newer than what is on screen. A patch that
+// does not speak for the container may still contribute what is purely
+// additive: turns the client has never seen, and a later timestamp. Required
+// rather than defaulted, so a new caller has to say which it is.
+function revisionFencedDelegate(
+  current: ActivityDelegate,
+  patch: ActivityDelegate,
+  patchIsAuthority: boolean,
+): ActivityDelegate {
+  const turnContainer = isTurnContainer(current) || isTurnContainer(patch);
+  const authoritative = turnContainer
+    ? patchIsAuthority
+    : (patch.projectionRevision ?? 0) > (current.projectionRevision ?? 0);
+  const state = cloneDelegate(authoritative ? patch : current);
+  if (turnContainer && !patchIsAuthority) state.turns = unionTurns(current.turns, patch.turns);
   const latestActivityAt = maxActivity(current.latestActivityAt, patch.latestActivityAt);
   if (latestActivityAt !== state.latestActivityAt) state.latestActivityAt = latestActivityAt;
   return state;
@@ -62,7 +96,8 @@ function mergeDelegate(
   inTarget: boolean,
 ): ActivityDelegate {
   const withinTarget = inTarget || activityNodeID({ kind: "delegate", delegate: current }) === targetID;
-  const state = revisionFencedDelegate(current, patch);
+  // A page speaks for this delegate only when it targets it.
+  const state = revisionFencedDelegate(current, patch, withinTarget);
   return {
     ...state,
     branch: withinTarget ? { ...patch.branch } : { ...current.branch },
@@ -77,36 +112,87 @@ function mergeDelegate(
   };
 }
 
-export function fenceRootSession(current: ActivitySessionNode, incoming: ActivitySessionNode): ActivitySessionNode {
+// fenceSession reports whether anything was retained anywhere beneath it, so a
+// session whose descendant kept a loaded page recomputes its own counts too -
+// the same bottom-up pass the daemon's recomputeActivitySession makes.
+function fenceSession(
+  current: ActivitySessionNode,
+  incoming: ActivitySessionNode,
+): { session: ActivitySessionNode; retained: boolean } {
   const currentByID = new Map(current.entries.map((entry) => [activityNodeID(entry), entry]));
+  let retainedBelow = false;
   const entries = incoming.entries.map((entry): ActivityEntry => {
     if (entry.kind === "shell") return cloneEntry(entry);
     const prior = currentByID.get(activityNodeID(entry));
     if (prior?.kind !== "delegate") return cloneEntry(entry);
-    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate);
+    // A refresh speaks for every delegate it lists, so its projection wins
+    // outright. Coverage only governs what it left out: a bounded branch may
+    // have stopped part-way through the turn list, and turns already on screen
+    // are not contradicted by a page that never reached them.
+    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate, true);
     delegate.branch = { ...entry.delegate.branch };
-    delegate.child =
-      prior.delegate.child && entry.delegate.child && prior.delegate.child.sessionId === entry.delegate.child.sessionId
-        ? fenceRootSession(prior.delegate.child, entry.delegate.child)
-        : entry.delegate.child
-          ? cloneSession(entry.delegate.child)
-          : undefined;
+    if (!completeBranch(entry.delegate.branch)) {
+      // A bounded page is a prefix of the turn list as much as of the entry
+      // list: it speaks for every turn it reached, so those arrive in the state
+      // it gave them, and the turns on screen survive only past where it
+      // stopped, appended after it.
+      const turns = unionTurns(entry.delegate.turns, prior.delegate.turns);
+      // A turn kept past the incoming list is work this session still holds,
+      // so it has to be counted, exactly as a kept entry or child is.
+      if ((turns?.length ?? 0) > (entry.delegate.turns?.length ?? 0)) retainedBelow = true;
+      delegate.turns = turns;
+    }
+    if (
+      prior.delegate.child &&
+      entry.delegate.child &&
+      prior.delegate.child.sessionId === entry.delegate.child.sessionId
+    ) {
+      const child = fenceSession(prior.delegate.child, entry.delegate.child);
+      delegate.child = child.session;
+      retainedBelow = retainedBelow || child.retained;
+    } else if (entry.delegate.child) {
+      delegate.child = cloneSession(entry.delegate.child);
+    } else if (prior.delegate.child && !completeBranch(entry.delegate.branch)) {
+      // The same rule on the child axis. Every projectStableActivityDelegate
+      // path that returns without a child marks this branch first - the
+      // child-unavailable and link-mismatch errors, and the depth cut-off's
+      // truncation - so an incomplete branch with no child says the daemon
+      // could not render the subtree, not that there is none to render.
+      delegate.child = cloneSession(prior.delegate.child);
+      retainedBelow = true;
+    } else {
+      delegate.child = undefined;
+    }
     return { kind: "delegate", delegate };
   });
-  return {
+  // A bounded page is a prefix of this session's entry order (projectActivitySessionAt
+  // renders owned shell jobs, then sorted stable delegates, and a continuation
+  // resumes at the exact index it stopped on), so it makes no claim at all about
+  // what lies past its cutoff: entries loaded from later pages stay. A complete
+  // page is the whole statement, and what it leaves out is genuinely gone - that
+  // is how an evicted delegate reaches the screen.
+  const incomingIDs = new Set(incoming.entries.map(activityNodeID));
+  const kept = completeBranch(incoming.branch)
+    ? []
+    : current.entries.filter((entry) => !incomingIDs.has(activityNodeID(entry))).map(cloneEntry);
+  const session = {
     ...incoming,
     counts: { ...incoming.counts },
     branch: { ...incoming.branch },
-    entries,
+    entries: [...entries, ...kept],
   };
+  const retained = kept.length > 0 || retainedBelow;
+  // The server's counts describe the page it sent. Anything kept beyond it is
+  // ours to account for, the same way a grafted page is.
+  return { session: retained ? summarizeSession(session) : session, retained };
+}
+
+export function fenceRootSession(current: ActivitySessionNode, incoming: ActivitySessionNode): ActivitySessionNode {
+  return fenceSession(current, incoming).session;
 }
 
 function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
-  const completeBranch = (branch: ActivitySessionNode["branch"]) =>
-    !branch.error && !branch.truncated && !branch.continuation;
   const counts = { active: 0, failed: 0, completed: 0, complete: completeBranch(session.branch) };
-  const jobOutcomeFailure = (outcome: string | undefined) => outcome === "failure";
-  const delegateOutcomeFailure = (outcome: string | undefined) => outcome === "failed" || outcome === "exhausted";
   const add = (terminal: boolean, failed: boolean) => {
     if (!terminal) counts.active++;
     else if (failed) counts.failed++;
@@ -114,12 +200,12 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
   };
   for (const entry of session.entries) {
     if (entry.kind === "shell") {
-      add(entry.job.terminal, jobOutcomeFailure(entry.job.outcome));
+      add(entry.job.terminal, isFailedJobOutcome(entry.job.outcome));
       continue;
     }
     const delegate = entry.delegate;
-    if (delegate.type === "delegate") add(delegate.terminal === true, delegateOutcomeFailure(delegate.outcome));
-    else for (const turn of delegate.turns ?? []) add(turn.terminal, jobOutcomeFailure(turn.outcome));
+    if (!isTurnContainer(delegate)) add(delegate.terminal === true, isFailedDelegateOutcome(delegate.outcome));
+    else for (const turn of delegate.turns ?? []) add(turn.terminal, isFailedJobOutcome(turn.outcome));
     if (!completeBranch(delegate.branch)) counts.complete = false;
     if (delegate.child) {
       counts.active += delegate.child.counts.active;

@@ -1,0 +1,473 @@
+{
+  "provenance": {
+    "source": ".superpowers/sdd/2026-09-09-tufte-webui/task-4-evidence/final-user-scroll/browser.json",
+    "sourceSHA256": "a28890bb13015441ac1256ecd38a12a88b23728b2e0f677c30b375192883e9aa",
+    "verifiedSourceCommit": "9b839dc094120391505d0951ce8851d2645920df",
+    "selection": "Complete unmodified geometry records for 360-light-m evidence and collaborators"
+  },
+  "samples": [
+    {
+      "label": "360-light-m",
+      "viewport": {
+        "width": 360,
+        "height": 800
+      },
+      "document": {
+        "width": 360,
+        "scrollWidth": 360,
+        "height": 800,
+        "scrollHeight": 800
+      },
+      "theme": "light",
+      "fontSize": "m",
+      "transcript": {
+        "x": 16,
+        "y": 77,
+        "right": 344,
+        "bottom": 649.8125,
+        "width": 328,
+        "height": 572.8125
+      },
+      "composer": {
+        "x": 16,
+        "y": 678.8125,
+        "right": 344,
+        "bottom": 788,
+        "width": 328,
+        "height": 109.1875
+      },
+      "input": {
+        "x": 25,
+        "y": 683.8125,
+        "right": 335,
+        "bottom": 735,
+        "width": 310,
+        "height": 51.1875,
+        "fontSize": "16px"
+      },
+      "buttons": [
+        {
+          "label": "Back",
+          "x": 12,
+          "y": 8,
+          "right": 56,
+          "bottom": 52,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "Sessions",
+          "x": 304,
+          "y": 8,
+          "right": 348,
+          "bottom": 52,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "latest",
+          "x": 140.4609375,
+          "y": 593.8125,
+          "right": 219.5390625,
+          "bottom": 637.8125,
+          "width": 79.078125,
+          "height": 44
+        },
+        {
+          "label": "Attach image",
+          "x": 25,
+          "y": 739,
+          "right": 69,
+          "bottom": 783,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "fixture/scripted \u2014 change model",
+          "x": 73,
+          "y": 739,
+          "right": 178.03125,
+          "bottom": 783,
+          "width": 105.03125,
+          "height": 44
+        },
+        {
+          "label": "\u22efSession actions",
+          "x": 239.734375,
+          "y": 739,
+          "right": 287,
+          "bottom": 783,
+          "width": 47.265625,
+          "height": 44
+        },
+        {
+          "label": "Send",
+          "x": 291,
+          "y": 739,
+          "right": 335,
+          "bottom": 783,
+          "width": 44,
+          "height": 44
+        }
+      ],
+      "stamps": [
+        {
+          "message": {
+            "x": 16,
+            "y": 5432.59375,
+            "right": 344,
+            "bottom": 5597.375,
+            "width": 328,
+            "height": 164.78125
+          },
+          "bubble": {
+            "x": 16,
+            "y": 5444.59375,
+            "right": 344,
+            "bottom": 5567.78125,
+            "width": 328,
+            "height": 123.1875
+          },
+          "prose": {
+            "x": 16,
+            "y": 5448.59375,
+            "right": 344,
+            "bottom": 5563.78125,
+            "width": 328,
+            "height": 115.1875
+          },
+          "stamp": {
+            "x": 16,
+            "y": 5567.78125,
+            "right": 344,
+            "bottom": 5593.375,
+            "width": 328,
+            "height": 25.59375
+          },
+          "position": "static",
+          "fontStyle": "italic"
+        }
+      ],
+      "prose": [
+        {
+          "family": "\"Inter Variable\", -apple-system, \"system-ui\", \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif",
+          "fontSize": "16px"
+        },
+        {
+          "family": "\"Inter Variable\", -apple-system, \"system-ui\", \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif",
+          "fontSize": "16px"
+        }
+      ],
+      "lifecycle": [
+        {
+          "text": "Idle \u00b7 reported",
+          "x": 16,
+          "y": 5679.015625,
+          "right": 344,
+          "bottom": 5698.203125,
+          "width": 328,
+          "height": 19.1875
+        },
+        {
+          "text": "Running",
+          "x": 16,
+          "y": 5886.875,
+          "right": 344,
+          "bottom": 5906.0625,
+          "width": 328,
+          "height": 19.1875
+        },
+        {
+          "text": "Status unavailable",
+          "x": 16,
+          "y": 6106.15625,
+          "right": 344,
+          "bottom": 6125.34375,
+          "width": 328,
+          "height": 19.1875
+        }
+      ]
+    },
+    {
+      "label": "360-light-m-collaborators",
+      "viewport": {
+        "width": 360,
+        "height": 800
+      },
+      "document": {
+        "width": 360,
+        "scrollWidth": 360,
+        "height": 800,
+        "scrollHeight": 800
+      },
+      "theme": "light",
+      "fontSize": "m",
+      "transcript": {
+        "x": 16,
+        "y": 77,
+        "right": 344,
+        "bottom": 649.8125,
+        "width": 328,
+        "height": 572.8125
+      },
+      "composer": {
+        "x": 16,
+        "y": 678.8125,
+        "right": 344,
+        "bottom": 788,
+        "width": 328,
+        "height": 109.1875
+      },
+      "input": {
+        "x": 25,
+        "y": 683.8125,
+        "right": 335,
+        "bottom": 735,
+        "width": 310,
+        "height": 51.1875,
+        "fontSize": "16px"
+      },
+      "buttons": [
+        {
+          "label": "Back",
+          "x": 12,
+          "y": 8,
+          "right": 56,
+          "bottom": 52,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "Sessions",
+          "x": 304,
+          "y": 8,
+          "right": 348,
+          "bottom": 52,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "Inspect the independent child transcript",
+          "x": 16,
+          "y": 77.1875,
+          "right": 344,
+          "bottom": 112.015625,
+          "width": 328,
+          "height": 34.828125
+        },
+        {
+          "label": "Open transcript",
+          "x": 256,
+          "y": 63.1875,
+          "right": 300,
+          "bottom": 107.1875,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "Tool call",
+          "x": 330,
+          "y": 78.515625,
+          "right": 344,
+          "bottom": 92.515625,
+          "width": 14,
+          "height": 14
+        },
+        {
+          "label": "Show recent activity",
+          "x": 300,
+          "y": 204.796875,
+          "right": 344,
+          "bottom": 248.796875,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "Continue the same collaborator after its previous report",
+          "x": 16,
+          "y": 268.796875,
+          "right": 344,
+          "bottom": 319.875,
+          "width": 328,
+          "height": 51.078125
+        },
+        {
+          "label": "Open transcript",
+          "x": 256,
+          "y": 254.796875,
+          "right": 300,
+          "bottom": 298.796875,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "Tool call",
+          "x": 330,
+          "y": 270.125,
+          "right": 344,
+          "bottom": 284.125,
+          "width": 14,
+          "height": 14
+        },
+        {
+          "label": "Show recent activity",
+          "x": 300,
+          "y": 441.453125,
+          "right": 344,
+          "bottom": 485.453125,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "Inspect unavailable collaborator state without guessing",
+          "x": 16,
+          "y": 506.453125,
+          "right": 322,
+          "bottom": 539.15625,
+          "width": 306,
+          "height": 32.703125
+        },
+        {
+          "label": "Tool call",
+          "x": 330,
+          "y": 505.453125,
+          "right": 344,
+          "bottom": 519.453125,
+          "width": 14,
+          "height": 14
+        },
+        {
+          "label": "Show recent activity",
+          "x": 300,
+          "y": 593.53125,
+          "right": 344,
+          "bottom": 637.53125,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "latest",
+          "x": 140.4609375,
+          "y": 593.8125,
+          "right": 219.5390625,
+          "bottom": 637.8125,
+          "width": 79.078125,
+          "height": 44
+        },
+        {
+          "label": "Attach image",
+          "x": 25,
+          "y": 739,
+          "right": 69,
+          "bottom": 783,
+          "width": 44,
+          "height": 44
+        },
+        {
+          "label": "fixture/scripted \u2014 change model",
+          "x": 73,
+          "y": 739,
+          "right": 178.03125,
+          "bottom": 783,
+          "width": 105.03125,
+          "height": 44
+        },
+        {
+          "label": "\u22efSession actions",
+          "x": 239.734375,
+          "y": 739,
+          "right": 287,
+          "bottom": 783,
+          "width": 47.265625,
+          "height": 44
+        },
+        {
+          "label": "Send",
+          "x": 291,
+          "y": 739,
+          "right": 335,
+          "bottom": 783,
+          "width": 44,
+          "height": 44
+        }
+      ],
+      "stamps": [
+        {
+          "message": {
+            "x": 16,
+            "y": -7063.53125,
+            "right": 344,
+            "bottom": -6898.75,
+            "width": 328,
+            "height": 164.78125
+          },
+          "bubble": {
+            "x": 16,
+            "y": -7051.53125,
+            "right": 344,
+            "bottom": -6928.34375,
+            "width": 328,
+            "height": 123.1875
+          },
+          "prose": {
+            "x": 16,
+            "y": -7047.53125,
+            "right": 344,
+            "bottom": -6932.34375,
+            "width": 328,
+            "height": 115.1875
+          },
+          "stamp": {
+            "x": 16,
+            "y": -6928.34375,
+            "right": 344,
+            "bottom": -6902.75,
+            "width": 328,
+            "height": 25.59375
+          },
+          "position": "static",
+          "fontStyle": "italic"
+        }
+      ],
+      "prose": [
+        {
+          "family": "\"Inter Variable\", -apple-system, \"system-ui\", \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif",
+          "fontSize": "16px"
+        },
+        {
+          "family": "\"Inter Variable\", -apple-system, \"system-ui\", \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif",
+          "fontSize": "16px"
+        }
+      ],
+      "lifecycle": [
+        {
+          "text": "Idle \u00b7 reported",
+          "x": 16,
+          "y": 116.015625,
+          "right": 344,
+          "bottom": 135.203125,
+          "width": 328,
+          "height": 19.1875
+        },
+        {
+          "text": "Running",
+          "x": 16,
+          "y": 323.875,
+          "right": 344,
+          "bottom": 343.0625,
+          "width": 328,
+          "height": 19.1875
+        },
+        {
+          "text": "Status unavailable",
+          "x": 16,
+          "y": 543.15625,
+          "right": 344,
+          "bottom": 562.34375,
+          "width": 328,
+          "height": 19.1875
+        }
+      ]
+    }
+  ]
+}

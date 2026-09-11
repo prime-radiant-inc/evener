@@ -121,7 +121,11 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         );
         return;
       }
-      const requestID = activityPanelStore.getState().beginFetch(sessionRef, { nodeID: continuation.nodeID });
+      const requestID = activityPanelStore.getState().beginContinuationFetch(sessionRef, continuation.nodeID);
+      // Refused while anything else is already out: a root refresh is about to
+      // replace this tree and the token this click carried, and another
+      // branch's page holds the one request this panel can have in flight.
+      if (requestID === null) return;
       void threadsStore
         .getState()
         .listJobs(sessionRef, continuation.token)
@@ -229,6 +233,9 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             </Button>
           </div>
         )}
+        {currentTree && !currentTree.root.counts.complete && (
+          <p className={CLASS.state}>Activity coverage is incomplete.</p>
+        )}
         {currentTree && currentTree.root.entries.length === 0 ? (
           <EmptyState
             title="No retained activity yet"
@@ -244,6 +251,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
               continuationFailures={entry.continuationFailures}
               onContinue={handleContinue}
               loadingContinuationID={entry.continuationLoadingID}
+              rootRefreshing={entry.pending?.kind === "root"}
             />
           </div>
         ) : null}

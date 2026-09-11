@@ -15,14 +15,18 @@ type Registration struct {
 	runDir     string
 	entry      rendezvous.Entry
 	registered bool
+	removed    bool
 }
 
 func (r *Registration) Register(runDir string, entry rendezvous.Entry) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.removed {
+		return errors.New("registration has been removed")
+	}
 	if _, err := rendezvous.Write(runDir, entry); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.runDir = runDir
 	r.entry = entry
 	r.registered = true
@@ -35,6 +39,9 @@ func (r *Registration) UpdateSessionID(sessionID string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.removed {
+		return errors.New("registration has been removed")
+	}
 	if !r.registered {
 		return nil
 	}
@@ -51,5 +58,10 @@ func (r *Registration) Remove() error {
 	if !r.registered {
 		return nil
 	}
-	return rendezvous.Remove(r.runDir, r.entry.PID)
+	r.removed = true
+	err := rendezvous.Remove(r.runDir, r.entry.PID)
+	if err == nil {
+		r.registered = false
+	}
+	return err
 }

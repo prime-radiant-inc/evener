@@ -19,7 +19,6 @@ import {
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
-  isActivityFailure,
 } from "../../../protocol/activityData";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -34,6 +33,7 @@ import {
   type ActivityRow,
   activityDelegateState,
   buildActivityRows,
+  jobIsFailed,
 } from "./activityRows";
 
 export interface ActivityTreeProps {
@@ -43,6 +43,11 @@ export interface ActivityTreeProps {
   continuationFailures?: Record<string, string | undefined>;
   onContinue?: (targetID: string, continuation: string) => void;
   loadingContinuationID?: string;
+  // A root refresh in flight is about to replace this tree, every branch's
+  // continuation token included, so no page may be requested against it. A page
+  // already loading blocks the others the same way: the panel carries one
+  // request at a time, so only the branch that asked first can be answered.
+  rootRefreshing?: boolean;
 }
 
 export interface ActivityTreeHandle {
@@ -149,7 +154,7 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
     ];
   }
   // No "failed" suffix: the colored kind glyph already carries the outcome.
-  return [terminalSegment(job, job.status, isActivityFailure(job.outcome, job.status))];
+  return [terminalSegment(job, job.status, jobIsFailed(job))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
@@ -410,11 +415,11 @@ const DenseRowView = memo(function DenseRowView({
   const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
   const target = transcriptTarget(row);
   const statusState = jobStatusDotState(statusText, true);
-  const failed =
-    row.kind === "job"
-      ? isActivityFailure(row.job.outcome, row.job.status)
-      : activityDelegateState(row.delegate).failed;
-  const kindState = failed ? "failed" : row.live && statusState !== "needs-you" ? "working" : statusState;
+  const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;
+  // Work that has ended says so through its outcome, the verdict the fold and
+  // the badge already count; only live work still reads its status.
+  const liveState = statusState !== "needs-you" ? "working" : statusState;
+  const kindState = failed ? "failed" : row.live ? liveState : "ended";
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>
@@ -467,6 +472,7 @@ interface ContinuationStripViewProps {
   strip: ContinuationStrip;
   failure: string | undefined;
   loadingContinuationID?: string;
+  rootRefreshing?: boolean;
   onContinue: (targetID: string, continuation: string) => void;
 }
 
@@ -474,6 +480,7 @@ const ContinuationStripView = memo(function ContinuationStripView({
   strip,
   failure,
   loadingContinuationID,
+  rootRefreshing,
   onContinue,
 }: ContinuationStripViewProps): ReactNode {
   return (
@@ -486,7 +493,7 @@ const ContinuationStripView = memo(function ContinuationStripView({
           variant="quiet"
           size="xs"
           tabIndex={-1}
-          disabled={loadingContinuationID === strip.targetID}
+          disabled={rootRefreshing || loadingContinuationID !== undefined}
           onClick={(event) => {
             event.stopPropagation();
             onContinue(strip.targetID, strip.token ?? "");
@@ -512,6 +519,7 @@ interface RowBlockProps {
   registerRowRef: (id: string, element: HTMLDivElement | null) => void;
   continuationFailures: Record<string, string | undefined>;
   loadingContinuationID?: string;
+  rootRefreshing?: boolean;
   onContinue?: (targetID: string, continuation: string) => void;
 }
 
@@ -532,6 +540,7 @@ function RowBlock({
   registerRowRef,
   continuationFailures,
   loadingContinuationID,
+  rootRefreshing,
   onContinue,
 }: RowBlockProps): ReactNode[] {
   const out: ReactNode[] = [];
@@ -575,6 +584,7 @@ function RowBlock({
             strip={strip}
             failure={continuationFailures[strip.targetID]}
             loadingContinuationID={loadingContinuationID}
+            rootRefreshing={rootRefreshing}
             onContinue={onContinue}
           />
         ) : null,
@@ -604,6 +614,7 @@ function RowBlock({
             registerRowRef={registerRowRef}
             continuationFailures={continuationFailures}
             loadingContinuationID={loadingContinuationID}
+            rootRefreshing={rootRefreshing}
             onContinue={onContinue}
           />
         </div>,
@@ -615,7 +626,7 @@ function RowBlock({
 }
 
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID },
+  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID, rootRefreshing },
   ref,
 ) {
   // Detail strips are per-row, not an accordion: each row carries its own
@@ -798,6 +809,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
           registerRowRef={registerRowRef}
           continuationFailures={continuationFailures}
           loadingContinuationID={loadingContinuationID}
+          rootRefreshing={rootRefreshing}
           onContinue={onContinue}
         />
       </div>

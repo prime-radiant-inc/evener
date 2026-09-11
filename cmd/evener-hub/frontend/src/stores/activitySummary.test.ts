@@ -67,7 +67,7 @@ describe("activitySummaryStore", () => {
       });
     });
 
-    activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+    const continuationRequest = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
     const continuationCounts = { active: 9, failed: 0, completed: 0, complete: true };
     const settled = new Promise<void>((resolve) => {
       const unsubscribe = activitySummaryStore.subscribe((state) => {
@@ -99,6 +99,8 @@ describe("activitySummaryStore", () => {
     await settled;
 
     expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toEqual(continuationCounts);
+    // The queued refresh runs once the continuation's own page has landed.
+    activityPanelStore.getState().publishFetch("ref_a", continuationRequest, { kind: "ready", tree: initialRoot });
     await queued;
     resolveQueued({
       revision: 3,

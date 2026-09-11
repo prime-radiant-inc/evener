@@ -356,6 +356,172 @@ afterEach(() => {
 });
 
 describe("ActivityPanel", () => {
+  describe("root coverage", () => {
+    // The wire's complete flag describes coverage, not why activity is missing.
+    // Keep the known rows identical so an unconditional warning or dropped row
+    // cannot satisfy the incomplete case at the expense of the complete control.
+    const coverageNotice =
+      /\b(?:partial|incomplete|limited)\b.*\b(?:activity|coverage)\b|\b(?:activity|coverage)\b.*\b(?:partial|incomplete|limited|unavailable|missing)\b/i;
+
+    function expectVisible(element: HTMLElement) {
+      for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+        expect(current.hidden).toBe(false);
+        expect(current.getAttribute("aria-hidden")).not.toBe("true");
+        const style = window.getComputedStyle(current);
+        expect(style.display).not.toBe("none");
+        expect(style.visibility).not.toBe("hidden");
+        expect(style.opacity).not.toBe("0");
+      }
+    }
+
+    describe.each(["body", "dialog"] as const)("%s", (surface) => {
+      test.each([
+        { complete: false, label: "incomplete" },
+        { complete: true, label: "complete control" },
+      ])("$label preserves known rows and communicates root coverage honestly", async ({ complete }) => {
+        const user = userEvent.setup();
+        const fake = connectFakeClient();
+        fake.on("evener/jobs/list", () => ({
+          data: {
+            revision: 1,
+            root: {
+              sessionId: "sess_root",
+              ref: "ref_root",
+              label: "Root session",
+              aggregate: "working",
+              counts: { active: 1, failed: 0, completed: 1, complete },
+              entries: [
+                {
+                  kind: "delegate",
+                  delegate: {
+                    delegateId: "dlg_running_coverage",
+                    childSessionId: "sess_running_coverage",
+                    childRef: "ref_running_coverage",
+                    type: "delegate",
+                    lifecycle: "active",
+                    phase: "running",
+                    status: "running",
+                    terminal: false,
+                    mandate: "Inspect coverage inputs",
+                    branch: {},
+                  },
+                },
+                {
+                  kind: "delegate",
+                  delegate: {
+                    delegateId: "dlg_done_coverage",
+                    childSessionId: "sess_done_coverage",
+                    childRef: "ref_done_coverage",
+                    type: "delegate",
+                    lifecycle: "retained",
+                    phase: "idle",
+                    status: "completed",
+                    terminal: true,
+                    mandate: "Review coverage inputs",
+                    branch: {},
+                  },
+                },
+              ],
+              branch: {},
+            },
+          },
+        }));
+
+        if (surface === "body") {
+          render(<ActivityPanelBody sessionRef="ref_root" model={testModel()} />);
+        } else {
+          installMatchMediaStub(true);
+          render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+          await user.click(screen.getByRole("button", { name: "Activity" }));
+          await screen.findByRole("dialog");
+        }
+
+        await screen.findByRole("tree");
+        const running = screen.getByRole("treeitem", { name: /Inspect coverage inputs/ });
+        expectVisible(running);
+        expect(running.contains(screen.getByText("running"))).toBe(true);
+        expectVisible(screen.getByText("running"));
+        await user.click(screen.getByRole("treeitem", { name: "1 inactive" }));
+        const completed = screen.getByRole("treeitem", { name: /Review coverage inputs/ });
+        expectVisible(completed);
+        expect(completed.contains(screen.getByText("completed"))).toBe(true);
+        expectVisible(screen.getByText("completed"));
+        expectVisible(running);
+        expect(screen.getAllByRole("treeitem")).toHaveLength(3);
+
+        if (complete) {
+          expect(screen.queryByText(coverageNotice)).toBeNull();
+        } else {
+          expectVisible(screen.getByText(coverageNotice));
+        }
+      });
+    });
+  });
+
+  describe("root coverage retained states", () => {
+    const coverageNotice =
+      /\b(?:partial|incomplete|limited)\b.*\b(?:activity|coverage)\b|\b(?:activity|coverage)\b.*\b(?:partial|incomplete|limited|unavailable|missing)\b/i;
+
+    describe.each(["empty", "stale", "ended"] as const)("%s", (state) => {
+      test.each([
+        { complete: false, label: "incomplete" },
+        { complete: true, label: "complete control" },
+      ])("$label retains existing state content and communicates coverage honestly", async ({ complete }) => {
+        const fake = connectFakeClient();
+        const tree = state === "empty" ? emptyTree() : activityTree();
+        tree.root.counts.complete = complete;
+        let fetched = false;
+        fake.on("evener/jobs/list", () => {
+          if (!fetched) {
+            fetched = true;
+            return { data: tree };
+          }
+          if (state === "ended") {
+            throw new WireError("thread not found: thr_root", -32014, { evenerErrorInfo: "sessionUnavailable" });
+          }
+          throw new Error("refresh failed");
+        });
+
+        const { rerender } = render(
+          <ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />,
+        );
+        if (state === "empty") {
+          await screen.findByText("No retained activity yet");
+          expect(screen.getByText("No shell or delegate activity has been retained for this session.")).toBeTruthy();
+          expect(screen.queryByRole("tree")).toBeNull();
+        } else {
+          await screen.findByRole("tree");
+          rerender(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />);
+          if (state === "stale") {
+            await screen.findByText("Showing the last activity that loaded.");
+            expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+          } else {
+            await screen.findByText("This session has ended");
+            expect(screen.getByText("Showing the last retained activity.")).toBeTruthy();
+          }
+          expect(screen.getByRole("tree")).toBeTruthy();
+          expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
+          expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
+          expect(screen.getByRole("treeitem", { name: "2 inactive" })).toBeTruthy();
+        }
+
+        if (complete) {
+          expect(screen.queryByText(coverageNotice)).toBeNull();
+        } else {
+          const notice = screen.getByText(coverageNotice);
+          for (let current: HTMLElement | null = notice; current; current = current.parentElement) {
+            expect(current.hidden).toBe(false);
+            expect(current.getAttribute("aria-hidden")).not.toBe("true");
+            const style = window.getComputedStyle(current);
+            expect(style.display).not.toBe("none");
+            expect(style.visibility).not.toBe("hidden");
+            expect(style.opacity).not.toBe("0");
+          }
+        }
+      });
+    });
+  });
+
   test("starts with Activity, fetches on open, shows loading, then badges complete active count", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -671,16 +837,16 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
   });
 
-  test("keeps a continuation merge when a late root refresh resolves after closing", async () => {
+  test("Load more waits for an in-flight root refresh instead of superseding it", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    const staleRoot = deferred<{ data: unknown }>();
+    const heldRoot = deferred<{ data: unknown }>();
     let rootCalls = 0;
     fake.on("evener/jobs/list", ({ continuation }) => {
       if (continuation) return { data: continuedPartialTree() };
       rootCalls += 1;
       if (rootCalls === 1) return { data: activityTree(1) };
-      return staleRoot.promise;
+      return heldRoot.promise;
     });
 
     const panel = (bump: number) => (
@@ -694,15 +860,59 @@ describe("ActivityPanel", () => {
     rerender(panel(2));
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
 
+    const loadMore = screen.getByRole("button", { name: /load more/i });
+    await user.click(loadMore);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
+    expect(loadMore.hasAttribute("disabled")).toBe(true);
+
+    act(() => heldRoot.resolve({ data: activityTree(2) }));
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
+
+    // The root's own snapshot lands, so the bump it claims is one the tree
+    // actually received - no page was grafted onto the older tree instead.
+    expect(screen.queryByRole("treeitem", { name: /continued shell/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    expect(activitySummaryStore.getState().entries.get("ref_root")).toMatchObject({
+      lastFetchedBump: 2,
+      hasPublishedResult: true,
+    });
+    // The refreshed tree carries its own token, so the reader can page again.
+    expect(screen.getByRole("button", { name: /load more/i }).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("keeps a continuation merge when a late root refresh resolves after closing", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const lateRoot = deferred<{ data: unknown }>();
+    let rootCalls = 0;
+    fake.on("evener/jobs/list", ({ continuation }) => {
+      if (continuation) return { data: continuedPartialTree() };
+      rootCalls += 1;
+      if (rootCalls === 1) return { data: activityTree(1) };
+      return lateRoot.promise;
+    });
+
+    const panel = (bump: number) => (
+      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
+    );
+    const { rerender } = render(panel(1));
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+
     await user.click(screen.getByRole("button", { name: /load more/i }));
     await screen.findByRole("treeitem", { name: /continued shell/i });
     expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
 
+    rerender(panel(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3));
+
     await user.click(screen.getByRole("button", { name: "Close" }));
-    act(() => staleRoot.resolve({ data: activityTree(2) }));
+    act(() => lateRoot.resolve({ data: activityTree(2) }));
     await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
 
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3);
+    // The refreshed partial branch is still bounded, so the page loaded into it
+    // stays and the badge keeps counting it.
     expect(rootCalls).toBe(2);
     const panelEntry = activityPanelStore.getState().entries.get("ref_root");
     if (panelEntry?.load.kind !== "ready") throw new Error("continuation merge was not retained");
@@ -726,6 +936,48 @@ describe("ActivityPanel", () => {
     );
     expect(activitySummaryStore.getState().entries.get("ref_root")?.counts?.active).toBe(4);
     expect(activitySummaryStore.getState().entries.get("ref_root")?.lastFetchedBump).toBe(2);
+  });
+
+  // Round 1 deferred a root refresh that arrives during a continuation, and the
+  // continuation guard below refuses the opposite order, so a root refresh is
+  // never superseded through the UI any more: it publishes its own snapshot.
+  test("a root refresh that resolves after closing still settles into the panel", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const lateRoot = deferred<{ data: unknown }>();
+    let rootCalls = 0;
+    fake.on("evener/jobs/list", ({ continuation }) => {
+      if (continuation) return { data: continuedPartialTree() };
+      rootCalls += 1;
+      if (rootCalls === 1) return { data: activityTree(1) };
+      return lateRoot.promise;
+    });
+
+    const panel = (bump: number) => (
+      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
+    );
+    const { rerender } = render(panel(1));
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    rerender(panel(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    act(() => lateRoot.resolve({ data: activityTree(2) }));
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
+
+    // The closed panel still receives the answer it asked for, and no page was
+    // ever requested against the tree that refresh replaced.
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
+    expect(rootCalls).toBe(2);
+    const panelEntry = activityPanelStore.getState().entries.get("ref_root");
+    if (panelEntry?.load.kind !== "ready") throw new Error("the late root refresh did not publish");
+    expect(panelEntry.load.tree.revision).toBe(2);
+    expect(activitySummaryStore.getState().entries.get("ref_root")).toMatchObject({
+      lastFetchedBump: 2,
+      counts: { active: 3 },
+    });
   });
 
   test("continuation grafts only the targeted branch", async () => {
