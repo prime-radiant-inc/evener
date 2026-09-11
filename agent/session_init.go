@@ -277,6 +277,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	cfg.spawn.inheritedContext = nil
 	s := &Session{
 		id:                            sessionID,
+		skillLifecycle:                schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
 		cfg:                           cfg,
 		descendantEvent:               cfg.spawn.descendantEvent,
 		client:                        client,
@@ -888,6 +889,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.spawn.jobActivityClock = jobClock
 	s := &Session{
 		id:                       meta.ID,
+		skillLifecycle:           schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
 		cfg:                      cfg,
 		descendantEvent:          cfg.spawn.descendantEvent,
 		client:                   client,
@@ -1038,6 +1040,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// new content still emits, and a still-empty store stays silent.
 	s.notesLastProjected = restoredNotesBlock
 	s.notesEverProjected = notesEverProjected
+	if meta.Skills != nil {
+		s.skillLifecycle = meta.Skills.Clone()
+		s.pinnedNoteGen = meta.Skills.PinnedNoteGen
+	}
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
 	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read

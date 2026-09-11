@@ -614,6 +614,10 @@ type Session struct {
 	// skills discovered at session startup
 	skills skill.Catalog
 
+	// skillLifecycle is activation metadata, separate from the full catalog.
+	// Guarded by mu; ordinary instruction bodies are never stored here.
+	skillLifecycle schema.SkillLifecycleSnapshot
+
 	// MCP server connections
 	mcpMgr   *mcp.Manager
 	mcpTools []llm.ToolDefinition
@@ -1953,6 +1957,8 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) {
+	live.SkillState = live.SkillState.Clone()
+	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	s.history = append(s.history, live)
