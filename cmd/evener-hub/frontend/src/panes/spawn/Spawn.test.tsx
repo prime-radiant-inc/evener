@@ -1504,6 +1504,96 @@ async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setu
   if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
 }
 
+for (const navigation of ["picker", "URL"] as const) {
+  const projectA = "/tmp/plugin-project-a";
+  const projectB = "/tmp/plugin-project-b";
+  const plugin = SPAWN_PLUGIN_PREVIEW.plugins[0];
+  if (!plugin) throw new Error("plugin preview fixture is empty");
+  const previewA: PluginPreviewResponse = {
+    plugins: [{ ...plugin, name: "a-only" }],
+  };
+  const previewB: PluginPreviewResponse = {
+    plugins: [{ ...plugin, name: "b-only" }],
+  };
+  const navigate = async (user: ReturnType<typeof userEvent.setup>, cwd: string) => {
+    if (navigation === "picker") await setWorkingDir(user, cwd);
+    else await visitSpawnURL(`/new?dir=${cwd}`);
+  };
+
+  test(`${navigation}: a ready preview from A cannot invalidate B's restored selection after B's preview fails`, async () => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", `/new?dir=${projectB}`);
+    let returningToB = false;
+    let rejectB: ((error: Error) => void) | undefined;
+    const fake = readyClient((f) => {
+      f.on("evener/plugin/preview", ({ cwd }) => {
+        if (cwd === projectA) return previewA;
+        if (returningToB) return new Promise<PluginPreviewResponse>((_, reject) => (rejectB = reject));
+        return previewB;
+      });
+    });
+    renderSpawn(fake);
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+        cwd: projectB,
+        launchOverrides: { enabledPlugins: ["b-only"] },
+      }),
+    );
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+    await navigate(user, projectA);
+    await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("a-only"));
+    returningToB = true;
+    await navigate(user, projectB);
+    await waitFor(() => expect(rejectB).toBeTypeOf("function"));
+    await act(async () => {
+      if (!rejectB) throw new Error("B preview was not requested");
+      rejectB(new Error("B preview unavailable"));
+    });
+    await screen.findAllByText("Couldn't inspect plugins");
+
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() =>
+      expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+        cwd: projectB,
+        launchOverrides: { enabledPlugins: ["b-only"] },
+      }),
+    );
+  });
+
+  test(`${navigation}: a ready preview from A cannot block default B while B's preview is pending`, async () => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", `/new?dir=${projectA}`);
+    const fake = readyClient((f) => {
+      f.on("evener/plugin/preview", ({ cwd }) =>
+        cwd === projectA
+          ? { ...previewA, selectionErrors: [{ name: "a-gone", reason: "unavailable" }] }
+          : new Promise<PluginPreviewResponse>(() => {}),
+      );
+    });
+    renderSpawn(fake);
+    await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("a-only"));
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+    await navigate(user, projectB);
+    await waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toEqual({
+        cwd: projectB,
+      }),
+    );
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+    // The directory picker moved focus; the submit shortcut belongs to the prompt.
+    await user.click(screen.getByRole("textbox", { name: "Prompt" }));
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    await waitFor(() =>
+      expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({ cwd: projectB }),
+    );
+  });
+}
+
 test("explicit plugin selection reaches Preview, resolve, and Thread Start", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
@@ -3558,6 +3648,8 @@ test("typing a working directory reloads the model catalog only after confirmati
   await settled();
   await waitFor(() => expect(fake.calls.some((call) => call.method === "model/list")).toBe(true));
 
+  // Global cleanup can run before the initial directory-scoped catalog load.
+  await waitFor(() => expect(modelListRequests(fake).some((params) => Object.hasOwn(params, "cwd"))).toBe(true));
   const baseline = fake.calls.filter((call) => call.method === "model/list").length;
   await user.click(workingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
