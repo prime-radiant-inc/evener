@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -106,6 +107,12 @@ func TestIdleCompactionKeepsLiveAndColdGrouping(t *testing.T) {
 	}
 	if gapOwner == lastUserTurn {
 		t.Fatalf("idle fold was attributed to the preceding turn %s; no turn was running", lastUserTurn)
+	}
+	// The prefix is what proves the idle path ran: a fold staged under a
+	// running turn would carry that turn's id (agent's compactionGapIDPrefix;
+	// unexported, so named here).
+	if !strings.HasPrefix(gapOwner, "turn_compaction_") {
+		t.Fatalf("idle fold owner %s is not a compaction gap id; the fold did not stage idle", gapOwner)
 	}
 	assertReplayItemParity(t, "idle compaction replay", liveItems, coldItems)
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -94,6 +95,12 @@ func TestHeldContinuationOwnsItsOwnRecords(t *testing.T) {
 	}
 	if continuationTurn == held.Turn.ID {
 		t.Fatalf("continuation adopted the held mutation's reserved id %s", held.Turn.ID)
+	}
+	// The prefix is what proves the held path ran: a continuation whose mint
+	// succeeded would carry a client-mutation id instead (agent's
+	// directTurnIDPrefix; unexported, so named here).
+	if !strings.HasPrefix(continuationTurn, "turn_direct_") {
+		t.Fatalf("continuation turn %s is not self-minted; mintRunningTurnID was not refused, so this is not the turnNameHeld path", continuationTurn)
 	}
 	// Everything the continuation published after it opened belongs to it.
 	seenContinuation := false
