@@ -1,20 +1,7 @@
 // Session creation keeps the project directory above the prompt and the
 // less frequently changed launch settings below it. The directory picker
 // commits once, so browsing does not churn directory-dependent configuration.
-import {
-  Component,
-  type JSX,
-  type LazyExoticComponent,
-  lazy,
-  memo,
-  type ReactNode,
-  Suspense,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type {
   HarnessDescriptor,
@@ -71,10 +58,13 @@ import {
   type SlashToken,
   spliceSlashCommand,
 } from "../session/composer/slashCompletion";
+import {
+  ConnectProviderDialogBoundary,
+  useConnectProviderDialogChunk,
+} from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
-import { isStaleConnectDialogChunkError, loadConnectDialog } from "./connectDialogChunk";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
@@ -115,121 +105,14 @@ import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 // oauthDialogs, oauthFlow) - stays out of the spawn pane's initial bundle
 // and loads on first open.
 //
-// A rejected chunk lands on ConnectProviderDialogBoundary below, scoped to
-// the dialog: without it the lazy() rethrow would bubble into whatever
-// boundary happens to sit above this pane (on desktop the dock's
-// workspace-failure state - misleading, the workspace is fine - and on
-// mobile StackHost mounts panes with no boundary at all, so the whole app).
-// Retry swaps in a fresh lazy component - a rejected payload rethrows
-// forever, so re-rendering the old one could never recover. The Suspense
-// fallback is a real dialog reading "Loading…": a null fallback would leave
-// the click that opened the dialog with no visible response while the chunk
-// fetches, and the boundary below renders the same Dialog shell on failure
-// so the pending/failure states share one frame.
-//
-// The fresh component loads over loadConnectDialog's cache-busted URL -
-// Chrome retains a failed module fetch by URL (see connectDialogChunk.ts),
-// so a same-URL retry would replay the cached failure instead of reaching
-// the network.
-interface ConnectProviderDialogBoundaryProps {
-  // Swaps in a fresh lazy component to load the chunk again. The boundary
-  // clears its own failure state alongside it - both halves are needed, and
-  // neither is any use without the other.
-  onRetry: () => void;
-  // True once a cache-busted retry has already failed: a deploy that replaced
-  // the hashed chunk filename 404s forever under a new query param, so the
-  // second strike offers a page reload instead of another same-file fetch
-  // (the DockRegion chunk-boundary pattern).
-  reloadAvailable: boolean;
-  onClose: () => void;
-  children: ReactNode;
-}
-
-interface ConnectProviderDialogBoundaryState {
-  // The failed chunk's own message ("Failed to fetch dynamically imported
-  // module: ..."), shown verbatim - a stated failure is worth more to
-  // whoever hits it than a generic apology.
-  failure: string | null;
-}
-
-class ConnectProviderDialogBoundary extends Component<
-  ConnectProviderDialogBoundaryProps,
-  ConnectProviderDialogBoundaryState
-> {
-  state: ConnectProviderDialogBoundaryState = { failure: null };
-
-  static getDerivedStateFromError(error: unknown): ConnectProviderDialogBoundaryState {
-    // A logic bug inside the resolved dialog (module init, render) surfaces
-    // through this same boundary as a chunk-fetch failure does. Only a stale
-    // hashed-asset URL (JS or CSS) is a chunk-load failure worth a retry:
-    // anything else keeps unwinding to the next boundary above instead of
-    // being misreported - and retried - as a network fetch.
-    if (!isStaleConnectDialogChunkError(error)) throw error;
-    return { failure: error instanceof Error ? error.message : String(error) };
-  }
-
-  private retry = () => {
-    this.setState({ failure: null });
-    this.props.onRetry();
-  };
-
-  render(): ReactNode {
-    if (this.state.failure === null) return this.props.children;
-    return (
-      <Dialog
-        open
-        onClose={this.props.onClose}
-        title="Couldn't load the connect dialog"
-        footer={
-          <>
-            <Button variant="quiet" onClick={this.props.onClose}>
-              Close
-            </Button>
-            <Button variant="primary" onClick={this.retry}>
-              Retry
-            </Button>
-            {/* reloadAvailable alone counts retries, so a logic bug that rode
-                in on a stale chunk URL would earn a page reload that cannot
-                fix it. The failed retry must itself name a stale hashed
-                asset (the DockRegion chunk-boundary pattern). */}
-            {this.props.reloadAvailable && isStaleConnectDialogChunkError(this.state.failure) && (
-              <Button variant="quiet" onClick={() => window.location.reload()}>
-                Reload page
-              </Button>
-            )}
-          </>
-        }
-      >
-        {this.state.failure}
-      </Dialog>
-    );
-  }
-}
-
-type ConnectProviderDialogComponent = (props: { onClose(): void; onConnected(name?: string): void }) => JSX.Element;
-type ConnectProviderDialogChunk = LazyExoticComponent<ConnectProviderDialogComponent>;
-
-function lazyConnectProviderDialog(cacheBust = false): ConnectProviderDialogChunk {
-  // ConnectProviderDialog is a named export, so the import() promise is
-  // adapted the same way App.tsx's own DevHarnessRoute does for
-  // dev/DevHarness.tsx.
-  return lazy(() => loadConnectDialog(cacheBust).then((m) => ({ default: m.ConnectProviderDialog })));
-}
-
-// Module scope, not per mount: a lazy() component caches its resolved
-// module on its own payload, so one shared component means the chunk is
-// fetched once per page load and every later open renders the dialog
-// straight away instead of suspending again.
-let connectProviderDialog = lazyConnectProviderDialog();
-
-// A payload caches its outcome for the life of the module, success or
-// failure, so one test's failed chunk would otherwise be every later test's
-// failed chunk. Mirrors the resetXForTests precedent every other module
-// singleton here follows (stores/navigation/store.ts's own note); no production code
-// should ever call it.
-export function resetConnectDialogChunkForTests(): void {
-  connectProviderDialog = lazyConnectProviderDialog();
-}
+// A rejected chunk lands on ConnectProviderDialogBoundary from
+// settings/sections/credentials/ConnectProviderDialogBoundary (shared with the
+// session chrome's model-switch trigger, which opens the same dialog), scoped
+// to the dialog so the lazy() rethrow does not bubble into this pane's own
+// workspace-failure boundary. The Suspense fallback is a real dialog reading
+// "Loading…": a null fallback would leave the click that opened the dialog
+// with no visible response while the chunk fetches, and the boundary renders
+// the same Dialog shell on failure so pending and failure share one frame.
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -339,30 +222,29 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     },
     [providerSetup.retry],
   );
-  // A retry needs a NEW lazy component, not a re-render of the old one:
-  // React.lazy stores the rejection on its payload and rethrows that same
-  // error on every subsequent render, forever.
-  const [ProviderDialog, setProviderDialog] = useState<ConnectProviderDialogChunk>(connectProviderDialog);
-  // A retry re-fetches the same hashed filename over a cache-busted URL:
-  // enough for a transient failure, useless once a deploy has removed the
-  // file. Counting retries lets the boundary offer a page reload on the
-  // second strike (the DockRegion chunk-boundary pattern).
-  const [dialogRetryCount, setDialogRetryCount] = useState(0);
-  const retryProviderDialog = useCallback(() => {
-    setDialogRetryCount((count) => count + 1);
-    const nextDialog = lazyConnectProviderDialog(true);
-    // Publish the new payload before it resolves so a remount during the
-    // retry shares the in-flight request instead of restoring the rejected
-    // payload that caused the boundary.
-    connectProviderDialog = nextDialog;
-    setProviderDialog(() => nextDialog);
-  }, []);
+  // The shared chunk hook owns the lazy payload and its cache-busted retry
+  // state, so this pane and the model-switch trigger cannot drift apart on
+  // recovery behavior; see ConnectProviderDialogBoundary.tsx.
+  const {
+    Dialog: ProviderDialog,
+    retry: retryProviderDialog,
+    reloadAvailable: dialogReloadAvailable,
+  } = useConnectProviderDialogChunk();
 
   const [prompt, setPrompt] = useState("");
   const [harness, setHarness] = useState("");
   const [model, setModel] = useState(""); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [cwd, setCwd] = useState("");
+  // providerChoicePending is scoped to one draft, not to the pane mount: a new
+  // working directory or harness is a different catalog scope whose own
+  // defaults were never overridden by an onboarding the user walked away from.
+  // Cancelling inside one scope keeps the flag (see its own comment above),
+  // because that draft's explicit choice is still in play.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: harness/cwd are trigger-only deps - the body only resets a ref, but the reset must re-run when the draft's catalog scope changes (same idiom as the catalog settle effect below)
+  useEffect(() => {
+    providerChoicePending.current = false;
+  }, [harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [branch, setBranch] = useState(""); // display-only (floor §1.7)
   const [accessMode, setAccessMode] = useState("");
@@ -646,7 +528,18 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // response. The same promise is shared with the default-model preview, so
   // opening a picker and resolving the working directory cannot issue
   // duplicate model/list RPCs for the same harness and cwd.
-  const loadCatalog = useCallback(() => loadModelList().then(modelListToCatalog), [loadModelList]);
+  const loadCatalog = useCallback(
+    (refresh?: boolean) => {
+      // ModelSwitchTrigger's contract: refresh:true must bypass the caller's
+      // cache. Without this, the pane's per-scope request cache could answer a
+      // post-connection refresh with the listing it fetched before connecting,
+      // and only providerConnected's own entries.clear() would be holding that
+      // apart - an invisible coupling the loader itself should own.
+      if (refresh) modelListCache.current.entries.clear();
+      return loadModelList().then(modelListToCatalog);
+    },
+    [loadModelList],
+  );
   // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
   // null rather than [] - a hub with no remembered projects, or a directory with
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
@@ -1678,7 +1571,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         {connectingProvider && (
           <ConnectProviderDialogBoundary
             onRetry={retryProviderDialog}
-            reloadAvailable={dialogRetryCount > 0}
+            reloadAvailable={dialogReloadAvailable}
             onClose={closeProviderSetup}
           >
             <Suspense

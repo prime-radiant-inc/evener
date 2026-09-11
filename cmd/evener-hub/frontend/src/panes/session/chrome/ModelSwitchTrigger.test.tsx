@@ -1,16 +1,49 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { connectionStore } from "../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../stores/credentials";
 import type { ModelCatalog } from "../../../widgets";
+import { resetConnectDialogChunkForTests } from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
+import * as connectDialogChunk from "../../spawn/connectDialogChunk";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
 
-afterEach(cleanup);
+// The connect dialog is a separate chunk, so a rejected import() is a real
+// failure mode (hub restart mid-load, deploy that replaced the hashed file).
+// The spy replaces only native module evaluation, exactly like
+// SpawnChunk.test.tsx's own recipe for the same chunk.
+const realLoadConnectDialog = connectDialogChunk.loadConnectDialog;
+const loadConnectDialog = vi.spyOn(connectDialogChunk, "loadConnectDialog");
+
+const CHUNK_ERROR = "Failed to fetch dynamically imported module: /webassets/ConnectProviderDialog-a1b2c3.js";
+
+function StubConnectDialog({ onClose }: { onClose(): void; onConnected(name?: string): void }) {
+  return (
+    <div role="dialog" aria-label="stub connect dialog">
+      <p>connect dialog mounted</p>
+      <button type="button" onClick={onClose}>
+        Close stub
+      </button>
+    </div>
+  );
+}
+
+beforeEach(() => {
+  loadConnectDialog.mockReset();
+  loadConnectDialog.mockImplementation(realLoadConnectDialog);
+  resetConnectDialogChunkForTests();
+});
+
+afterEach(() => {
+  cleanup();
+  loadConnectDialog.mockReset();
+  loadConnectDialog.mockImplementation(realLoadConnectDialog);
+  resetConnectDialogChunkForTests();
+});
 
 function catalog(): ModelCatalog {
   return {
@@ -395,4 +428,30 @@ test("connect another provider refreshes the actual instance catalog without swi
   expect(onPick).toHaveBeenCalledWith({ provider: "team-local", model: "served", displayName: "Team served" });
   expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+});
+
+test("a rejected connect-dialog chunk stays inside the dialog's boundary and retries over a cache-busted URL", async () => {
+  const user = userEvent.setup();
+  vi.mocked(loadConnectDialog)
+    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
+    .mockResolvedValueOnce({
+      ConnectProviderDialog: StubConnectDialog,
+    } as never);
+  renderTrigger();
+
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+
+  // The rejected import is contained: the trigger survives, the failure names
+  // itself, and a retry is offered - instead of unwinding through the session
+  // chrome with no recovery path.
+  expect(await screen.findByText("Couldn't load the connect dialog")).toBeTruthy();
+  expect(await screen.findByText(CHUNK_ERROR)).toBeTruthy();
+  expect(screen.getByTestId("trigger")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
+  // Second call carries the cache-busting flag: a same-URL retry would replay
+  // Chrome's retained module failure.
+  expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
 });

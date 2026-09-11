@@ -20,7 +20,7 @@
 // Chrome, not a pane: the "panes never ask am I mobile?" rule doesn't reach
 // this component (SessionChrome's own openDetails already branches the same
 // way).
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage, sessionActionHeadline } from "../../../protocol/errors";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
@@ -35,13 +35,11 @@ import {
   Sheet,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import {
+  ConnectProviderDialogBoundary,
+  useConnectProviderDialogChunk,
+} from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
 import styles from "./modelswitch.module.css";
-
-const ConnectProviderDialog = lazy(() =>
-  import("../../settings/sections/credentials/ConnectProviderDialog").then((module) => ({
-    default: module.ConnectProviderDialog,
-  })),
-);
 
 export interface ModelSwitchTriggerProps {
   /** The trigger's visible text. Usually the current qualified model id, but a
@@ -103,6 +101,13 @@ export function ModelSwitchTrigger({
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [providerFilter, setProviderFilter] = useState<string>();
+  // The connect dialog is a lazy chunk with its own recovery, shared with the
+  // spawn pane: a rejected import must not take the session UI with it.
+  const {
+    Dialog: ConnectProviderDialog,
+    retry: retryConnector,
+    reloadAvailable: connectorReloadAvailable,
+  } = useConnectProviderDialogChunk();
   const handledConnection = useRef(connectionRequest);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // Generation guard for the catalog load below: every open - and every
@@ -286,21 +291,27 @@ export function ModelSwitchTrigger({
   );
 
   const connector = connecting && (
-    <Suspense
-      fallback={
-        <Dialog open title="Connect provider" onClose={() => setConnecting(false)}>
-          <Loader label="Loading…" />
-        </Dialog>
-      }
+    <ConnectProviderDialogBoundary
+      onRetry={retryConnector}
+      reloadAvailable={connectorReloadAvailable}
+      onClose={() => setConnecting(false)}
     >
-      <ConnectProviderDialog
-        onClose={() => {
-          setConnecting(false);
-          triggerRef.current?.focus();
-        }}
-        onConnected={connected}
-      />
-    </Suspense>
+      <Suspense
+        fallback={
+          <Dialog open title="Connect provider" onClose={() => setConnecting(false)}>
+            <Loader label="Loading…" />
+          </Dialog>
+        }
+      >
+        <ConnectProviderDialog
+          onClose={() => {
+            setConnecting(false);
+            triggerRef.current?.focus();
+          }}
+          onConnected={connected}
+        />
+      </Suspense>
+    </ConnectProviderDialogBoundary>
   );
 
   if (isMobile) {

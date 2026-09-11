@@ -9,9 +9,10 @@ import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../stores/extensions";
 import { Toast } from "../../widgets";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
+import { resetConnectDialogChunkForTests } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import * as connectDialogChunk from "./connectDialogChunk";
 import { resetConnectDialogLoaderForTests } from "./connectDialogChunk";
-import Spawn, { resetConnectDialogChunkForTests } from "./Spawn";
+import Spawn from "./Spawn";
 
 // The connect-provider dialog chunk is a separate network request from
 // index.html, so a hub restarting mid-load, a slow link, or a deploy that

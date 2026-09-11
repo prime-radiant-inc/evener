@@ -1995,6 +1995,70 @@ test("preselects the first launchable model when the resolved default's provider
   expect(start?.params).toMatchObject({ model: "anthropic/claude-sonnet-4-5" });
 });
 
+test("entering onboarding for one draft scope does not suppress the fallback for the next", async () => {
+  const user = userEvent.setup();
+  // The first scope resolves a credentialed default, so no fallback runs and
+  // Model stays empty. The working-directory switch starts a new catalog scope
+  // whose default is uncredentialed - exactly when the fallback must apply.
+  let defaultModel = "anthropic/claude-opus-4";
+  const fake = readyClient((f) => {
+    // Nothing stored, so the pane offers the Connect provider entry point - the
+    // path that marks this draft as having entered onboarding.
+    f.on("evener/instance/list", () => ({
+      instances: [],
+      availableProviders: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          protocol: "openai-chat",
+          auth: "bearer",
+          implicit: true,
+          authModes: ["apiKey"],
+          setup: {
+            name: "openai",
+            providerId: "openai",
+            protocol: "openai-chat",
+            auth: "bearer",
+            implicit: true,
+            isDefault: false,
+            activeSource: "none",
+            hasStoredOAuth: false,
+            credentialRequired: true,
+            authModes: ["apiKey"],
+            baseUrl: "https://provider.example/v1",
+          },
+        },
+      ],
+    }));
+    f.on("model/list", () => ({
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        { provider: "anthropic", model: "claude-opus-4", displayName: "anthropic/claude-opus-4" },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: defaultModel },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByRole("button", { name: "Connect provider" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+  await user.keyboard("{Escape}");
+
+  defaultModel = "openai/gpt-5.5"; // openai has no credentials in this fixture
+  await setWorkingDir(user, "/tmp/later-draft");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
+});
+
 test("keeps the form usable and leaves Model at '(default)' when no provider is credentialed at all", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
