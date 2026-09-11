@@ -3993,3 +3993,45 @@ The `tests` job at 73186a7 FAILED: `--- FAIL: TestDelegatePreseededInputCarriesO
 2. Gates: gofmt, `go vet ./...`, `go test -count=1 ./...` in agent with zero non-ok lines, `-race -count=3` on the delegate preseed test and the fold/replay sets, deadline audit, pinned golangci-lint 2.13.1 with 0 issues; root `internal/apptranscript` and `internal/appprojector` packages green.
 3. Do not push. Do not merge main.
 4. Append a "Task 68" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-33-report.md`; reply with status, commit SHAs, the isolation-run RED line for Medium 2, one-line test summary, concerns.
+
+## Task 69: PR #1145 round 4 (head 86e8c4b) — CI tooling flake fix, RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/flake-ci-tools (branch claude/fix-ci-tooling-download-flakes). Flake lane: you push the branch and update PR #1145; you do not merge it.
+
+### RoboRev verdict (verbatim, 3 reviewers)
+
+## roborev: Combined Review (`86e8c4b`)
+
+## Summary Verdict
+
+Bounded retry and resilient installer are functionally sound; four issues remain — two medium (unbounded agent-shards path, missing test coverage) and two low (stale docs, unchecked `perl` prerequisite).
+
+---
+
+## Medium
+
+- **`scripts/gate/run-module-tests.sh:558`** — Agent path runs `go run ./cmd/evener-dev/bin dev agent-shards` before the bounded `go list`, and that `go run` reads the same `GOCACHE`/`GOMODCACHE`, so a stalled volume can hang unbounded before the new bound is reached. Apply the same bound to the shards invocation or enumerate packages before running shards.
+- **`scripts/gate/run-module-tests.sh:346`** — New timeout, retry, group-stop, zombie-exclusion, and promote-only-on-success logic has no automated coverage for retry-then-succeed, exhaust-attempts, or survivor fail-closed paths. Add a test using a stub `go` on `PATH` with short `EVENER_ROOT_PACKAGE_LIST_TIMEOUT`/`ATTEMPTS` verifying retry notice, promoted output, and non-retry on survivors.
+
+## Low
+
+- **`docs/developing-evener/testing.md:349`** *(reported by all three reviewers)* — Docs state the process group comes from bash's job control rather than `setsid`. That was true of an earlier commit (`4e170ea`, `set -m`), but commit `46f1aeb` replaced monitor mode with `perl -e 'setpgrp(0, 0); ...'` and explicitly rejects `set -m` because it changes job semantics for the whole script. The process group is now made by perl's `setpgrp`, not bash job control. A maintainer reading only the testing docs could reintroduce `set -m` or fail to realize the runner has a `perl` runtime dependency. Replace that sentence with the actual mechanism, e.g. "The process group is made by the spawn: the attempt is `exec`'d through `perl`'s `setpgrp(0, 0)`, so `setsid(1)` — absent on macOS — is not needed."
+- **`scripts/gate/run-module-tests.sh:423`** — `perl` is required for group isolation but never checked, so a missing `perl` surfaces as a `go list` exit 127 with an attempt heading rather than a clear dependency error. Add a startup `command -v perl` check with an explicit failure message.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 16s | Total: 11m36s*
+
+
+### Coordinator rulings
+
+- **Medium 1 (`go run ./cmd/evener-dev/bin dev agent-shards` runs before the bounded `go list` and reads the same caches): real, fix.** Generalise the bounded runner from "package list" to "bounded go invocation used during discovery" — same timeout/attempts knobs (keep the documented `EVENER_ROOT_PACKAGE_LIST_*` names, note in the doc that they now bound every discovery-phase go invocation), same group spawn, stop, zombie-aware probe and diagnostic — and run the shards invocation through it. Do not copy the helper. If reordering (enumerate packages first, then shards) is genuinely enough because the shards command only needs what the bounded list already forced into the cache, say so with evidence; otherwise bound it.
+- **Medium 2 (no automated coverage for retry-then-succeed, exhaust-attempts, survivor fail-closed): real, fix.** The manual stub runs you have been recording become an automated test. Find how this repo tests shell scripts (look for existing script tests under `scripts/`, `make/`, a Go test that execs a script, or a `*_test.sh`); add a test in that style that puts a stub `go` on `PATH`, sets short `EVENER_ROOT_PACKAGE_LIST_TIMEOUT`/`ATTEMPTS`, runs the gate script against a throwaway module in a temp dir, and asserts: (a) retry notice then promoted output on retry-then-succeed; (b) failure and the retained-log diagnostic on exhaust-attempts; (c) non-retry and the fail-closed message when a survivor remains (a stub child that ignores SIGTERM) and when `ps` cannot run. The test must not recurse into the real gate (the stub `go` must never reach the real toolchain) and must run in seconds. Wire it into a target CI already runs (`make test` or the `static`/`tests` job — say which and why). RED-first is satisfied by writing the test against a temporarily broken script only if that is cheap; otherwise a characterization test that demonstrably exercises each branch (assert on the exact diagnostic lines) is acceptable — say which.
+- **Low 1 (`docs/developing-evener/testing.md` ~349 still says the group comes from bash job control): fix.** State the present mechanism (perl `setpgrp`), why not `setsid` (absent on macOS) and why not `set -m` (changes job semantics for the whole script). Present tense only.
+- **Low 2 (`perl` never checked): fix.** A startup `command -v perl` check in the gate script with one clear failure line naming what it is needed for.
+
+### Requirements
+
+1. One commit per finding; conventional `ci:`/`docs:`/`test:` subjects; no trailers.
+2. Before pushing: `git fetch origin main` on its own line, then `git merge --no-ff --no-edit origin/main` (main is at least 9ff969396 now); `bash -n` both scripts; run the new automated test and the gate once in the bounded path (record elapsed time).
+3. Push; extend the PR body with a "Review round 4" section naming the commit per finding and the new test's target.
+4. Append "Round 4" to your report. Reply with status, commit SHAs, pushed head, the new test's command and output summary, concerns.
