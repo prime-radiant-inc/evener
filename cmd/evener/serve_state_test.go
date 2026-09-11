@@ -118,6 +118,7 @@ type sessionControlIdentityServer struct {
 
 	mu                   sync.Mutex
 	processing           bool
+	claimedTurnID        string
 	processingStarted    chan struct{}
 	releaseProcessing    chan struct{}
 	processingFinished   chan struct{}
@@ -136,6 +137,15 @@ type sessionControlIdentityServer struct {
 	terminalEnteredOnce       sync.Once
 	terminalProjectedOnce     sync.Once
 	terminalReleaseOnce       sync.Once
+
+	// An input pass that claims nothing still publishes the session's wire
+	// state at its tail. Holding one lets a test place a turn/start inside that
+	// pass, which is the ordering the daemon reaches on its own under load.
+	holdUnclaimedPass        bool
+	unclaimedPassEntered     chan struct{}
+	releaseUnclaimedPass     chan struct{}
+	unclaimedPassOnce        sync.Once
+	unclaimedPassReleaseOnce sync.Once
 }
 
 func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIdentityServer {
@@ -150,17 +160,41 @@ func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIde
 		terminalProjectionEntered: make(chan struct{}),
 		releaseTerminalProjection: make(chan struct{}),
 		terminalProjected:         make(chan struct{}),
+
+		unclaimedPassEntered: make(chan struct{}),
+		releaseUnclaimedPass: make(chan struct{}),
 	}
 }
 
+// SetProcessingTurn records the claim of a durable turn. It is the daemon's one
+// call that publishes a client-mutation turn's stable identity, so it is the
+// signal the processing gate below waits on.
+func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
+	s.Server.SetProcessingTurn(turnID)
+	s.mu.Lock()
+	s.claimedTurnID = turnID
+	s.mu.Unlock()
+}
+
+// SetState holds the daemon inside the claimed turn. Active state alone is not
+// that moment: the serve loop publishes the live session's wire state at the
+// tail of every input pass, and that state reads active for a durable start the
+// loop has accepted but not yet claimed, whose stable identity nothing has
+// published. Only a claim opens this gate.
 func (s *sessionControlIdentityServer) SetState(state string) {
 	s.Server.SetState(state)
 	if state != string(agent.SessionProcessing) {
 		return
 	}
 	s.mu.Lock()
-	s.processing = true
+	claimed := s.claimedTurnID != ""
+	if claimed {
+		s.processing = true
+	}
 	s.mu.Unlock()
+	if !claimed {
+		return
+	}
 	s.processingStartOnce.Do(func() { close(s.processingStarted) })
 	<-s.releaseProcessing
 }
@@ -173,9 +207,14 @@ func (s *sessionControlIdentityServer) SetProcessing(processing bool) {
 	s.mu.Lock()
 	finishing := s.processing
 	s.processing = false
+	holdUnclaimedPass := s.holdUnclaimedPass
 	s.mu.Unlock()
 	if finishing {
 		s.processingFinishOnce.Do(func() { close(s.processingFinished) })
+	}
+	if holdUnclaimedPass {
+		s.unclaimedPassOnce.Do(func() { close(s.unclaimedPassEntered) })
+		<-s.releaseUnclaimedPass
 	}
 }
 
@@ -199,7 +238,7 @@ type sessionControlLifecycle struct {
 	ref    string
 }
 
-func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter) *sessionControlLifecycle {
+func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter, configure ...func(*sessionControlIdentityServer)) *sessionControlLifecycle {
 	t.Helper()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
@@ -216,6 +255,9 @@ func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter) *se
 	var observedServer *sessionControlIdentityServer
 	deps.newServer = func(cfg server.ServerConfig) serveServer {
 		observedServer = newSessionControlIdentityServer(cfg)
+		for _, apply := range configure {
+			apply(observedServer)
+		}
 		return observedServer
 	}
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
@@ -279,6 +321,7 @@ func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter) *se
 	t.Cleanup(func() {
 		observedServer.release()
 		observedServer.terminalReleaseOnce.Do(func() { close(observedServer.releaseTerminalProjection) })
+		observedServer.unclaimedPassReleaseOnce.Do(func() { close(observedServer.releaseUnclaimedPass) })
 		client.Close()
 		if err := shutdownServeTestDaemon(ctx, entry.Address, entry.SessionID); err != nil {
 			return
@@ -305,7 +348,7 @@ func awaitSessionControlLifecycle(t *testing.T, lifecycle *sessionControlLifecyc
 	}
 }
 
-func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
+func startClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
 	t.Helper()
 	response, err := lifecycle.client.TurnStart(lifecycle.ctx, appwire.TurnStartParams{
 		ClientMutationID:   mutationID,
@@ -316,6 +359,12 @@ func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycl
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
+	return response
+}
+
+func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
+	t.Helper()
+	response := startClientMutationTurn(t, lifecycle, mutationID, text)
 	awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
 	return response
 }
@@ -383,6 +432,29 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			}
 		}
 		t.Fatalf("projected turns do not contain incorporated pending input: %#v", projected.Turns)
+	})
+
+	// The serve loop publishes the live session's wire state at the tail of
+	// every input pass, including a pass that claimed nothing, and that state
+	// reads active from the moment turn/start durably accepts a start -- before
+	// the loop claims it and publishes its stable identity. Holding an
+	// unclaimed pass across turn/start reproduces that ordering, which CI hits
+	// on its own under load.
+	t.Run("start claimed after an unclaimed input pass", func(t *testing.T) {
+		lifecycle := startSessionControlLifecycle(t, &closedStreamAdapter{}, func(srv *sessionControlIdentityServer) {
+			srv.holdUnclaimedPass = true
+		})
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.unclaimedPassEntered, "unclaimed input pass entry")
+		start := startClientMutationTurn(t, lifecycle, "unclaimed-pass-start", "claim this turn")
+		lifecycle.server.unclaimedPassReleaseOnce.Do(func() { close(lifecycle.server.releaseUnclaimedPass) })
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
+		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
+		if activeTurnID == "" {
+			t.Fatal("thread/read published no active turn while processing")
+		}
+		if activeTurnID != start.Turn.ID {
+			t.Fatalf("published active turn = %q, durable start turn = %q", activeTurnID, start.Turn.ID)
+		}
 	})
 
 	t.Run("stop", func(t *testing.T) {
