@@ -224,8 +224,15 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // ToolSummaryContext so shell's own descriptor can strip a redundant
   // "cd <cwd> && " prefix from its summary.
   const statedIntent = statedIntentOf(item);
-  const useProjectedSummary = projectedSummary !== undefined && statedIntent === undefined;
-  const summary = useProjectedSummary ? projectedSummary : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+  // The descriptor's own summary (read_file's "Read <path> · lines N-M", shell's
+  // "Ran <cmd>", …) is the row's summary at every verbosity level. The projected
+  // summary is only a fallback for a descriptor that renders nothing — never a
+  // replacement for a real one. Overriding a real summary with the projected
+  // neutral text is what showed "Action summary unavailable" for every
+  // intent-less tool call, including read_file rows that clearly read a file.
+  const descriptorSummary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+  const useProjectedSummary = projectedSummary !== undefined && descriptorSummary.trim() === "";
+  const summary = useProjectedSummary ? projectedSummary : descriptorSummary;
   let intent = item.description;
   if (isDelegate) {
     intent = delegateIntentOf(item);

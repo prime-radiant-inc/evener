@@ -220,13 +220,13 @@ test("with both hook toggles off, only a non-zero hook survives as a compact cri
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
 });
 
-test("a blank-intent tool uses the projected neutral summary without a raw command summary", () => {
+test("an intent-less tool shows its own derived summary at chat and tools levels", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
   const blankIntent = item({
     id: "critical-blank-intent",
     type: "commandExecution",
     toolName: "shell",
-    argumentsJSON: JSON.stringify({ command: "echo should-not-be-recomputed" }),
+    argumentsJSON: JSON.stringify({ command: "echo derived-summary" }),
     description: "  ",
     status: "completed",
   });
@@ -235,13 +235,35 @@ test("a blank-intent tool uses the projected neutral summary without a raw comma
   // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
   // <details> children), so it is present even when the group is closed.
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByText("Action summary unavailable")).toBeTruthy();
-  expect(screen.queryByText("Ran echo should-not-be-recomputed")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
 
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   rerender(withConfig(tools, <TurnBlock turn={turn([blankIntent], {}, tools)} />));
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Action summary unavailable");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+});
+
+// Regression for session 034MY2rfMj2ho4Nj6J0jFB: an intent-less read_file row
+// rendered "Action summary unavailable" instead of the row's own
+// "Read <path> · lines N-M", because the projected neutral summary replaced the
+// descriptor's own summary. Every level must show the derived summary.
+test("an intent-less read_file shows the Read summary, never 'Action summary unavailable'", () => {
+  const read = item({
+    id: "read-no-intent",
+    type: "commandExecution",
+    toolName: "read_file",
+    argumentsJSON: JSON.stringify({ file_path: "src/foo.ts" }),
+    output: "line one\nline two\n",
+    description: "  ",
+    status: "completed",
+  });
+  for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
+    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
+    expect(screen.queryByText("Action summary unavailable")).toBeNull();
+    unmount();
+  }
 });
 
 test("Chat renders a closed action group that expands reasons without tool UI (catches missing Chat intent)", () => {
