@@ -14,31 +14,26 @@ import {
   useRef,
   useState,
 } from "react";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import { Button, Chevron } from "../../../widgets";
-import { requireClass } from "../../../widgets/internal/requireClass";
-import { OpenTranscriptButton } from "../transcript/openTranscript";
-import { ActivityRowDetail } from "./ActivityRowDetail";
 import {
   type ActivityDelegate,
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
-} from "./activityData";
-import {
-  formatQuietAge,
-  formatUsagePair,
-  isFailedStatus,
-  jobStatusDotState,
-  quietAnchorMillis,
-} from "./activityFormat";
+} from "../../../protocol/activityData";
+import { Button, Chevron } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
+import { OpenTranscriptButton } from "../transcript/openTranscript";
+import { ActivityRowDetail } from "./ActivityRowDetail";
+import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import {
   type ActivityDelegateRow,
   type ActivityFoldRow,
   type ActivityJobRow,
   type ActivityRow,
+  activityDelegateState,
   buildActivityRows,
+  jobIsFailed,
 } from "./activityRows";
 
 export interface ActivityTreeProps {
@@ -48,6 +43,11 @@ export interface ActivityTreeProps {
   continuationFailures?: Record<string, string | undefined>;
   onContinue?: (targetID: string, continuation: string) => void;
   loadingContinuationID?: string;
+  // A root refresh in flight is about to replace this tree, every branch's
+  // continuation token included, so no page may be requested against it. A page
+  // already loading blocks the others the same way: the panel carries one
+  // request at a time, so only the branch that asked first can be answered.
+  rootRefreshing?: boolean;
 }
 
 export interface ActivityTreeHandle {
@@ -74,7 +74,7 @@ const CLASS = {
 };
 
 function delegateStatusText(delegate: ActivityDelegate): string {
-  return stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+  return activityDelegateState(delegate).status;
 }
 
 function delegateName(delegate: ActivityDelegate): string {
@@ -128,9 +128,13 @@ function parseMillis(value: string | undefined): number | undefined {
 
 // terminalSegment renders the duration (endedAt - startedAt, quiet-age
 // bucketed) when both endpoints parse, else the status text - colored danger
-// when the status itself is the failure, so a failed row with no endedAt
+// when the outcome is failure, so a failed row with no endedAt
 // never needs a second "failed" suffix.
-function terminalSegment(job: { startedAt: string; endedAt?: string } | undefined, statusText: string): MetaSegment {
+function terminalSegment(
+  job: { startedAt: string; endedAt?: string } | undefined,
+  statusText: string,
+  failed: boolean,
+): MetaSegment {
   if (job) {
     const start = parseMillis(job.startedAt);
     const end = parseMillis(job.endedAt);
@@ -138,7 +142,7 @@ function terminalSegment(job: { startedAt: string; endedAt?: string } | undefine
       return { key: "duration", text: formatQuietAge(end - start) };
     }
   }
-  return { key: "status", text: statusText, tone: isFailedStatus(statusText) ? "failed" : undefined };
+  return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
 }
 
 function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
@@ -150,7 +154,7 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
     ];
   }
   // No "failed" suffix: the colored kind glyph already carries the outcome.
-  return [terminalSegment(job, job.status)];
+  return [terminalSegment(job, job.status, jobIsFailed(job))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
@@ -179,7 +183,11 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
     segments.push({ key: "duration", text: formatQuietAge(delegate.durationMs) });
   } else {
     segments.push(
-      terminalSegment({ startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt }, statusText),
+      terminalSegment(
+        { startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt },
+        statusText,
+        activityDelegateState(delegate).failed,
+      ),
     );
   }
   return segments;
@@ -406,7 +414,12 @@ const DenseRowView = memo(function DenseRowView({
   const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
   const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
   const target = transcriptTarget(row);
-  const kindState = jobStatusDotState(statusText, row.live ? undefined : true);
+  const statusState = jobStatusDotState(statusText, true);
+  const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;
+  // Work that has ended says so through its outcome, the verdict the fold and
+  // the badge already count; only live work still reads its status.
+  const liveState = statusState !== "needs-you" ? "working" : statusState;
+  const kindState = failed ? "failed" : row.live ? liveState : "ended";
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>
@@ -459,6 +472,7 @@ interface ContinuationStripViewProps {
   strip: ContinuationStrip;
   failure: string | undefined;
   loadingContinuationID?: string;
+  rootRefreshing?: boolean;
   onContinue: (targetID: string, continuation: string) => void;
 }
 
@@ -466,6 +480,7 @@ const ContinuationStripView = memo(function ContinuationStripView({
   strip,
   failure,
   loadingContinuationID,
+  rootRefreshing,
   onContinue,
 }: ContinuationStripViewProps): ReactNode {
   return (
@@ -478,7 +493,7 @@ const ContinuationStripView = memo(function ContinuationStripView({
           variant="quiet"
           size="xs"
           tabIndex={-1}
-          disabled={loadingContinuationID === strip.targetID}
+          disabled={rootRefreshing || loadingContinuationID !== undefined}
           onClick={(event) => {
             event.stopPropagation();
             onContinue(strip.targetID, strip.token ?? "");
@@ -504,6 +519,7 @@ interface RowBlockProps {
   registerRowRef: (id: string, element: HTMLDivElement | null) => void;
   continuationFailures: Record<string, string | undefined>;
   loadingContinuationID?: string;
+  rootRefreshing?: boolean;
   onContinue?: (targetID: string, continuation: string) => void;
 }
 
@@ -524,6 +540,7 @@ function RowBlock({
   registerRowRef,
   continuationFailures,
   loadingContinuationID,
+  rootRefreshing,
   onContinue,
 }: RowBlockProps): ReactNode[] {
   const out: ReactNode[] = [];
@@ -567,6 +584,7 @@ function RowBlock({
             strip={strip}
             failure={continuationFailures[strip.targetID]}
             loadingContinuationID={loadingContinuationID}
+            rootRefreshing={rootRefreshing}
             onContinue={onContinue}
           />
         ) : null,
@@ -596,6 +614,7 @@ function RowBlock({
             registerRowRef={registerRowRef}
             continuationFailures={continuationFailures}
             loadingContinuationID={loadingContinuationID}
+            rootRefreshing={rootRefreshing}
             onContinue={onContinue}
           />
         </div>,
@@ -607,7 +626,7 @@ function RowBlock({
 }
 
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID },
+  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID, rootRefreshing },
   ref,
 ) {
   // Detail strips are per-row, not an accordion: each row carries its own
@@ -790,6 +809,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
           registerRowRef={registerRowRef}
           continuationFailures={continuationFailures}
           loadingContinuationID={loadingContinuationID}
+          rootRefreshing={rootRefreshing}
           onContinue={onContinue}
         />
       </div>

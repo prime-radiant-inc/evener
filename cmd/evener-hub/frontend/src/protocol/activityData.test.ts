@@ -5,6 +5,7 @@ import {
   type ActivityTree,
   activityNodeID,
   defaultExpandedIDs,
+  delegateHasActiveWork,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
@@ -619,6 +620,62 @@ describe("defaultExpandedIDs", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
     expect(defaultExpandedIDs(tree)).toEqual(["session:sess_root", "delegate:dlg_1", "session:sess_child"]);
   });
+
+  it("uses active turns for turn-container expansion even after the container closes", () => {
+    const wire = cloneWire(VALID_TREE_WIRE);
+    const rootDelegate = getRootDelegateWire(wire);
+    Object.assign(rootDelegate, {
+      type: "agent",
+      terminal: true,
+      child: undefined,
+      turns: [
+        {
+          jobId: "turn-live",
+          ownerSessionId: "sess_root",
+          ownerRef: "ref_root",
+          type: "turn",
+          status: "running",
+          terminal: false,
+          background: false,
+          hasOutput: false,
+          description: "live turn",
+          startedAt: "2026-08-03T00:05:00Z",
+          outputBytes: 0,
+        },
+      ],
+    });
+    const tree = parseActivityTree(wire) as ActivityTree;
+    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
+    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
+    expect(delegateHasActiveWork(entry.delegate)).toBe(true);
+    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+  });
+
+  // The same shape as the closed container below, minus the type the wire is
+  // free to omit: without it this is the stable form, whose running state is
+  // its own rather than a turn's.
+  it("expands a running delegate whose type the wire omitted", () => {
+    const wire = cloneWire(VALID_TREE_WIRE);
+    const rootDelegate = getRootDelegateWire(wire);
+    Object.assign(rootDelegate, { terminal: false, turns: [], child: undefined });
+    delete (rootDelegate as { type?: string }).type;
+    const tree = parseActivityTree(wire) as ActivityTree;
+    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
+    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
+    expect(delegateHasActiveWork(entry.delegate)).toBe(true);
+    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+  });
+
+  it("does not expand an empty closed turn container", () => {
+    const wire = cloneWire(VALID_TREE_WIRE);
+    const rootDelegate = getRootDelegateWire(wire);
+    Object.assign(rootDelegate, { type: "agent", terminal: false, turns: [], child: undefined });
+    const tree = parseActivityTree(wire) as ActivityTree;
+    const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
+    if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
+    expect(delegateHasActiveWork(entry.delegate)).toBe(false);
+    expect(defaultExpandedIDs(tree)).not.toContain("delegate:dlg_1");
+  });
 });
 
 describe("reconcileActivityState", () => {
@@ -886,6 +943,31 @@ function treeFixture(entries: unknown[]) {
   };
 }
 
+function delegateUsageTree(usage?: unknown) {
+  return treeFixture([
+    {
+      kind: "delegate",
+      delegate: {
+        delegateId: "dlg_usage",
+        ownerSessionId: "sess_root",
+        rootSessionId: "sess_root",
+        childSessionId: "sess_child",
+        childRef: "ref_child",
+        transcriptRef: "ref_child",
+        type: "delegate",
+        lifecycle: "retained",
+        phase: "idle",
+        status: "completed",
+        projectionRevision: 1,
+        terminal: true,
+        resumable: false,
+        branch: {},
+        ...(typeof usage === "undefined" ? {} : { usage }),
+      },
+    },
+  ]);
+}
+
 describe("lastOutputAt and usage wire fields", () => {
   it("parses lastOutputAt on jobs", () => {
     const tree = parseActivityTree(
@@ -926,6 +1008,60 @@ describe("lastOutputAt and usage wire fields", () => {
       kind: "delegate",
       delegate: { usage: { inputTokens: 41200, outputTokens: 6100 } },
     });
+  });
+
+  it("keeps usage absent when the wire omits it", () => {
+    const tree = parseActivityTree(delegateUsageTree()) as ActivityTree;
+    const entry = tree.root.entries[0];
+    if (entry?.kind !== "delegate") throw new Error("expected delegate entry");
+    expect(entry.delegate.usage).toBeUndefined();
+  });
+
+  it.each([
+    ["empty", {}, undefined],
+    ["input-only", { inputTokens: 4 }, { inputTokens: 4, outputTokens: 0 }],
+    ["output-only", { outputTokens: 4 }, { inputTokens: 0, outputTokens: 4 }],
+  ])("handles %s sparse usage according to omitempty wire semantics", (_name, rawUsage, expectedUsage) => {
+    const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
+    const entry = tree.root.entries[0];
+    if (entry?.kind !== "delegate") throw new Error("expected delegate entry");
+    expect(entry.delegate.usage).toEqual(expectedUsage);
+  });
+
+  it("preserves explicit zero and valid usage counters", () => {
+    const zero = parseActivityTree(delegateUsageTree({ inputTokens: 0, outputTokens: 0 })) as ActivityTree;
+    expect(zero.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { usage: { inputTokens: 0, outputTokens: 0 } },
+    });
+
+    const valid = parseActivityTree(
+      delegateUsageTree({ inputTokens: 41200, outputTokens: 6100, cacheReadTokens: 1200, totalTokens: 47700 }),
+    ) as ActivityTree;
+    expect(valid.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { usage: { inputTokens: 41200, outputTokens: 6100, cacheReadTokens: 1200, totalTokens: 47700 } },
+    });
+  });
+
+  it.each([
+    ["cache-only", { cacheReadTokens: 1200 }, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1200 }],
+    ["total-only", { totalTokens: 47700 }, { inputTokens: 0, outputTokens: 0, totalTokens: 47700 }],
+  ])("preserves %s sparse optional usage", (_name, rawUsage, expectedUsage) => {
+    const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
+    const entry = tree.root.entries[0];
+    if (entry?.kind !== "delegate") throw new Error("expected delegate entry");
+    expect(entry.delegate.usage).toEqual(expectedUsage);
+  });
+
+  it.each([
+    ["negative", { inputTokens: -1, outputTokens: 1 }],
+    ["fractional", { inputTokens: 1.5, outputTokens: 1 }],
+    ["unsafe", { inputTokens: Number.MAX_SAFE_INTEGER + 1, outputTokens: 1 }],
+  ])("rejects %s primary usage counters", (_name, usage) => {
+    const tree = parseActivityTree(delegateUsageTree(usage));
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBeDefined();
   });
 
   it("omits optional activity fields when absent", () => {

@@ -126,6 +126,22 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 	}
 }
 
+func TestAggregateActivity_EmptyTurnContainerDoesNotCountContainerMetadata(t *testing.T) {
+	t.Parallel()
+	entries := []appwire.JobActivityEntry{
+		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+			Type: "agent", Status: "running", Terminal: false, Turns: []appwire.JobActivityJob{},
+		}},
+		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+			Type: "agent", Status: "completed", Outcome: "failure", Terminal: true, Turns: []appwire.JobActivityJob{},
+		}},
+	}
+	got, aggregate := aggregateActivity(entries, appwire.JobActivityBranchState{})
+	if got != (appwire.JobActivityCounts{Complete: true}) || aggregate != "idle" {
+		t.Fatalf("counts=%+v aggregate=%q, want empty idle summary", got, aggregate)
+	}
+}
+
 func TestMergeActivityRecords_LiveOverlayHasNoDuplicate(t *testing.T) {
 	t.Parallel()
 	durable := []*jobstore.JobRecord{
