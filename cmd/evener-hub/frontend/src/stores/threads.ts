@@ -922,6 +922,14 @@ let modelsCache: ModelListResponse | null = null;
 // is stale, and a listing still in flight answers the old credentials and
 // must not become the cache either.
 let modelsEpoch = 0;
+// modelsListGeneration advances on every new model/list request, and a
+// response becomes the cache only while it is still the NEWEST request:
+// refresh:true deliberately does not cancel an older in-flight listing, and
+// when no evener/auth/updated intervenes (a keyless connection, a
+// config-only save) the epoch guard alone cannot stop the older answer from
+// landing last and overwriting the fresher one. Every caller still receives
+// its own response; only the cache write is gated.
+let modelsListGeneration = 0;
 let inflightModelsList: Promise<ModelListResponse> | null = null;
 
 // watchThread's own refcount/inflight bookkeeping - independent of
@@ -2800,6 +2808,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // turn-CAS concept (verified against every server-side handler - see
     // this file's own describe block for the exact citations).
     const epoch = modelsEpoch;
+    const generation = ++modelsListGeneration;
     const request = (async () => {
       const client = await requireReadyClient();
       return client.request("model/list", {});
@@ -2807,7 +2816,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (!refresh) inflightModelsList = request;
     try {
       const resp = await request;
-      if (epoch === modelsEpoch) modelsCache = resp;
+      if (epoch === modelsEpoch && generation === modelsListGeneration) modelsCache = resp;
       return resp;
     } finally {
       if (!refresh && inflightModelsList === request) inflightModelsList = null;

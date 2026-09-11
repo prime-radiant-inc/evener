@@ -4872,6 +4872,46 @@ describe("useThreadsStore.listModels", () => {
     expect(second.data[0]?.model).toBe("model-2");
   });
 
+  test("a refresh landing before an older in-flight request keeps the cache fresh - the stale late answer never overwrites it", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preConnection = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // A keyless/no-credential-change connection emits no evener/auth/updated
+    // between the pre-connection listing and the post-connection refresh, so
+    // the epoch guard alone cannot protect the cache here.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    pending[0]?.(stale);
+    // The older request still answers its own caller; it must not become the cache.
+    expect((await preConnection).data[0]?.model).toBe("stale");
+
+    expect((await threadsStore.getState().listModels()).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("an older in-flight request landing first still loses the cache to a later refresh", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preConnection = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    pending[0]?.(stale);
+    expect((await preConnection).data[0]?.model).toBe("stale");
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+
+    expect((await threadsStore.getState().listModels()).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
   test("a failed call does not cache a rejected promise - the next call retries rather than repeating the same rejection", async () => {
     const fake = connectFakeClient();
     let shouldFail = true;
