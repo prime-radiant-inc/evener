@@ -81,6 +81,13 @@ func (s *SessionScratch) Retain() error {
 	return err
 }
 
+// HasLease reports whether this scratch still owns its live lease. A scratch
+// whose lease was released (Retain/Cleanup) keeps its directory but can no
+// longer be pinned.
+func (s *SessionScratch) HasLease() bool {
+	return s != nil && s.lease != nil
+}
+
 func canonicalScratchRoot(root string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", nil

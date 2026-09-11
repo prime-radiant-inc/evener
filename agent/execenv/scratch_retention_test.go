@@ -132,3 +132,35 @@ func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 		t.Fatal("B's lease was released before its committed mapping")
 	}
 }
+
+// TestScratchRetentionLiveEnvironmentPinsOnMint proves a live environment that
+// installed a retention binding pins the allocation it mints and publishes the
+// manifest, so the retention path is not inert in production.
+func TestScratchRetentionLiveEnvironmentPinsOnMint(t *testing.T) {
+	base, workspace := t.TempDir(), t.TempDir()
+	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-live"}
+	env := NewLocalExecutionEnvironment(workspace)
+	env.sandboxTmpBase = base
+	if err := env.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{BindingID: "E0", OwnerSessionID: "root-live", WorkingDir: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	dir := env.unsandboxedScratchDir()
+	if dir == "" {
+		t.Fatal("environment minted no scratch")
+	}
+	t.Cleanup(func() { env.RetainSessionScratch() })
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.References) != 1 || filepath.Clean(manifest.References[0].Dir) != filepath.Clean(dir) {
+		t.Fatalf("minted allocation not pinned: %+v", manifest.References)
+	}
+	if len(manifest.Bindings) != 1 {
+		t.Fatalf("binding not published: %+v", manifest.Bindings)
+	}
+	slot := manifest.Bindings[0].Slots[sandbox.ScratchKindUnsandboxed]
+	if !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(dir) {
+		t.Fatalf("minted allocation slot = %+v, want owning slot at %q", slot, dir)
+	}
+}

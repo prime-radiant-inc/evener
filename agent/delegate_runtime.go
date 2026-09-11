@@ -1911,6 +1911,14 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 		ctx = context.WithValue(ctx, ctxToolItemID, started.descriptor.OriginItemID)
 	}
 	ctx = context.WithValue(ctx, ctxParentDelegateID, started.lease.delegateID)
+	// Register the delegate child's own binding under the parent root's
+	// retention manifest before the child environment can expose or mint
+	// scratch, so its allocation is pinned rather than inert.
+	if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
+		if err := s.installChildScratchRetention(local, started.descriptor.ChildSessionID); err != nil {
+			return nil, err
+		}
+	}
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, started.descriptor.DelegationAllowance)
 	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, started.descriptor.ChildSessionID)
 	ctx = context.WithValue(ctx, delegatePreparedEnvironmentContextKey{}, delegatePreparedEnvironment{
@@ -2017,6 +2025,15 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
 		return nil, false, errors.New("committed delegate environment is unavailable")
+	}
+	// Install the committed child's retained scratch before construction runs the
+	// child's git snapshot, which is what mints a fresh unsandboxed scratch.
+	// Binding the exact consumer here is what restores the child's allocation at
+	// its original absolute path instead of minting a replacement.
+	if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
+		if _, err := s.adoptConsumerScratch(local, descriptor.ChildSessionID); err != nil {
+			return nil, false, fmt.Errorf("restore delegate scratch: %w", err)
+		}
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
 	if err != nil {

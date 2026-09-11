@@ -25,6 +25,85 @@ func (e *LocalExecutionEnvironment) SetScratchRetentionBinding(owner sandbox.Scr
 	return nil
 }
 
+// PinOwnedScratch publishes this environment's installed binding and pins every
+// allocation it currently owns into the owner's manifest, under the live leases
+// it holds. It is idempotent and safe to call after any allocation is minted. A
+// failure is recorded sticky for the preparation readiness check and returned
+// to the caller; it never silently succeeds.
+func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
+	e.scratchMu.Lock()
+	if !e.retentionSet {
+		e.scratchMu.Unlock()
+		return nil
+	}
+	owner := e.retentionOwner
+	binding := cloneScratchBinding(e.retentionBinding)
+	handles := make(map[string]*sandbox.SessionScratch)
+	if e.ownedSessionTmp != nil {
+		handles[sandbox.ScratchKindSandbox] = e.ownedSessionTmp
+	}
+	if e.unsandboxedScratch != nil {
+		handles[sandbox.ScratchKindUnsandboxed] = e.unsandboxedScratch
+	}
+	e.scratchMu.Unlock()
+
+	if binding.Slots == nil {
+		binding.Slots = make(map[string]sandbox.ScratchSlot)
+	}
+	owned := make(map[string]*sandbox.SessionScratch, len(handles))
+	for kind, handle := range handles {
+		if !handle.HasLease() {
+			// Already retained/handed off; it can no longer be pinned, and a
+			// stale slot must not be republished.
+			continue
+		}
+		owned[kind] = handle
+	}
+	if len(handles) > 0 && len(owned) == 0 {
+		return nil
+	}
+	for kind, handle := range owned {
+		if err := handle.Pin(owner, sandbox.ScratchReference{Dir: handle.Dir, Kind: kind}); err != nil {
+			e.recordRetentionPinError(err)
+			return err
+		}
+		binding.Slots[kind] = sandbox.ScratchSlot{Dir: handle.Dir, OwnsLease: true}
+	}
+	consumer := sandbox.ScratchConsumerBinding{SessionID: binding.OwnerSessionID, CurrentBindingID: binding.BindingID}
+	if err := sandbox.UpsertScratchBinding(owner, binding, consumer); err != nil {
+		e.recordRetentionPinError(err)
+		return err
+	}
+	return nil
+}
+
+// ScratchRetentionError returns the first sticky retention-pin failure recorded
+// on this environment, or nil. Preparation surfaces it as a persistence error.
+func (e *LocalExecutionEnvironment) ScratchRetentionError() error {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	return e.retentionPinErr
+}
+
+func (e *LocalExecutionEnvironment) recordRetentionPinError(err error) {
+	if err == nil {
+		return
+	}
+	e.scratchMu.Lock()
+	if e.retentionPinErr == nil {
+		e.retentionPinErr = err
+	}
+	e.scratchMu.Unlock()
+}
+
+// pinOwnedScratchAfterMint runs after a fresh allocation is installed, outside
+// scratchMu, so a live session actually pins what it just created.
+func (e *LocalExecutionEnvironment) pinOwnedScratchAfterMint() {
+	if err := e.PinOwnedScratch(); err != nil {
+		e.recordRetentionPinError(err)
+	}
+}
+
 // ScratchRetentionBinding returns this environment's logical binding with its
 // current owned allocations reflected as lease-owning slots. It does not mutate
 // durable state.

@@ -30,6 +30,16 @@ const (
 	ScratchKindUnsandboxed = "unsandboxed"
 )
 
+// ErrScratchRetentionStaleRevision is returned when an update's expected
+// revision no longer matches the manifest. Callers that race a concurrent
+// writer may reload and retry.
+var ErrScratchRetentionStaleRevision = errors.New("sandbox: scratch retention revision is stale")
+
+// ErrScratchRetentionLeaseHeld means a retained allocation's lease is already
+// held (typically the live owner in this process). A caller restoring after a
+// real crash releases the lease first; a held lease is left with its owner.
+var ErrScratchRetentionLeaseHeld = errors.New("sandbox: retained scratch lease is already held")
+
 // ScratchOwner identifies the root that owns a retention manifest. It is the
 // only retention authority: every pin, reference and binding belongs to exactly
 // one owner.
@@ -304,7 +314,7 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 		return err
 	}
 	if manifest.Revision != expectedRevision {
-		return fmt.Errorf("sandbox: scratch retention revision %d does not match expected %d", manifest.Revision, expectedRevision)
+		return fmt.Errorf("%w: manifest %d does not match expected %d", ErrScratchRetentionStaleRevision, manifest.Revision, expectedRevision)
 	}
 	if err := validateScratchBindingUpdate(manifest, bindings, consumers); err != nil {
 		return err
@@ -313,6 +323,33 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 	manifest.Consumers = mergeScratchConsumers(manifest.Consumers, consumers)
 	manifest.Revision++
 	return writeScratchRetention(owner, manifest)
+}
+
+// UpsertScratchBinding inserts or replaces exactly one binding and its consumer
+// record in a revision-checked transaction, retrying a bounded number of times
+// when a concurrent writer advanced the manifest first. It is the writer a live
+// environment uses to publish its own binding before any exposure.
+func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding) error {
+	if err := owner.validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(binding.BindingID) == "" {
+		return errors.New("sandbox: scratch binding has no id")
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		manifest, err := LoadScratchRetention(owner)
+		if err != nil {
+			return err
+		}
+		err = UpdateScratchBindings(owner, manifest.Revision, []ScratchBinding{binding}, []ScratchConsumerBinding{consumer})
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrScratchRetentionStaleRevision) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: exhausted retries", ErrScratchRetentionStaleRevision)
 }
 
 func validateScratchBindingUpdate(manifest ScratchManifest, bindings []ScratchBinding, consumers []ScratchConsumerBinding) error {
@@ -452,11 +489,11 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 		return nil, fmt.Errorf("sandbox: stat retained scratch: %w", err)
 	}
 	lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
+	if contended {
+		return nil, ErrScratchRetentionLeaseHeld
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: acquire retained scratch lease: %w", err)
-	}
-	if contended {
-		return nil, errors.New("sandbox: retained scratch lease is already held")
 	}
 	after, err := os.Stat(dir)
 	if err != nil || !os.SameFile(before, after) {

@@ -189,5 +189,11 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	promptWarning := s.refreshSystemPromptCache(next)
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
+	// Publish the swapped-in environment's binding and its current/parked
+	// consumer roles outside any Session lock, so retention tracks the same
+	// environment the session now works in.
+	if err := s.registerScratchConsumerRoles(next); err != nil {
+		return err
+	}
 	return nil
 }

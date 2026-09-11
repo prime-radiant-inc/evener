@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -91,6 +93,22 @@ func (c *RetirementController) Prepare(ctx context.Context, claim *RetirementCla
 	if err := root.validateRetirementRestore(ctx); err != nil {
 		return nil, err
 	}
+	// Capture occupied-lane identity and lock ownership from the live lock for
+	// every resident runtime, leaf-first then root. A lane that is unlocked or
+	// owned by someone else blocks preparation.
+	var lanes []retirementLaneEvidence
+	for _, child := range sessions {
+		childLanes, err := child.retirementLaneEvidence(ctx)
+		if err != nil {
+			return nil, err
+		}
+		lanes = append(lanes, childLanes...)
+	}
+	rootLanes, err := root.retirementLaneEvidence(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lanes = append(lanes, rootLanes...)
 	// Required scratch dependencies must still exist at their original paths
 	// under exact ownership before any release is attempted.
 	if err := root.validateRetainedScratchPresent(); err != nil {
@@ -140,8 +158,62 @@ func (c *RetirementController) Prepare(ctx context.Context, claim *RetirementCla
 		generation:      generation,
 		sessions:        sessions,
 		evidenceVersion: evidenceVersion,
-		lanes:           nil,
+		lanes:           lanes,
 	}, nil
+}
+
+// retirementLaneEvidence captures the occupied worktree lane for one resident
+// runtime: its exact path, branch, owning delegate and the lock owner's marker,
+// verified against the live lock. It reads session fields under mu, then forks
+// git with no Session lock held. A runtime occupying no lane returns nil.
+func (s *Session) retirementLaneEvidence(ctx context.Context) ([]retirementLaneEvidence, error) {
+	s.mu.Lock()
+	path := s.worktreeCurrentPath
+	sessionID := s.id
+	delegateID := s.owningDelegateID
+	branch := s.envInfo.GitBranch
+	s.mu.Unlock()
+	if path == "" {
+		return nil, nil
+	}
+	run := s.newWorktreeGitRunner(ctx, s.currentEnv())
+	out, err := run("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("retirement preparation: lane %q lock read: %w", path, err)
+	}
+	entries := worktree.ParsePorcelain(out)
+	target := canonicalOrClean(path)
+	locked, reason := lockStateFromPorcelain(entries, target)
+	if !locked {
+		return nil, fmt.Errorf("retirement preparation: occupied lane %q is not locked", target)
+	}
+	state := worktree.ClassifyReason(reason, sessionID, delegateID)
+	if state != worktree.OwnSession && state != worktree.OwnDelegate {
+		return nil, fmt.Errorf("retirement preparation: occupied lane %q is locked by another owner", target)
+	}
+	if branch == "" {
+		for _, entry := range entries {
+			if canonicalOrClean(entry.Path) == target && entry.Branch != "" {
+				branch = strings.TrimPrefix(entry.Branch, "refs/heads/")
+				break
+			}
+		}
+	}
+	owner := reason
+	if owner == "" {
+		if state == worktree.OwnDelegate && delegateID != "" {
+			owner = worktree.FormatDelegateMarker(delegateID, sessionID)
+		} else {
+			owner = worktree.FormatSessionMarker(sessionID)
+		}
+	}
+	return []retirementLaneEvidence{{
+		sessionID:  sessionID,
+		delegateID: delegateID,
+		path:       target,
+		branch:     branch,
+		owner:      owner,
+	}}, nil
 }
 
 // validateRetirementRestore proves one session's durable artifacts are
@@ -181,6 +253,20 @@ func (s *Session) validateRetirementRestore(ctx context.Context) error {
 	}
 	if meta.ID != s.id {
 		return fmt.Errorf("retirement preparation: metadata session %q does not match %q", meta.ID, s.id)
+	}
+	// Finish and surface the task store's durable writes. Task mutations persist
+	// synchronously, so rereading the primary file proves it is reconstructible
+	// and surfaces a corrupt list as a preparation failure.
+	if store := s.getOrCreateTaskStore(); store != nil {
+		if err := store.Load(); err != nil {
+			return fmt.Errorf("retirement preparation: task store reconstruction: %w", err)
+		}
+	}
+	// Attention state is transcript-backed. The fold read is the strict
+	// readiness check (it stats before and after); EstablishDurability above
+	// already flushed any pending attention bytes.
+	if _, err := readExistingDelegateAttentionFold(s.TranscriptPath(), s.id); err != nil {
+		return fmt.Errorf("retirement preparation: attention reconstruction: %w", err)
 	}
 	s.clientMutationsInitMu.Lock()
 	mutations := s.clientMutations

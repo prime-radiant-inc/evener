@@ -208,6 +208,10 @@ type LocalExecutionEnvironment struct {
 	retentionOwner   sandbox.ScratchOwner
 	retentionBinding sandbox.ScratchBinding
 	retentionSet     bool
+	// retentionPinErr is the first sticky scratch-retention pin/publish failure
+	// seen on this environment. Preparation surfaces it as a persistence error
+	// rather than trusting a partially pinned allocation.
+	retentionPinErr error
 }
 
 // ObserveScratchMoveWindowForTesting installs fn as this environment's
@@ -585,22 +589,28 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 // directory, and only the owned one is disposed with the env.
 func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 	e.scratchMu.Lock()
-	defer e.scratchMu.Unlock()
 	if tmp := e.ownedSessionTmp; tmp != nil {
+		e.scratchMu.Unlock()
 		return tmp.Dir
 	}
 	if e.unsandboxedScratch != nil {
-		return e.unsandboxedScratch.Dir
+		dir := e.unsandboxedScratch.Dir
+		e.scratchMu.Unlock()
+		return dir
 	}
 	if e.unsandboxedScratchFailed {
+		e.scratchMu.Unlock()
 		return ""
 	}
 	tmp, err := e.newSessionScratch()
 	if err != nil {
 		e.unsandboxedScratchFailed = true
+		e.scratchMu.Unlock()
 		return ""
 	}
 	e.unsandboxedScratch = tmp
+	e.scratchMu.Unlock()
+	e.pinOwnedScratchAfterMint()
 	return tmp.Dir
 }
 
@@ -718,6 +728,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		if policy != nil && policy.FileToolConfined() {
 			if tmp, err := e.newSessionScratch(); err == nil {
 				e.setOwnedSessionTmp(tmp)
+				e.pinOwnedScratchAfterMint()
 			}
 		}
 		return nil
@@ -755,6 +766,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	e.Wrapper = w
 	e.Sandbox = policy
 	e.setOwnedSessionTmp(tmp)
+	e.pinOwnedScratchAfterMint()
 	return nil
 }
 

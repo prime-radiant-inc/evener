@@ -214,3 +214,65 @@ func TestRetirementPreparationMissingScratchArtifactStaysResident(t *testing.T) 
 		t.Fatal(err)
 	}
 }
+
+// TestRetirementPreparationCorruptTaskStoreStaysResident proves preparation
+// finishes/flushes the session's durable task store and surfaces a corrupt
+// primary task file as a persistence failure rather than a warning.
+func TestRetirementPreparationCorruptTaskStoreStaysResident(t *testing.T) {
+	root, c, claim := retirementPrepareFixture(t)
+	path := filepath.Join(root.stateDir, "tasks", root.id+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a corrupt task store")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Snapshot().Phase; got != "resident" {
+		t.Fatalf("phase = %s", got)
+	}
+}
+
+// TestRetirementPreparationCapturesOccupiedLane proves preparation carries the
+// occupied managed lane's identity and lock ownership, verified against the
+// live lock, rather than only refusing a bad lane in tree evidence.
+func TestRetirementPreparationCapturesOccupiedLane(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create lane: %v", err)
+	}
+	lanePath := res["path"].(string)
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(r.s); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("TryClaim: %v", err)
+	}
+	if claim == nil {
+		t.Fatalf("lane fixture was not claimable: %+v", state)
+	}
+	prep, err := c.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if len(prep.lanes) != 1 {
+		t.Fatalf("preparation lanes = %+v, want the occupied lane", prep.lanes)
+	}
+	lane := prep.lanes[0]
+	if lane.sessionID != r.s.id || lane.path != lanePath || lane.branch == "" || lane.owner == "" {
+		t.Fatalf("lane evidence = %+v (want session %q path %q with branch and owner)", lane, r.s.id, lanePath)
+	}
+}

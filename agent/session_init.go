@@ -467,6 +467,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 	s.attachTranscript(tw)
+	if s.cfg.spawn.parentSessionID == "" {
+		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+			if err := s.installScratchRetention(local); err != nil {
+				return nil, fmt.Errorf("scratch retention: %w", err)
+			}
+		}
+	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
@@ -925,6 +932,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
 	s.retirementController.Store(cfg.spawn.retirementController)
+	// Reacquire every retained scratch lease before this restore allocates or
+	// launches any process work. A root without durable state or a manifest is a
+	// no-op.
+	if s.cfg.spawn.parentSessionID == "" {
+		if err := s.prepareRetainedScratch(); err != nil {
+			return nil, fmt.Errorf("prepare retained scratch: %w", err)
+		}
+	}
 	s.initEnvContext(meta.EnvContext)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
@@ -1127,6 +1142,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 	s.attachTranscript(tw)
+	if s.cfg.spawn.parentSessionID == "" {
+		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+			if err := s.installScratchRetention(local); err != nil {
+				return nil, fmt.Errorf("scratch retention: %w", err)
+			}
+		}
+	}
 	// refreshFromDisk re-reads the transcript file whenever a restore-time
 	// replay appended turns it did not decode: the retained entry list would
 	// otherwise end at the last pre-append entry, and serve (which projects
