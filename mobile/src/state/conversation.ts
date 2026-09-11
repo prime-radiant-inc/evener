@@ -32,7 +32,6 @@ import type {
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   ActivityDetail,
-  ActivityState,
   MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
