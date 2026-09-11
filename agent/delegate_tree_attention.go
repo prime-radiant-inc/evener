@@ -64,6 +64,11 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 	if c == nil {
 		return errors.New("delegate attention controller is nil")
 	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	c.mu.Lock()
 	stateDir := c.stateDir
 	refs := make([]coldDelegateAttentionRef, 0, len(c.durable))
@@ -138,6 +143,11 @@ func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID s
 	if c == nil {
 		return false
 	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return false
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.noteDelegateAttentionLocked(delegateID, attentionID)
@@ -147,6 +157,11 @@ func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID s
 // answer consumption for the same child. Delivery opens use their larger
 // owner-open/source-ack batch; watch and quiet opens use this single-event path.
 func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID string) (bool, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	for {
 		added, blocker, plan, emit, err := c.tryOpenDelegateAttention(delegateID, attentionID)
 		if err != nil {
@@ -170,6 +185,11 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 	if c == nil || delegateID == "" || attentionID == "" {
 		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
 	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return false, nil, delegateUpdatePlan{}, false, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var blocker <-chan struct{}
@@ -422,6 +442,7 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 }
 
 func (c *delegateTreeController) forgetDelegateAttention(delegateID string, attentionIDs ...string) {
+	defer c.retirementChanged()
 	if c == nil {
 		return
 	}
@@ -437,6 +458,11 @@ func (c *delegateTreeController) forgetDelegateAttention(delegateID string, atte
 // unresolved-ID set; the caller retains responsibility for retrying a failed
 // transcript read.
 func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionID string) error {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	armed, err := c.armColdDelegateAttentionOnce(delegateID, attentionID)
 	c.mu.Lock()
 	root := c.rootRuntime
@@ -451,6 +477,11 @@ func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attent
 	if c == nil || delegateID == "" || attentionID == "" {
 		return false, errors.New("cold delegate attention identity is incomplete")
 	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
@@ -520,6 +551,11 @@ func (c *delegateTreeController) AttachIdleRuntime(delegateID string, runtime *S
 	if c == nil || runtime == nil || delegateID == "" {
 		return errDelegateTargetBusy
 	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate := c.durable[delegateID]

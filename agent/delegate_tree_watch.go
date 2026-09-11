@@ -78,6 +78,11 @@ func (c *delegateTreeController) ResolveParentWatchSource(actor delegateActor) (
 	return delegateWatchSourceBinding{lease: &lease, runtime: live.binding.runtime}, nil
 }
 func (c *delegateTreeController) BeginWatchEnqueue(sourceID string, sourceGeneration uint64, receiverID, deliveryID string, updateSeq uint64, terminalSource bool) (*delegateWatchReceipt, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return nil, retirementErr
+	}
+	defer retirementRelease()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.validateWatchReceiptLocked(sourceID, sourceGeneration, receiverID, terminalSource); err != nil {
@@ -98,6 +103,7 @@ func (c *delegateTreeController) BeginWatchEnqueue(sourceID string, sourceGenera
 }
 
 func (c *delegateTreeController) CompleteWatchEnqueue(receipt *delegateWatchReceipt) (*delegateWatchReceipt, error) {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if receipt == nil || receipt.controller != c || c.watchEnqueues[receipt.token] != receipt {
@@ -120,6 +126,7 @@ func (c *delegateTreeController) CompleteWatchEnqueue(receipt *delegateWatchRece
 }
 
 func (c *delegateTreeController) AbortWatchEnqueue(receipt *delegateWatchReceipt) {
+	defer c.retirementChanged()
 	if receipt == nil {
 		return
 	}
@@ -137,6 +144,11 @@ func (c *delegateTreeController) AbortWatchEnqueue(receipt *delegateWatchReceipt
 }
 
 func (c *delegateTreeController) AcquireWatchDelivery(sourceID string, sourceGeneration uint64, receiverID, deliveryID string, updateSeq uint64, terminalSource bool) (*delegateWatchReceipt, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return nil, retirementErr
+	}
+	defer retirementRelease()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.validateWatchReceiptLocked(sourceID, sourceGeneration, receiverID, terminalSource); err != nil {
@@ -165,6 +177,7 @@ func (c *delegateTreeController) AcquireWatchDelivery(sourceID string, sourceGen
 }
 
 func (c *delegateTreeController) CompleteWatchDelivery(receipt *delegateWatchReceipt) error {
+	defer c.retirementChanged()
 	if receipt == nil {
 		return nil
 	}

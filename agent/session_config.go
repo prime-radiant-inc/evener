@@ -580,6 +580,8 @@ type spawnConfig struct {
 	// delegateController is the single root-owned authority inherited by every
 	// child session in the live tree.
 	delegateController *delegateTreeController
+	// retirementController is inherited before initialization can launch work.
+	retirementController *RetirementController
 
 	// delegateRootSessionID identifies the root session that owns the inherited
 	// controller. It is stable across every child construction in the tree.

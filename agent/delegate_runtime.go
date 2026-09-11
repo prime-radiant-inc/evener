@@ -429,6 +429,11 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if c == nil || receiver == nil {
 		return nil, errDelegateDeliveryReceiverUnavailable
 	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
@@ -480,6 +485,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 }
 
 func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAttentionClaim, committed bool) error {
+	defer c.retirementChanged()
 	if c == nil || claim == nil {
 		return errDelegateStaleLease
 	}
@@ -684,6 +690,11 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 	if s == nil || s.delegateController == nil || delegateID == "" {
 		return nil, nil, errors.New("cold delegate attention restore identity is incomplete")
 	}
+	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
+	if retirementErr != nil {
+		return nil, nil, retirementErr
+	}
+	defer retirementRelease()
 	started, parentID, err := s.delegateController.idleDelegateRestoreCommit(delegateID)
 	if err != nil {
 		return nil, nil, err
@@ -1070,6 +1081,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if s == nil || s.delegateController == nil {
 		return failed(errors.New("delegate controller is unavailable"))
 	}
+	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
+	if retirementErr != nil {
+		return failed(retirementErr)
+	}
+	defer retirementRelease()
 	if delegateID == "" || message == "" {
 		return failed(errors.New("invalid_request: delegate_id and message are required"))
 	}
@@ -1408,6 +1424,11 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if s == nil || s.delegateController == nil {
 		return delegateStartFailed(errors.New("delegate controller is unavailable"))
 	}
+	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
+	if retirementErr != nil {
+		return delegateStartFailed(retirementErr)
+	}
+	defer retirementRelease()
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
 		return delegateStartFailed(errors.New("invalid_request: prompt is required"))
@@ -1932,6 +1953,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if s == nil || started.lease.delegateID == "" {
 		return nil, false, errors.New("delegate restore reservation is unavailable")
 	}
+	release, err := s.beginRetirementMutation("delegate_restore")
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
 	descriptor := cloneDelegateStartDescriptor(started.descriptor)
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
@@ -2011,6 +2037,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		sandboxProvisioned:      true,
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
+			retirementController:          s.retirementController.Load(),
 			delegateRootSessionID:         s.delegateRootSessionID,
 			owningDelegateID:              started.lease.delegateID,
 			subscriberCount:               s.subscriberCountFn,
@@ -2093,6 +2120,12 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 	if s == nil {
 		return nil, false, finish, errors.New("delegate restore reservation is unavailable")
 	}
+	release, err := s.beginRetirementMutation("delegate_restore")
+	if err != nil {
+		return nil, false, finish, err
+	}
+	// Every caller finishes after installation and deferred effects or rollback.
+	finish = func(*subagent, error) { release() }
 	childID := strings.TrimSpace(started.descriptor.ChildSessionID)
 	if childID == "" {
 		return nil, false, finish, errors.New("delegate restore child identity is unavailable")
@@ -2109,6 +2142,7 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 		return reconstructed, false, finish, waitErr
 	}
 	finish = func(sub *subagent, restoreErr error) {
+		defer release()
 		s.subagents.finishReconstruction(childID, pending, sub, restoreErr)
 	}
 	sub, restored, restoreErr := runtime.restoreIdle(started)
@@ -2473,6 +2507,9 @@ func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) 
 			return nil, fmt.Errorf("collect evidence: %w", err)
 		}
 		plans, err := controller.Reconcile(evidence)
+		if plans.retirementRelease != nil {
+			defer plans.retirementRelease()
+		}
 		if err != nil {
 			return nil, err
 		}

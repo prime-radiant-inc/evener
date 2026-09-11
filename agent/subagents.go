@@ -818,6 +818,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.parentJobActivity = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.delegateController = s.delegateController
+	subCfg.spawn.retirementController = s.retirementController.Load()
 	subCfg.spawn.delegateRootSessionID = s.delegateRootSessionID
 	subCfg.spawn.owningDelegateID = ""
 	subCfg.spawn.subscriberCount = subscriberCount
@@ -1432,6 +1433,16 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	if sub == nil {
 		return false
 	}
+	release, err := s.beginRetirementMutation("delegate_drive")
+	if err != nil {
+		return false
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			release()
+		}
+	}()
 	sub.mu.Lock()
 	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing {
 		sub.mu.Unlock()
@@ -1476,7 +1487,9 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	childSess := sub.sess
 	sub.mu.Unlock()
 
+	launched = true
 	go func() {
+		defer release()
 		defer s.sendersWG.Done()
 		defer driveCancel()
 		// The re-check defer is registered BEFORE treeSlot.release so LIFO runs

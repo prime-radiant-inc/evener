@@ -87,6 +87,11 @@ func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor,
 // controlling runtime. A nested caller uses the stable parent's controller
 // admission; a top-level caller uses the root Session's turn-boundary queue.
 func (c *delegateTreeController) SteerCaller(ctx context.Context, actor delegateActor, message string, p *provenance.Causal) (delegateMutationPlans, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return delegateMutationPlans{}, err
 	}
@@ -112,6 +117,11 @@ func (c *delegateTreeController) SteerCaller(ctx context.Context, actor delegate
 }
 
 func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, delegateID string) (*delegateSteeringClaim, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
@@ -121,6 +131,11 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 }
 
 func (c *delegateTreeController) beginCallerSteerPersistence(actor delegateActor, p *provenance.Causal) (*delegateSteeringClaim, *Session, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if actor.lease == nil {
@@ -170,6 +185,7 @@ func (c *delegateTreeController) beginSteerPersistenceLocked(delegateID string, 
 }
 
 func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteeringClaim, entry delegateTranscriptEntry) (delegateMutationPlans, error) {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if claim == nil || c.steeringClaims[claim.token] != claim || entry.entryID == "" || entry.entryID != claim.entryID {
@@ -230,6 +246,7 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 }
 
 func (c *delegateTreeController) AbortSteerPersistence(claim *delegateSteeringClaim) error {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if claim == nil || c.steeringClaims[claim.token] != claim {
@@ -279,6 +296,7 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 }
 
 func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn, scope replayScope) ([]llm.Message, error) {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	if claim == nil || c.modelClaims[claim.token] != claim {
 		c.mu.Unlock()
@@ -356,6 +374,7 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 }
 
 func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestClaim) error {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if claim == nil || c.modelClaims[claim.token] != claim {

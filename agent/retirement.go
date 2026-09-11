@@ -65,6 +65,7 @@ type RetirementClaim struct {
 	controller *RetirementController
 	root       *Session
 	generation uint64
+	tree       *delegateTreeController
 	committed  bool
 	finished   bool
 }
@@ -262,21 +263,35 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		return nil, c.snapshotLocked(), nil
 	}
 	c.phase = "preparing"
-	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation}
+	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation, tree: c.root.delegateController}
 	claim := c.claim
 	c.mu.Unlock()
 	blockers := claim.root.retirementInputBlockers()
+	var evidenceErr error
+	if claim.tree != nil {
+		evidenceErr = claim.tree.setRetirementFence(claim)
+		if evidenceErr == nil {
+			var treeBlockers []RetirementBlocker
+			treeBlockers, _, evidenceErr = claim.tree.retirementEvidence()
+			blockers = append(blockers, treeBlockers...)
+		}
+	}
+	if evidenceErr != nil || len(blockers) != 0 {
+		if claim.tree != nil {
+			claim.tree.clearRetirementFence(claim)
+		}
+	}
 	c.mu.Lock()
 	if !c.validClaimLocked(claim) {
 		return nil, c.snapshotLocked(), ErrRetirementUnavailable
 	}
 	c.blockers = blockers
-	if len(blockers) != 0 {
+	if len(blockers) != 0 || evidenceErr != nil {
 		claim.finished = true
 		c.claim = nil
 		c.phase = "resident"
 		c.eligibleSince = time.Time{}
-		return nil, c.snapshotLocked(), nil
+		return nil, c.snapshotLocked(), evidenceErr
 	}
 	return claim, c.snapshotLocked(), nil
 }
@@ -295,6 +310,12 @@ func (c *RetirementController) Abort(claim *RetirementClaim, failure string) err
 		return ErrRetirementUnavailable
 	}
 	claim.finished = true
+	// Keep outer admission closed until the exact tree fence has been removed.
+	c.mu.Unlock()
+	if claim.tree != nil {
+		claim.tree.clearRetirementFence(claim)
+	}
+	c.mu.Lock()
 	c.claim = nil
 	c.phase = "resident"
 	c.eligibleSince = time.Time{}

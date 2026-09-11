@@ -31,6 +31,29 @@ func (s *Session) retirementInputBlockers() []RetirementBlocker {
 	return blockers
 }
 
+// retirementDelegateBlockers reads only this runtime's local delivery and
+// child-manager obligations. It must not recursively scan the shared tree.
+func (s *Session) retirementDelegateBlockers() []RetirementBlocker {
+	blocked := false
+	s.delegateDeliveryMu.Lock()
+	blocked = len(s.pendingDelegateDeliveries) != 0 || s.delegateDeliveryPumping || s.delegateDeliveryWake || s.delegateDeliveryRetry.active
+	s.delegateDeliveryMu.Unlock()
+	if m := s.subagents; m != nil {
+		m.mu.Lock()
+		blocked = blocked || m.closing || len(m.reconstructing) != 0 || m.activeRestoreSideEffects != 0
+		for _, sub := range m.subs {
+			sub.mu.Lock()
+			blocked = blocked || sub.running || sub.driving || sub.finalizing
+			sub.mu.Unlock()
+		}
+		m.mu.Unlock()
+	}
+	if blocked {
+		return []RetirementBlocker{{Category: "delegate", SessionID: s.id, DelegateID: s.owningDelegateID}}
+	}
+	return nil
+}
+
 // Read only eligibility evidence, not historical payloads/results/input bytes.
 // Like queueHeld, this reads the committed generation under stateMu, never the
 // serializer that may be holding an in-progress filesystem write.

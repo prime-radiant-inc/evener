@@ -303,6 +303,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	s.retirementController.Store(cfg.spawn.retirementController)
 	if inheritedContext != nil {
 		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
 		s.history = ResumeHistory(inheritedContext)
@@ -922,6 +923,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		ownsArtifactStore:           ownsArtifactStore,
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
+	s.retirementController.Store(cfg.spawn.retirementController)
 	s.initEnvContext(meta.EnvContext)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err

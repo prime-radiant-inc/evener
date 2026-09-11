@@ -17,6 +17,11 @@ type delegateShellWork struct {
 }
 
 func (c *delegateTreeController) BeginShellWork(owner delegateLease) (delegateWorkToken, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return delegateWorkToken{}, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
@@ -60,6 +65,7 @@ func (c *delegateTreeController) CommitShellWork(token delegateWorkToken, shellJ
 }
 
 func (c *delegateTreeController) AbortShellWork(token delegateWorkToken) error {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	work := c.work[token.processID]
@@ -78,6 +84,7 @@ func (c *delegateTreeController) AbortShellWork(token delegateWorkToken) error {
 }
 
 func (c *delegateTreeController) ReportShellFinished(token delegateWorkToken, shellJobID string) (delegateMutationPlans, error) {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	work := c.work[token.processID]

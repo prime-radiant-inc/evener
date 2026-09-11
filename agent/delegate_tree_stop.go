@@ -56,6 +56,11 @@ type delegateCancelPlan struct {
 }
 
 func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, retirementErr
+	}
+	defer retirementRelease()
 	for {
 		c.mu.Lock()
 		if c.stop == nil {
@@ -79,6 +84,16 @@ func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID strin
 // the root runtime. The driver is process-only and unique for the exact stop;
 // callers may stop waiting without stopping reconciliation.
 func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, retirementErr
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			retirementRelease()
+		}
+	}()
 	for {
 		c.mu.Lock()
 		if c.stop == nil {
@@ -134,7 +149,11 @@ func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, target
 	driver := stop.driver
 	c.mu.Unlock()
 	if startDriver {
-		go c.runStopReconcileDriver(stop, driver, root)
+		handedOff = true
+		go func() {
+			defer retirementRelease()
+			c.runStopReconcileDriver(stop, driver, root)
+		}()
 	}
 	return result, cancelPlan, plans, nil
 }
@@ -470,6 +489,11 @@ func (c *delegateTreeController) deliveryIntersectsMembersLocked(receipt *delega
 }
 
 func (c *delegateTreeController) CloseResumability(actor delegateActor, delegateID, reason string) (delegateMutationPlans, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return delegateMutationPlans{}, retirementErr
+	}
+	defer retirementRelease()
 	c.mu.Lock()
 	for {
 		if c.closing {
@@ -508,6 +532,11 @@ func (c *delegateTreeController) CloseResumability(actor delegateActor, delegate
 // never creates a second stop: each root subtree is drained through the same
 // durable stop operation, in stable order, before the next one can begin.
 func (c *delegateTreeController) Close(ctx context.Context) error {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return retirementErr
+	}
+	defer retirementRelease()
 	if err := c.closeRuntimeTree(ctx); err != nil {
 		return err
 	}
@@ -523,6 +552,11 @@ func (c *delegateTreeController) Close(ctx context.Context) error {
 // scratch is released here whether or not any owner's subagent map named it.
 // The delegate store remains open for subsequent worktree disposal evidence.
 func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return retirementErr
+	}
+	defer retirementRelease()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -663,6 +697,9 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 			return err
 		}
 		plans, err := c.Reconcile(evidence)
+		if plans.retirementRelease != nil {
+			defer plans.retirementRelease()
+		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
 				continue
