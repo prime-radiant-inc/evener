@@ -82,7 +82,7 @@ func TestHubSpawnerSpawnAPILog(t *testing.T) {
 			bin := filepath.Join(dir, "fake-evener")
 			script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -151,7 +151,7 @@ func TestHubSpawnerResumeAPILog(t *testing.T) {
 			bin := filepath.Join(dir, "fake-evener")
 			script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -192,6 +192,42 @@ exit 2
 				t.Fatalf("--api-log = %q, want %q\nargs:\n%s", got, tc.wantArg, argsData)
 			}
 		})
+	}
+}
+
+// TestHubSpawnerSpawnRejectsChildWithoutAPILogFlag pins the capability half
+// of the version-skew fix: the hub passes --api-log on every launch, so a
+// binary whose launch-check does not advertise the flag (an evener predating
+// it) must be rejected at validation with a clear upgrade error — not
+// die on the unknown flag after accepting the protocol and surface as a
+// misleading spawn timeout.
+func TestHubSpawnerSpawnRejectsChildWithoutAPILogFlag(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v5"}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 2 * time.Second
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+
+	_, err := spawner.Spawn(context.Background(), hubcore.SpawnRequest{
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/test"}},
+		WorkingDir: dir,
+		Provider:   "ollama",
+	})
+	if err == nil {
+		t.Fatal("expected rejection for a child without the api-log flag, got nil")
+	}
+	if !strings.Contains(err.Error(), "did not advertise the --api-log flag") {
+		t.Fatalf("error = %v, want the capability rejection naming --api-log", err)
 	}
 }
 

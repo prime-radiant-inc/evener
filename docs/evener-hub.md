@@ -131,11 +131,14 @@ provider request and response body to the session's
 `false` because those records grow with every model call. The hub's value is
 always passed explicitly (`--api-log on` or `--api-log off`) rather than left to
 the spawned binary's own default, so the opt-out cannot be defeated by an older
-`evener` on `PATH` that still records by default. It is a floor, not a force:
-launch config layers that set `api_log` explicitly (either direction) win over
-the hub-wide value. The `evener/launch/resolve` preview reports the same floor
-(provenance `hub`), so what the Launch settings show matches what a spawned
-session actually runs with.
+`evener` on `PATH` that still records by default. The hub also refuses to launch
+a binary whose `launch-check` does not advertise the `api-log` flag (see
+`launch_flags` in the launch contract), reporting an upgrade error up front
+instead of letting the launch die on the unknown flag. It is a floor, not a
+force: launch config layers that set `api_log` explicitly (either direction)
+win over the hub-wide value. The `evener/launch/resolve` preview reports the
+same floor (provenance `hub`), so what the Launch settings show matches what a
+spawned session actually runs with.
 
 ## Launch configuration
 

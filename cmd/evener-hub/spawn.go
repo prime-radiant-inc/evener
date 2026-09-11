@@ -761,6 +761,14 @@ func launchCheckWaitError(ctx context.Context) error {
 	return appwire.HubLaunchError("evener launch-check timed out")
 }
 
+// requiredLaunchFlag is the serve flag the hub passes on every spawn and
+// resume (the api_log floor pins both directions), so every child binary
+// must advertise it in launch-check's launch_flags before the hub will
+// launch it: a pre-change evener would otherwise accept the protocol, then
+// die on the unknown flag before writing its rendezvous record, surfacing
+// as a misleading spawn timeout.
+const requiredLaunchFlag = "api-log"
+
 func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
@@ -785,13 +793,17 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 		return appwire.HubLaunchError("evener launch-check failed: " + msg)
 	}
 	var resp struct {
-		Protocol string `json:"protocol"`
+		Protocol    string   `json:"protocol"`
+		LaunchFlags []string `json:"launch_flags"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&resp); err != nil {
 		return appwire.HubLaunchError("evener launch-check returned invalid response")
 	}
 	if resp.Protocol != appwire.ProtocolVersion {
 		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
+	}
+	if !slices.Contains(resp.LaunchFlags, requiredLaunchFlag) {
+		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check did not advertise the --%s flag: upgrade the evener binary the hub spawns", requiredLaunchFlag))
 	}
 	return nil
 }
