@@ -83,6 +83,34 @@ describe("hub connections", () => {
 		expect((await profiles.list()).map((p) => p.id)).toEqual(["b"]);
 		expect(await profiles.token("b")).toBe("second");
 	});
+	it("degrades to an empty roster for a corrupt index and reports a corrupt record", async () => {
+		const data = new Map<string, string>();
+		const profiles = new HubProfiles({
+			getItemAsync: async (k) => data.get(k) ?? null,
+			setItemAsync: async (k, v) => {
+				data.set(k, v);
+			},
+			deleteItemAsync: async (k) => {
+				data.delete(k);
+			},
+		});
+		// A corrupt index is unreadable, not fatal: the roster is empty.
+		data.set("evener.hubs", "{not json");
+		expect(await profiles.list()).toEqual([]);
+		// A corrupt record surfaces the domain error, never a raw SyntaxError.
+		data.set("evener.hubs", JSON.stringify(["a"]));
+		data.set("evener.hub.a", "{not json");
+		await expect(profiles.token("a")).rejects.toThrow(
+			"Saved hub could not be read.",
+		);
+		// A record that parses to null is just as unreadable.
+		data.set("evener.hub.a", "null");
+		await expect(profiles.token("a")).rejects.toThrow(
+			"Saved hub could not be read.",
+		);
+		// list() still degrades around the unreadable record.
+		expect(await profiles.list()).toEqual([]);
+	});
 	it("retains both hubs when secure writes overlap", async () => {
 		const data = new Map<string, string>();
 		const profiles = new HubProfiles({

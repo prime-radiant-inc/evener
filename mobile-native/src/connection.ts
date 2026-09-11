@@ -110,7 +110,17 @@ export class HubProfiles {
 	private async ids(): Promise<string[]> {
 		const raw = await this.storage.getItemAsync(INDEX);
 		if (!raw) return [];
-		const ids: unknown = JSON.parse(raw);
+		// An index we cannot parse names no hubs we could open, so it reads as
+		// empty: list() shows an empty roster and the user can save a hub again,
+		// where propagating the parse error would leave the app with no way in.
+		// A parsed index of the wrong shape still throws below — that one is a
+		// readable record making a claim we refuse, not an unreadable one.
+		let ids: unknown;
+		try {
+			ids = JSON.parse(raw);
+		} catch {
+			return [];
+		}
 		if (
 			!Array.isArray(ids) ||
 			!ids.every((id) => typeof id === "string" && /^[a-zA-Z0-9-]+$/.test(id))
@@ -123,8 +133,21 @@ export class HubProfiles {
 	): Promise<(HubProfile & { token: string }) | null> {
 		const raw = await this.storage.getItemAsync(key(id));
 		if (!raw) return null;
-		const value = JSON.parse(raw);
+		// A record is a single hub the caller asked for by id, so an unreadable
+		// one is reported rather than silently skipped — token() must not hand
+		// back an empty token for a hub that is actually there but corrupt.
+		// list() catches this per record and drops it, so one bad record still
+		// does not take the roster down.
+		let value: Partial<HubProfile & { token: string }> | null;
+		try {
+			value = JSON.parse(raw);
+		} catch {
+			throw new Error("Saved hub could not be read.");
+		}
 		if (
+			value === null ||
+			typeof value !== "object" ||
+			typeof value.id !== "string" ||
 			value.id !== id ||
 			typeof value.name !== "string" ||
 			typeof value.origin !== "string" ||
@@ -132,7 +155,12 @@ export class HubProfiles {
 		)
 			throw new Error("Saved hub could not be read.");
 		connectionTarget(value.origin);
-		return value;
+		return {
+			id: value.id,
+			name: value.name,
+			origin: value.origin,
+			token: value.token,
+		};
 	}
 	async list(): Promise<HubProfile[]> {
 		const values = await Promise.all(
