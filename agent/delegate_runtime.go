@@ -1590,8 +1590,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr))
 	}
 	// The run context was built before the entry was written, so the identity
-	// the preseed minted for it is only known now. Re-stamp it: the run reads
-	// this to name its USER_INPUT event after the entry it already wrote.
+	// the preseed minted for it is only known now. This is the path's only
+	// preseed stamp, and it is written before the launch below: the run reads
+	// it to name its USER_INPUT event after the entry it already wrote.
 	prepared.runCtx = context.WithValue(prepared.runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: prepared.sub.id, input: prepared.input, turnID: preseedTurnID})
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
 	s.delegateController.emitDelegateUpdates(plans)
@@ -1936,7 +1937,9 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	prepared.runCancel()
 	runContext, runCancel := context.WithCancel(started.ctx)
 	runContext = context.WithValue(runContext, delegateRunLeaseContextKey{}, started.lease)
-	runContext = context.WithValue(runContext, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: prepared.sub.id, input: prepared.input})
+	// No preseed stamp here: the entry this turn runs on has not been written
+	// yet, so its identity does not exist. create stamps it once preseedInput
+	// returns the id, which is before the only launch on this path.
 	prepared.runCtx = runContext
 	prepared.runCancel = runCancel
 	prepared.sub.mu.Lock()
