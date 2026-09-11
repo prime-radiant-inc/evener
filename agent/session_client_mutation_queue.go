@@ -206,8 +206,16 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
 	}
-	if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
-		return "", false, err
+	// Refuse only a wake that has something to claim. An idle poll against a
+	// dead transcript claims nothing and loses nothing, and answering it with an
+	// error would turn every poll into a logged failure for the rest of the
+	// session's life; the start path takes the same shape by checking after its
+	// runnable test. The queue depth is read rather than popped because popping
+	// is the durable act this guard exists to prevent.
+	if s.QueueDepth() > 0 || s.hasPendingUserSteering() {
+		if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
+			return "", false, err
+		}
 	}
 	queued := s.popQueueHead()
 	if strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
@@ -220,6 +228,12 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// when poisoning lands in between. Put the message back rather than
 		// leave it in no queue and no transcript; turn completion is the queue's
 		// own restore, the same one the environment-append failure uses.
+		//
+		// Keyed on the poisoned error alone, deliberately. Every other
+		// pre-incorporation failure either unwinds where it happened or is
+		// reclaimed by startup recovery, and a wider key would re-queue a turn
+		// already recorded in the transcript — an incorporation marking that
+		// fails after the entry is durable would deliver the message twice.
 		if errors.Is(err, transcript.ErrWriterPoisoned) &&
 			!s.clientMutationUserTranscriptIncorporated(queued.ClientMutationID, queued.StableTurnID) {
 			if restoreErr := s.completeClientMutationTurn(queued.ClientMutationID); restoreErr != nil {

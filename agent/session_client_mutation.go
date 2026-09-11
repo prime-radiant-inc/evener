@@ -460,6 +460,12 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	// The claim above spends a turn of the budget and the turn loop's gate can
 	// refuse after it, when poisoning lands in between. Give the claim back
 	// rather than leave it spent on a turn that never ran.
+	//
+	// Keyed on the poisoned error alone, deliberately. Every other
+	// pre-incorporation failure either unwinds where it happened or is reclaimed
+	// by startup recovery, and a wider key would return a claim whose turn is
+	// already recorded in the transcript — an incorporation marking that fails
+	// after the entry is durable would run the start twice.
 	if errors.Is(err, transcript.ErrWriterPoisoned) &&
 		!s.clientMutationUserTranscriptIncorporated(claimed.ClientMutationID, claimed.StableTurnID) {
 		if returnErr := s.returnClaimedClientMutationStart(claimed.ClientMutationID); returnErr != nil {

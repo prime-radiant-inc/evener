@@ -1065,3 +1065,20 @@ func TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary(t *testing
 		t.Fatalf("live environment events = %v, want the durable entries %v they announce", ids, durable)
 	}
 }
+
+// TestPoisonedWriterStandsDownOnAnIdleWake: the refusal is for work the session
+// would otherwise claim and lose. An idle wake has nothing to claim, so a dead
+// transcript is not its business — answering it with an error turns every poll
+// into a logged failure while the session waits for its restart.
+func TestPoisonedWriterStandsDownOnAnIdleWake(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	poisonSessionTranscript(t, sess)
+	if got := sess.QueueDepth(); got != 0 {
+		t.Fatalf("setup: queue depth = %d, want nothing queued", got)
+	}
+
+	result, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	if result != "" || ran || err != nil {
+		t.Fatalf("idle wake against a poisoned transcript = (%q, %v, %v), want a quiet stand-down", result, ran, err)
+	}
+}

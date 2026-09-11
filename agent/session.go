@@ -1677,6 +1677,25 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		s.mu.Unlock()
 	}
 	if committed && publishEvent {
+		// The entry and the event announcing it are one publication, and the
+		// transcript door is the statement that says so: while it is held no
+		// fold can publish, so the order a live reader sees is the order the
+		// transcript holds. Emitted after the release, a fold could take the
+		// door in between, commit its markers and flush its own events first,
+		// and the projector — which reads an environment event as a turn
+		// boundary — would split a turn cold replay does not.
+		//
+		// This is the one event published under the door, and the trade is
+		// real: emit is not a bounded send. It parks indefinitely against the
+		// authoritative consumer when the buffer is full (holding eventsMu for
+		// read), and it runs the job-watch fan-out synchronously, job-store
+		// persistence and cross-session notification delivery included. All of
+		// that now runs under attentionMu, so a slow daemon consumer stalls
+		// this session's transcript writes and fold publication rather than
+		// only the emitter. Accepted because a parked consumer already stalls
+		// the emitting turn and the door already spans an fsync; see
+		// publishFoldTransaction, whose deferred flush must NOT follow this
+		// example.
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
 		}

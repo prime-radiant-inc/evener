@@ -1405,7 +1405,7 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 	}
 	s.finishProcessingAtBoundary(ctx, SessionIdle)
 	s.endInputAtTurnFailure()
-	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
+	return errTranscriptRefusesRecords()
 }
 
 // refuseBeforeClaimingOnPoisonedTranscript reports why a durable claim must not
@@ -1415,10 +1415,22 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 // recoverable only by restarting the session. This is the first of two guards:
 // poisoning can land between this read and that gate, which is why both callers
 // also give the claim back when the loop refuses.
+//
+// Unlike the loop's gate it settles nothing and emits nothing: at these entry
+// points no turn has begun and no input has been published, so there is no
+// processing boundary to close and no subscriber waiting to hear this input end.
+// Its callers only reach it when they have work in hand, so an idle wake against
+// a dead transcript still stands down quietly.
 func (s *Session) refuseBeforeClaimingOnPoisonedTranscript() error {
 	if !s.attachedTranscript().Poisoned() {
 		return nil
 	}
+	return errTranscriptRefusesRecords()
+}
+
+// errTranscriptRefusesRecords is the single answer both poisoned-transcript
+// guards give, so a caller sees one error whichever guard produced it.
+func errTranscriptRefusesRecords() error {
 	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
 }
 

@@ -453,8 +453,10 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // handleCompactionTurnEffects runs a compaction turn's post-write side
 // effects. writeErr is the outcome of the turn's transcript append — a fold
 // publisher performs that append inside its publication transaction's
-// transcript-commit phase (under attentionMu, where emitting is unsafe) and
-// hands the error here; the OnCompactionTurn fallback path above writes and
+// transcript-commit phase (under attentionMu, where emitting is unsafe — the
+// one sanctioned exception is appendEnvironmentContext's EventEnvironment,
+// which needs the door's ordering and pays one emit for it, where these
+// effects would re-enter the locks they hold) and hands the error here; the OnCompactionTurn fallback path above writes and
 // reports in one step. superseded reports that a NEWER fold publication has
 // already flushed its deferred effects: the last-write-wins pieces
 // (compaction naming, the task-list reminder) are skipped so a stale parked

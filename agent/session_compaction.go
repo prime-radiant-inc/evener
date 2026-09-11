@@ -149,7 +149,13 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //   - Everything else (events, session naming, hook user messages, the
 //     nudge latch) runs after both locks release, via commit.flush: those
 //     effects re-enter emit/steering/transcript machinery that itself takes
-//     these locks, and none of them need the ordering guarantee.
+//     these locks, and none of them need the ordering guarantee. The lone
+//     deliberate exception is appendEnvironmentContext's EventEnvironment,
+//     which publishes under attentionMu because it DOES need the ordering
+//     guarantee — the projector reads it as a turn boundary, so a live reader
+//     must see it where the transcript holds it. It is one emit of known
+//     content; this flush is unbounded work (naming, hook user messages) that
+//     re-enters these very locks, so it stays out here.
 //
 // onPublishLocked, when non-nil, runs under s.mu immediately after a
 // successful publish — the publisher's baseline correction, per
