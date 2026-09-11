@@ -395,6 +395,21 @@ describe("projectThread", () => {
         expect(a.state).toBe("completed");
       }
     });
+
+    it.each(["failed", "interrupted"] as const)(
+      "keeps state completed for a reasoning item with wire status %s (web excludes reasoning from hasItemFailure)",
+      (status) => {
+        const t = thread([
+          turn("t1", [
+            item({ id: "r1", type: "reasoning", text: "thinking...", status }),
+          ]),
+        ]);
+        const c = projectThread(t);
+        const a = c.items[0];
+        expect(a?.kind).toBe("activity");
+        if (a?.kind === "activity") expect(a.state).toBe("completed");
+      },
+    );
   });
 
   describe("shell/tool/MCP call items", () => {

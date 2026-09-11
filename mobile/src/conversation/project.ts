@@ -323,23 +323,27 @@ function projectItem(
     };
   }
 
-  // Reasoning — collapsed, labeled activity. family is "reasoning" regardless
-  // of any label text; a commandExecution whose toolName is "Reasoning" is NOT
-  // routed here (it stays family "tool" below).
+  // Reasoning — collapsed, labeled activity. Web's transcript display never
+  // calls hasItemFailure on a reasoning item (its own hasFailureStatus check
+  // there only gates disclosure visibility, never a render state), so
+  // reasoning state here is running/completed only — never "failed" — the
+  // same as the incremental store path (state/conversation.ts). family is
+  // "reasoning" regardless of any label text; a commandExecution whose
+  // toolName is "Reasoning" is NOT routed here (it stays family "tool" below).
   if (isReasoning(item)) {
+    const state: ActivityState = isInProgressStatus(item.status)
+      ? "running"
+      : "completed";
     return {
       kind: "activity",
       pre: {
-        family:
-          activityState(item) === "failed"
-            ? `failed:${item.id}`
-            : `unknown:${item.type}`,
+        family: `unknown:${item.type}`,
         item: {
           kind: "activity",
           id: item.id,
           label: "Reasoning",
           family: "reasoning",
-          state: activityState(item),
+          state,
           detail: { ...activityDetail(item), output: item.text },
         },
       },
