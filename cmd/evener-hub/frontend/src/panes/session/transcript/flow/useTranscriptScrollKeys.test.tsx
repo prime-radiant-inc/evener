@@ -38,8 +38,14 @@ function renderPaneKeys(paneId: string, { mounted = true }: { mounted?: boolean 
     } as VirtualListHandle,
   };
   const jumpToBottom = vi.fn();
-  const hook = renderHook(() => useTranscriptScrollKeys({ paneId, listRef, jumpToBottom }));
-  return { el, scrollToIndex, jumpToBottom, unmount: hook.unmount };
+  // Records the offset AT THE MOMENT the marker is called, so a test can prove
+  // the gesture is marked before the scroll write rather than after it.
+  const markedAt: number[] = [];
+  const markGesture = vi.fn(() => {
+    markedAt.push(el.scrollTop);
+  });
+  const hook = renderHook(() => useTranscriptScrollKeys({ paneId, listRef, jumpToBottom, markGesture }));
+  return { el, scrollToIndex, jumpToBottom, markGesture, markedAt, unmount: hook.unmount };
 }
 
 beforeEach(() => {
@@ -203,4 +209,38 @@ test("mobile: no transcript scroll handlers register at all (the rail.toggle ine
   window.dispatchEvent(event);
   expect(a.el.scrollTop).toBe(0);
   expect(event.defaultPrevented).toBe(false);
+});
+
+// useTranscriptScroll's bottom-hold correction refuses to re-pin a transcript
+// while the reader is gesturing at it. These chords scroll by writing scrollTop
+// straight to the element, dispatched from `window` - a listener on the scroll
+// port never sees them (roborev medium 1 on f998582) - so they announce
+// themselves through the marker instead.
+test("the line and page scroll chords mark a reader gesture before writing scrollTop", () => {
+  const a = renderPaneKeys("pane_a");
+  workspaceStore.setState({ focusedPaneId: "pane_a" });
+  a.el.scrollTop = 500;
+
+  document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true }));
+
+  expect(a.markedAt).toEqual([500]);
+  expect(a.el.scrollTop).toBe(500 - TRANSCRIPT_LINE_SCROLL_PX);
+
+  document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true, shiftKey: true }));
+
+  expect(a.markedAt).toEqual([500, 500 - TRANSCRIPT_LINE_SCROLL_PX]);
+});
+
+test("a chord an unfocused pane declines marks no gesture on it", () => {
+  // The marker must not fire for a pane that did not scroll: a false gesture
+  // vetoes a legitimate bottom correction, and that veto is not recoverable
+  // until the reader returns to the bottom.
+  const a = renderPaneKeys("pane_a");
+  const b = renderPaneKeys("pane_b");
+  workspaceStore.setState({ focusedPaneId: "pane_a" });
+
+  document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true }));
+
+  expect(a.markGesture).toHaveBeenCalledTimes(1);
+  expect(b.markGesture).not.toHaveBeenCalled();
 });

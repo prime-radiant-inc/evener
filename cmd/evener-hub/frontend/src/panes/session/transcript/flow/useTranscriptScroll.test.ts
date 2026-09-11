@@ -631,7 +631,6 @@ describe("jumpToBottom landing reliability", () => {
 
   test.each([
     ["a touch drag", (el: HTMLElement) => el.dispatchEvent(new Event("touchmove"))],
-    ["a scroll key", (el: HTMLElement) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" }))],
     [
       "a pointer drag",
       (el: HTMLElement) => {
@@ -662,6 +661,67 @@ describe("jumpToBottom landing reliability", () => {
 
     expect(el.scrollTop).toBe(16432);
     expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a transcript scroll action routed through markGesture vetoes the correction re-pin", () => {
+    // The app's own Alt+Arrow scroll chords are dispatched from `window` by
+    // useTranscriptScrollKeys, which then writes scrollTop directly - a port
+    // listener never sees them (roborev medium 1 on f998582). So the marker is
+    // exposed and called at the source instead of inferred from key names.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      result.current.markGesture();
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16432);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("Space on a focused control inside the transcript is not a scroll - the correction still re-pins", () => {
+    // roborev medium 2 on f998582. Space activates a focused button and types a
+    // space in the ask dock's input (the port's own trailing row); neither
+    // scrolls the transcript. A veto here is a FALSE veto, and a false veto is
+    // not neutral - the fall-through marks the reader away from the bottom, so
+    // every later correction fails the at-bottom clause and the strand this PR
+    // fixes comes back for good.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    const input = document.createElement("input");
+    el.appendChild(input);
+    el.scrollTop = 16374;
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
   });
 
   test("typing and a bare click are not gestures - the correction still re-pins", () => {

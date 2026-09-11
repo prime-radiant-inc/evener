@@ -40,15 +40,30 @@ export interface UseTranscriptScrollKeysOptions {
   listRef: RefObject<VirtualListHandle | null>;
   /** useTranscriptScroll's jumpToBottom (error-anchor aware, pill clearing). */
   jumpToBottom: () => void;
+  /** useTranscriptScroll's markGesture. These chords scroll by writing the
+   * element's scrollTop directly, and they are dispatched from `window`, so the
+   * scroll port's own gesture listeners never see them - without this the
+   * transcript's bottom-hold correction can read a keyboard scroll-up as a
+   * measurement correction and pin the reader back. Called immediately BEFORE
+   * each write, so the correction classifier sees the gesture in the same frame
+   * as the scroll event it produces. */
+  markGesture: () => void;
 }
 
-export function useTranscriptScrollKeys({ paneId, listRef, jumpToBottom }: UseTranscriptScrollKeysOptions): void {
+export function useTranscriptScrollKeys({
+  paneId,
+  listRef,
+  jumpToBottom,
+  markGesture,
+}: UseTranscriptScrollKeysOptions): void {
   const isMobile = useIsMobile();
   // jumpToBottom's identity tracks useTranscriptScroll's renders; the ref
   // keeps the registered handler stable across them (SelectionQuote's
   // actionsRef idiom).
   const jumpToBottomRef = useRef(jumpToBottom);
   jumpToBottomRef.current = jumpToBottom;
+  const markGestureRef = useRef(markGesture);
+  markGestureRef.current = markGesture;
 
   useEffect(() => {
     if (isMobile) return undefined;
@@ -61,6 +76,7 @@ export function useTranscriptScrollKeys({ paneId, listRef, jumpToBottom }: UseTr
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
+        markGestureRef.current();
         el.scrollTop -= TRANSCRIPT_LINE_SCROLL_PX;
         return true;
       }),
@@ -68,6 +84,7 @@ export function useTranscriptScrollKeys({ paneId, listRef, jumpToBottom }: UseTr
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
+        markGestureRef.current();
         el.scrollTop += TRANSCRIPT_LINE_SCROLL_PX;
         return true;
       }),
@@ -75,6 +92,7 @@ export function useTranscriptScrollKeys({ paneId, listRef, jumpToBottom }: UseTr
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
+        markGestureRef.current();
         el.scrollTop -= el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO;
         return true;
       }),
@@ -82,6 +100,7 @@ export function useTranscriptScrollKeys({ paneId, listRef, jumpToBottom }: UseTr
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
+        markGestureRef.current();
         el.scrollTop += el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO;
         return true;
       }),

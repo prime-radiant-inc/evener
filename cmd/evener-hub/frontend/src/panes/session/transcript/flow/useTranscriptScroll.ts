@@ -32,7 +32,7 @@
 //    not an out-of-band "a loadOlder call is in flight" flag: a live append
 //    can land while a loadOlder request is still in flight, and diffing the
 //    data's own shape stays correct regardless of that interleaving.
-import { type RefObject, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ThreadModel, TurnModel } from "../../../../protocol/model";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
@@ -576,6 +576,14 @@ export interface UseTranscriptScrollResult {
    * scroll event (or an at-bottom measurement at click time) confirms
    * arrival. Also the target for a manual click on NewContentPill. */
   jumpToBottom: () => void;
+  /** Announce that the READER is moving the transcript right now, for scroll
+   * actions this hook cannot observe from the scroll port: the transcript's
+   * keyboard chords are dispatched from `window` and write `scrollTop`
+   * directly (useTranscriptScrollKeys), so no port listener ever sees them.
+   * Call it immediately BEFORE the scroll write. The bottom-hold correction
+   * refuses to re-pin while a gesture is pending in the same frame - see the
+   * scroll listener. Stable identity; safe to call from a long-lived handler. */
+  markGesture: () => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
   /** Finish a pending restore after VirtualList reports new measurements. */
@@ -637,11 +645,6 @@ function failedTurnCount(model: ThreadModel | undefined): number {
   return n;
 }
 
-// Keys that scroll a focused region. A key-driven scroll moves the transcript
-// under the reader exactly as a wheel tick does, so it counts as a reader
-// gesture; everything else (typing, shortcuts) does not.
-const SCROLL_KEYS = new Set([" ", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]);
-
 export function useTranscriptScroll({
   ref,
   model,
@@ -684,12 +687,47 @@ export function useTranscriptScroll({
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
+  // Reader-gesture state for the bottom-hold correction (see the scroll
+  // listener). Hook-level rather than effect-local so markGesture can be handed
+  // out with a stable identity.
+  const gesturePendingRef = useRef(false);
+  const gestureClearFrameRef = useRef<number | null>(null);
+  const pointerDraggingRef = useRef(false);
   // The geometry the previous measurement saw. Read only to classify the NEXT
   // scroll event (see handleScroll). Deliberately NOT reset alongside the other
   // per-ref state below: the mount block reseeds it from a fresh measurement in
   // the same effect pass, before the scroll listener is attached, so no handler
   // can ever read the previous session's geometry.
   const lastScrollGeometryRef = useRef<ScrollMetrics>({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 });
+  // Announce that the reader is moving the transcript right now. Cleared on the
+  // next animation frame, which is exactly "this frame": a frame's scroll steps
+  // run BEFORE its requestAnimationFrame callbacks, so every scroll event the
+  // gesture can be responsible for is delivered while the flag is up, and none
+  // of the next frame's corrections see it.
+  const markGesture = useCallback(() => {
+    gesturePendingRef.current = true;
+    if (gestureClearFrameRef.current !== null) return;
+    gestureClearFrameRef.current = requestAnimationFrame(() => {
+      gestureClearFrameRef.current = null;
+      gesturePendingRef.current = false;
+    });
+  }, []);
+  const startPointerDrag = useCallback(() => {
+    pointerDraggingRef.current = true;
+  }, []);
+  const continuePointerDrag = useCallback(() => {
+    if (pointerDraggingRef.current) markGesture();
+  }, [markGesture]);
+  const endPointerDrag = useCallback(() => {
+    pointerDraggingRef.current = false;
+  }, []);
+  useEffect(
+    () => () => {
+      if (gestureClearFrameRef.current !== null) cancelAnimationFrame(gestureClearFrameRef.current);
+    },
+    [],
+  );
+
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
   const initializedRef = useRef(false);
@@ -1018,59 +1056,6 @@ export function useTranscriptScroll({
       initializedRef.current = true;
     }
 
-    // Whether the reader has gestured at the scroll port in THIS frame. The
-    // correction classifier in handleScroll takes it as a veto.
-    //
-    // Round 1 classified an event as a correction from its net geometry alone,
-    // which cannot see the reader at all: a native scroll event can coalesce the
-    // reader's own upward delta with a virtualizer correction that exceeds it,
-    // and the resulting event - more content, offset advanced - is byte-identical
-    // to a pure correction (roborev, medium, on 448e8a4). The input that produced
-    // the event is the only thing that separates them, so it is tracked here
-    // rather than guessed from geometry.
-    //
-    // Tracking the READER rather than the correction is the deliberate choice.
-    // The signals available for the other direction - a ResizeObserver on the
-    // inner element, or VirtualList's onChange - are present in the coalesced
-    // frame TOO, so they cannot discriminate the reported case; the one variant
-    // that could, recording the virtualizer's intended target through a custom
-    // scrollToFn, would change VirtualList's public surface for every consumer to
-    // settle a transcript-specific race. This way is also a pure NARROWING of
-    // round 1: it can only ever decline to re-pin, never re-pin more, so an input
-    // source not enumerated here is no worse off than it already was.
-    //
-    // Only inputs that actually scroll a region count. A bare pointerdown is a
-    // click or the start of a text selection, and a keystroke that scrolls
-    // nothing is typing - treating either as a gesture would veto the real
-    // corrections and put the mount strand back.
-    let gesturePending = false;
-    let gestureClearFrame: number | null = null;
-    let pointerDragging = false;
-    // Cleared on the next animation frame, which is exactly "this frame": a
-    // frame's scroll steps run BEFORE its requestAnimationFrame callbacks, so
-    // every scroll event the gesture can be responsible for is delivered while
-    // the flag is still up, and none of the next frame's corrections see it.
-    function markGesture() {
-      gesturePending = true;
-      if (gestureClearFrame !== null) return;
-      gestureClearFrame = requestAnimationFrame(() => {
-        gestureClearFrame = null;
-        gesturePending = false;
-      });
-    }
-    function markScrollKey(event: KeyboardEvent) {
-      if (SCROLL_KEYS.has(event.key)) markGesture();
-    }
-    function startPointerDrag() {
-      pointerDragging = true;
-    }
-    function continuePointerDrag() {
-      if (pointerDragging) markGesture();
-    }
-    function endPointerDrag() {
-      pointerDragging = false;
-    }
-
     function handleScroll() {
       // el is already narrowed non-null above, but that narrowing doesn't
       // carry into this nested closure's own type - it's the same `const`,
@@ -1124,7 +1109,7 @@ export function useTranscriptScroll({
       const previous = lastScrollGeometryRef.current;
       lastScrollGeometryRef.current = m;
       if (
-        !gesturePending &&
+        !gesturePendingRef.current &&
         wasAtBottomRef.current &&
         !isAtBottom(m) &&
         m.clientHeight === previous.clientHeight &&
@@ -1180,7 +1165,6 @@ export function useTranscriptScroll({
     el.addEventListener("scroll", handleScroll);
     el.addEventListener("wheel", markGesture, { passive: true });
     el.addEventListener("touchmove", markGesture, { passive: true });
-    el.addEventListener("keydown", markScrollKey, { passive: true });
     el.addEventListener("pointerdown", startPointerDrag, { passive: true });
     el.addEventListener("pointermove", continuePointerDrag, { passive: true });
     el.addEventListener("pointerup", endPointerDrag, { passive: true });
@@ -1189,12 +1173,10 @@ export function useTranscriptScroll({
       el.removeEventListener("scroll", handleScroll);
       el.removeEventListener("wheel", markGesture);
       el.removeEventListener("touchmove", markGesture);
-      el.removeEventListener("keydown", markScrollKey);
       el.removeEventListener("pointerdown", startPointerDrag);
       el.removeEventListener("pointermove", continuePointerDrag);
       el.removeEventListener("pointerup", endPointerDrag);
       el.removeEventListener("pointercancel", endPointerDrag);
-      if (gestureClearFrame !== null) cancelAnimationFrame(gestureClearFrame);
     };
     // firstTurnId is intentionally NOT a dependency: it's only read inside
     // the initializedRef-guarded one-time block above, which - since
@@ -1377,6 +1359,7 @@ export function useTranscriptScroll({
 
   return {
     pillCount,
+    markGesture,
     pillVisible,
     // needs-you is gated on VISIBILITY, not on a nonzero count: an awaiting
     // flip that lands after the reader scrolled away (no new items at all)
