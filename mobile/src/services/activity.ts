@@ -353,12 +353,10 @@ function projectWork(diagnostics: EvenerDiagnostics | undefined): WorkEntry[] {
   }
 
   // Build delegate entries recursively. A delegate with a parentDelegateId
-  // nests under that parent; a delegate whose parent is absent from the
-  // diagnostics is rendered at top level (never dropped).
-  const delegateById = new Map<string, EvenerDelegateInfo>();
-  for (const dlg of delegates) {
-    delegateById.set(dlg.delegateId, dlg);
-  }
+  // nests under that parent. A delegate or job whose parent is absent from
+  // the diagnostics never reaches here: validateHierarchy has already failed
+  // the whole projection with missing-parent, so there is no orphan to render
+  // at top level and no fallback for one.
 
   // Memoized projection so each delegate is projected exactly once and
   // children are assembled depth-first.
@@ -392,12 +390,10 @@ function projectWork(diagnostics: EvenerDiagnostics | undefined): WorkEntry[] {
 
   const entries: WorkEntry[] = [];
   for (const dlg of delegates) {
-    // A delegate is top-level when it has no parentDelegateId, or when its
-    // parent is not present in the diagnostics.
+    // A delegate is top-level exactly when it has no parentDelegateId — a
+    // parent that is named is guaranteed present by validateHierarchy.
     const parent = dlg.parentDelegateId;
-    const hasParentInList =
-      parent !== undefined && parent !== "" && delegateById.has(parent);
-    if (!hasParentInList) {
+    if (parent === undefined || parent === "") {
       entries.push(buildDelegate(dlg));
     }
   }
