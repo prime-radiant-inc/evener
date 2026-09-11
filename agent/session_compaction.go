@@ -402,7 +402,15 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// identity of the turn it staged under. Read here, before the publication
 	// transaction holds attentionMu — a turn that named itself keeps its id
 	// under s.mu, which that transaction nests inside attentionMu.
+	//
+	// An idle fold has no turn to name it and takes an id of its own instead
+	// of publishing ownerless records, which the two projections group
+	// differently (see mintCompactionGapID). Every publication path below can
+	// therefore stamp unconditionally: compactionOwner is never empty.
 	compactionOwner := s.activeTurnOwner()
+	if compactionOwner == "" {
+		compactionOwner = mintCompactionGapID()
+	}
 	var existingArtifacts []schema.Turn
 	if history != nil {
 		for _, turn := range *history {
@@ -441,18 +449,23 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// no side effect) and stays inline.
 	var pendingCompactionTurns []schema.Turn
 	ctx = contextmgr.WithCompactionTurnCallback(ctx, func(turn schema.Turn) {
-		if compactionOwner != "" {
-			turn.OwningTurnID = compactionOwner
-			// The context manager passes the newly created marker by value after
-			// placing it at history[0]. Update the folded history copy as well;
-			// otherwise the durable callback record and published history would
-			// disagree about its owner.
-			if len(*history) > 0 && (*history)[0].Kind == turn.Kind {
-				(*history)[0].OwningTurnID = compactionOwner
-			}
+		// Decide novelty on the turn AS RECEIVED, before this fold's owner
+		// goes on it. A re-presented marker arrives carrying the owner its own
+		// fold stamped, which is what the snapshot in existingArtifacts holds;
+		// comparing after the stamp below would report every re-presented
+		// artifact as newly produced and queue a transcript reminder for a
+		// compaction that produced nothing.
+		newArtifact := isSessionNameCompactionTurn(turn) && !consumeMatchingCompactionArtifact(&existingArtifacts, turn)
+		turn.OwningTurnID = compactionOwner
+		// The context manager passes the newly created marker by value after
+		// placing it at history[0]. Update the folded history copy as well;
+		// otherwise the durable callback record and published history would
+		// disagree about its owner.
+		if len(*history) > 0 && (*history)[0].Kind == turn.Kind {
+			(*history)[0].OwningTurnID = compactionOwner
 		}
 		pendingCompactionTurns = append(pendingCompactionTurns, turn)
-		if isSessionNameCompactionTurn(turn) && !consumeMatchingCompactionArtifact(&existingArtifacts, turn) {
+		if newArtifact {
 			artifactProduced = true
 		}
 	})
@@ -501,13 +514,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				preCompactRan = true
 				var records []steeringTurnRecord
 				records, noteCommit = s.runPreCompactHook(ctx, history)
-				if compactionOwner != "" {
-					for i := len(*history) - len(records); i < len(*history); i++ {
-						(*history)[i].OwningTurnID = compactionOwner
-					}
-					for i := range records {
-						records[i].turn.OwningTurnID = compactionOwner
-					}
+				for i := len(*history) - len(records); i < len(*history); i++ {
+					(*history)[i].OwningTurnID = compactionOwner
+				}
+				for i := range records {
+					records[i].turn.OwningTurnID = compactionOwner
 				}
 				pendingSteering = append(pendingSteering, records...)
 			}

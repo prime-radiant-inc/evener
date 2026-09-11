@@ -127,6 +127,24 @@ func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 // that slot must treat it as absent.
 const directTurnIDPrefix = "turn_direct_"
 
+// compactionGapIDPrefix marks the group an IDLE fold's records belong to. A
+// fold that stages with no turn running has no turn to own what it produces,
+// but it still produces one contiguous run of records, and both projections
+// have to put that run in one group. Live coalesces ownerless announcements on
+// a synthetic gap id it mints per gap; the transcript projection makes every
+// unowned record a standalone group of its own entry index. Persisting one id
+// for the fold is what makes them agree — it changes neither grouping rule, so
+// no index version moves, and it is the same shape the environment entry
+// already uses for a durable record that belongs to no turn.
+const compactionGapIDPrefix = "turn_compaction_"
+
+// mintCompactionGapID names one idle fold's records. Deliberately NOT recorded
+// as the session's direct turn: no turn is running, and a later record must
+// not be drawn into this fold's group.
+func mintCompactionGapID() string {
+	return compactionGapIDPrefix + ulid.Make().String()
+}
+
 // selfMintedTurnID reports a name nameTurnItself produced.
 func selfMintedTurnID(turnID string) bool {
 	return strings.HasPrefix(turnID, directTurnIDPrefix)
