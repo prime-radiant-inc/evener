@@ -1743,10 +1743,17 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
+	return s.appendDurableTurn(t, persistedTurn)
+}
+
+// appendDurableTurn is appendTurnWithDurableTranscriptMessage for a caller
+// that built the turn itself — the delegate preseed, which stamps the turn's
+// own identity before it is written.
+func (s *Session) appendDurableTurn(live, persisted schema.Turn) error {
 	err := s.appendTurnAfterTranscriptWrite(
-		persistedTurn,
-		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
-		func() { s.history = append(s.history, t) },
+		persisted,
+		func() error { return s.writeTranscriptDurableLocked(persisted) },
+		func() { s.history = append(s.history, live) },
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

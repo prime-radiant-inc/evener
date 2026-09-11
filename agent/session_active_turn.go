@@ -151,10 +151,18 @@ func selfMintedTurnID(turnID string) bool {
 // namespace (turn_%d) and the client-mutation one (appwire.ClientMutationTurnID).
 func (s *Session) nameTurnItself() string {
 	turnID := directTurnIDPrefix + ulid.Make().String()
+	s.adoptSelfMintedTurnID(turnID)
+	return turnID
+}
+
+// adoptSelfMintedTurnID re-establishes a name minted for a turn that is only
+// now starting. The delegate preseed writes its turn's entry before the run
+// that executes it exists, so the executing turn adopts the name the entry
+// already carries rather than minting a second one.
+func (s *Session) adoptSelfMintedTurnID(turnID string) {
 	s.mu.Lock()
 	s.directTurnID = turnID
 	s.mu.Unlock()
-	return turnID
 }
 
 // warnStoreUnhealthyOnce reports a client-mutation-store failure at most once

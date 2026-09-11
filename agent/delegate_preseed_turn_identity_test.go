@@ -1,0 +1,105 @@
+package agent
+
+import (
+	"bufio"
+	"context"
+	"os"
+	"sync"
+	"testing"
+
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+)
+
+// A delegate's opening input is written straight to the child's transcript at
+// preseed time, before the run that executes it exists, so it never reaches
+// acceptUserInput's naming. The entry and the USER_INPUT event the child later
+// emits are the two halves the cold and live projections read: they must carry
+// the SAME non-empty id, or the transcript projection falls back to the entry
+// index while the live projector mints a turn_%d of its own and every item's
+// transcript key changes across a reload. The environment entry preseed writes
+// first is what makes the two disagree from the very first turn.
+func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
+	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
+	var (
+		mu         sync.Mutex
+		childPath  string
+		userInputs []events.UserInputData
+	)
+	root.cfg.testOnly.delegateInitialInputAppend = func(child *Session) {
+		mu.Lock()
+		childPath = child.TranscriptPath()
+		mu.Unlock()
+		go func() {
+			for event := range child.Events() {
+				if data, ok := event.Data.(events.UserInputData); ok && event.Kind == events.EventUserInput {
+					mu.Lock()
+					userInputs = append(userInputs, data)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "preseeded delegate input", 0)
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("idle send = %#v", outcome.result)
+	}
+	<-entered
+	defer close(release)
+
+	mu.Lock()
+	path := childPath
+	emitted := append([]events.UserInputData(nil), userInputs...)
+	mu.Unlock()
+	if path == "" {
+		t.Fatal("preseed never reported the child transcript")
+	}
+	entryID, sawEnvironmentFirst := preseededUserInputIdentity(t, path)
+	if !sawEnvironmentFirst {
+		t.Fatal("preseed wrote no environment entry before the input; the divergence this pins needs one")
+	}
+	if entryID == "" {
+		t.Fatal("preseeded USER_INPUT entry has no stable turn id; cold projection falls back to its entry index")
+	}
+	if len(emitted) != 1 {
+		t.Fatalf("child emitted %d USER_INPUT events, want exactly the preseeded one", len(emitted))
+	}
+	if emitted[0].StableTurnID != entryID {
+		t.Fatalf("live USER_INPUT id = %q, persisted entry id = %q; the two projections would name the same turn differently", emitted[0].StableTurnID, entryID)
+	}
+	if !selfMintedTurnID(entryID) {
+		t.Fatalf("preseeded turn id = %q, want a self-minted name (%s...)", entryID, directTurnIDPrefix)
+	}
+}
+
+// preseededUserInputIdentity reports the child's first USER_INPUT entry's
+// stable turn id, and whether an ENVIRONMENT entry precedes it.
+func preseededUserInputIdentity(t *testing.T, path string) (turnID string, environmentFirst bool) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open child transcript: %v", err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sawEnvironment := false
+	for scanner.Scan() {
+		entry, decodeErr := transcript.DecodeEntry(scanner.Bytes())
+		if decodeErr != nil {
+			continue
+		}
+		switch entry.Turn.Kind {
+		case schema.TurnEnvironment:
+			sawEnvironment = true
+		case schema.TurnUserInput:
+			return entry.Turn.StableTurnID, sawEnvironment
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan child transcript: %v", err)
+	}
+	t.Fatal("child transcript has no USER_INPUT entry")
+	return "", false
+}

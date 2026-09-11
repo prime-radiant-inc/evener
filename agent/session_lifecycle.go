@@ -1964,7 +1964,8 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.turns++
 	s.mu.Unlock()
 
-	preseededInput := delegateInputWasPreseeded(ctx, s.id, input) && len(images) == 0 && queuedIdentity.ClientMutationID == ""
+	preseedTurnID, preseeded := delegatePreseededTurnID(ctx, s.id, input)
+	preseededInput := preseeded && len(images) == 0 && queuedIdentity.ClientMutationID == ""
 	if !preseededInput {
 		if err := s.maybeAppendEnvironmentContext(); err != nil {
 			s.mu.Lock()
@@ -2008,7 +2009,14 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	stableTurnID := queuedIdentity.StableTurnID
 	if queuedIdentity.ClientMutationID == "" {
-		if !preseededInput {
+		if preseededInput {
+			// The preseed already wrote this turn's entry, under the identity
+			// it minted then. Adopt that name rather than minting a second
+			// one: the event below and everything published during the run
+			// must name the turn the entry already names.
+			stableTurnID = preseedTurnID
+			s.adoptSelfMintedTurnID(preseedTurnID)
+		} else {
 			// Nothing outside the session named this turn, so it names
 			// itself: the id rides the persisted entry and the USER_INPUT
 			// event below, and activeTurnOwner reports it for everything
