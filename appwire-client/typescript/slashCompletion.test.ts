@@ -144,7 +144,11 @@ test("filterSlashMenuItems filters the merged list to labels starting with the q
 });
 
 test("fuzzy matching finds simplify from a non-prefix query", () => {
-  const items = mergeSlashCommands([], [], [{ name: "simplify", description: "rewrite" }]);
+  const items = mergeSlashCommands(
+    [],
+    [],
+    [{ name: "simplify", description: "rewrite", disableModelInvocation: false, userInvocable: true, available: true }],
+  );
   expect(filterSlashMenuItems(items, "smp").map((item) => item.invocation)).toEqual(["/simplify"]);
 });
 
@@ -152,7 +156,15 @@ test("skills merge after commands with canonical labels, invocations, and descri
   const items = mergeSlashCommands(
     [builtin("goal", "sets the session goal")],
     [{ name: "review", description: "review the diff" }],
-    [{ name: "plugin:review", description: "review with the skill" }],
+    [
+      {
+        name: "plugin:review",
+        description: "review with the skill",
+        disableModelInvocation: false,
+        userInvocable: true,
+        available: true,
+      },
+    ],
   );
   expect(items).toEqual([
     { key: "builtin:goal", invocation: "/goal", label: "goal", hint: "sets the session goal", kind: "builtin" },
@@ -241,7 +253,15 @@ test("command and skill rows with the same name retain distinct keys", () => {
   const items = mergeSlashCommands(
     [builtin("review", "review command")],
     [],
-    [{ name: "review", description: "review skill" }],
+    [
+      {
+        name: "review",
+        description: "review skill",
+        disableModelInvocation: false,
+        userInvocable: true,
+        available: true,
+      },
+    ],
   );
   expect(items.map((item) => ({ key: item.key, kind: item.kind, invocation: item.invocation }))).toEqual([
     { key: "builtin:review", kind: "builtin", invocation: "/review" },
@@ -250,7 +270,19 @@ test("command and skill rows with the same name retain distinct keys", () => {
 });
 
 test("qualified skill labels can be filtered and spliced with their canonical invocation", () => {
-  const items = mergeSlashCommands([], [], [{ name: "plugin:review", description: "review skill" }]);
+  const items = mergeSlashCommands(
+    [],
+    [],
+    [
+      {
+        name: "plugin:review",
+        description: "review skill",
+        disableModelInvocation: false,
+        userInvocable: true,
+        available: true,
+      },
+    ],
+  );
   const [skill] = filterSlashMenuItems(items, "pr");
   const text = "Use /pr on this";
   const token = parseSlashToken(text, "Use /pr".length)!;
@@ -262,7 +294,9 @@ test("qualified skill labels can be filtered and spliced with their canonical in
 });
 
 test("filterSlashMenuItems with an empty query returns the whole merged list, in order", () => {
-  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG, [{ name: "simplify" }]);
+  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG, [
+    { name: "simplify", disableModelInvocation: false, userInvocable: true, available: true },
+  ]);
   expect(filterSlashMenuItems(items, "").map((i) => i.label)).toEqual([
     "goal",
     "review",

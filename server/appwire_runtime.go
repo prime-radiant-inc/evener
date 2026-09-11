@@ -1542,6 +1542,12 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	if err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
+	// Skill input is not consumable here yet: the gate keeps every skill
+	// selection an unsupported-input error until per-endpoint consumption is
+	// wired, so the capability this thread advertises stays honestly false.
+	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
+		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
 	}
@@ -1578,6 +1584,10 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	defer unlock()
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	// Skill input is not consumable here yet: see the turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
@@ -1649,6 +1659,10 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	if err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
+	// Skill input is not consumable here yet: see the turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
 	}
@@ -1674,6 +1688,10 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	defer unlock()
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	// Skill input is not consumable here yet: see the turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, false); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	params.Input = input.Items
@@ -2575,6 +2593,11 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// the session is open. Like Goal it is NOT gated on !active: a human
 		// save may land mid-turn (it steers the running turn), unlike Send.
 		SharedNotes: s.notesHumanSetFunc != nil && s.urlsRemoveFunc != nil && !closed,
+		// SkillInput stays false until runtime consumption of skill input
+		// items is wired per endpoint; the input handlers gate skill items
+		// with appwire.ValidateSkillInputSupport, so a false here means every
+		// skill selection is an unsupported-input error.
+		SkillInput: false,
 	}
 }
 
