@@ -155,6 +155,19 @@ test("a child-session continuation keeps the turn container's own newer turns", 
   expect(entry.delegate.latestActivityAt).toBe("2026-09-10T00:03:00Z");
 });
 
+test("a child-session continuation adopts turns the client had never seen", () => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.turns = undefined;
+  const patchEntry = delegate(session("child", [shell("b")]));
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.turns = [shell("turn-first").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-first"]);
+});
+
 test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
   const entry = delegate();
   const raw = tree([entry]);

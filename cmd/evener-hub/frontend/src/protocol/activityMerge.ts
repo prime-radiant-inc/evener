@@ -66,8 +66,10 @@ function mergeDelegate(
   // Turn containers carry no projection revision to fence on. A page cut for a
   // descendant session still ships this container as it stood when the page was
   // cut, so only a page that targets the delegate itself may replace its turns.
-  if (!withinTarget && (current.type !== "delegate" || patch.type !== "delegate")) {
-    state.turns = current.turns?.map((turn) => ({ ...turn }));
+  // Turns the client never had are new information, not a regression: keep the
+  // patch's when there is nothing on screen to protect.
+  if (!withinTarget && current.turns && (current.type !== "delegate" || patch.type !== "delegate")) {
+    state.turns = current.turns.map((turn) => ({ ...turn }));
   }
   return {
     ...state,
