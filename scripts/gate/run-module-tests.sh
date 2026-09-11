@@ -30,8 +30,9 @@
 # the per-attempt budget on a host slower than that; the failure diagnostic
 # names both knobs. A timed-out attempt is stopped by process group, SIGTERM
 # then SIGKILL, and reaped before the next one starts; an attempt that will not
-# stop fails the run instead of being retried. Each attempt writes its own
-# package list and only a completed one is used.
+# stop fails the run, naming its surviving pids and waiting on none of them,
+# instead of being retried. Each attempt writes its own package list and only a
+# completed one is used.
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
@@ -196,21 +197,6 @@ process_descendants() {
 	done
 }
 
-stop_process_tree() {
-	local pid="$1" descendant
-	local -a descendants=()
-	for descendant in $(process_descendants "$pid"); do
-		descendants+=("$descendant")
-	done
-	if [ "${#descendants[@]}" -gt 0 ]; then
-		for descendant in "${descendants[@]}"; do
-			[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
-		done
-	fi
-	kill -TERM "$pid" 2>/dev/null || :
-	wait "$pid" 2>/dev/null || :
-}
-
 stop_children() {
 	local pid descendant
 	local -a descendants=()
@@ -304,15 +290,31 @@ root_package_list_timeout_diagnostic() {
 		"$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
+# root_package_list_group_survivors PGID — print `pid(state)` for every live
+# member of PGID, zombies excluded.
+#
+# Zombies have to be excluded, and `kill -0 -- -PGID` cannot do it. A process
+# the kernel has finished with stays a member of its own group until its parent
+# reaps it, and a group signal is reported as delivered to it, so the leader
+# this function is asked about would read as "still running" for as long as the
+# shell had not got round to reaping it — a successful kill reported as a
+# survivor, purely on reap timing. Asking `ps` for the state instead makes the
+# answer independent of when anyone reaps.
+root_package_list_group_survivors() {
+	ps -axo pid=,pgid=,state= 2>/dev/null |
+		awk -v pgid="$1" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
+}
+
 # stop_root_package_list_group PGID — stop one package-list attempt and prove
 # nothing of it is still running. Returns non-zero when the group still has a
-# member after the escalation, which is the caller's signal to stop retrying.
+# live member after the escalation, which is the caller's signal to stop
+# retrying.
 #
-# By group, not by process tree: stop_process_tree reads `ps` once and signals
-# the descendants that snapshot happened to show, so a child forked after the
-# snapshot, or one that outlives the leader, survives into the next attempt —
-# still writing a package list, still holding Go's build and module cache
-# locks. A group signal reaches every member however late it appeared.
+# By group, not by process tree: a snapshot of descendants plus a signal to
+# what it showed misses a child forked after the snapshot, and one that
+# outlives the leader survives into the next attempt — still writing a package
+# list, still holding Go's build and module cache locks. A group signal reaches
+# every member however late it appeared.
 #
 # The group comes from bash's monitor mode, not setsid(1): setsid ships with
 # util-linux and is absent on macOS, which this script has to run on, while
@@ -326,20 +328,22 @@ stop_root_package_list_group() {
 		kill -"$signal" -- -"$pgid" 2>/dev/null || :
 		waited=0
 		while [ "$waited" -lt "$ticks" ]; do
-			kill -0 -- -"$pgid" 2>/dev/null || return 0
+			if [ -z "$(root_package_list_group_survivors "$pgid")" ]; then
+				return 0
+			fi
 			sleep 0.1
 			waited=$((waited + 1))
 		done
 	done
-	if kill -0 -- -"$pgid" 2>/dev/null; then
-		return 1
+	if [ -z "$(root_package_list_group_survivors "$pgid")" ]; then
+		return 0
 	fi
-	return 0
+	return 1
 }
 
 run_root_package_list() {
 	local package_list="$1" package_list_stderr attempt attempt_list
-	local list_pid list_pgid started_at list_status
+	local list_pid list_pgid started_at list_status descendant survivors
 	package_list_stderr="${package_list}.stderr"
 	# Every attempt appends under its own heading, so the diagnostic still names
 	# one retained log and whoever reads it sees what each attempt said.
@@ -368,21 +372,34 @@ run_root_package_list() {
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
 				if [ "$list_pgid" != "$list_pid" ]; then
-					# Best effort on a host where the attempt is not its own
-					# group, then stop: retrying would race whatever is left.
-					stop_process_tree "$list_pid"
+					# No group to name, so signal what a snapshot shows and
+					# stop. Nothing is waited on here: a retry would race
+					# whatever is left, and a process wedged in
+					# uninterruptible sleep would never be reaped, which
+					# would hang the gate instead of failing it.
+					for descendant in $(process_descendants "$list_pid"); do
+						kill -KILL "$descendant" 2>/dev/null || :
+					done
+					kill -KILL "$list_pid" 2>/dev/null || :
 					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
 					printf 'run-module-tests.sh: attempt %s was not its own process group (pgid %s, pid %s), so it cannot be stopped as one. Not retrying.\n' \
 						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" >&2
 					return 1
 				fi
 				if ! stop_root_package_list_group "$list_pid"; then
-					wait "$list_pid" 2>/dev/null || :
+					# Deliberately no wait: SIGKILL does not land on a
+					# process in uninterruptible sleep, which is exactly the
+					# stalled-volume case this bound exists for, and waiting
+					# on it would replace the bound with an indefinite hang.
+					# Name the survivors instead and fail.
+					survivors="$(root_package_list_group_survivors "$list_pid")"
 					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
-					printf 'run-module-tests.sh: attempt %s would not stop: its process group outlived SIGTERM and SIGKILL with %ss of grace each, so a retry would share the host with it. Not retrying.\n' \
-						"$attempt" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
+					printf 'run-module-tests.sh: attempt %s would not stop: process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and not waiting on it.\n' \
+						"$attempt" "$list_pid" "${survivors:-<none at the final probe>}" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
 					return 1
 				fi
+				# The group has no live member, so the leader is a zombie or
+				# already reaped and this reap cannot block.
 				wait "$list_pid" 2>/dev/null || :
 				if [ "$attempt" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
 					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
@@ -561,7 +578,7 @@ run_wave $WAVE2
 
 if [ -s "$root_package_list_retry_log" ]; then
 	while IFS= read -r retry_line; do
-		printf 'run-module-tests.sh: %s\n' "$retry_line"
+		printf 'run-module-tests.sh: %s\n' "$retry_line" >&2
 	done <"$root_package_list_retry_log"
 fi
 

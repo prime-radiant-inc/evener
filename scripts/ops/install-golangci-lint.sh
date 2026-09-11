@@ -77,7 +77,12 @@ if ! installed="$("$bindir/golangci-lint" version 2>&1)"; then
 		"$bindir" "$installed" >&2
 	exit 1
 fi
-case "$installed" in
+# Match the version as a whole word wherever it sits. Squeezing the reported
+# text to single-space-separated words and wrapping the result in spaces means
+# the token is surrounded by spaces even when it ends a line or ends the
+# output, which a bare *" version X "* pattern would reject.
+reported=" $(printf '%s' "$installed" | tr -s '[:space:]' ' ') "
+case "$reported" in
 *" version $version "*) ;;
 *)
 	printf 'install-golangci-lint.sh: %s/golangci-lint reports "%s", not the pinned v%s from %s\n' \

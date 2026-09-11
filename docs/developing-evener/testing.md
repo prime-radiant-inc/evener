@@ -329,11 +329,17 @@ A retry only makes sense if the attempt it replaces is really gone. Each
 attempt runs in its own process group and a timed-out one is stopped by group
 — SIGTERM, then SIGKILL after five seconds — and reaped before the next
 starts; a group that outlives both fails the run rather than being retried,
-because a survivor would still hold Go's build and module cache locks. Each
-attempt also writes its own package list, and only a completed attempt's is
-promoted to the file the rest of the runner reads, so nothing a stopped
-attempt is still writing can reach the run. The process group comes from
-bash's job control rather than `setsid`, which is absent on macOS.
+because a survivor would still hold Go's build and module cache locks. That
+failure names the surviving pids and does **not** wait on them: SIGKILL never
+lands on a process in uninterruptible sleep, which is the stalled-volume case
+the bound exists for, so waiting would trade the bound for an indefinite hang.
+Liveness is read from `ps` states rather than from `kill -0` on the group, so
+a leader the shell has not reaped yet — a zombie, and still a group member —
+cannot make a clean kill look like a survivor. Each attempt also writes its
+own package list, and only a completed attempt's is promoted to the file the
+rest of the runner reads, so nothing a stopped attempt is still writing can
+reach the run. The process group comes from bash's job control rather than
+`setsid`, which is absent on macOS.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
