@@ -1017,6 +1017,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				ChangeModel:  true,
 				Queue:        status == appwire.ThreadStatusActive,
 				Goal:         true,
+				SharedNotes:  !item.ReadOnlyAlias,
 				Rename:       true,
 			},
 			AskPending: item.PendingAsk,

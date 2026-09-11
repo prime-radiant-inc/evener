@@ -594,6 +594,40 @@ func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) 
 	}
 }
 
+// TestLocalDaemonSourceListAdvertisesSharedNotes guards the roster path: a live
+// local session supports shared notes, so ListThreads must advertise the
+// capability instead of making list-derived models report it unsupported until
+// hydration. Read-only aliases and restart-required sessions must not.
+func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/live", ThreadID: "th_live", SessionID: "sess_live"}, Status: "idle"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/alias", ThreadID: "th_alias"}, SessionID: "sess_alias", OwnerSessionID: "sess_live", Status: "idle", ReadOnlyAlias: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/restart", ThreadID: "th_restart", SessionID: "sess_restart"}, Status: appwire.ThreadStatusRestartRequired},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	// Keyed by session: a read-only alias derives its thread id from the session
+	// it mirrors, which is not the id this test names it by.
+	capsBySession := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsBySession[thread.SessionID] = thread.Evener.Capabilities
+	}
+	if live, ok := capsBySession["sess_live"]; !ok || !live.SharedNotes {
+		t.Fatalf("live local session did not advertise shared notes: %+v (all: %+v)", live, capsBySession)
+	}
+	if alias, ok := capsBySession["sess_alias"]; !ok || alias.SharedNotes {
+		t.Fatalf("read-only alias advertised shared notes: %+v (all: %+v)", alias, capsBySession)
+	}
+	if restart, ok := capsBySession["sess_restart"]; !ok || restart.SharedNotes {
+		t.Fatalf("restart-required session advertised shared notes: %+v (all: %+v)", restart, capsBySession)
+	}
+}
+
 // TestLocalDaemonSourceListCarriesAskPending guards the TUI attach path (Task
 // 29's per-row ask marker): when the hub's entries() feed reports PendingAsk
 // on a LocalDaemonEntry, threadFromEntry must carry it through to
