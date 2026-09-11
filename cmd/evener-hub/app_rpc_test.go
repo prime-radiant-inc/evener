@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
@@ -9316,6 +9317,58 @@ func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
 	_, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
 	if err == nil {
 		t.Fatal("expected error for empty profile id, got nil")
+	}
+}
+
+// TestResumeRequestForConfigCarriesLaunchAPILog proves the resume path
+// consults the session's launch layers for api_log: buildResumeArgs passes
+// the value through to the daemon, so without this carry an explicit
+// api_log choice would be silently dropped and the hub floor (or the
+// daemon's own default) would fill the gap instead. An unset layer must
+// stay nil so the hub floor still applies, and a broken launch.toml must
+// not block the resume.
+func TestResumeRequestForConfigCarriesLaunchAPILog(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		launchTOML string // global launch.toml content; "" writes nothing
+		wantNil    bool
+		wantOn     bool
+	}{
+		{name: "layer true is carried", launchTOML: "api_log = true\n", wantOn: true},
+		{name: "layer false is carried, not dropped", launchTOML: "api_log = false\n", wantOn: false},
+		{name: "unset stays nil for the hub floor", launchTOML: "", wantNil: true},
+		{name: "broken launch.toml resumes with api_log unset", launchTOML: "not = [toml", wantNil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			sessionID := hubtest.SessionID(t)
+			_, past := makeResumeSession(t, root, sessionID, "openai", "gpt-4o")
+			launchRoot := filepath.Join(root, "launchroot")
+			if tc.launchTOML != "" {
+				if err := os.MkdirAll(launchRoot, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(launchRoot, "launch.toml"), []byte(tc.launchTOML), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past, LaunchConfigRoot: launchRoot}, sessionID)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantNil {
+				if req.Resolved.Effective.APILog != nil {
+					t.Fatalf("APILog = %v, want nil", *req.Resolved.Effective.APILog)
+				}
+				return
+			}
+			if got := req.Resolved.Effective.APILog; got == nil || *got != tc.wantOn {
+				t.Fatalf("APILog = %v, want %v", got, tc.wantOn)
+			}
+			if got := req.Resolved.Effective.Model; got != "openai/gpt-4o" {
+				t.Fatalf("Model = %q, want openai/gpt-4o (api_log carry must not clobber it)", got)
+			}
+		})
 	}
 }
 

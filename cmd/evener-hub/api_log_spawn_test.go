@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
 
@@ -110,6 +111,74 @@ exit 2
 				Provider:   "ollama",
 			}); err != nil {
 				t.Fatalf("Spawn: %v", err)
+			}
+			argsData, err := os.ReadFile(argsOut)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			args := strings.Fields(string(argsData))
+			got := argValue(args, "--api-log")
+			if got != tc.wantArg {
+				t.Fatalf("--api-log = %q, want %q\nargs:\n%s", got, tc.wantArg, argsData)
+			}
+		})
+	}
+}
+
+// TestHubSpawnerResumeAPILog pins the same floor at the resume boundary:
+// buildResumeArgs passes the resolved api_log through to the daemon, so an
+// explicit launch-layer value must beat the hub-wide api_log=true, and the
+// hub floor must fill a request whose layers left api_log unset.
+func TestHubSpawnerResumeAPILog(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hubOn    bool
+		layerAPI *bool
+		wantArg  string // "" means the flag must be absent
+	}{
+		{name: "default passes no flag", hubOn: false, layerAPI: nil, wantArg: ""},
+		{name: "hub on injects on", hubOn: true, layerAPI: nil, wantArg: "on"},
+		{name: "launch layer false overrides hub on", hubOn: true, layerAPI: new(false), wantArg: "off"},
+		{name: "launch layer true passes on without hub default", hubOn: false, layerAPI: new(true), wantArg: "on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			runDir := filepath.Join(dir, "run")
+			argsOut := filepath.Join(dir, "args.txt")
+			t.Setenv("ARGS_OUT", argsOut)
+			bin := filepath.Join(dir, "fake-evener")
+			script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v5"}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  printf '%s\n' "$@" > "$ARGS_OUT"
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+			writeFakeEvener(t, bin, script)
+
+			cfg := DefaultConfig()
+			cfg.SpawnTimeout = 2 * time.Second
+			cfg.APILog = tc.hubOn
+			spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+
+			if _, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+				SessionID: hubtest.SessionID(t),
+				Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+					APILog: tc.layerAPI,
+				}},
+				WorkingDir: dir,
+				StateDir:   filepath.Join(dir, "state"),
+			}); err != nil {
+				t.Fatalf("Resume: %v", err)
 			}
 			argsData, err := os.ReadFile(argsOut)
 			if err != nil {
