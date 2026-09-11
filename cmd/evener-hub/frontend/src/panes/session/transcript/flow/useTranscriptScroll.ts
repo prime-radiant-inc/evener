@@ -688,6 +688,14 @@ function isIndependentVerticalScroller(el: Element): boolean {
  * Can a vertical input landing on `target` actually move `port`? Two ways it
  * cannot:
  *
+ * The port's own geometry arrives as `portMetrics` rather than being read off
+ * the element: the at-bottom decision goes through this hook's injectable
+ * measurement seam everywhere else, for the reason scrollMetrics.ts states (a
+ * jsdom element's layout is all zeroes, so a helper that takes the element
+ * cannot be tested honestly). The nested walk below has no such seam and reads
+ * the DOM directly - there is nothing it could be measured through, and its
+ * answer is about elements this hook never otherwise looks at.
+ *
  *   the port is already at that limit; or
  *   something between the target and the port is an independent vertical
  *   scroller with room left in that direction, so IT answers the input and the
@@ -712,8 +720,13 @@ function isIndependentVerticalScroller(el: Element): boolean {
  * would mean reading a second property per ancestor for a case the transcript
  * does not currently build.
  */
-function verticalInputCanMovePort(port: HTMLElement, target: EventTarget | null, direction: ScrollDirection): boolean {
-  if (!portCanScroll(readScrollMetrics(port), direction)) return false;
+function verticalInputCanMovePort(
+  port: HTMLElement,
+  portMetrics: ScrollMetrics,
+  target: EventTarget | null,
+  direction: ScrollDirection,
+): boolean {
+  if (!portCanScroll(portMetrics, direction)) return false;
   let node = target instanceof Element ? target : null;
   while (node !== null && node !== port) {
     if (isIndependentVerticalScroller(node) && hasRoomToScroll(node, direction)) return false;
@@ -866,10 +879,10 @@ export function useTranscriptScroll({
       if (event.deltaY === 0) return;
       const port = event.currentTarget;
       if (!(port instanceof HTMLElement)) return;
-      if (!verticalInputCanMovePort(port, event.target, event.deltaY > 0 ? 1 : -1)) return;
+      if (!verticalInputCanMovePort(port, measure(port), event.target, event.deltaY > 0 ? 1 : -1)) return;
       markGesture();
     },
-    [markGesture],
+    [markGesture, measure],
   );
   const startTouch = useCallback((event: TouchEvent) => {
     lastTouchYRef.current = event.touches[0]?.clientY ?? null;
@@ -885,10 +898,10 @@ export function useTranscriptScroll({
       const port = event.currentTarget;
       if (!(port instanceof HTMLElement)) return;
       // A finger moving UP - clientY decreasing - pushes content down.
-      if (!verticalInputCanMovePort(port, event.target, y < last ? 1 : -1)) return;
+      if (!verticalInputCanMovePort(port, measure(port), event.target, y < last ? 1 : -1)) return;
       markGesture();
     },
-    [markGesture],
+    [markGesture, measure],
   );
   // A finished touch has to clear the recorded Y, or the "no recorded start"
   // guard above is true exactly once per mount and every later outside-start
