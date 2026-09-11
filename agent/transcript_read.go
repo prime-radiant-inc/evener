@@ -186,13 +186,68 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		return repaired
 	}
 
-	// Return compaction turn + everything after it.
-	result := make([]schema.Turn, 0, len(entries)-compactionIdx)
-	for i := compactionIdx; i < len(entries); i++ {
+	// Return the compaction turn + everything after it, plus the replay copies
+	// this anchor's own fold wrote just before it. The fold's footprint is one
+	// contiguous run of records sharing its id — copies first, then the
+	// context-compaction records, markers and injected steering — so the run
+	// is reassembled in the order the fold published it: the fold's own
+	// records from the anchor onward, then its copies, then everything after.
+	// That is where the copies sat when they were written after the marker,
+	// so a resume reads the same history either ordering produced.
+	//
+	// An untagged anchor is one written before the tag existed, when the
+	// copies followed their marker and are already inside the range below;
+	// foldRun returns the anchor alone, and this is exactly the old behaviour.
+	foldStart, foldEnd := foldRun(entries, compactionIdx)
+	result := make([]schema.Turn, 0, len(entries)-foldStart)
+	for i := compactionIdx; i < foldEnd; i++ {
+		if entries[i].Turn.ContextReplay {
+			continue
+		}
+		result = append(result, entries[i].Turn)
+	}
+	for i := foldStart; i < foldEnd; i++ {
+		if !entries[i].Turn.ContextReplay {
+			continue
+		}
+		turn := entries[i].Turn
+		turn.ContextReplay = false
+		result = append(result, turn)
+	}
+	anchorFold := entries[compactionIdx].Turn.CompactionFoldID
+	for i := foldEnd; i < len(entries); i++ {
+		// A copy claimed by some OTHER fold is a copy whose marker never
+		// arrived — a later fold that wrote its tail and then crashed. Its
+		// originals are after this anchor too, so it is a duplicate for the
+		// same reason the no-anchor branch's are. Untagged copies are the old
+		// ordering's, written after their own marker and inside this range on
+		// purpose, so they stay.
+		if entries[i].Turn.ContextReplay && entries[i].Turn.CompactionFoldID != "" && entries[i].Turn.CompactionFoldID != anchorFold {
+			continue
+		}
 		turn := entries[i].Turn
 		turn.ContextReplay = false
 		result = append(result, turn)
 	}
 	repaired, _ := repairOrphanedToolResults(result)
 	return repaired
+}
+
+// foldRun reports the half-open span of entries written by the fold that owns
+// the record at anchor. An untagged anchor owns only itself: records from
+// before the tag existed carry no id to group by, and their copies already
+// follow the marker rather than preceding it.
+func foldRun(entries []transcript.Entry, anchor int) (start, end int) {
+	foldID := entries[anchor].Turn.CompactionFoldID
+	if foldID == "" {
+		return anchor, anchor + 1
+	}
+	start, end = anchor, anchor+1
+	for start > 0 && entries[start-1].Turn.CompactionFoldID == foldID {
+		start--
+	}
+	for end < len(entries) && entries[end].Turn.CompactionFoldID == foldID {
+		end++
+	}
+	return start, end
 }

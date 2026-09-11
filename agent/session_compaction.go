@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -214,22 +215,30 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
 	}
-	markerLanded := commit.commitTranscriptsLocked()
+	// The tail goes down BEFORE the fold's own records, and this ordering is
+	// the whole crash story. ResumeHistory anchors on the last marker and
+	// discards everything before it, so whichever write lands first is the one
+	// a crash can lose. Markers first would mean a crash between them keeps an
+	// anchor that has already discarded the originals while the copies meant
+	// to replace them never arrived — the turns recorded during the fold gone
+	// from every later resume. Tail first, a crash before the markers leaves
+	// no anchor at all, so the originals stand and the copies are dropped as
+	// the duplicates they are; a crash after them finds the tail already
+	// durable, claimed by the marker through the shared fold id.
+	//
+	// The rewrite still only happens for a fold that HAS a marker: without one
+	// nothing discards the originals, so a copy carries nothing.
 	var mergedTailWriteErrs []error
-	// The rewrite exists only to carry these pairs PAST a marker this fold
-	// landed, because ResumeHistory anchors on the last one and discards
-	// everything before it. A fold that landed none moved no anchor, so the
-	// pairs' own entries are already on the surviving side and a copy is a
-	// pure duplicate: written anyway, an earlier fold's marker would make the
-	// anchored read return the pair twice.
-	if markerLanded {
+	if commit.writesCompactionMarker() {
 		for _, turn := range rewriteTail {
 			turn.ContextReplay = true
+			turn.CompactionFoldID = commit.foldID
 			if err := s.writeTranscriptDurableLocked(turn); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
 			}
 		}
 	}
+	commit.commitTranscriptsLocked()
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
@@ -337,11 +346,11 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // the note would stay globally visible, so a concurrent fold could re-inject
 // it, and an unconditional clear could erase a newer note pinned mid-fold.
 // commitTranscriptsLocked appends the fold's own transcript entries and MUST
-// run under the same attentionMu hold that decided the publish; it reports
-// whether a CHECKPOINT/SUMMARY marker actually landed, which is what decides
-// whether the tail rewrite has anything to carry past. flush commits the
-// remaining deferred effects, outside the locks. A losing fold runs none of
-// them.
+// run under the same attentionMu hold that decided the publish, AFTER the tail
+// rewrite that same hold writes first. writesCompactionMarker answers, before
+// either write, whether the tail has an anchor to be carried past at all.
+// flush commits the remaining deferred effects, outside the locks. A losing
+// fold runs none of them.
 //
 // publishedRevision is the historyRevision this fold's publish produced,
 // set by the publisher inside the publish's s.mu critical section: flush
@@ -349,8 +358,13 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // the newest PUBLICATION skips its last-write-wins effects, whichever flush
 // runs first.
 type foldCommit struct {
-	claimNoteLocked              func()
-	commitTranscriptsLocked      func() bool
+	claimNoteLocked         func()
+	commitTranscriptsLocked func()
+	// writesCompactionMarker reports whether this fold produced a
+	// CHECKPOINT/SUMMARY to write, answerable before any write happens.
+	writesCompactionMarker func() bool
+	// foldID tags every record this fold writes; see schema.Turn.
+	foldID                       string
 	flush                        func()
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
@@ -421,6 +435,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	if compactionOwner == "" {
 		compactionOwner = mintCompactionGapID()
 	}
+	// Every record this fold writes carries this, so a resume that anchors on
+	// one of its markers can tell which replay copies that marker is entitled
+	// to keep. See publishFoldTransaction for why the copies are written
+	// first and schema.Turn.CompactionFoldID for what the tag claims.
+	foldID := mintCompactionFoldID()
 	var existingArtifacts []schema.Turn
 	if history != nil {
 		for _, turn := range *history {
@@ -467,6 +486,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		// compaction that produced nothing.
 		newArtifact := isSessionNameCompactionTurn(turn) && !consumeMatchingCompactionArtifact(&existingArtifacts, turn)
 		turn.OwningTurnID = compactionOwner
+		turn.CompactionFoldID = foldID
 		// The context manager passes the newly created marker by value after
 		// placing it at history[0]. Update the folded history copy as well;
 		// otherwise the durable callback record and published history would
@@ -529,6 +549,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				}
 				for i := range records {
 					records[i].turn.OwningTurnID = compactionOwner
+					records[i].turn.CompactionFoldID = foldID
 				}
 				pendingSteering = append(pendingSteering, records...)
 			}
@@ -555,29 +576,34 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	var compactionTurnWriteErrs []error
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
-	commitTranscriptsLocked := func() bool {
+	commitTranscriptsLocked := func() {
 		compactionEventWriteErrs = make([]error, len(pendingCompactionEvents))
 		for i, event := range pendingCompactionEvents {
 			payload := event.Compaction()
 			turn := schema.NewTurn(schema.TurnContextCompaction, llm.System(payload.Announcement()))
 			turn.ContextCompaction = &payload
 			turn.OwningTurnID = compactionOwner
+			turn.CompactionFoldID = foldID
 			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
-		markerLanded := false
 		for i, turn := range pendingCompactionTurns {
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
-			// The kinds ResumeHistory anchors on, and only those: a
-			// TurnContextCompaction record moves no anchor.
-			if compactionTurnWriteErrs[i] == nil && isSessionNameCompactionTurn(turn) {
-				markerLanded = true
-			}
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
-		return markerLanded
 	}
-	commit := &foldCommit{}
+	commit := &foldCommit{foldID: foldID}
+	// Asked BEFORE anything is written, because the tail now goes down first:
+	// what matters is whether this fold HAS a replacement marker to write, not
+	// whether one landed. A marker whose write then fails leaves tagged copies
+	// with no anchor of their own, which resume handles — an older fold's
+	// marker will not claim them, and with no anchor at all they are dropped
+	// as the duplicates they are.
+	commit.writesCompactionMarker = func() bool {
+		// The kinds ResumeHistory anchors on, and only those: a
+		// TurnContextCompaction record moves no anchor.
+		return slices.ContainsFunc(pendingCompactionTurns, isSessionNameCompactionTurn)
+	}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {
 		if removed && len(pendingCompactionTurns) > 0 {
 			s.resetEnvContextTrackerLocked()

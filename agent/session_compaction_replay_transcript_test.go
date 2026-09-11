@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -284,4 +285,80 @@ func TestCompactionReplay_NoMarkerFoldWritesNoReplayTail(t *testing.T) {
 	if copies != 0 {
 		t.Fatalf("marker-less fold wrote %d replay copies; nothing discards the originals, so each is a duplicate", copies)
 	}
+}
+
+// A fold's markers and its replay tail are two separate durable writes, so a
+// crash can land between them. ResumeHistory anchors on the last marker and
+// discards everything before it, so whichever of the two is written FIRST is
+// the one a crash can lose: with the markers first, a crash after them keeps
+// an anchor that has already discarded the originals while the copies that
+// were to replace them never arrived, and the turns recorded during the fold
+// are gone from every later resume.
+//
+// Truncating the real fold's transcript at its last marker is that crash. The
+// fold's turns must still be there.
+func TestCompactionReplay_CrashAtMarkerKeepsTheFoldsTurns(t *testing.T) {
+	t.Parallel()
+	data, err := readTranscriptFull(compactionReplayTranscript(t))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	marker := lastCompactionMarkerIndex(data.Entries)
+	if marker < 0 {
+		t.Fatal("fixture wrote no compaction marker")
+	}
+	crashed := data.Entries[:marker+1]
+	calls, results := 0, 0
+	for _, turn := range ResumeHistory(crashed) {
+		c, r := replayToolRoundParts(turn.Message)
+		calls += c
+		results += r
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("a crash at the marker resumed %d calls and %d results, want the fold's tool round intact", calls, results)
+	}
+}
+
+// The other side of the same window: a crash partway through the tail, before
+// any marker is durable. There is no anchor, so nothing is discarded and the
+// originals are still the record — the copies written so far are duplicates of
+// them and must not come back as well.
+func TestCompactionReplay_CrashMidTailKeepsOriginalsOnce(t *testing.T) {
+	t.Parallel()
+	data, err := readTranscriptFull(compactionReplayTranscript(t))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	firstCopy := -1
+	for i, entry := range data.Entries {
+		if entry.Turn.ContextReplay {
+			firstCopy = i
+			break
+		}
+	}
+	if firstCopy < 0 {
+		t.Fatal("fixture wrote no replay copies")
+	}
+	crashed := data.Entries[:firstCopy+1]
+	if marker := lastCompactionMarkerIndex(crashed); marker >= 0 {
+		t.Fatalf("test setup: a marker at %d is already durable before the tail; this case needs the pre-marker crash", marker)
+	}
+	calls, results := 0, 0
+	for _, turn := range ResumeHistory(crashed) {
+		c, r := replayToolRoundParts(turn.Message)
+		calls += c
+		results += r
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("a crash mid-tail resumed %d calls and %d results, want the originals exactly once", calls, results)
+	}
+}
+
+func lastCompactionMarkerIndex(entries []transcript.Entry) int {
+	for i := range slices.Backward(entries) {
+		if entries[i].Turn.Kind == schema.TurnCheckpoint || entries[i].Turn.Kind == schema.TurnSummary {
+			return i
+		}
+	}
+	return -1
 }

@@ -3742,3 +3742,56 @@ func TestReadSessionTranscriptJSONLRejectsHeaderLargerThanHardOutputCap(t *testi
 		t.Fatalf("oversized JSONL header error is not bounded and clear: len=%d output=%q", len(result.Output), result.Output)
 	}
 }
+
+// Anchoring discards everything before the marker, but what follows it is not
+// automatically the record: a LATER fold can have written its tail and then
+// crashed before its own marker, leaving tagged copies after the anchor whose
+// originals are also after the anchor. Those copies are claimed by a marker
+// that never arrived, so they are duplicates exactly like the no-anchor case's,
+// and keeping them replays the stretch twice.
+func TestResumeHistoryFromTranscript_AnchorDropsALaterFoldsUnanchoredCopies(t *testing.T) {
+	t.Parallel()
+	const callID = "resume-later-fold-call"
+	toolCall := delegateAttentionToolCall(callID)
+	toolResult := llm.ToolResultNamed(callID, "probe", "ok", false)
+	entry := func(kind schema.TurnKind, message llm.Message, seq int, foldID string, replay bool) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.CompactionFoldID = foldID
+		turn.ContextReplay = replay
+		return transcript.Entry{Kind: "entry", Seq: seq, Turn: turn}
+	}
+	entries := []transcript.Entry{
+		// A fold that completed: its copy, then its marker.
+		entry(schema.TurnAssistant, llm.Assistant("folded away"), 0, "fold_one", true),
+		entry(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"), 1, "fold_one", false),
+		// Turns recorded after it.
+		entry(schema.TurnAssistant, toolCall, 2, "", false),
+		entry(schema.TurnToolResults, toolResult, 3, "", false),
+		// A second fold wrote its tail and crashed before its marker.
+		entry(schema.TurnAssistant, toolCall, 4, "fold_two", true),
+		entry(schema.TurnToolResults, toolResult, 5, "fold_two", true),
+	}
+
+	history := ResumeHistory(entries)
+
+	calls, results := 0, 0
+	for _, turn := range history {
+		if turn.ContextReplay {
+			t.Errorf("resume history carried the durable replay marker: %#v", turn)
+		}
+		for _, part := range turn.Message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == callID {
+				calls++
+			}
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				results++
+			}
+		}
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("resume history rebuilt the tool round as %d calls and %d results, want exactly one of each: %d turns", calls, results, len(history))
+	}
+	if len(history) != 4 {
+		t.Fatalf("resume history = %d turns, want the summary, its own copy and the two originals", len(history))
+	}
+}

@@ -145,6 +145,14 @@ func mintCompactionGapID() string {
 	return compactionGapIDPrefix + ulid.Make().String()
 }
 
+// mintCompactionFoldID names one fold's footprint in the transcript. It is not
+// a turn id and never reaches a projection: it exists so a resume that anchors
+// on a marker can tell which replay copies that marker wrote, which is what
+// lets the copies be written before it.
+func mintCompactionFoldID() string {
+	return "fold_" + ulid.Make().String()
+}
+
 // selfMintedTurnID reports a name nameTurnItself produced.
 func selfMintedTurnID(turnID string) bool {
 	return strings.HasPrefix(turnID, directTurnIDPrefix)
