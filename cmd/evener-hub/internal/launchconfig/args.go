@@ -66,6 +66,12 @@ func ToArgs(r Resolved) []string {
 	if e.Verbose != nil && *e.Verbose {
 		out = append(out, "--verbose")
 	}
+	// Emitted in both directions so a higher layer can override a global
+	// default back to off; an unset value emits nothing (evener's own default,
+	// which is off).
+	if e.APILog != nil {
+		add("--api-log", onOff(*e.APILog))
+	}
 	if e.TraceFile != "" {
 		add("--trace", e.TraceFile)
 	}

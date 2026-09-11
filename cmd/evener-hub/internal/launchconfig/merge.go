@@ -201,6 +201,12 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["verbose"] = name
 			nonEmpty = true
 		}
+		if l.APILog != nil {
+			v := *l.APILog
+			eff.APILog = &v
+			prov["api_log"] = name
+			nonEmpty = true
+		}
 		if l.TraceFile != "" {
 			eff.TraceFile = l.TraceFile
 			prov["trace_file"] = name
