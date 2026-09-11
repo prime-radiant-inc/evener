@@ -1128,15 +1128,34 @@ func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (strin
 // here, which is what keeps them from disagreeing while nothing is changing:
 // one that stopped at the alias would read "ownership changed" off a redirect
 // that has been stable since before the request started.
+// Redirects chain. PersistForceStop rewrites only the aliases of the group it
+// is handed and RecordResolvedSession writes onto whichever group an alias
+// currently points at, so resuming A onto B and later B onto C leaves both
+// records standing: one hop would branch B, a session already retired.
+// resumeOwnership traverses the same chains for the same reason, which is why
+// its loop and cycle guard exist.
+//
+// A cycle stops rather than refusing. Both resolvers share this tail, so
+// whatever a corrupted chain answers they answer alike and no fork is refused
+// for an ownership change that did not happen; whether that id can be forked at
+// all is still ownershipEntry's to decide.
 func forkRedirectSessionID(cfg hubcore.WebConfig, threadID string) string {
 	if cfg.ResumeLocks == nil {
 		return threadID
 	}
-	return cmp.Or(
-		cfg.ResumeLocks.RecoveryState(threadID).ResumeSessionID,
-		cfg.ResumeLocks.ResolvedSessionID(threadID),
-		threadID,
-	)
+	current := threadID
+	seen := map[string]bool{current: true}
+	for {
+		next := cmp.Or(
+			cfg.ResumeLocks.RecoveryState(current).ResumeSessionID,
+			cfg.ResumeLocks.ResolvedSessionID(current),
+		)
+		if next == "" || next == current || seen[next] {
+			return current
+		}
+		seen[next] = true
+		current = next
+	}
 }
 
 // forkFenceTargets is every identity one fork has to reserve, in request order:

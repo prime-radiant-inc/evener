@@ -2397,3 +2397,79 @@ func TestHubForkResolvesAnAliasFromWhicheverSourceIsConfigured(t *testing.T) {
 		})
 	}
 }
+
+// resumeThreeSessionIDs mints the ids a redirect-chain fixture needs.
+func resumeThreeSessionIDs(t *testing.T) (string, string, string) {
+	t.Helper()
+	ids := make([]string, 3)
+	for i := range ids {
+		id, err := identifier.NewSessionID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+	}
+	return ids[0], ids[1], ids[2]
+}
+
+// recordResumeRedirect leaves behind what an explicit resume through an alias
+// leaves: one recovery group over both ids, resolved onto the second, then
+// completed. It is the shape forkRedirectSessionID reads.
+func recordResumeRedirect(t *testing.T, locks *hubcore.ResumeLocks, from, to string) {
+	t.Helper()
+	group := []string{from, to}
+	finish := locks.BeginForceStop(group)
+	if err := locks.PersistForceStop(group, to); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	epoch := locks.RecoveryState(from).Epoch
+	if err := locks.ExplicitResumeCompleted(from, epoch); err != nil {
+		t.Fatal(err)
+	}
+	locks.RecordResolvedSession(from, to, epoch)
+}
+
+// Recovery redirects chain: resuming A onto B and later B onto C leaves two
+// records, because PersistForceStop only rewrites the aliases of the group it
+// is given and RecordResolvedSession writes onto whichever group the alias
+// currently points at. A resolver that followed one hop branched B — a session
+// already retired — so the redirect is followed to a fixed point. resumeThread
+// traverses the same chains (resumeOwnership's loop), which is why they exist.
+func TestHubForkFollowsARedirectChainToItsEnd(t *testing.T) {
+	t.Run("two hops", func(t *testing.T) {
+		a, b, c := resumeThreeSessionIDs(t)
+		locks := hubcore.NewResumeLocks()
+		recordResumeRedirect(t, locks, a, b)
+		recordResumeRedirect(t, locks, b, c)
+		if got := locks.ResolvedSessionID(a); got != b {
+			t.Fatalf("the fixture's first hop resolved to %q, want %q", got, b)
+		}
+		if got := locks.ResolvedSessionID(b); got != c {
+			t.Fatalf("the fixture's second hop resolved to %q, want %q", got, c)
+		}
+		cfg := hubcore.WebConfig{ResumeLocks: locks}
+		if got := forkRedirectSessionID(cfg, a); got != c {
+			t.Fatalf("redirect for %s resolved to %q, want the end of the chain %q", a, got, c)
+		}
+		if got := forkRedirectSessionID(cfg, c); got != c {
+			t.Fatalf("the end of the chain resolved to %q, want itself", got)
+		}
+	})
+	t.Run("cycle terminates", func(t *testing.T) {
+		a, b, _ := resumeThreeSessionIDs(t)
+		locks := hubcore.NewResumeLocks()
+		recordResumeRedirect(t, locks, a, b)
+		recordResumeRedirect(t, locks, b, a)
+		cfg := hubcore.WebConfig{ResumeLocks: locks}
+		// Whatever a corrupted chain answers, it answers it in bounded time and
+		// identically for both resolvers, which share this tail.
+		first := forkRedirectSessionID(cfg, a)
+		if first != forkRedirectSessionID(cfg, a) {
+			t.Fatal("a redirect cycle does not resolve deterministically")
+		}
+		if first != a && first != b {
+			t.Fatalf("redirect cycle resolved to %q, want one of the two ids in it", first)
+		}
+	})
+}
