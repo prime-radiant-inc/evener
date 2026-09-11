@@ -8,9 +8,9 @@ import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
 //
 // The act comes from @testing-library/react, not react: only RTL's wrapper
 // marks the environment as act-capable for the wrapped scope, and callers of
-// this flush run outside RTL's own scopes. Bare React act here logged "The
-// current testing environment is not configured to support act(...)" once per
-// round.
+// this flush run outside RTL's own scopes. Bare React act here made
+// react-dom log "The current testing environment is not configured to
+// support act(...)" on every render while the flag was clear.
 //
 // What it can settle is exactly what registers with trackProjectionWork, so a
 // round that found nothing is proof that nothing is left only while every
