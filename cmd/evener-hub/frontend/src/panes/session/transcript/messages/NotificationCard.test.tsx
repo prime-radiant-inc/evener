@@ -162,7 +162,9 @@ test("an error notification earns a danger chip", () => {
 
 test("the secondary line surfaces the demoted metadata", () => {
   render(<NotificationCard notification={notif({ secondary: "shell · exit 2 · boom" })} />);
-  expect(screen.getByText("shell · exit 2 · boom")).toBeTruthy();
+  // The trailing word renders inside the tail unit (atomic with the chevron),
+  // so assert on the row's whole text rather than a single text node.
+  expect(screen.getByTestId("notification-card").textContent).toContain("shell · exit 2 · boom");
 });
 
 test("confirmed cancellation recedes while expanded diagnostics retain physical exit", () => {
@@ -263,6 +265,71 @@ test("binds Open to the final notification text fragment instead of permitting a
   expect(headingText?.contains(screen.getByText("Job completed"))).toBe(true);
   expect(headingText?.contains(screen.getByText(/Inspect the complete delegated/))).toBe(true);
   // Real line geometry is pinned by layoutguard/notification-open-last-line.
+});
+
+// A collapsed card gives no other expand affordance (the native details marker
+// is suppressed), so the summary owes the reader the same trailing chevron
+// every other disclosure row in the transcript shows (ThinkBlock, ToolRow).
+test("the summary shows a trailing disclosure chevron that turns when the card opens", () => {
+  renderTools(<NotificationCard notification={notif({ tone: "neutral", title: "explorer finished" })} />);
+  const chevron = screen.getByTestId("notification-chevron");
+  expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  expect(chevron.getAttribute("data-open")).toBe("false");
+  fireEvent.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-chevron").getAttribute("data-open")).toBe("true");
+});
+
+// The app's row grammar (ToolRow's): the chevron rides INLINE at the end of the
+// words it opens, after the Open control and inside the same atomic tail unit —
+// never a flex sibling that could strand alone on a wrapped line.
+test("with a transcript ref the chevron rides inside the atomic tail unit after the Open control", () => {
+  render(
+    <NotificationCard notification={notif({ secondary: "Inspect the workspace", transcriptRef: "local:child" })} />,
+  );
+  const chevron = screen.getByTestId("notification-chevron");
+  const button = screen.getByRole("button", { name: "Open subagent" });
+  const openTrailing = button.parentElement?.parentElement;
+  const secondaryTail = openTrailing?.parentElement;
+  expect(chevron.parentElement).toBe(secondaryTail);
+  const tailChildren = [...(secondaryTail?.children ?? [])];
+  expect(tailChildren.indexOf(openTrailing!)).toBeLessThan(tailChildren.indexOf(chevron));
+});
+
+// The chevron never strands: it rides inside the atomic tail unit with the
+// words it opens, so when the line runs out the WHOLE unit wraps - never the
+// glyph alone (the same guarantee the Open control has; roborev #1143).
+test("with a title-only card the chevron rides the title's atomic tail unit", () => {
+  renderTools(<NotificationCard notification={notif({ secondary: undefined, transcriptRef: undefined })} />);
+  const chevron = screen.getByTestId("notification-chevron");
+  const tail = chevron.parentElement;
+  // The title splits like the secondary does: leading words as their own span,
+  // the FINAL word and the chevron as one atomic unit, so a line that runs out
+  // moves the word and the glyph together - never the glyph alone.
+  expect(tail?.previousElementSibling?.textContent).toBe("Job ");
+  expect(tail?.textContent).toContain("completed");
+  expect(tail?.parentElement?.textContent).toContain("Job completed");
+  expect(chevron.previousElementSibling?.textContent).toBe("completed");
+  const tailChildren = [...(tail?.children ?? [])];
+  expect(tailChildren.indexOf(chevron)).toBe(tailChildren.length - 1);
+});
+
+test("with a secondary and no transcript ref the chevron rides the secondary's atomic tail unit", () => {
+  renderTools(
+    <NotificationCard
+      notification={notif({ secondary: "Inspect the workspace and report back", transcriptRef: undefined })}
+    />,
+  );
+  const chevron = screen.getByTestId("notification-chevron");
+  const tail = chevron.parentElement;
+  // The unit carries the secondary's FINAL word with the chevron: the two can
+  // move to the next line together, never the chevron alone.
+  expect(tail?.textContent).toContain("back");
+  expect(tail?.parentElement?.textContent).toContain("Inspect the workspace and report");
+  const tailChildren = [...(tail?.children ?? [])];
+  expect(tailChildren.indexOf(chevron)).toBe(tailChildren.length - 1);
+  // Same discriminator as the title-only case: the secondary's one element
+  // child is the trailing-word unit, not a loose chevron after the text.
+  expect(tail?.parentElement?.children.length).toBe(1);
 });
 
 test("opening a child restores the notification owner as main when an unrelated session is focused", async () => {
