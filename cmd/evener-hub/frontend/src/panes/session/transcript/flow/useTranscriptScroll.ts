@@ -652,10 +652,29 @@ function failedTurnCount(model: ThreadModel | undefined): number {
  */
 type ScrollDirection = 1 | -1;
 
-/** Can this element still move that way, from the geometry it has right now? */
-function canScroll(el: Element, direction: ScrollDirection): boolean {
+/**
+ * Can the PORT still move that way? Uses the same at-bottom band the rest of the
+ * hook decides by, so this agrees with what wasAtBottom will say. The band's
+ * error here is safe: a port within the band of its bottom reads as "cannot
+ * move", so a downward input goes unmarked.
+ */
+function portCanScroll(metrics: ScrollMetrics, direction: ScrollDirection): boolean {
+  if (direction === -1) return metrics.scrollTop > 0;
+  return !isAtBottom(metrics);
+}
+
+/**
+ * Has this element any room left that way, EXACTLY - no tolerance band.
+ *
+ * The band's error inverts for a nested candidate: a scroller three pixels from
+ * its own bottom would read as "at its limit", the walk below would let the
+ * input through, the port would mark - and then that scroller would eat the
+ * wheel and the port would never move. That is precisely the false veto this
+ * predicate must never produce, so the nested question is asked exactly.
+ */
+function hasRoomToScroll(el: Element, direction: ScrollDirection): boolean {
   if (direction === -1) return el.scrollTop > 0;
-  return !isAtBottom({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
+  return el.scrollHeight - el.scrollTop - el.clientHeight > 0;
 }
 
 /** An element that scrolls vertically on its own, independently of the port. */
@@ -677,18 +696,27 @@ function isIndependentVerticalScroller(el: Element): boolean {
  *
  * Both are read from state that exists BEFORE the browser scrolls, which is a
  * plain read of the present - not the after-the-fact geometry inference this
- * design replaced. A nested scroller at its OWN limit passes the input on, so
- * that case still counts as a gesture.
+ * design replaced. A nested scroller with NO room that way passes the input on,
+ * so that case still counts as a gesture.
  *
- * Being wrong costs one unmarked real scroll, never a false veto: the safe
- * direction, since a false veto disarms the bottom-hold correction until the
- * reader returns to the bottom.
+ * Marking therefore implies the port has room beyond the at-bottom band AND
+ * nothing on the way to it has any room to answer the input first - so a mark
+ * is a scroll the port will really feel, and being wrong costs an unmarked real
+ * scroll rather than a false veto. That matters because a false veto disarms the
+ * bottom-hold correction until the reader returns to the bottom, where an
+ * unmarked scroll costs a single frame.
+ *
+ * The one band left: an ancestor with overscroll-behavior other than `auto`
+ * refuses to chain the input onward when it reaches its own limit, so it can
+ * swallow an input this says will reach the port. Not modelled - computing it
+ * would mean reading a second property per ancestor for a case the transcript
+ * does not currently build.
  */
 function verticalInputCanMovePort(port: HTMLElement, target: EventTarget | null, direction: ScrollDirection): boolean {
-  if (!canScroll(port, direction)) return false;
+  if (!portCanScroll(readScrollMetrics(port), direction)) return false;
   let node = target instanceof Element ? target : null;
   while (node !== null && node !== port) {
-    if (isIndependentVerticalScroller(node) && canScroll(node, direction)) return false;
+    if (isIndependentVerticalScroller(node) && hasRoomToScroll(node, direction)) return false;
     node = node.parentElement;
   }
   return true;
@@ -826,8 +854,10 @@ export function useTranscriptScroll({
   );
   // Deliberately NOT filtered by pointerType, unlike the two above: ending a
   // drag is the under-marking direction, so a stray touch pointerup clearing a
-  // mouse drag costs an unmarked scroll, while ignoring it would leave the drag
-  // latched - the harmful direction.
+  // mouse drag costs an unmarked scroll. Ignoring it would keep the drag marked
+  // only until the mouse's own pointerup, its next button-free move, or a
+  // pointerleave - a short window, not a latch, but still the over-marking side
+  // of the trade.
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
   }, []);

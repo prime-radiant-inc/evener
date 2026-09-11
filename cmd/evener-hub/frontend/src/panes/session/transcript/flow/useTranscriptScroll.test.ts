@@ -986,6 +986,52 @@ describe("jumpToBottom landing reliability", () => {
     expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
   });
 
+  // A nested scroller with only a FEW pixels of room is still a scroller that
+  // answers the input. isAtBottom's 4px band is the safe direction on the port
+  // (it under-marks), but the unsafe one here: reading "at its limit" lets the
+  // walk pass, the port marks, the nested scroller eats the wheel, and the port
+  // never moves - the false veto the predicate's own comment rules out.
+  //
+  // Reachable only downward, and only in this PR's own scenario: the port clause
+  // needs room below the port, which means content grew there since the last
+  // scroll event while wasAtBottom is still true.
+  const NESTED_3PX_FROM_ITS_BOTTOM: ScrollMetrics = { scrollTop: 1597, scrollHeight: 2000, clientHeight: 400 };
+
+  /** Content measured in below the port, with no scroll event yet. */
+  function growBelow(el: HTMLElement, set: (m: Partial<ScrollMetrics>) => void) {
+    const grown = { ...PORT_AT_BOTTOM, scrollHeight: PORT_AFTER_GROWTH.scrollHeight };
+    definePort(el, grown);
+    set(grown);
+  }
+
+  test("a wheel a nested scroller can still answer by 3px marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, NESTED_3PX_FROM_ITS_BOTTOM);
+
+    act(() => {
+      growBelow(el, set);
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a finger a nested scroller can still answer by 3px marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, NESTED_3PX_FROM_ITS_BOTTOM);
+
+    act(() => {
+      growBelow(el, set);
+      // Finger moving UP pushes content down: the same direction as the wheel above.
+      inner.dispatchEvent(touchEvent("touchstart", 460));
+      inner.dispatchEvent(touchEvent("touchmove", 400));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
   test("a wheel over a nested scroller at its OWN limit reaches the port and marks", () => {
     // The suppression must stay narrow: a nested scroller that cannot move in
     // this direction passes the input on, and that really is a reader scroll.
