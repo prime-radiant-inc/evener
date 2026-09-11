@@ -78,6 +78,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+test("Settings Connect provider opens discovery and retains management on cancel", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
+  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  expect(await screen.findByText("work")).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+});
+
 describe("initial load", () => {
   test("fetches evener/instance/list on mount and groups rows by providerId", async () => {
     const fake = connectFakeClient();
@@ -381,7 +393,7 @@ describe("single-open-editor invariant", () => {
   test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" />);
+    render(<CredentialsSection sectionId="credentials" fullEditor />);
     await screen.findByText("work");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
@@ -774,7 +786,7 @@ describe("diagnostics and writesRefused", () => {
     await screen.findByText("work");
     const user = userEvent.setup();
 
-    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Connect provider" }) as HTMLButtonElement).disabled).toBe(true);
 
     const workInspector = await openSheet(user, "work");
     expect((within(workInspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);

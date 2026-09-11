@@ -206,7 +206,7 @@ class ConnectProviderDialogBoundary extends Component<
   }
 }
 
-type ConnectProviderDialogComponent = (props: { onClose(): void; onConnected(): void }) => JSX.Element;
+type ConnectProviderDialogComponent = (props: { onClose(): void; onConnected(name?: string): void }) => JSX.Element;
 type ConnectProviderDialogChunk = LazyExoticComponent<ConnectProviderDialogComponent>;
 
 function lazyConnectProviderDialog(cacheBust = false): ConnectProviderDialogChunk {
@@ -320,11 +320,25 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const toasts = useToasts();
   const providerSetup = useProviderSetup();
   const [connectingProvider, setConnectingProvider] = useState(false);
+  const [modelHandoff, setModelHandoff] = useState<{ name?: string }>();
+  // Save/reload can make new models appear before Continue. Once this draft
+  // enters onboarding, do not substitute the legacy untouched-model fallback
+  // for its explicit choice, including after cancellation.
+  const providerChoicePending = useRef(false);
+  const openProviderSetup = useCallback(() => {
+    providerChoicePending.current = true;
+    setConnectingProvider(true);
+  }, []);
   const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
-  const providerConnected = useCallback(() => {
-    setConnectingProvider(false);
-    void providerSetup.retry();
-  }, [providerSetup.retry]);
+  const providerConnected = useCallback(
+    (name?: string) => {
+      setConnectingProvider(false);
+      modelListCache.current.entries.clear();
+      setModelHandoff({ name });
+      void providerSetup.retry();
+    },
+    [providerSetup.retry],
+  );
   // A retry needs a NEW lazy component, not a re-render of the old one:
   // React.lazy stores the rejection on its payload and rethrows that same
   // error on every subsequent render, forever.
@@ -913,7 +927,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
           const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
           const fallback = models[0];
-          if (!defaultCredentialed && fallback) {
+          if (!defaultCredentialed && fallback && !providerChoicePending.current) {
             setModel(`${fallback.provider}/${fallback.model}`);
           }
         },
@@ -1562,6 +1576,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                       value={model}
                       loadCatalog={loadCatalog}
                       onPick={handleModelPickEntry}
+                      connectionRequest={modelHandoff}
+                      onConnectProvider={openProviderSetup}
                       data-testid="spawn-model-trigger"
                       valueTestId="spawn-model-value"
                     />
@@ -1644,7 +1660,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         {providerRequired && (
           <div className={CLASS.notice} role="status">
             <span>Connect a provider to use a model. Sign in or add an API key here.</span>
-            <Button onClick={() => setConnectingProvider(true)}>Connect provider</Button>
+            <Button onClick={openProviderSetup}>Connect provider</Button>
             <Button variant="quiet" onClick={() => void providerSetup.retry()}>
               Retry provider check
             </Button>
@@ -1654,7 +1670,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           <div className={CLASS.notice} role="status">
             <span>Could not check provider configuration.</span>
             <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
-            <Button variant="quiet" onClick={() => setConnectingProvider(true)}>
+            <Button variant="quiet" onClick={openProviderSetup}>
               Review providers
             </Button>
           </div>

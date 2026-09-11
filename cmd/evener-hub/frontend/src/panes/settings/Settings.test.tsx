@@ -98,9 +98,9 @@ test("Escape closes this pane", () => {
 // stand-in for the real thing, not the real thing. That stand-in couldn't
 // have caught OverlayPanel forgetting to call preventDefault on its own
 // Escape handling (see OverlayPanel.tsx's handleKeyDown), because it never
-// exercised OverlayPanel at all. These render a REAL Dialog (credentials'
-// AddInstanceDialog, reached exactly as a user would - the "+ Add provider
-// instance" button) inside Settings' actual section content, so the keydown
+// exercised OverlayPanel at all. These render the REAL connector Dialog,
+// reached through "Connect provider" inside Settings' actual section content,
+// so the keydown
 // that bubbles up to Settings' own handleKeyDown is the genuine one
 // OverlayPanel produces.
 function connectFakeClientWithNoInstances(): void {
@@ -118,7 +118,7 @@ test("Escape closes a real Dialog open inside a settings section, not the settin
   connectFakeClientWithNoInstances();
   const user = userEvent.setup();
   render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
-  await user.click(await screen.findByRole("button", { name: "+ Add provider instance" }));
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
   expect(screen.getByRole("dialog")).toBeTruthy();
 
   await user.keyboard("{Escape}");
@@ -132,10 +132,10 @@ test("Escape closes the settings pane when no dialog is open inside it", async (
   seedOpenSettingsPane();
   connectFakeClientWithNoInstances();
   render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
-  const addButton = await screen.findByRole("button", { name: "+ Add provider instance" });
+  const connectButton = await screen.findByRole("button", { name: "Connect provider" });
   expect(screen.queryByRole("dialog")).toBeNull();
 
-  fireEvent.keyDown(addButton, { key: "Escape" });
+  fireEvent.keyDown(connectButton, { key: "Escape" });
 
   expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain("settings-1");
 });

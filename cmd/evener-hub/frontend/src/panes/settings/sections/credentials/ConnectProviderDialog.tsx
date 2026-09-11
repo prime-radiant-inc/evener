@@ -51,7 +51,7 @@ export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
         <Button variant="quiet" onClick={() => setView("connect")}>
           Back to connection choices
         </Button>
-        <CredentialsSection sectionId="credentials" />
+        <CredentialsSection sectionId="credentials" fullEditor />
       </Dialog>
     );
   return <ManageConnections {...props} onBack={() => setView("connect")} onSettings={() => setView("settings")} />;

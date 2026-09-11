@@ -20,11 +20,14 @@
 // Chrome, not a pane: the "panes never ask am I mobile?" rule doesn't reach
 // this component (SessionChrome's own openDetails already branches the same
 // way).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage, sessionActionHeadline } from "../../../protocol/errors";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
+  Button,
   Chevron,
+  Dialog,
+  Loader,
   type ModelCatalog,
   type ModelCatalogEntry,
   ModelCatalogPanel,
@@ -33,6 +36,12 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./modelswitch.module.css";
+
+const ConnectProviderDialog = lazy(() =>
+  import("../../settings/sections/credentials/ConnectProviderDialog").then((module) => ({
+    default: module.ConnectProviderDialog,
+  })),
+);
 
 export interface ModelSwitchTriggerProps {
   /** The trigger's visible text. Usually the current qualified model id, but a
@@ -44,13 +53,18 @@ export interface ModelSwitchTriggerProps {
    * to the panel: it pre-fills the search field, marks the current row, and
    * scrolls it into view. */
   value: string;
-  /** Loads the catalog on open. Rejections are framed and shown inside the
-   * open panel rather than thrown away or toasted. */
-  loadCatalog: () => Promise<ModelCatalog>;
+  /** Loads the catalog on open; refresh bypasses a caller's cache after
+   * connecting (including keyless checks with no auth notification).
+   * Rejections are framed inside the panel rather than thrown away. */
+  loadCatalog: (refresh?: boolean) => Promise<ModelCatalog>;
   /** Reports the chosen entry. The picker closes optimistically first, so a
    * caller whose own write fails surfaces that its own way (parity-m5-composer
    * §H: no rollback of an already-closed picker). */
   onPick: (entry: ModelCatalogEntry) => void;
+  /** A new completion opens a fresh catalog scoped to the actual instance. */
+  connectionRequest?: { name?: string };
+  /** Spawn owns its existing recoverable lazy connector and composer draft. */
+  onConnectProvider?: () => void;
   disabled?: boolean;
   /** Visually-hidden action suffix for the trigger's accessible name. */
   actionLabel?: string;
@@ -75,6 +89,8 @@ export function ModelSwitchTrigger({
   value,
   loadCatalog,
   onPick,
+  connectionRequest,
+  onConnectProvider,
   disabled = false,
   actionLabel = "change model",
   "data-testid": testId,
@@ -85,6 +101,9 @@ export function ModelSwitchTrigger({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [providerFilter, setProviderFilter] = useState<string>();
+  const handledConnection = useRef(connectionRequest);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // Generation guard for the catalog load below: every open - and every
   // loader-identity change under an OPEN picker (Spawn recreates loadCatalog
@@ -99,45 +118,48 @@ export function ModelSwitchTrigger({
 
   // Stable across renders (refs + setState only), so the scope-change
   // effect below can honestly depend on it without re-running every render.
-  const startLoad = useCallback(async (generation: number, loader: () => Promise<ModelCatalog>): Promise<void> => {
-    setError(null);
-    setLoading(true);
-    try {
-      const loaded = await loader();
-      if (loadGenerationRef.current !== generation) return;
-      setCatalog(loaded);
-    } catch (err) {
-      if (loadGenerationRef.current !== generation) return;
-      // Not sessionActionError: that composes its detail from errorText, which
-      // is the RAW rejection text - fine for a WireError (the hub wrote it for
-      // a person) but not for AppwireClient's own internal "cannot call ...
-      // while state is closed" rejections, which is exactly what a
-      // mid-teardown model/list lands here. Same headline rule
-      // (sessionActionHeadline), friendlyLaunchErrorMessage detail instead -
-      // it also replaces the daemon-missing family's raw launch-check text
-      // with actionable copy (T3).
-      const headline = sessionActionHeadline("Couldn't load models", err);
-      setError(`${headline}: ${friendlyLaunchErrorMessage(err)}`);
-    } finally {
-      // A superseded load clears neither the fresh load's spinner nor its
-      // result: without this, a dead request landing mid-fresh-load drops
-      // the loading state while the panel still has nothing to show.
-      if (loadGenerationRef.current === generation) setLoading(false);
-    }
-  }, []);
+  const startLoad = useCallback(
+    async (generation: number, loader: ModelSwitchTriggerProps["loadCatalog"], refresh?: boolean): Promise<void> => {
+      setError(null);
+      setLoading(true);
+      try {
+        const loaded = await loader(refresh);
+        if (loadGenerationRef.current !== generation) return;
+        setCatalog(loaded);
+      } catch (err) {
+        if (loadGenerationRef.current !== generation) return;
+        // Not sessionActionError: that composes its detail from errorText, which
+        // is the RAW rejection text - fine for a WireError (the hub wrote it for
+        // a person) but not for AppwireClient's own internal "cannot call ...
+        // while state is closed" rejections, which is exactly what a
+        // mid-teardown model/list lands here. Same headline rule
+        // (sessionActionHeadline), friendlyLaunchErrorMessage detail instead -
+        // it also replaces the daemon-missing family's raw launch-check text
+        // with actionable copy (T3).
+        const headline = sessionActionHeadline("Couldn't load models", err);
+        setError(`${headline}: ${friendlyLaunchErrorMessage(err)}`);
+      } finally {
+        // A superseded load clears neither the fresh load's spinner nor its
+        // result: without this, a dead request landing mid-fresh-load drops
+        // the loading state while the panel still has nothing to show.
+        if (loadGenerationRef.current === generation) setLoading(false);
+      }
+    },
+    [],
+  );
 
   // The Popover path's FocusScope is opted out of focus management
   // (autoFocus={false}) so the panel's input can own focus and its selection -
   // which makes restoring focus to the trigger on close this component's job.
   // The Sheet path's FocusScope keeps its default focus management (first
   // tabbable option in, restore on close), so only the Popover path needs this.
-  function openPicker(): void {
+  function openPicker(refresh?: boolean): void {
     if (disabled) return;
     const generation = loadGenerationRef.current + 1;
     loadGenerationRef.current = generation;
     loadedLoaderRef.current = loadCatalog;
     setOpen(true);
-    void startLoad(generation, loadCatalog);
+    void startLoad(generation, loadCatalog, refresh);
   }
 
   // A new loader identity under an OPEN picker is a scope change (Spawn's
@@ -150,6 +172,30 @@ export function ModelSwitchTrigger({
     loadGenerationRef.current += 1;
     if (open) void startLoad(loadGenerationRef.current, loadCatalog);
   }, [loadCatalog, open, startLoad]);
+  useEffect(() => {
+    if (!connectionRequest || handledConnection.current === connectionRequest) return;
+    handledConnection.current = connectionRequest;
+    setProviderFilter(connectionRequest.name);
+    setCatalog(null);
+    setOpen(true);
+    loadedLoaderRef.current = loadCatalog;
+    void startLoad(++loadGenerationRef.current, loadCatalog, true);
+  }, [connectionRequest, loadCatalog, startLoad]);
+
+  function connectAnother(): void {
+    setOpen(false);
+    loadGenerationRef.current += 1;
+    if (onConnectProvider) onConnectProvider();
+    else setConnecting(true);
+  }
+
+  function connected(name?: string): void {
+    setConnecting(false);
+    setProviderFilter(name);
+    setCatalog(null);
+    openPicker(true);
+  }
+
   function closePicker(): void {
     setOpen(false);
     if (!isMobile) triggerRef.current?.focus();
@@ -164,15 +210,38 @@ export function ModelSwitchTrigger({
     onPick(entry);
   }
 
+  const filteredCatalog =
+    catalog && providerFilter
+      ? {
+          ...catalog,
+          models: catalog.models.filter((entry) => entry.provider === providerFilter),
+          recent: catalog.recent.filter((entry) => entry.provider === providerFilter),
+        }
+      : catalog;
   const panel = (
-    <ModelCatalogPanel
-      loading={loading}
-      error={error}
-      catalog={catalog}
-      value={value}
-      onPick={handlePick}
-      variant={isMobile ? "sheet" : "default"}
-    />
+    <>
+      {providerFilter && (
+        <div>
+          <p className={CLASS.value} title={providerFilter}>
+            Models from {providerFilter}
+          </p>
+          <Button variant="quiet" onClick={() => setProviderFilter(undefined)}>
+            Show all models
+          </Button>
+        </div>
+      )}
+      <ModelCatalogPanel
+        loading={loading}
+        error={error}
+        catalog={filteredCatalog}
+        value={providerFilter ? "" : value}
+        onPick={handlePick}
+        variant={isMobile ? "sheet" : "default"}
+      />
+      <Button variant="quiet" onClick={connectAnother}>
+        Connect another provider
+      </Button>
+    </>
   );
 
   // One trigger button, whichever overlay sits behind it: the visible control
@@ -186,7 +255,13 @@ export function ModelSwitchTrigger({
       className={CLASS.trigger}
       data-testid={testId}
       title={label}
-      onClick={() => (open ? closePicker() : void openPicker())}
+      onClick={() => {
+        if (open) closePicker();
+        else {
+          setProviderFilter(undefined);
+          openPicker();
+        }
+      }}
       disabled={disabled}
     >
       {/* Plain text, not a Chip: the trigger already draws the control's
@@ -210,6 +285,24 @@ export function ModelSwitchTrigger({
     </button>
   );
 
+  const connector = connecting && (
+    <Suspense
+      fallback={
+        <Dialog open title="Connect provider" onClose={() => setConnecting(false)}>
+          <Loader label="Loading…" />
+        </Dialog>
+      }
+    >
+      <ConnectProviderDialog
+        onClose={() => {
+          setConnecting(false);
+          triggerRef.current?.focus();
+        }}
+        onConnected={connected}
+      />
+    </Suspense>
+  );
+
   if (isMobile) {
     return (
       <>
@@ -224,23 +317,27 @@ export function ModelSwitchTrigger({
         <Sheet open={open} side="bottom" onClose={closePicker} title="Choose model">
           <div className={CLASS.sheetBody}>{panel}</div>
         </Sheet>
+        {connector}
       </>
     );
   }
 
   return (
-    <Popover
-      open={open}
-      onClose={closePicker}
-      // The picker's own list scrolls, and whatever sits behind it scrolls
-      // too: neither may dismiss a picker mid-interaction.
-      closeOnScroll={false}
-      // The panel's input owns focus and its own text selection - see
-      // closePicker for why FocusScope must not manage focus here.
-      autoFocus={false}
-      trigger={triggerButton}
-    >
-      <div className={CLASS.popoverPanel}>{panel}</div>
-    </Popover>
+    <>
+      <Popover
+        open={open}
+        onClose={closePicker}
+        // The picker's own list scrolls, and whatever sits behind it scrolls
+        // too: neither may dismiss a picker mid-interaction.
+        closeOnScroll={false}
+        // The panel's input owns focus and its own text selection - see
+        // closePicker for why FocusScope must not manage focus here.
+        autoFocus={false}
+        trigger={triggerButton}
+      >
+        <div className={CLASS.popoverPanel}>{panel}</div>
+      </Popover>
+      {connector}
+    </>
   );
 }

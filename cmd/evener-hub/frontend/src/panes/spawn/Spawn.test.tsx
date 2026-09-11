@@ -259,9 +259,153 @@ test("missing credentials surface setup in the composer without opening a dialog
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "All providers" })).toBeTruthy();
   await user.keyboard("{Escape}");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
+});
+
+test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
+  const user = userEvent.setup();
+  let available = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({
+      instances: [
+        {
+          name: "team-local",
+          providerId: "ollama",
+          protocol: "openai-chat",
+          auth: "none",
+          implicit: false,
+          isDefault: false,
+          activeSource: "none",
+          hasStoredOAuth: false,
+          credentialRequired: false,
+        },
+      ],
+      availableProviders: [],
+    }));
+    fake.on("model/list", () => ({
+      data: available
+        ? [
+            { provider: "team-local", model: "served-model", displayName: "Served model" },
+            { provider: "other", model: "unrelated", displayName: "Unrelated model" },
+          ]
+        : [],
+    }));
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "handoff-draft");
+  await setWorkingDir(user, "/tmp/handoff-project");
+  await user.click(modelTrigger());
+  const connect = await screen.findByRole("button", { name: "Connect another provider" });
+  await act(async () => {
+    await user.click(connect);
+    await vi.dynamicImportSettled();
+  });
+  await user.click(screen.getByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  available = true;
+  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  const option = await screen.findByRole("option", { name: /Served model/ });
+  expect(screen.queryByRole("option", { name: /Unrelated model/ })).toBeNull();
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+  expectWorkingDir("/tmp/handoff-project");
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("value", "handoff-draft");
+  await user.click(option);
+  expect(modelValue().textContent).toBe("team-local/served-model");
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect(client.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    cwd: "/tmp/handoff-project",
+    model: "team-local/served-model",
+  });
+});
+
+test("fresh guided connection waits for Continue and explicit model choice without changing the draft", async () => {
+  const user = userEvent.setup();
+  let saved = false;
+  const setup = {
+    name: "openai",
+    providerId: "openai",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: true,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    authModes: ["apiKey"],
+    baseUrl: "https://provider.example/v1",
+  };
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => {
+      const row = { ...setup, activeSource: saved ? "store" : "none", hasStoredFile: saved };
+      return {
+        instances: saved ? [row] : [],
+        availableProviders: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            protocol: row.protocol,
+            auth: row.auth,
+            implicit: true,
+            authModes: ["apiKey"],
+            setup: row,
+          },
+        ],
+      };
+    });
+    fake.on("model/list", () => ({
+      data: saved ? [{ provider: "openai", model: "from-server", displayName: "Server choice" }] : [],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return {
+        provider,
+        supported: true,
+        signedIn: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+      };
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "missing/old-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await screen.findByRole("button", { name: "Connect provider" });
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "guided-draft");
+  await setWorkingDir(user, "/tmp/guided");
+  await act(async () => {
+    await user.click(screen.getByRole("button", { name: "Connect provider" }));
+    await vi.dynamicImportSettled();
+  });
+  await user.click(await screen.findByRole("button", { name: "OpenAI" }));
+  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  const next = await screen.findByRole("button", { name: "Continue" });
+  expect(screen.queryByRole("option", { name: /Server choice/ })).toBeNull();
+  expect(modelValue().textContent).not.toBe("openai/from-server");
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+  await user.click(next);
+  await screen.findByRole("option", { name: /Server choice/ });
+  expect(modelValue().textContent).not.toBe("openai/from-server");
+  await user.keyboard("{Escape}");
+  expectWorkingDir("/tmp/guided");
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("value", "guided-draft");
+  expect(modelValue().textContent).not.toBe("openai/from-server");
+  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
 });
 
 test("retrying missing provider setup discovers a local server started afterward", async () => {
@@ -349,7 +493,6 @@ test("successful keyless testing refreshes availability without an auth notifica
     { method: "evener/auth/test", params: { provider: "ollama" } },
   ]);
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
-  await user.click(modelTrigger());
   expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
 });
 

@@ -29,6 +29,7 @@ import { credentialsStore, useCredentialsStore } from "../../../../stores/creden
 import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
+import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import styles from "./CredentialsSection.module.css";
 import { groupByProvider, safeCredentialTestResult } from "./credentialLabels";
 import { InstanceRow } from "./InstanceRow";
@@ -84,10 +85,13 @@ export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The connector's escape must retain the full editor, not reopen itself. */
+  fullEditor?: boolean;
 }
 
-export function CredentialsSection(_props: CredentialsSectionProps) {
+export function CredentialsSection({ fullEditor = false }: CredentialsSectionProps) {
   const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
+  const [connecting, setConnecting] = useState(false);
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
@@ -216,11 +220,17 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   return (
     <div className={CLASS.root}>
       <div className={CLASS.headerRow}>
-        <Button onClick={() => setOpenEditor({ kind: "add" })} disabled={writesRefused}>
-          + Add provider instance
+        <Button
+          onClick={() => (fullEditor ? setOpenEditor({ kind: "add" }) : setConnecting(true))}
+          disabled={writesRefused}
+        >
+          {fullEditor ? "+ Add provider instance" : "Connect provider"}
         </Button>
       </div>
 
+      {connecting && (
+        <ConnectProviderDialog onClose={() => setConnecting(false)} onConnected={() => setConnecting(false)} />
+      )}
       <Diagnostics diagnostics={diagnostics} />
 
       {loading && <Skeleton />}

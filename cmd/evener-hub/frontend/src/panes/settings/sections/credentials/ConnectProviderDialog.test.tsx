@@ -44,6 +44,11 @@ test("opens compact discovery by default and keeps management and the full edito
   expect(await screen.findByRole("button", { name: "Set API key" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Full provider settings" }));
   expect(await screen.findByRole("button", { name: "+ Add provider instance" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
+  const editor = await screen.findByRole("dialog", { name: "Add provider instance" });
+  expect(within(editor).getByLabelText("Protocol")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "All providers" })).toBeNull();
+  await user.click(within(editor).getByRole("button", { name: "Cancel" }));
   await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
   expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
 });

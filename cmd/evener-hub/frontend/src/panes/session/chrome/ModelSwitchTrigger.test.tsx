@@ -2,6 +2,9 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
+import { FakeClient } from "../../../protocol/testing/fakeClient";
+import { connectionStore } from "../../../stores/connection";
+import { resetCredentialsStoreForTests } from "../../../stores/credentials";
 import type { ModelCatalog } from "../../../widgets";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
@@ -342,4 +345,54 @@ test("Escape closes the mobile sheet and returns focus to the trigger", async ()
   } finally {
     restoreViewport();
   }
+});
+
+test("connect another provider refreshes the actual instance catalog without switching on cancel", async () => {
+  resetCredentialsStoreForTests();
+  const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => ({
+    instances: [
+      {
+        name: "team-local",
+        providerId: "ollama",
+        protocol: "openai-chat",
+        auth: "none",
+        implicit: false,
+        isDefault: false,
+        activeSource: "none",
+        hasStoredOAuth: false,
+        credentialRequired: false,
+      },
+    ],
+    availableProviders: [],
+  }));
+  fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  connectionStore.getState().connect(fake);
+  const user = userEvent.setup();
+  const loadCatalog = vi.fn(async () => catalog());
+  const onPick = vi.fn();
+  renderTrigger({ loadCatalog, onPick });
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  expect(onPick).not.toHaveBeenCalled();
+  expect(screen.getByTestId("trigger-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  await user.click(await screen.findByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  loadCatalog.mockResolvedValue({
+    models: [{ provider: "team-local", model: "served", displayName: "Team served" }],
+    recent: [],
+  });
+  const loadsBefore = loadCatalog.mock.calls.length;
+  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  const option = await screen.findByRole("option", { name: /Team served/ });
+  expect(loadCatalog.mock.calls.length).toBeGreaterThan(loadsBefore);
+  expect(onPick).not.toHaveBeenCalled();
+  await user.click(option);
+  expect(onPick).toHaveBeenCalledWith({ provider: "team-local", model: "served", displayName: "Team served" });
+  expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
 });

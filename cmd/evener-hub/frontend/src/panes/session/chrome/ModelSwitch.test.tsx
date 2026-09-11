@@ -9,6 +9,7 @@ import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ModelListResponse, ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
+import { resetCredentialsStoreForTests } from "../../../stores/credentials";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -125,6 +126,63 @@ afterEach(() => {
 function trigger(): HTMLButtonElement {
   return screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
 }
+
+test("keyless connection refreshes the warmed real session catalog without switching until a pick", async () => {
+  resetCredentialsStoreForTests();
+  const fake = connectFakeClient();
+  let connected = false;
+  fake.on("model/list", () =>
+    connected
+      ? {
+          data: [...modelListResponse().data, { provider: "team-local", model: "served-model" }],
+        }
+      : modelListResponse(),
+  );
+  fake.on("evener/instance/list", () => ({
+    instances: [
+      {
+        name: "team-local",
+        providerId: "ollama",
+        protocol: "openai-chat",
+        auth: "none",
+        implicit: false,
+        isDefault: false,
+        activeSource: "none",
+        hasStoredOAuth: false,
+        credentialRequired: false,
+      },
+    ],
+    availableProviders: [],
+  }));
+  fake.on("evener/auth/test", ({ provider }) => {
+    connected = true;
+    return { provider, status: "success", message: "" };
+  });
+  fake.on("thread/model/set", () => ({}));
+  render(<ModelSwitch sessionRef="remote:original" model={testModel()} />);
+  const user = userEvent.setup();
+  await user.click(trigger());
+  await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
+  await user.click(screen.getByRole("button", { name: "Connect another provider" }));
+  await user.click(await screen.findByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  const option = await screen.findByRole("option", { name: /served-model/ });
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2);
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+  expect(fake.calls.filter((call) => call.method === "thread/model/set")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+  await user.click(option);
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toEqual([
+      {
+        method: "thread/model/set",
+        params: { ref: "remote:original", modelProvider: "team-local", model: "served-model" },
+      },
+    ]),
+  );
+});
 
 test("shows the current model label alongside a Change-model trigger", () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);

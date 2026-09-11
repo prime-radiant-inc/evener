@@ -9,7 +9,9 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import Spawn from "../panes/spawn/Spawn";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { ThreadStartParams } from "../protocol/types.gen";
 import { ClientProvider } from "../shell/clientContext";
+import { connectionStore } from "../stores/connection";
 import { PathField, Toast } from "../widgets";
 import { isElementVisible } from "./guardVisibility";
 import "../styles/tokens.css";
@@ -88,6 +90,57 @@ document.body.style.height = "100%";
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 rootEl.style.height = "100%";
+
+// A separate page scenario: real React/widgets with a scripted AppWire client.
+// This proves component integration and geometry, not production-hub E2E.
+if (new URLSearchParams(window.location.search).has("onboarding")) {
+  localStorage.clear();
+  const url = new URL(window.location.href);
+  url.searchParams.set("dir", directoryRoot);
+  window.history.replaceState(null, "", url);
+  let saved = false;
+  const setup = {
+    name: "openai",
+    providerId: "openai",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: true,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    authModes: ["apiKey"],
+    baseUrl: "https://provider.example/v1",
+  };
+  fake.on("evener/instance/list", () => {
+    const row = { ...setup, activeSource: saved ? "store" : "none", hasStoredFile: saved };
+    return {
+      instances: saved ? [row] : [],
+      availableProviders: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          protocol: setup.protocol,
+          auth: setup.auth,
+          implicit: true,
+          authModes: ["apiKey"],
+          setup: row,
+        },
+      ],
+    };
+  });
+  fake.on("model/list", () => ({ data: saved ? [{ provider: "openai", model: "fixture-served-model" }] : [] }));
+  fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/auth/apiKey/set", ({ provider }) => {
+    saved = true;
+    return { provider, supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+  });
+  fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  fake.on("thread/start", () => {
+    throw new Error("Fixture stops at the thread/start RPC boundary");
+  });
+  connectionStore.getState().connect(fake);
+}
 
 createRoot(rootEl).render(
   <ClientProvider client={fake}>
@@ -510,6 +563,7 @@ declare global {
   interface Window {
     measureSpawn: typeof measureSpawn;
     settledSpawn: Promise<true>;
+    exerciseProviderOnboarding(): Promise<string[]>;
     stageSpawnAttachments: typeof stageSpawnAttachments;
     selectLongSpawnModel: typeof selectLongSpawnModel;
     openSpawnPlugins: typeof openSpawnPlugins;
@@ -587,3 +641,78 @@ async function exerciseDirectoryField() {
 }
 
 window.exerciseDirectoryField = exerciseDirectoryField;
+
+async function onboardingButton(name: string): Promise<HTMLButtonElement> {
+  const deadline = performance.now() + 10_000;
+  for (;;) {
+    const button = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent?.trim() === name && isElementVisible(candidate) && !candidate.disabled,
+    );
+    if (button) return button;
+    if (performance.now() > deadline) throw new Error(`Onboarding did not expose ${name}`);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
+async function exerciseProviderOnboarding(): Promise<string[]> {
+  const failures: string[] = [];
+  const prompt = await directoryElement<HTMLTextAreaElement>('textarea[aria-label="Prompt"]');
+  const promptSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+  if (!promptSetter) throw new Error("Missing textarea setter");
+  promptSetter.call(prompt, "onboarding-draft");
+  prompt.dispatchEvent(new Event("input", { bubbles: true }));
+  (await onboardingButton("Connect provider")).click();
+  (await onboardingButton("OpenAI")).click();
+  const key = await directoryElement<HTMLInputElement>("#provider-credential");
+  if (key.type !== "password") failures.push("credential is not masked");
+  const advanced = Array.from(document.querySelectorAll("details")).find(
+    (element) => element.querySelector("summary")?.textContent === "Advanced settings",
+  );
+  if (!advanced || advanced.open) failures.push("advanced settings not collapsed");
+  (await onboardingButton("Save and check")).click();
+  await directoryElement("#provider-credential-error");
+  if (document.activeElement !== key) failures.push("missing-key error did not focus the key");
+  failures.push(...scanHorizontalOverflow());
+  (await onboardingButton("Cancel")).click();
+  (await onboardingButton("Connect provider")).click();
+  (await onboardingButton("OpenAI")).click();
+  const freshKey = await directoryElement<HTMLInputElement>("#provider-credential");
+  if (prompt.value !== "onboarding-draft") failures.push("cancel lost prompt");
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (!setter) throw new Error("Missing input setter");
+  setter.call(freshKey, "fixture-not-a-real-key");
+  freshKey.dispatchEvent(new Event("input", { bubbles: true }));
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  (await onboardingButton("Save and check")).click();
+  const continuation = await onboardingButton("Continue");
+  if (fake.calls.some((call) => call.method === "thread/start")) failures.push("save started a session");
+  failures.push(...scanHorizontalOverflow());
+  continuation.click();
+  const deadline = performance.now() + 10_000;
+  let option: HTMLElement | undefined;
+  while (!option) {
+    option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(
+      (candidate) => candidate.textContent?.includes("fixture-served-model") && isElementVisible(candidate),
+    );
+    if (performance.now() > deadline) throw new Error("Connected model handoff did not open");
+    if (!option) await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  failures.push(...scanHorizontalOverflow());
+  if (fake.calls.some((call) => call.method === "thread/start")) failures.push("continuation started a session");
+  option.click();
+  (await onboardingButton("Start")).click();
+  while (!fake.calls.some((call) => call.method === "thread/start")) {
+    if (performance.now() > deadline) throw new Error("Explicit Start did not reach the RPC boundary");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  const start = fake.calls.find((call) => call.method === "thread/start");
+  const params = start?.params as ThreadStartParams | undefined;
+  if (params?.model !== "openai/fixture-served-model" || params.cwd !== directoryRoot)
+    failures.push("explicit Start lost model or working directory");
+  if (fake.calls.some((call) => call.method === "evener/instance/setDefault"))
+    failures.push("onboarding wrote default");
+  if (JSON.stringify(localStorage).includes("fixture-not-a-real-key"))
+    failures.push("credential persisted in browser storage");
+  return failures;
+}
+window.exerciseProviderOnboarding = exerciseProviderOnboarding;
