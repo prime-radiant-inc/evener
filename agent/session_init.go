@@ -577,8 +577,9 @@ func (s *Session) hasConfiguredDelegateCapability() bool {
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
-	// LifetimeContext owns this restored session tree when supplied by a
-	// one-shot run. Nil preserves daemon/background ownership.
+	// LifetimeContext owns this restored session tree exactly as
+	// SessionConfig.LifetimeContext owns a fresh one: run and serve each supply
+	// their own, and nil is the library/test shape that roots at Background.
 	LifetimeContext         context.Context
 	StateDir                string
 	Project                 identifier.Project

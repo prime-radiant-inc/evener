@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { ActivityTree } from "../../protocol/activityData";
 import { WireError } from "../../protocol/errors";
 import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -11,7 +12,6 @@ import { connectionStore } from "../../stores/connection";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
-import type { ActivityTree } from "../session/chrome/activityData";
 import { NOW_TICK_MS } from "../session/liveness";
 import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";

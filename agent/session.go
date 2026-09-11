@@ -123,7 +123,11 @@ type Session struct {
 	strictTranscriptMaxLineBytes int
 	events                       chan events.SessionEvent
 	eventsMu                     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
-	eventsClosed                 bool         // set under eventsMu.Lock immediately before close(events)
+	closeCtxMu                   sync.RWMutex
+	closeCtx                     context.Context // shared shutdown deadline for blocked authoritative sends
+	closeSignal                  chan struct{}
+	testOnlyBlockedSendEntered   func()
+	eventsClosed                 bool // set under eventsMu.Lock immediately before close(events)
 	// descendantEvent is inherited from the spawning root and remains immutable
 	// for this Session's lifetime. Children use it to expose their live event
 	// stream without acquiring an authoritative consumer for their own channel.

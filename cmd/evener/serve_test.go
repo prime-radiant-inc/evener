@@ -617,6 +617,18 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	}
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+	closed := make(chan appwire.Notification, 1)
+	go func() {
+		for notification := range client.Notifications() {
+			if notification.Method == appwire.NotifyThreadClosed {
+				closed <- notification
+				return
+			}
+		}
+	}()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
 		ClientMutationID:   "shutdown-in-flight",
 		ExpectedInstanceID: entry.SessionID,
@@ -657,6 +669,18 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServe did not exit after in-flight input was released")
+	}
+	select {
+	case notification := <-closed:
+		var params appwire.ThreadClosedParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatalf("decode thread/closed params: %v", err)
+		}
+		if params.Ref != ref || params.ThreadID != entry.SessionID {
+			t.Fatalf("thread/closed params = %+v, want ref=%q threadId=%q", params, ref, entry.SessionID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscribed client did not receive thread/closed before serve shutdown")
 	}
 }
 
@@ -1462,5 +1486,238 @@ func TestServeAgentsDocFlagReachesTheRestoredSessionConfig(t *testing.T) {
 	}
 	if got != wantPath {
 		t.Fatalf("RestoreSessionConfig.AgentsDocPath = %q, want %q", got, wantPath)
+	}
+}
+
+// TestRunServeRetriesBlockedRendezvousRemoval proves the exiting daemon does
+// not leave its rendezvous entry behind after a removal that failed once.
+//
+// Registration.Remove deliberately stays retryable after a failure -- it keeps
+// the entry registered so a later attempt can finish the job -- and shutdown
+// spending exactly one attempt, with the error discarded, made that dead code.
+// What is left behind is a PID artifact that discovery reads as a live daemon,
+// at a PID the OS is free to hand to something else.
+//
+// The blocker is the real refusal: the artifact path replaced by a non-empty
+// directory, which os.Remove will not take. It is cleared from inside the retry
+// pause, so the removal is performed by the retry rather than by a test racing
+// a timer.
+func TestRunServeRetriesBlockedRendezvousRemoval(t *testing.T) {
+	runDir := t.TempDir()
+	artifact := filepath.Join(runDir, strconv.Itoa(os.Getpid())+".json")
+	blocker := filepath.Join(artifact, "blocker")
+
+	deps := defaultServeDeps()
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		return client, func() error { return nil }, nil
+	}
+	pauses := 0
+	deps.rendezvousRetryPause = func() <-chan time.Time {
+		pauses++
+		if pauses == 1 {
+			if err := os.Remove(blocker); err != nil {
+				t.Errorf("clear rendezvous blocker: %v", err)
+			}
+		}
+		elapsed := make(chan time.Time, 1)
+		elapsed <- time.Now()
+		return elapsed
+	}
+
+	args := []string{
+		"--model", "openai/test",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", runDir,
+	}
+	done := make(chan error, 1)
+	go func() { done <- runServeWithDeps(args, deps) }()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	if err := os.Remove(artifact); err != nil {
+		t.Fatalf("take the rendezvous artifact: %v", err)
+	}
+	if err := os.Mkdir(artifact, 0o700); err != nil {
+		t.Fatalf("replace the rendezvous artifact with a directory: %v", err)
+	}
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write the blocker: %v", err)
+	}
+	if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runServeWithDeps: %v", err)
+	}
+
+	if pauses == 0 {
+		t.Fatal("shutdown never retried the blocked rendezvous removal")
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("shutdown left a stale rendezvous artifact behind: stat err=%v", err)
+	}
+}
+
+// TestRemoveRendezvousAtShutdownReportsAnExhaustedBudget covers the other arm:
+// a removal that fails every attempt is named rather than discarded, and it is
+// bounded -- an exiting daemon does not retry forever over a directory that is
+// never going to let go.
+func TestRemoveRendezvousAtShutdownReportsAnExhaustedBudget(t *testing.T) {
+	wantErr := errors.New("remove rendezvous file: device busy")
+	attempts, pauses := 0, 0
+	var reported error
+	reports := 0
+	removeRendezvousAtShutdown(
+		func() error { attempts++; return wantErr },
+		func() <-chan time.Time {
+			pauses++
+			elapsed := make(chan time.Time, 1)
+			elapsed <- time.Now()
+			return elapsed
+		},
+		func(err error) { reports++; reported = err },
+	)
+	if attempts != rendezvousRemovalAttempts {
+		t.Fatalf("removal attempts = %d, want %d", attempts, rendezvousRemovalAttempts)
+	}
+	if pauses != rendezvousRemovalAttempts-1 {
+		t.Fatalf("retry pauses = %d, want %d: the last attempt must not pause before giving up", pauses, rendezvousRemovalAttempts-1)
+	}
+	if reports != 1 || !errors.Is(reported, wantErr) {
+		t.Fatalf("reports = %d with err = %v, want exactly one carrying %v", reports, reported, wantErr)
+	}
+}
+
+// TestServeSessionLifetimeEndsWhenShutdownStarts pins what the daemon's
+// session tree is allowed to outlive. Shutdown waits for the input loop before
+// it closes the session, and work that runs synchronously on that loop -- a
+// Notification hook is the one that can run for its own timeout -- is reached
+// by nothing else. So the session's lifetime has to be the daemon's shutdown
+// context, cancelled the moment shutdown starts rather than after the wait it
+// is holding up.
+//
+// The HTTP server is closed by the shutdown goroutine before that wait, so
+// serveHTTP returning is the observation point: whatever the lifetime context
+// says there, it said at the start of shutdown.
+func TestServeSessionLifetimeEndsWhenShutdownStarts(t *testing.T) {
+	runDir := t.TempDir()
+	deps := defaultServeDeps()
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		return client, func() error { return nil }, nil
+	}
+	var lifetime context.Context
+	buildSession := deps.newSession
+	deps.newSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		lifetime = cfg.LifetimeContext
+		return buildSession(c, p, e, cfg)
+	}
+	var lifetimeAtShutdown error
+	var observedAtShutdown bool
+	runHTTP := deps.serveHTTP
+	deps.serveHTTP = func(s *http.Server, l net.Listener) error {
+		err := runHTTP(s, l)
+		if lifetime != nil {
+			observedAtShutdown = true
+			lifetimeAtShutdown = lifetime.Err()
+		}
+		return err
+	}
+
+	args := []string{
+		"--model", "openai/test",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", runDir,
+	}
+	done := make(chan error, 1)
+	go func() { done <- runServeWithDeps(args, deps) }()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runServeWithDeps: %v", err)
+	}
+
+	if !observedAtShutdown {
+		t.Fatal("the daemon's session was built with no lifetime context; nothing shutdown cancels reaches work parked outside a turn")
+	}
+	if lifetimeAtShutdown == nil {
+		t.Fatal("the session's lifetime context was still live when shutdown closed the listener; it does not end when shutdown starts")
+	}
+}
+
+// The resumed daemon owes the same thing: --resume builds its session through
+// RestoreSessionFromMetaWithConfig, which carries its own lifetime field.
+func TestServeResumedSessionLifetimeIsTheShutdownContext(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var lifetime context.Context
+	var liveAtRestore bool
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		lifetime = restoreCfg.LifetimeContext
+		liveAtRestore = lifetime != nil && lifetime.Err() == nil
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
+	}
+	if lifetime == nil {
+		t.Fatal("the resumed session was built with no lifetime context")
+	}
+	if !liveAtRestore {
+		t.Fatal("the resumed session's lifetime context was already over when the restore ran")
+	}
+	if lifetime.Err() == nil {
+		t.Fatal("the resumed session's lifetime context outlives the daemon; it is not the shutdown context")
+	}
+}
+
+// thread/clear builds the replacement session from a copy of the daemon's own
+// SessionConfig, so the cleared thread has to inherit the same shutdown
+// lifetime the session it replaces had. A replacement rooted at Background
+// would put the daemon straight back into the state this branch fixes, for
+// every thread after the first clear.
+func TestRunServeClearSessionInheritsTheShutdownLifetime(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var lifetime context.Context
+	var liveAtClear bool
+	buildClearSession := deps.newClearSession
+	deps.newClearSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		lifetime = cfg.LifetimeContext
+		liveAtClear = lifetime != nil && lifetime.Err() == nil
+		return buildClearSession(c, p, e, cfg)
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+	if obs.clearErr != nil {
+		t.Fatalf("thread/clear: %v", obs.clearErr)
+	}
+	if lifetime == nil {
+		t.Fatal("the cleared session was built with no lifetime context")
+	}
+	if !liveAtClear {
+		t.Fatal("the cleared session's lifetime context was already over when the clear ran")
 	}
 }
