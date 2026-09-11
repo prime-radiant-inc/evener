@@ -1623,13 +1623,21 @@ func (p *AppEventProjector) ownedSystemAnnouncementItem(owner string, eventKind 
 		EventKind:   eventKind,
 		ExitCode:    exitCode,
 	}
-	// A gap group is over the moment its records are published: nothing is
-	// running, and nothing will name this turn again. The ownerless gap has
-	// always been completed here; a fold that staged idle now carries a
-	// synthetic owner of its own instead, and needs the same close — the live
-	// store opens an unknown turn InProgress and would leave it that way,
-	// while the transcript projection stamps the reloaded group Completed.
-	if p.activeTurnID == "" && (owner == "" || strings.HasPrefix(owner, compactionGapTurnIDPrefix)) {
+	// A gap group is over the moment its records are published, and the two
+	// gaps reach that conclusion differently.
+	//
+	// The ownerless gap IS "nothing is running": the announcement belongs to
+	// whatever lull the projector is in, so the conjunct is the whole test and
+	// stays exactly as it was.
+	//
+	// A compaction-gap owner carries the conclusion in the id itself. The fold
+	// took that name at stage time precisely because no turn was running, and
+	// no turn will ever run under it — but the records are emitted later, in
+	// the fold's flush, and nothing orders that flush against a turn the
+	// client accepts meanwhile. Gating on what is running NOW would leave the
+	// group InProgress live, against Completed cold, for the ordering the
+	// session never promised.
+	if (owner == "" && p.activeTurnID == "") || strings.HasPrefix(owner, compactionGapTurnIDPrefix) {
 		// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
 			"threadId": p.threadID,
