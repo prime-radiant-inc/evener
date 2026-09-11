@@ -1693,3 +1693,31 @@ func TestServeResumedSessionLifetimeIsTheShutdownContext(t *testing.T) {
 		t.Fatal("the resumed session's lifetime context outlives the daemon; it is not the shutdown context")
 	}
 }
+
+// thread/clear builds the replacement session from a copy of the daemon's own
+// SessionConfig, so the cleared thread has to inherit the same shutdown
+// lifetime the session it replaces had. A replacement rooted at Background
+// would put the daemon straight back into the state this branch fixes, for
+// every thread after the first clear.
+func TestRunServeClearSessionInheritsTheShutdownLifetime(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var lifetime context.Context
+	var liveAtClear bool
+	buildClearSession := deps.newClearSession
+	deps.newClearSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		lifetime = cfg.LifetimeContext
+		liveAtClear = lifetime != nil && lifetime.Err() == nil
+		return buildClearSession(c, p, e, cfg)
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+	if obs.clearErr != nil {
+		t.Fatalf("thread/clear: %v", obs.clearErr)
+	}
+	if lifetime == nil {
+		t.Fatal("the cleared session was built with no lifetime context")
+	}
+	if !liveAtClear {
+		t.Fatal("the cleared session's lifetime context was already over when the clear ran")
+	}
+}

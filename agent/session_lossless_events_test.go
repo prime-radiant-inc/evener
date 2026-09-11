@@ -202,6 +202,62 @@ func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
 	}
 }
 
+// The other side of the same window: once the daemon's shutdown context is
+// cancelled but before a close has published its budget, a warning must not
+// start a NEW hook. Nothing is left to wait for one -- shutdown is already
+// past the point where it would.
+//
+// The marker alone cannot pin this: exec.Cmd.Start refuses an already-cancelled
+// context before it spawns anything, so the command stays untouched whether the
+// decline happens here or four layers down. The dispatch is the discriminator --
+// runAll announces HookStart before it runs the hook -- so a decline that stops
+// being taken shows up as an announced hook.
+func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
+	owner, shutdown := context.WithCancel(context.Background())
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		AgentsDocPath:    t.TempDir() + "/no-personal-AGENTS.md",
+		LifetimeContext:  owner,
+	}))
+	shutdown()
+
+	s.closeCtxMu.RLock()
+	published := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if published != nil {
+		t.Fatal("a close budget was already published; this test covers the window before one exists")
+	}
+
+	marker := t.TempDir() + "/hook-started"
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "touch " + marker,
+		Timeout: 30,
+	})
+	dispatched := make(chan struct{}, 1)
+	runner.SetEventCallback(func(kind events.EventKind, _ events.EventData) {
+		if kind != events.EventHookStart {
+			return
+		}
+		select {
+		case dispatched <- struct{}{}:
+		default:
+		}
+	})
+	s.hookRunner = runner
+
+	s.fireNotificationHook("warning after shutdown started")
+
+	if len(dispatched) != 0 {
+		t.Fatal("a warning emitted after the session lifetime ended dispatched a notification hook")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expired session lifetime started notification hook; stat error = %v", err)
+	}
+}
+
 func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
 	s := newSession(t, withoutGitSnapshot())
 	runner := hooks.NewRunner(nil, "test-model")
