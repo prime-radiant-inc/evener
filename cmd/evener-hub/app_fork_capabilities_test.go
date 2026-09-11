@@ -2304,3 +2304,66 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
 		})
 	}
 }
+
+// The two resolvers read different sources — the roster before the locks, the
+// rendezvous under them — and a configuration that supplies only one used to
+// make them disagree about an alias nothing had touched, refusing a valid fork
+// as an ownership change. Each now falls back to the other's source when its own
+// is absent, so the answer depends on the ownership information available, not
+// on which resolver is asking.
+func TestHubForkResolvesAnAliasFromWhicheverSourceIsConfigured(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		rosterOnly bool
+		rendezvous bool
+	}{
+		{name: "roster only, no run dir", rosterOnly: true},
+		{name: "run dir only, no roster", rendezvous: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			aliasID := buildRPCParentSession(t, stateDir)
+			currentID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
+			daemon := rendezvous.Entry{
+				PID: 1001, SourceID: "local", ThreadID: currentID, SessionID: currentID, InstanceID: currentID,
+				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+			}
+			cfg := hubcore.WebConfig{StateDir: stateDir, DaemonProcesses: liveClaimController()}
+			if tc.rosterOnly {
+				// Ownership known only through the roster: no run dir to read,
+				// and the roster is maintained by something other than a scan
+				// of one, so its refresh is not what fills it.
+				cfg.Roster = hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+					Entry: daemon, SessionID: currentID, Status: appwire.ThreadStatusIdle,
+				})
+				previousRefresh := hubRosterRefresh
+				hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
+				t.Cleanup(func() { hubRosterRefresh = previousRefresh })
+			}
+			if tc.rendezvous {
+				// Ownership known only through the run dir: no roster at all.
+				cfg.RunDir = t.TempDir()
+				writeRendezvous(t, cfg.RunDir, daemon)
+			}
+
+			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if err != nil {
+				t.Fatalf("fork through a stable alias: %v", err)
+			}
+			meta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.ParentSessionID != currentID {
+				t.Fatalf("fork branched %q, want the session the configured source names %q", meta.ParentSessionID, currentID)
+			}
+		})
+	}
+}

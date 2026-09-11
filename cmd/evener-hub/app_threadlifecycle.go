@@ -1054,10 +1054,24 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 // direction for a mutation. A claim whose own process cannot be verified is
 // refused the same way, and for the same reason.
 //
-// With no run dir configured, and for a thread nothing currently claims, it
-// answers the requested id — the same thing the roster-backed resolution
-// answers when no live daemon owns the thread.
+// For a thread nothing currently claims it answers the requested id, the same
+// thing the roster-backed resolution answers when no live daemon owns the
+// thread.
+//
+// Each resolver falls back to the other's source when its own is not
+// configured — this one to the roster with no run dir, the pre-lock one to the
+// rendezvous with no roster — so a hub given only one of the two cannot make
+// them disagree about an alias nothing has touched and refuse a valid fork as
+// an ownership change. With both configured, which production always is
+// (main.go builds the roster from the run dir that becomes WebConfig.RunDir),
+// neither fallback runs and the rendezvous stays authoritative.
 func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (string, error) {
+	if cfg.RunDir == "" && cfg.Roster != nil {
+		// No rendezvous to read: answer from the roster, which is what the
+		// pre-lock resolver would have read, rather than skipping to the tail
+		// and disagreeing with it over an alias nothing has touched.
+		return forkTargetSessionID(cfg, threadID), nil
+	}
 	if cfg.RunDir != "" {
 		entries, err := rendezvous.ListStrict(cfg.RunDir)
 		if err != nil {
@@ -1140,6 +1154,17 @@ func forkFenceTargets(requestedID, sessionID string) []string {
 // stays the identity for recovery and deletion fencing, which reserve the
 // alias the client asked about.
 func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
+	if cfg.Roster == nil && cfg.RunDir != "" {
+		// No roster to read: answer from the rendezvous, the under-lock
+		// resolver's source, for the same reason it falls back to the roster.
+		// A verification failure is not this resolver's to report — the
+		// under-lock pass reaches it again and refuses with the reason — so an
+		// unanswerable claim falls through to the tail below.
+		if sessionID, err := forkTargetSessionIDUnderLock(cfg, threadID); err == nil {
+			return sessionID
+		}
+		return forkRedirectSessionID(cfg, threadID)
+	}
 	if cfg.Roster != nil {
 		if owner, ok := liveDaemonForThread(cfg.Roster, threadID); ok {
 			// Same fallback order as liveDaemonForSession: a probe that answered
