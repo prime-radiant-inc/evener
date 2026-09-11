@@ -138,6 +138,23 @@ test("turn-container refresh retains the latest activity timestamp", () => {
   expect(entry.delegate.latestActivityAt).toBe("2026-09-10T00:02:00Z");
 });
 
+test("a child-session continuation keeps the turn container's own newer turns", () => {
+  const currentEntry = delegate(session("child", [shell("a")], "next"));
+  delete currentEntry.delegate.type;
+  currentEntry.delegate.latestActivityAt = "2026-09-10T00:01:00Z";
+  currentEntry.delegate.turns = [shell("turn-old").job, shell("turn-new").job];
+  const patchEntry = delegate(session("child", [shell("b")]));
+  delete patchEntry.delegate.type;
+  patchEntry.delegate.latestActivityAt = "2026-09-10T00:03:00Z";
+  patchEntry.delegate.turns = [shell("turn-old").job];
+  const result = graftContinuationTree(tree([currentEntry]), "session:child", tree([patchEntry]));
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-old", "turn-new"]);
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(entry.delegate.latestActivityAt).toBe("2026-09-10T00:03:00Z");
+});
+
 test.each([null, []])("delegate turns accept the wire array value %j", (turns) => {
   const entry = delegate();
   const raw = tree([entry]);
