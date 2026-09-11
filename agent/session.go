@@ -1736,7 +1736,8 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 }
 
 // logPairPersistedLocked records the persisted transcript form of one
-// append/write pair for publishFoldTransaction's post-marker rewrite.
+// append/write pair for publishFoldTransaction's tail rewrite, which
+// re-appends that form inside the fold's own run.
 // Callers hold s.mu inside their pair's attentionMu hold; the transaction
 // prunes the log at every successful publication.
 func (s *Session) logPairPersistedLocked(persisted schema.Turn) {

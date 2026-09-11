@@ -563,8 +563,8 @@ func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMark
 // fold runs lands its entry before the later compaction marker, and
 // publishFoldedHistory merges it into live history past the fold result --
 // since ResumeHistory anchors on the LAST marker, the publication transaction
-// must leave merged-back turns durably represented after the fold's marker or
-// they vanish on restart.
+// must leave merged-back turns durably represented inside the fold's own run,
+// which its marker claims, or they vanish on restart.
 func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
@@ -603,7 +603,7 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	}
 	resumed := ResumeHistory(data.Entries)
 	if indexOfTurnText(resumed, concurrentText) < 0 {
-		t.Fatal("a turn recorded during the fold survives in live history but is missing from the resumed history -- merged-back turns must be durably represented after the compaction marker")
+		t.Fatal("a turn recorded during the fold survives in live history but is missing from the resumed history -- merged-back turns must be durably represented inside the fold's own run")
 	}
 	count := 0
 	for _, rt := range resumed {
@@ -854,8 +854,8 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 // the rewrite against attention-turn resurrection:
 // removeUnverifiedDelegateAttentionTurn (which takes only s.mu) can delete a
 // merged-back attention turn between publish and the merged-tail rewrite, and
-// a rewrite that persisted it after the marker would resurrect, on resume, a
-// turn whose durability verification had FAILED. Attention turns
+// a rewrite that persisted it inside the fold's run would resurrect, on
+// resume, a turn whose durability verification had FAILED. Attention turns
 // enter live history without a session-transcript pair (their durability is
 // owned by the attention transcript machinery and their restart path is the
 // attention re-fold), so the rewrite must never manufacture
@@ -1892,12 +1892,12 @@ func (file *syncSnapshotFile) Sync() error {
 
 // TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync
 // pins the durability of the merged-tail rewrite: a turn appended DURABLY
-// while a fold runs has its only durable entry before the compaction marker,
-// which ResumeHistory discards, so the post-marker rewrite is the entry a
-// restart depends on — and it must be durable before the publication counts
-// as persisted. A crash after the marker's fsync but before a later sync
-// covers the rewrite must not lose a turn the session already promised was
-// durable.
+// while a fold runs has its original entry outside the fold's run, which
+// ResumeHistory discards once that fold's marker anchors, so the rewrite's
+// tagged copy is the entry a restart depends on — and it must be durable
+// before the publication counts as persisted. A crash that leaves the fold's
+// marker in the fsynced transcript must not lose a turn the session already
+// promised was durable.
 func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
@@ -1961,6 +1961,6 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 		t.Fatal("test setup: the compaction marker did not reach the durable transcript")
 	}
 	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
-		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite after the compaction marker was not durable, and the pre-marker durable entry is the one ResumeHistory discards")
+		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite's tagged copy was not durable, and the original entry outside the fold's run is the one ResumeHistory discards")
 	}
 }

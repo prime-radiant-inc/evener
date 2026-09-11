@@ -61,7 +61,8 @@ func TestRoundTimingsFoldPublicationSurvivesReloadWithoutProviderHistory(t *test
 	}
 	// This append runs while the real fold is between its snapshot and
 	// publication. The fold must merge this durable turn into its published
-	// history and rewrite it after the compaction marker.
+	// history and rewrite it inside its own run, tagged with the fold id its
+	// marker carries.
 	s.persistAndEmitRoundTimings(want)
 	close(proceed)
 	if err := <-compactErr; err != nil {

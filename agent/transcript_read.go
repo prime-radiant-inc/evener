@@ -194,8 +194,8 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// context-compaction records, markers and injected steering — so the run
 	// is reassembled in the order the fold published it: the fold's own
 	// records from the anchor onward, then its copies, then everything after.
-	// That is where the copies sat when they were written after the marker,
-	// so a resume reads the same history either ordering produced.
+	// That is the order the fold held in memory, so a resume rebuilds the
+	// history the live session had.
 	//
 	// An untagged anchor is one written before the tag existed, when the
 	// copies followed their marker and are already inside the range below;

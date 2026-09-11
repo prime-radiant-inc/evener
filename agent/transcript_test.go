@@ -3800,9 +3800,8 @@ func TestResumeHistoryFromTranscript_AnchorDropsALaterFoldsUnanchoredCopies(t *t
 // ORDER it puts back is a contract, not an accident: the anchor, then the rest
 // of the fold's own records (its injected steering), then the copies of the
 // turns recorded while it ran, then everything after the run. That is the
-// order the fold published in memory and the order the transcript carried when
-// the copies were written after the marker, so a resume rebuilds the same
-// history the live session held.
+// order the fold published in memory, so a resume rebuilds the same history
+// the live session held.
 func TestResumeHistoryFromTranscript_AnchoredBranchReassemblesFoldOrder(t *testing.T) {
 	t.Parallel()
 	entry := func(kind schema.TurnKind, message llm.Message, seq int, foldID string, replay bool) transcript.Entry {
