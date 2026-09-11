@@ -59,6 +59,7 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
       triggerLabel="Session actions"
       canRename
       canShutdown
+      canReadNotes
       panesOpen={{ details: false, tasks: true, activity: false, notes: false }}
       actions={actions}
       {...overrides}

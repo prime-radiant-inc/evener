@@ -36,7 +36,8 @@
 // with no hover to reveal them).
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-
+import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
+import { useThreadsStore } from "../../stores/threads";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
@@ -441,6 +442,9 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
   const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref }));
+  // Navigation summaries do not carry notes capability. Observe only an
+  // already-hydrated snapshot; opening the session owns any needed fetch.
+  const canReadNotes = useThreadsStore((s) => canReadSharedNotes(s.threads.get(ref)));
   return (
     <SessionMenu
       sessionRef={ref}
@@ -448,6 +452,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
       canShutdown={session.live && session.state !== "restartRequired"}
+      canReadNotes={canReadNotes}
       treeNode={session}
       panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
       actions={{

@@ -23,6 +23,7 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
+import { SessionPanelPane } from "../../sessionPanels/SessionPanelPane";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
@@ -300,6 +301,101 @@ test("status row has no inline Details/Tasks/Activity/Notes buttons; they live i
   expect(screen.getByRole("menuitem", { name: /Activity/ })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Notes" })).toBeTruthy();
 });
+
+// Exercise the shared SessionMenu through its real chrome adapter, proving
+// capability reaches the menu instead of testing only the menu's boolean prop.
+test.each(["desktop", "mobile"] as const)(
+  "%s Notes menu must not expose an unsupported blank panel",
+  async (viewport) => {
+    const restoreViewport = viewport === "mobile" ? installMobileViewport() : () => {};
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_no_notes", {
+        evener: { ref: "ref_no_notes", capabilities: { ...CAPABILITIES, sharedNotes: false }, queue: { revision: 0 } },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_no_notes");
+
+    try {
+      render(<SessionChrome ref="ref_no_notes" placement="composer" />);
+      await user.click(screen.getByRole("button", { name: "Session actions" }));
+      const opener = screen.queryByRole("menuitem", { name: "Notes" });
+      expect.soft(opener).toBeNull();
+      // If the forbidden opener exists, follow it to its real destination so
+      // failure also establishes the user-visible blank-pane consequence.
+      if (opener) await user.click(opener);
+      if (viewport === "mobile") {
+        expect(screen.queryByTestId("shared-notes-section")).toBeNull();
+        expect(screen.queryByRole("dialog", { name: "Session notes" })).toBeNull();
+      } else {
+        const pane = workspaceStore.getState().panes.find((entry) => entry.type === "sessionNotes");
+        if (pane) {
+          const { container } = render(
+            <SessionPanelPane kind="notes" params={{ ref: "ref_no_notes" }} paneId={pane.id} focused />,
+          );
+          expect(container.querySelector(`[data-pane-id="${pane.id}"]`)?.childElementCount).toBe(0);
+        }
+        expect(pane).toBeUndefined();
+      }
+    } finally {
+      restoreViewport();
+    }
+  },
+);
+
+test.each([
+  { status: "idle", editable: true },
+  { status: "active", editable: true },
+  { status: "ended", editable: false },
+  { status: "closed", editable: false },
+  { status: "notLoaded", editable: false },
+] as const)(
+  "Notes navigation keeps supported $status content reachable (editable=$editable)",
+  async ({ status, editable }) => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_notes", {
+        status: { type: status },
+        evener: {
+          ref: "ref_notes",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          humanNote: "human read sentinel",
+          agentNote: "agent read sentinel",
+          sessionUrls: [{ id: "u1", url: "https://notes.test/read", label: "reference sentinel" }],
+        },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_notes");
+
+    // Saved notLoaded sessions mount the menu-only placement, not the composer.
+    render(<SessionChrome ref="ref_notes" placement={status === "notLoaded" ? "menu" : "composer"} />);
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Notes" }));
+    const pane = workspaceStore.getState().panes.find((entry) => entry.type === "sessionNotes");
+    expect(pane).toBeDefined();
+    if (!pane) throw new Error("Notes navigation did not create its workspace pane");
+    render(<SessionPanelPane kind="notes" params={{ ref: "ref_notes" }} paneId={pane.id} focused />);
+
+    expect(screen.getByTestId("shared-notes-agent").textContent).toBe("agent read sentinel");
+    expect(screen.getByRole("link", { name: "reference sentinel" }).getAttribute("href")).toBe(
+      "https://notes.test/read",
+    );
+    if (editable) {
+      expect((screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement).value).toBe(
+        "human read sentinel",
+      );
+      expect(screen.getByRole("button", { name: "Remove reference sentinel" })).toBeTruthy();
+    } else {
+      expect(screen.getByTestId("shared-notes-human").textContent).toBe("human read sentinel");
+      expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Remove reference sentinel" })).toBeNull();
+    }
+    expect(fake.calls.filter((call) => call.method === "notes/human/set" || call.method === "urls/remove")).toEqual([]);
+  },
+);
 
 test("SessionChrome shows task outcome aggregates in its actions menu", async () => {
   const user = userEvent.setup();

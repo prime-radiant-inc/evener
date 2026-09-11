@@ -10,6 +10,7 @@
 // for a fire-and-report action - never a silent swallow.
 
 import type { ThreadModel } from "../../protocol/model";
+import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
@@ -594,7 +595,11 @@ export function buildCommands(): Command[] {
       hint: "",
       keywords: ["notes", "shared"],
       scope: "session",
-      run: (ctx) => toggleSessionPane(ctx, "sessionNotes"),
+      capability: "sharedNotes",
+      run: (ctx) => {
+        if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
+        toggleSessionPane(ctx, "sessionNotes");
+      },
     },
     {
       id: "project",
@@ -632,7 +637,8 @@ export function rememberableId(command: Command): string {
 //
 // An unhydrated model (no snapshot in the store yet) leaves everything
 // enabled: unknown is not the same as refused, and the hub still gets the
-// final word on the call itself.
+// final word on the call itself. Notes is the exception: its reader requires
+// a known capability, rather than opening a blank pane before hydration.
 export function commandsInScope(ctx: PaletteContext, catalog = useCommandCatalog.getState().commands): ScopedCommand[] {
   const model = focusedModel(ctx.sessionRef);
   const catalogEntries = ctx.sessionRef === null ? [] : catalogCommands(catalog);
@@ -696,6 +702,9 @@ function catalogCommands(catalog: CommandDescriptor[]): Command[] {
 
 function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedCommand {
   const capability = command.capability;
+  if (capability === "sharedNotes" && !canReadSharedNotes(model)) {
+    return { ...command, unavailableReason: UNAVAILABLE_REASON };
+  }
   if (!capability || !model || model.capabilities[capability]) return command;
   return { ...command, unavailableReason: UNAVAILABLE_REASON };
 }

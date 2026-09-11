@@ -5,6 +5,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
+import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
 import { WireError } from "../../../protocol/errors";
@@ -21,7 +22,7 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { NotesPanel, NotesPanelBody } from "./NotesPanel";
+import { NotesPanel, NotesPanelBody, type NotesPanelHandle } from "./NotesPanel";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -321,6 +322,65 @@ test("notes panel body renders nothing when capability unset", () => {
   openPanel(testModel({ capabilities: { ...FULL_CAPABILITIES, sharedNotes: false } }));
   expect(screen.queryByTestId("shared-notes-section")).toBeNull();
 });
+
+test("standalone Notes navigation hides when capability is unset", () => {
+  const model = testModel({ capabilities: { ...FULL_CAPABILITIES, sharedNotes: false } });
+  render(<NotesPanel sessionRef={model.ref} model={model} />);
+
+  expect(screen.queryByRole("button", { name: "Notes" })).toBeNull();
+});
+
+test.each(["idle", "ended", "notLoaded"] as const)(
+  "imperative Notes opening rechecks capability for %s sessions",
+  async (status) => {
+    const user = userEvent.setup();
+    const handle = createRef<NotesPanelHandle>();
+    const supported = testModel({ status: { type: status }, humanNote: "imperative note sentinel" });
+    const unsupported = { ...supported, capabilities: { ...FULL_CAPABILITIES, sharedNotes: false } };
+    const panel = render(<NotesPanel ref={handle} sessionRef={supported.ref} model={supported} hideTrigger />);
+    panel.rerender(<NotesPanel ref={handle} sessionRef={supported.ref} model={unsupported} hideTrigger />);
+
+    act(() => handle.current?.open());
+    expect.soft(screen.queryByRole("dialog", { name: "Session notes" })).toBeNull();
+    // Keep the positive control runnable on the unguarded implementation too.
+    const close = screen.queryByRole("button", { name: "Close" });
+    if (close) await user.click(close);
+
+    panel.rerender(<NotesPanel ref={handle} sessionRef={supported.ref} model={supported} hideTrigger />);
+    act(() => handle.current?.open());
+    expect(screen.getByRole("dialog", { name: "Session notes" })).toBeTruthy();
+    if (status === "idle") expect(editor().value).toBe("imperative note sentinel");
+    else expect(screen.getByTestId("shared-notes-human").textContent).toBe("imperative note sentinel");
+  },
+);
+
+// The sheet's Notes button is read navigation, not a forbidden edit trigger.
+// Hiding it on all non-live sessions would remove this supported read path.
+test.each(["ended", "closed", "notLoaded"] as const)(
+  "Notes sheet opens saved %s content without editor or removal controls",
+  async (status) => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const model = testModel({
+      status: { type: status },
+      humanNote: "human sheet sentinel",
+      agentNote: "agent sheet sentinel",
+      sessionUrls: [{ id: "u1", url: "https://notes.test/sheet", label: "sheet reference" }],
+    });
+    threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+    render(<NotesPanel sessionRef={model.ref} model={model} />);
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByRole("dialog", { name: "Session notes" })).toBeTruthy();
+    expect(screen.getByTestId("shared-notes-human").textContent).toBe("human sheet sentinel");
+    expect(screen.getByTestId("shared-notes-agent").textContent).toBe("agent sheet sentinel");
+    expect(screen.getByRole("link", { name: "sheet reference" }).getAttribute("href")).toBe("https://notes.test/sheet");
+    expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove sheet reference" })).toBeNull();
+    expect(fake.calls.filter((call) => call.method === "notes/human/set" || call.method === "urls/remove")).toEqual([]);
+  },
+);
 
 // --- rule 2: set but not live shows read-only --------------------------------
 

@@ -24,6 +24,7 @@
 // goal chip + clear popover only.
 import { useRef, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
+import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
@@ -163,6 +164,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
     else workspaceStore.getState().togglePane("sessionActivity", { ref: sessionRef });
   };
   const openNotes = () => {
+    if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
     if (isMobile) notesRef.current?.open();
     else workspaceStore.getState().togglePane("sessionNotes", { ref: sessionRef });
   };
@@ -302,6 +304,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
             triggerLabel="Session actions"
             canRename={model.capabilities.rename}
             canShutdown={model.capabilities.shutdown}
+            canReadNotes={canReadSharedNotes(model)}
             session={menuSession}
             panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
             taskLabel={model.tasks ? `Tasks ${taskAggregateLabel(model.tasks)}` : undefined}
