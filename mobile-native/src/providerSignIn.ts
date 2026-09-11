@@ -297,6 +297,11 @@ export class ProviderSignIn {
       }
     } catch {
       if (this.current(generation)) {
+        // A completion that could not be confirmed may or may not have landed
+        // on the hub, so the flow stays uncertain — the same conservative
+        // terminal the poll catch and the unrecognized-status branch take.
+        // Without it a later checkStatus reads clean and polling resumes.
+        this.uncertain = true;
         this.publish({
           busy: false,
           error:

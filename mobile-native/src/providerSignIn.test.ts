@@ -489,3 +489,33 @@ it("clears completion operation after authorized response", async () => {
   expect(flow.getSnapshot().error).toBeNull();
   flow.dispose();
 });
+
+it("keeps the re-check prompt after a failed completion", async () => {
+  const { flow, io } = boundary();
+  io.request = async (method) =>
+    method === "evener/auth/device/start"
+      ? { ...device, fallback: true }
+      : method === "evener/auth/login/start"
+        ? {
+            provider: "work",
+            flowId: "browser-2",
+            url: "https://example.test/auth",
+          }
+        : method === "evener/auth/login/complete"
+          ? Promise.reject(new Error("offline"))
+          : method === "evener/auth/status"
+            ? authorizedStatus
+            : { status: authorizedStatus };
+  await flow.start();
+  expect(flow.getSnapshot().phase).toBe("browser");
+
+  await flow.complete("https://example.test/callback?code=fixture");
+  expect(flow.getSnapshot().error).toContain("confirmed");
+
+  // A completion that could not be confirmed leaves the flow uncertain, so a
+  // later status check must keep saying so rather than reading clean.
+  await flow.checkStatus();
+  expect(flow.getSnapshot().error).toBe(
+    "Sign-in status could not be confirmed. Check credential status before trying again.",
+  );
+});
