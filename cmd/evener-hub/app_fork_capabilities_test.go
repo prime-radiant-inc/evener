@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -657,5 +659,25 @@ func TestHubForkCapabilityAdvertisesAheadOfOwnershipResolution(t *testing.T) {
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok || wire.Code != appwire.CodeUnavailable {
 		t.Fatalf("ambiguous ownership fork error=%v, want structured unavailable", err)
+	}
+}
+
+// Every producer of thread/status/changed builds appwire.ThreadStatusChangedParams
+// (internal/appprojector's threadStatus, then server's failure-count and
+// capability stamps), so what that type declares is the whole of what a relayed
+// status notification can carry. The recovery signal it carries lives inside
+// status, which is where stampForkCapability reads the fork fence from; the
+// wire's other recovery flag, resumeRequired, is a field of EvenerThread on a
+// thread snapshot and is written only by the hub's own read projection. A
+// top-level recovery flag on the notification would have to be declared here
+// first, and this fails when one is, so the relay fence cannot silently start
+// missing a signal the protocol began carrying.
+func TestThreadStatusChangedParamsDeclareNoTopLevelRecoveryFlag(t *testing.T) {
+	params := reflect.TypeFor[appwire.ThreadStatusChangedParams]()
+	for i := range params.NumField() {
+		name, _, _ := strings.Cut(params.Field(i).Tag.Get("json"), ",")
+		if name == "resumeRequired" {
+			t.Fatalf("%s gained a top-level recovery flag stampForkCapability does not read", params.Name())
+		}
 	}
 }
