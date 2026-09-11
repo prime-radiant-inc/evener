@@ -621,7 +621,7 @@ describe("jumpToBottom landing reliability", () => {
     expect(result.current.pillVisible).toBe(false);
 
     act(() => {
-      el.dispatchEvent(new Event("wheel"));
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
       // The DOM and the measurement seam move TOGETHER, as they do in a
       // browser: by the time the listener runs, the event's net offset is
       // already committed. The veto's job is not to restore the pre-event
@@ -824,7 +824,7 @@ describe("jumpToBottom landing reliability", () => {
       el.scrollTop = 16374;
 
       act(() => {
-        el.dispatchEvent(new Event("wheel"));
+        el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
         el.dispatchEvent(new Event("scroll"));
       });
 

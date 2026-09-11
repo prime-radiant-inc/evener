@@ -16,7 +16,11 @@ import { installKeybindings } from "../../../../shell/installKeybindings";
 import { resetMobileViewportForTests } from "../../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
-import { TRANSCRIPT_LINE_SCROLL_PX, useTranscriptScrollKeys } from "./useTranscriptScrollKeys";
+import {
+  TRANSCRIPT_LINE_SCROLL_PX,
+  TRANSCRIPT_PAGE_SCROLL_RATIO,
+  useTranscriptScrollKeys,
+} from "./useTranscriptScrollKeys";
 
 function keydown(init: KeyboardEventInit): KeyboardEvent {
   return new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
@@ -38,8 +42,11 @@ function renderPaneKeys(paneId: string, { mounted = true }: { mounted?: boolean 
     } as VirtualListHandle,
   };
   const jumpToBottom = vi.fn();
-  // Records the offset AT THE MOMENT the marker is called, so a test can prove
-  // the gesture is marked before the scroll write rather than after it.
+  // Records the offset AT THE MOMENT the marker is called. The marker fires
+  // just after the write now (it turns on whether the write moved anything), so
+  // what this pins is that it still runs in the SAME task as its write: each
+  // entry is the offset that write produced, not the one before it and not a
+  // later frame's.
   const markedAt: number[] = [];
   const markGesture = vi.fn(() => {
     markedAt.push(el.scrollTop);
@@ -240,12 +247,15 @@ test("the line and page scroll chords mark a reader gesture when the write moves
 
   document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true }));
 
-  expect(a.el.scrollTop).toBe(500 - TRANSCRIPT_LINE_SCROLL_PX);
-  expect(a.markGesture).toHaveBeenCalledTimes(1);
+  const afterLine = 500 - TRANSCRIPT_LINE_SCROLL_PX;
+  expect(a.el.scrollTop).toBe(afterLine);
+  expect(a.markedAt).toEqual([afterLine]);
 
   document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true, shiftKey: true }));
 
-  expect(a.markGesture).toHaveBeenCalledTimes(2);
+  const afterPage = afterLine - 500 * TRANSCRIPT_PAGE_SCROLL_RATIO;
+  expect(a.el.scrollTop).toBe(afterPage);
+  expect(a.markedAt).toEqual([afterLine, afterPage]);
 });
 
 // roborev medium on fb07321. scrollTop assignments clamp, so a chord aimed past

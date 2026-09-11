@@ -736,14 +736,17 @@ export function useTranscriptScroll({
   //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
   //     and marks only when the write moved it (its scrollPortBy).
   //   wheel         - a deltaY of zero is a sideways wheel and scrolls nothing
-  //     here, so it never marks. A vertical wheel AT a scroll limit still marks
-  //     without moving anything: a passive handler runs before the scroll, so
-  //     whether it will move is not knowable yet, and reading it back afterwards
-  //     would be the geometry inference this whole design replaced. It costs a
-  //     veto only if a correction lands in that same frame.
+  //     here, so it never marks. Two cases still mark without moving the port:
+  //     a vertical wheel AT a scroll limit, and a vertical wheel over a NESTED
+  //     vertical scroller that consumes it and bubbles the event up anyway (the
+  //     sandbox-escalation panel is overflow-y:auto inside the transcript).
+  //     Neither is knowable here: a passive handler runs before the scroll, and
+  //     reading the offset back afterwards would be the geometry inference this
+  //     whole design replaced. Each costs a veto only if a correction lands in
+  //     that same frame.
   //   touch         - marks only on real vertical movement, so a sideways swipe
-  //     (a code block's own scroller) is not a transcript scroll. Same residual
-  //     as wheel at a limit.
+  //     is not a transcript scroll. Same two residuals as wheel: a vertical drag
+  //     at a limit, and one inside a nested vertical scroller.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
   //     from a scrollbar drag that does scroll. What is ruled out is a drag that
