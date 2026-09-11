@@ -2195,7 +2195,8 @@ func (runtime delegateRuntime) adopt(prepared *preparedSubagentRun) error {
 
 // preseedInput writes the delegate's opening input to the child's transcript
 // before the run that executes it exists, and returns the identity it minted
-// for that turn. The run adopts the id rather than naming the turn again:
+// for that turn. It mints only — the run adopts the id rather than naming the
+// turn again:
 // acceptUserInput's own naming is skipped for a preseeded input (the entry is
 // already written), so without carrying it the entry and the USER_INPUT event
 // would name the same turn differently and the cold and live projections would
@@ -2209,7 +2210,10 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 		observer(child)
 	}
 	turn := schema.NewTurn(schema.TurnUserInput, message)
-	turn.StableTurnID = child.nameTurnItself()
+	// Minted, not adopted: this turn does not begin until the run starts and
+	// adopts the id off the preseed context value. Every return below can
+	// fail, and those paths retain the child without a run.
+	turn.StableTurnID = mintDirectTurnID()
 	if err := child.appendDurableTurn(turn, turn); err != nil {
 		return "", err
 	}

@@ -168,9 +168,21 @@ func selfMintedTurnID(turnID string) bool {
 // reintroduce one. The turn_direct_ prefix keeps it out of both the entry-index
 // namespace (turn_%d) and the client-mutation one (appwire.ClientMutationTurnID).
 func (s *Session) nameTurnItself() string {
-	turnID := directTurnIDPrefix + ulid.Make().String()
+	turnID := mintDirectTurnID()
 	s.adoptSelfMintedTurnID(turnID)
 	return turnID
+}
+
+// mintDirectTurnID makes a name without adopting it, for a caller that needs
+// the id before the turn it names begins. The delegate preseed is the one such
+// caller: it stamps the id on the entry it writes, and the run that executes
+// that entry adopts it at start (acceptUserInput). Adopting at mint time
+// instead would leave the name set on a child whose preseed then failed —
+// those paths retain the runtime WITHOUT launching a run — and activeTurnOwner
+// prefers directTurnID, so every later record that child published would be
+// attributed to a turn that never ran.
+func mintDirectTurnID() string {
+	return directTurnIDPrefix + ulid.Make().String()
 }
 
 // adoptSelfMintedTurnID re-establishes a name minted for a turn that is only
