@@ -630,3 +630,32 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 		})
 	}
 }
+
+// The advertised fork capability is deliberately ahead of the fork RPC's
+// ownership resolution: the projection runs per thread on every list and per
+// relayed status notification, so it does not repeat ownershipEntry's scan of
+// every project directory. A session whose ownership cannot be resolved is
+// therefore offered and then refused, and the refusal is structured.
+func TestHubForkCapabilityAdvertisesAheadOfOwnershipResolution(t *testing.T) {
+	root := t.TempDir()
+	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "project-one-0000000000"))
+	meta, err := schema.LoadSessionMeta(filepath.Join(root, "projects", "project-one-0000000000"), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(filepath.Join(root, "projects", "project-two-0000000000"), meta); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{StateDir: root}
+	thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:" + sessionID}}
+	if !applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn {
+		t.Fatal("projection resolved ownership; update the note on applyHubForkCapability")
+	}
+	_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+		Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "forked input",
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("ambiguous ownership fork error=%v, want structured unavailable", err)
+	}
+}

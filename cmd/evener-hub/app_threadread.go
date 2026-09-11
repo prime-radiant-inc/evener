@@ -459,6 +459,14 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool
 // recovery fence has been applied. A daemon's capability set is not an
 // authority grant for persisted local forks, and a session needing recovery
 // cannot accept a fork until that fence clears.
+//
+// It stops short of the ownership resolution hubThreadFork performs, so a
+// session whose metadata is missing, unreadable, or claimed by two project
+// directories is advertised as forkable here and refused by the fork RPC with a
+// structured unavailable. Resolving it would put ownershipEntry's scan of every
+// project directory on the read path, which runs this projection once per
+// thread on every thread/list and once per relayed status notification; the
+// fork RPC stays the authority for a mutation this rare error path blocks.
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {
