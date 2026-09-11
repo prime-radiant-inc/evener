@@ -3795,3 +3795,54 @@ func TestResumeHistoryFromTranscript_AnchorDropsALaterFoldsUnanchoredCopies(t *t
 		t.Fatalf("resume history = %d turns, want the summary, its own copy and the two originals", len(history))
 	}
 }
+
+// The anchored branch reassembles a fold's run rather than slicing it, so the
+// ORDER it puts back is a contract, not an accident: the anchor, then the rest
+// of the fold's own records (its injected steering), then the copies of the
+// turns recorded while it ran, then everything after the run. That is the
+// order the fold published in memory and the order the transcript carried when
+// the copies were written after the marker, so a resume rebuilds the same
+// history the live session held.
+func TestResumeHistoryFromTranscript_AnchoredBranchReassemblesFoldOrder(t *testing.T) {
+	t.Parallel()
+	entry := func(kind schema.TurnKind, message llm.Message, seq int, foldID string, replay bool) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.CompactionFoldID = foldID
+		turn.ContextReplay = replay
+		return transcript.Entry{Kind: "entry", Seq: seq, Turn: turn}
+	}
+	const foldID = "fold_order"
+	entries := []transcript.Entry{
+		entry(schema.TurnUserInput, llm.User("before the fold"), 0, "", false),
+		entry(schema.TurnAssistant, llm.Assistant("recorded during the fold"), 1, "", false),
+		// The fold's run, in the order publishFoldTransaction writes it.
+		entry(schema.TurnAssistant, llm.Assistant("recorded during the fold"), 2, foldID, true),
+		entry(schema.TurnContextCompaction, llm.System("context compaction"), 3, foldID, false),
+		entry(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"), 4, foldID, false),
+		entry(schema.TurnSteering, llm.User("goal objective"), 5, foldID, false),
+		entry(schema.TurnUserInput, llm.User("after the fold"), 6, "", false),
+	}
+
+	type step struct {
+		kind schema.TurnKind
+		text string
+	}
+	want := []step{
+		{schema.TurnSummary, "[CONTEXT SUMMARY]"},
+		{schema.TurnSteering, "goal objective"},
+		{schema.TurnAssistant, "recorded during the fold"},
+		{schema.TurnUserInput, "after the fold"},
+	}
+	got := make([]step, 0, len(want))
+	for _, turn := range ResumeHistory(entries) {
+		got = append(got, step{turn.Kind, turn.Message.Text()})
+	}
+	if len(got) != len(want) {
+		t.Fatalf("resume history = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resume history step %d = %v, want %v (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}

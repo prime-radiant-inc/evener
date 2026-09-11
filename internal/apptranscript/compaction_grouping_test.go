@@ -23,6 +23,14 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 		turn.ContextReplay = true
 		return turn
 	}
+	// A fold now writes its replay copies just AHEAD of its markers, tagging
+	// every record of the run with its own id. This projection ignores the
+	// tag, but a fixture that mirrors what the writer produces is what makes
+	// the case about the on-disk order rather than about a hand-built shape.
+	fold := func(turn schema.Turn) schema.Turn {
+		turn.CompactionFoldID = "fold_grouping"
+		return turn
+	}
 	cases := []struct {
 		name string
 		tail []schema.Turn
@@ -34,6 +42,19 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 			replay(record(schema.TurnAssistant, "assistant", "")),
 			replay(record(schema.TurnRoundTimings, "timing", "turn_active")),
 			record(schema.TurnSteering, "steering", "turn_active"),
+			record(schema.TurnUserInput, "turn_next", ""),
+		}, []string{"turn_active", "turn_next"}},
+		// The same records as the case above, in the order the fold writes
+		// them today: copies first, then the marker they belong to. Replay
+		// records are skipped for items but keep their physical record and
+		// inherit the open group from what precedes them (turn_index.go), so
+		// the run has to group identically either way.
+		{"copies ahead of their marker preserve the open group", []schema.Turn{
+			fold(replay(record(schema.TurnUserInput, "turn_active", ""))),
+			fold(replay(record(schema.TurnAssistant, "assistant", ""))),
+			fold(replay(record(schema.TurnRoundTimings, "timing", "turn_active"))),
+			fold(record(schema.TurnSummary, "summary", "turn_active")),
+			fold(record(schema.TurnSteering, "steering", "turn_active")),
 			record(schema.TurnUserInput, "turn_next", ""),
 		}, []string{"turn_active", "turn_next"}},
 		{"context recovery copies preserve a closed boundary", []schema.Turn{

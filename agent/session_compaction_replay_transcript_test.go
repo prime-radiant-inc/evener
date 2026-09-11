@@ -21,8 +21,10 @@ const (
 
 // compactionReplayTranscript runs one real fold whose publication rewrites a
 // tool round that was appended while the fold was in flight. The rewritten
-// copies carry context_replay, so the returned transcript holds the compaction
-// markers plus a duplicate of the tool call and its result.
+// copies carry context_replay and the fold's id, and sit just ahead of the
+// compaction markers that carry the same id, so the returned transcript holds
+// a duplicate of the tool call and its result followed by the fold's own
+// records.
 func compactionReplayTranscript(t *testing.T) string {
 	t.Helper()
 	entered := make(chan struct{})
@@ -55,7 +57,8 @@ func compactionReplayTranscript(t *testing.T) string {
 	<-entered
 	// Both appends run while the fold sits between its snapshot and its
 	// publication, so the publication merges them into the published history
-	// and rewrites them after the compaction markers as replay copies.
+	// and rewrites them as replay copies just ahead of the compaction
+	// markers, tagged with the same fold id.
 	toolCall := delegateAttentionToolCall(compactionReplayCallID)
 	if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnAssistant, toolCall, toolCall); err != nil {
 		t.Fatalf("append tool call: %v", err)

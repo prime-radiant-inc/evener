@@ -128,18 +128,20 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //     is held across the publish decision AND the fold's own transcript
 //     entries. A turn recorded concurrently (recordTurn: history append,
 //     then transcript write) either completes entirely before this publish
-//     (its entry precedes the fold's markers, and the fold's snapshot or
+//     (its entry precedes the fold's records, and the fold's snapshot or
 //     merge-back accounts for the turn itself) or has its transcript write
-//     queue behind this transaction, sequencing its entry after the markers
-//     — the order ResumeHistory needs, since it anchors on the LAST
-//     compaction marker and discards every entry before it. A competing
-//     fold's own transaction queues the same way, so compaction markers
-//     always land in publish order. The transcript-commit phase also
-//     re-appends the PERSISTED forms of the pairs recorded DURING the fold
-//     (their original entries are already pre-marker) after the markers, so
-//     they stay resume-visible too; the forms come from the session's pair
-//     log — see the rewrite-set comment in the body — never from the live
-//     turns.
+//     queue behind this transaction, sequencing its entry after them — the
+//     order ResumeHistory needs, since it anchors on the LAST compaction
+//     marker and discards every entry before it. A competing fold's own
+//     transaction queues the same way, so compaction markers always land in
+//     publish order. This hold is also what makes the fold's whole run
+//     CONTIGUOUS on disk — its replay copies, then its context-compaction
+//     records, markers and injected steering, with nothing interleaved —
+//     which is the invariant ResumeHistory's anchored branch reassembles the
+//     run by. The copies themselves are the PERSISTED forms of the pairs
+//     recorded DURING the fold, written FIRST, before the markers; the forms
+//     come from the session's pair log — see the rewrite-set comment in the
+//     body — never from the live turns.
 //   - s.mu is nested inside (the codebase-wide attentionMu → s.mu order
 //     writeTranscript itself established; no s.mu-holding caller can reach
 //     attentionMu, since writeTranscript's internal s.mu use would already
@@ -176,8 +178,10 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// delivery commits live only on the persisted form. The pairs' original
 	// entries sit BEFORE the compaction markers this transaction is about to
 	// write — where ResumeHistory's last-marker anchor would silently drop
-	// them on restart — so the transcript-commit phase below re-appends these
-	// forms after the markers. Attention-retained turns and repair synthetics
+	// them on restart — so this transaction re-appends these forms just ahead
+	// of the markers, tagged with the fold id the markers carry, which is how
+	// the anchored branch knows the anchor is entitled to keep them.
+	// Attention-retained turns and repair synthetics
 	// never enter the log (they have no session-transcript pair: the
 	// attention re-fold and ResumeHistory's own repair own their restart
 	// stories), so the rewrite cannot manufacture entries for attention-owned

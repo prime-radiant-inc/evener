@@ -1705,19 +1705,19 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 // must travel with the append, under s.mu. Holding attentionMu across the
 // pair keeps it whole relative to a fold's publication transaction: the pair
 // lands either entirely before the publish — the turn is in the fold's
-// snapshot or merged tail, and its pre-marker entry
-// gets a post-marker copy — or entirely after it, where its entry follows
-// the markers on its own. A half-done pair could otherwise leave a
-// pre-marker entry for a turn the publish never saw (lost on restart) or a
-// post-marker entry racing the transaction's own tail rewrite (duplicated on
+// snapshot or merged tail, and the fold writes a tagged copy of its entry
+// inside the fold's own run — or entirely after it, where its entry follows
+// that run on its own. A half-done pair could otherwise leave an entry the
+// publish never saw with no copy to carry it past the anchor (lost on
+// restart) or one racing the transaction's own tail rewrite (duplicated on
 // restart). On write error nothing is appended; the error returns for the
 // caller to report outside the locks.
 //
 // persisted is the exact transcript form write commits. It is recorded in
 // the session's pair log so a fold publication can re-append that same form
-// after its compaction markers — never the live turn, whose tool results
-// deliberately retain the private evidence the persisted projection replaces
-// with a placeholder.
+// just ahead of its compaction markers — never the live turn, whose tool
+// results deliberately retain the private evidence the persisted projection
+// replaces with a placeholder.
 func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()

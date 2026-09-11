@@ -144,11 +144,13 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 // If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
 // Otherwise returns all turns except the replay copies.
 //
-// A fold re-appends the PERSISTED forms of the pairs recorded during it after
-// its compaction markers, stamped ContextReplay, so the last-marker anchor
-// does not drop them (publishFoldTransaction's tail rewrite). Which side of
-// the anchor those copies are the record of decides what resume must do with
-// them:
+// A fold re-appends the PERSISTED forms of the pairs recorded during it just
+// ahead of its compaction markers, stamped ContextReplay and tagged with the
+// fold id every record of that fold carries, so the last-marker anchor does
+// not drop them (publishFoldTransaction's tail rewrite). One attentionMu hold
+// writes the whole run, so it is contiguous on disk and the anchored branch
+// below can reassemble it from the anchor outward. Which side of the anchor
+// those copies are the record of decides what resume must do with them:
 //
 //   - With an anchor, everything before it is discarded, so the copies are the
 //     ONLY record of those turns and are kept.
