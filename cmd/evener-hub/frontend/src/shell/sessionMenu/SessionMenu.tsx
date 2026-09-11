@@ -49,6 +49,7 @@ export interface SessionMenuProps {
   triggerLabel: string; // sr-only trigger name: "Session actions" / `Actions for ${title}`
   canRename: boolean;
   canShutdown: boolean;
+  canReadNotes: boolean;
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
@@ -77,6 +78,7 @@ export function SessionMenu({
   triggerLabel,
   canRename,
   canShutdown,
+  canReadNotes,
   session,
   treeNode,
   panesOpen,
@@ -128,8 +130,14 @@ export function SessionMenu({
       label: checked(activityLabel ?? "Activity", panesOpen.activity),
       onSelect: () => actions.onOpenPane("activity"),
     },
-    { id: "notes", label: checked("Notes", panesOpen.notes), onSelect: () => actions.onOpenPane("notes") },
   ];
+  if (canReadNotes) {
+    paneItems.push({
+      id: "notes",
+      label: checked("Notes", panesOpen.notes),
+      onSelect: () => actions.onOpenPane("notes"),
+    });
+  }
   if (onOpenVerbosity) {
     paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
   }

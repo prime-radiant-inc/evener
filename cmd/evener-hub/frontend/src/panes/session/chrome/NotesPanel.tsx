@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import type { SessionURL } from "../../../protocol/types.gen";
 import {
   blurHumanNote,
@@ -157,7 +158,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
 
   // Rule 1 of the ordered display rule: capability unset hides the panel
   // body entirely. After the hooks above (Rules of Hooks).
-  if (!model.capabilities.sharedNotes) return null;
+  if (!canReadSharedNotes(model)) return null;
 
   const hasContent = model.humanNote !== "" || model.agentNote !== "" || model.sessionUrls.length > 0;
 
@@ -268,14 +269,23 @@ export const NotesPanel = forwardRef<NotesPanelHandle, NotesPanelProps>(function
   ref,
 ) {
   const [open, setOpen] = useState(false);
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
+  const canReadNotes = canReadSharedNotes(model);
+  useImperativeHandle(
+    ref,
+    () => ({
+      open: () => {
+        if (canReadNotes) setOpen(true);
+      },
+    }),
+    [canReadNotes],
+  );
 
   return (
     <>
       {/* Omitted while hideTrigger is set (SessionChrome collapses this into
           the "..." menu instead). The palette's /notes toggles the
           sessionNotes workspace pane (shell/palette/commands.ts). */}
-      {!hideTrigger && (
+      {!hideTrigger && canReadNotes && (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
           Notes
         </Button>

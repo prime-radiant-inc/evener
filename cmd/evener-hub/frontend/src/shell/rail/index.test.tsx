@@ -187,9 +187,11 @@ class RailTestOuterBoundary extends Component<{ children: ReactNode }, { failure
 }
 
 test("a logic bug in the resolved chunk keeps unwinding past the rail boundary", async () => {
+  const error = new Error("RailHost render logic bug");
+  const onCaughtError = vi.fn();
   vi.mocked(loadRailHost).mockResolvedValue({
     RailHost: () => {
-      throw new Error("RailHost render logic bug");
+      throw error;
     },
   });
 
@@ -197,8 +199,14 @@ test("a logic bug in the resolved chunk keeps unwinding past the rail boundary",
     <RailTestOuterBoundary>
       <RailHost />
     </RailTestOuterBoundary>,
+    { onCaughtError },
   );
 
   expect(await screen.findByText("outer boundary caught: RailHost render logic bug")).toBeTruthy();
   expect(screen.queryByText("Couldn't load the sidebar")).toBeNull();
+  // Capture React's expected diagnostic at this root, not via a broader
+  // console filter. Any additional or different caught error fails here.
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(error);
+  expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(RailTestOuterBoundary);
 });
