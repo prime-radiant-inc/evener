@@ -1030,6 +1030,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.skillLifecycle = meta.Skills.Clone()
 		s.pinnedNoteGen = meta.Skills.PinnedNoteGen
 	}
+	// Resume a persisted compaction operation: an unpublished forced operation
+	// re-arms its round-tail trigger; automatic state restores its elicitation
+	// latch through the persisted record itself; a published operation is
+	// delivery-only. Restart is not cancellation, and a legacy session without
+	// lifecycle metadata resumes with fresh state (no history backfill).
+	if err := s.resumeSkillCompaction(context.Background()); err != nil {
+		return nil, fmt.Errorf("resume skill compaction: %w", err)
+	}
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
 	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read
