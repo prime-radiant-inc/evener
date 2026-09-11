@@ -416,6 +416,10 @@ func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread
 	return thread
 }
 
+// hubCanForkThread fences the alias the client is holding against a live
+// delegate. Its counterpart for the session that alias resolves to is
+// hubForkResolvedSessionFenced: a fence added here is owed there too, or a
+// stable-ref client is advertised a fork the RPC refuses.
 func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {
@@ -443,6 +447,10 @@ func hubForkRecoveryFenced(thread appwire.Thread) bool {
 		slices.Contains(thread.Status.ActiveFlags, "resumeRequired")
 }
 
+// hubForkRecoveryFencedNow fences the alias the client is holding against
+// recovery. Its counterpart for the session that alias resolves to is
+// hubForkResolvedSessionFenced: a fence added here is owed there too, or a
+// stable-ref client is advertised a fork the RPC refuses.
 func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool {
 	if hubForkRecoveryFenced(thread) {
 		return true
@@ -499,15 +507,26 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 			storageAvailable = strings.TrimSpace(entry.StateDir) != ""
 		}
 	}
+	// The alias's own fences first, because they are the cheap ones and they
+	// settle most threads on their own.
+	if !storageAvailable || !hubCanForkThread(cfg, thread) || hubForkRecoveryFencedNow(cfg, thread) {
+		thread.Evener.Capabilities.ForkFromTurn = false
+		return thread
+	}
 	// A fork touches two identities: the alias the client is holding and the
 	// session it currently names. hubThreadFork fences both, so the capability
 	// answers for both — otherwise a stable-ref client is offered a fork of a
-	// session the RPC will refuse. One resolution serves every fence below.
+	// session the RPC will refuse.
+	//
+	// Resolving costs a roster lookup that falls through to a full snapshot scan
+	// whenever the thread is not itself a live daemon's current session, and
+	// this runs once per thread on every thread/list and once per relayed status
+	// notification. So it happens once, after the fences above have already
+	// rejected everything they can, and the one result serves both fences below.
 	sessionID := forkTargetSessionID(cfg, ref.ThreadID)
-	thread.Evener.Capabilities.ForkFromTurn = storageAvailable && hubCanForkThread(cfg, thread) &&
-		!hubForkRecoveryFencedNow(cfg, thread) &&
+	thread.Evener.Capabilities.ForkFromTurn =
 		!hubForkDeletionFenced(cfg, thread.Evener.Ref, ref.ThreadID, sessionID) &&
-		!hubForkResolvedSessionFenced(cfg, ref.ThreadID, sessionID)
+			!hubForkResolvedSessionFenced(cfg, ref.ThreadID, sessionID)
 	return thread
 }
 
