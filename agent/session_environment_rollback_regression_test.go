@@ -1029,3 +1029,39 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
 }
+
+// TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary: the entry
+// and the live event that announces it are one publication. Emitted after the
+// transcript door is released, a concurrent fold can take that door in between,
+// commit its compaction markers and flush its own events, so a live reader sees
+// the compaction ahead of the environment block while the transcript holds them
+// the other way round. The projector reads an environment event as a turn
+// boundary, so live then splits or closes a turn cold replay does not.
+//
+// The door is the statement: while it is held, no fold can publish, so live
+// order is transcript order. A publication that can take the door is a
+// publication that happens outside it.
+func TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	publications := 0
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.beforeEnvironmentEventPublish = func() {
+			publications++
+			if sess.attentionMu.TryLock() {
+				sess.attentionMu.Unlock()
+				t.Error("environment event published with the transcript door open: a fold can commit and flush its own events between the entry and this event")
+			}
+		}
+	})
+
+	if err := sess.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if publications != 1 {
+		t.Fatalf("environment event publications = %d, want the one the appended entry owes", publications)
+	}
+	ids := environmentEventTurnIDs(t, drainPendingEvents(sess))
+	if durable := durableEnvironmentTurnIDs(t, sess); !reflect.DeepEqual(ids, durable) {
+		t.Fatalf("live environment events = %v, want the durable entries %v they announce", ids, durable)
+	}
+}

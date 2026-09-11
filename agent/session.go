@@ -1676,12 +1676,15 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		s.envContextState = &st
 		s.mu.Unlock()
 	}
+	if committed && publishEvent {
+		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
+			hook()
+		}
+		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+	}
 	s.attentionMu.Unlock()
 	if committed {
 		s.maybeAutoSave()
-		if publishEvent {
-			s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
-		}
 	}
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
