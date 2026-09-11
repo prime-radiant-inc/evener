@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"strings"
+
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -11,6 +14,13 @@ type ImageAttachment struct {
 	MediaType string `json:"media_type"`     // MIME type, e.g. "image/png"
 	Data      []byte `json:"data"`           // raw image bytes (base64 in JSON)
 	Name      string `json:"name,omitempty"` // original filename, when known
+}
+
+// inputHasContent reports whether a durable input's typed parts carry
+// content. Prose, image attachments, and selected skill identities all count:
+// a selection-only input is content even with no text of its own.
+func inputHasContent(text string, images []ImageAttachment, skillNames []string) bool {
+	return strings.TrimSpace(text) != "" || len(images) > 0 || len(skillNames) > 0
 }
 
 // userInputImagesFromAttachments converts the attachments into the
@@ -52,4 +62,32 @@ func buildUserInputMessage(input string, images []ImageAttachment) llm.Message {
 		})
 	}
 	return llm.Message{Role: llm.RoleUser, Content: parts}
+}
+
+// skillSelectionMarker is the text part a selection-only input carries on its
+// user turn: an empty user message is not representable on every provider,
+// and the typed selection itself rides the turn's SkillState, which is what
+// replay and UIs read.
+func skillSelectionMarker(skillNames []string) string {
+	return "[skill selection: " + strings.Join(skillNames, ", ") + "]"
+}
+
+// buildSelectedUserInputMessage renders the user turn for an input that may
+// carry a durable skill selection. Prose and attachments render as
+// themselves; a selection-only input renders the bracketed selection marker so
+// the recorded turn is never an empty user message.
+func buildSelectedUserInputMessage(input string, images []ImageAttachment, skillNames []string) llm.Message {
+	if strings.TrimSpace(input) != "" || len(images) > 0 || len(skillNames) == 0 {
+		return buildUserInputMessage(input, images)
+	}
+	return llm.User(skillSelectionMarker(skillNames))
+}
+
+// skillInputNames returns the selection's canonical names, nil-safe for
+// inputs without one.
+func skillInputNames(input *schema.SkillInputRecord) []string {
+	if input == nil {
+		return nil
+	}
+	return input.Names
 }

@@ -861,6 +861,7 @@ type drainInputs struct {
 	FollowUp             string
 	QueuedText           string
 	QueuedImages         int
+	QueuedSkills         int
 	NotificationsPending bool
 	Awaiting             bool
 }
@@ -910,7 +911,7 @@ const (
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
 	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting
 	if in.Awaiting {
-		if strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 {
+		if strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 {
 			return runQueued, skipGoalGate
 		}
 		return goIdle, skipGoalGate
@@ -918,7 +919,7 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
 	switch {
 	case strings.TrimSpace(in.FollowUp) != "":
 		return runFollowUp, skipGoalGate
-	case strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0:
+	case strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0:
 		return runQueued, skipGoalGate
 	case in.RanKind != EntryNotification && in.NotificationsPending:
 		return runNotification, skipGoalGate
@@ -1068,6 +1069,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			stopSettledThisTurn = stopFinalized
 		}
 		processCtx = context.WithValue(processCtx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{})
+		// The durable selection belonged to the turn that just ran; a
+		// follow-up turn must not re-admit it.
+		processCtx = withDurableSkillSelection(processCtx, nil)
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
 		nextImages = nil
@@ -1147,10 +1151,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						// transcript is what stopped the drain.
 						if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
 							err = errors.Join(err, refusal)
-						} else if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
+						} else if queued := s.popQueueHead(); inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
 							next = queued.Text
 							nextImages = queued.Images
-							processCtx = withQueuedClientMutation(cfg.nextTurnContext(), queued)
+							processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(cfg.nextTurnContext(), queued), queued)
 							s.mu.Lock()
 							s.sessionEndEmitted = false
 							s.mu.Unlock()
@@ -1240,7 +1244,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			queued = s.popQueueHead()
 		}
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
-			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
+			!inputHasContent(queued.Text, queued.Images, queued.SkillNames)
 		notificationsPending := false
 		// After a terminal communicate, notification work is left to the one-shot
 		// drain rather than run here: a completion the model was never shown is
@@ -1258,6 +1262,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			FollowUp:             fu,
 			QueuedText:           queued.Text,
 			QueuedImages:         len(queued.Images),
+			QueuedSkills:         len(queued.SkillNames),
 			NotificationsPending: notificationsPending,
 			Awaiting:             awaiting,
 		})
@@ -1272,7 +1277,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		case runQueued:
 			next = queued.Text
 			nextImages = queued.Images
-			processCtx = withQueuedClientMutation(processCtx, queued)
+			processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(processCtx, queued), queued)
 			s.mu.Lock()
 			s.sessionEndEmitted = false
 			s.mu.Unlock()
@@ -1539,13 +1544,23 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// is expanded too), but a goal continuation's or notification's synthesized
 	// text never is.
 	//
+	// A durable client skill selection owns this input's skill route instead:
+	// it was prepared at claim time against the input's durable identity, the
+	// prose stays the user's own text, and slash expansion is skipped so a
+	// slash-looking prose token cannot execute a command while a structured
+	// selection rides the same input.
+	//
 	// Skill routes keep the original input as the turn's text; their prepared
 	// activations admit below, after the input turn is recorded. A known skill
 	// failure is a visible failed input, never ordinary chat fall-through.
 	var skillSelection *schema.SkillInputRecord
 	var skillBatch *skillActivationBatch
 	var skillRouteErr error
-	if kind == EntryUserInput {
+	if durable := durableSkillSelectionFromContext(ctx); durable != nil && kind == EntryUserInput {
+		skillSelection = durable.Selection
+		skillBatch = durable.Batch
+		skillRouteErr = durable.Err
+	} else if kind == EntryUserInput {
 		result := s.expandSlashCommand(ctx, input)
 		if result.Handled {
 			input = result.Text
@@ -2216,7 +2231,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
-			turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
 			if skillInput != nil {
 				turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 			}
@@ -2228,7 +2243,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			}
 		}
 	} else {
-		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
 		turn.StableTurnID = queuedIdentity.StableTurnID
 		if skillInput != nil {

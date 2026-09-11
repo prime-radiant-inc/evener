@@ -209,10 +209,32 @@ Names must be non-blank and are trimmed; duplicate selections are passed
 through for the runtime's identity and invocation policy to judge. Exact
 catalog identity and invocation policy remain consumption-time checks.
 
+Selections are consumed at the input's actual claim, not at submission: the
+queued or started input keeps its selection across the durable queue, journal
+payload, queue returns, drains, and restarts, and the claimed input prepares
+all of its selections as one atomic group tied to the input's durable identity
+(its queue entry, or the stable turn a start or steering mutation reserved).
+Preparation resolves each name against the exact catalog identity — a bare
+suffix or unknown name fails rather than retargeting — loads the complete
+current bytes from the recorded `SKILL.md`, and checks the current invocation
+flags. Bytes changed on disk after queueing are what the consumption delivers.
+
+Consumption is all-or-nothing. A group whose second selection cannot be
+prepared activates nothing and dispatches no dependent model work: the input
+is recorded as a visible failed input that keeps both the names and the
+original prose for correction and an explicit retry. A steering input whose
+selection fails is never downgraded to text: the unrelated in-flight turn
+keeps running with none of that steering input — not the bodies, not the
+prose — while a prominent failed-steering record persists before the pending
+execution clears, again keeping the names and prose for retry.
+
 Submission is capability-gated. `ThreadCapabilities.skillInput` advertises
-whether a thread accepts skill items; where it is false, a skill item is an
-unsupported-input error rather than a silently degraded message. Diagnostics
-carry the catalog context clients need to build a selection UI:
+whether a thread accepts skill items; a daemon-sourced thread advertises it
+exactly when its input-bearing turn mutations (turn/start, turn/steer,
+turn/queue, turn/drainAsSteer) are wired to consume selections, and anywhere
+it is false a skill item is an unsupported-input error rather than a silently
+degraded message. Diagnostics carry the catalog context clients need to build
+a selection UI:
 `EvenerSkillInfo` reports `disableModelInvocation`, `userInvocable`,
 `available`, and preserved `allowedTools` metadata, while
 `EvenerDiagnostics.skillDiagnostics` reports discovery problems (collisions,

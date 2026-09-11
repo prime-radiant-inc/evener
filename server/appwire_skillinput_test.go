@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"sort"
 	"testing"
@@ -10,14 +9,13 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// TestTurnMutationsRejectSkillInputUntilWired pins the runtime half of the
-// canonical skill input contract: the daemon decodes and normalizes canonical
-// skill selections, but no mutation endpoint consumes them yet, so each
-// input-bearing mutation answers an unsupported-input invalidParams error
-// without ever reaching the retry-safe seam, and the advertised
-// ThreadCapabilities keeps SkillInput false until per-endpoint consumption is
-// wired.
-func TestTurnMutationsRejectSkillInputUntilWired(t *testing.T) {
+// TestTurnMutationsConsumeSkillInputWhenWired pins the runtime half of the
+// canonical skill input contract now that per-endpoint consumption is wired:
+// each of the four input-bearing turn mutations passes a canonical skill
+// selection through to its retry-safe seam instead of answering an
+// unsupported-input error, and the advertised ThreadCapabilities.SkillInput
+// is true exactly when the daemon wired the seams that consume selections.
+func TestTurnMutationsConsumeSkillInputWhenWired(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	called := map[string]bool{}
@@ -41,15 +39,13 @@ func TestTurnMutationsRejectSkillInputUntilWired(t *testing.T) {
 	})
 	skillSelection := []appwire.InputItem{{Type: "skill", Name: "pkg:probe"}}
 
-	assertUnsupported := func(t *testing.T, method string, err error) {
+	assertConsumed := func(t *testing.T, method string, err error, reached bool) {
 		t.Helper()
-		var wire appwire.WireError
-		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-			t.Fatalf("%s with skill input error = %T %v, want invalidParams", method, err, err)
+		if err != nil {
+			t.Fatalf("%s with skill input error = %T %v, want the seam to consume it", method, err, err)
 		}
-		want := appwire.ValidateSkillInputSupport(skillSelection, false)
-		if err.Error() != want.Error() {
-			t.Fatalf("%s error is not the skill-unsupported verdict: got %q want %q", method, err, want)
+		if !reached {
+			t.Fatalf("%s seam never ran for a skill-only selection", method)
 		}
 	}
 
@@ -60,7 +56,7 @@ func TestTurnMutationsRejectSkillInputUntilWired(t *testing.T) {
 			ExpectedInstanceID: "th_1",
 			Input:              skillSelection,
 		})
-		assertUnsupported(t, appwire.MethodTurnStart, err)
+		assertConsumed(t, appwire.MethodTurnStart, err, called["start"])
 	})
 	t.Run("turn/steer", func(t *testing.T) {
 		_, err := srv.handleAppTurnSteer(context.Background(), appwire.TurnSteerParams{
@@ -69,7 +65,7 @@ func TestTurnMutationsRejectSkillInputUntilWired(t *testing.T) {
 			ExpectedInstanceID: "th_1",
 			Input:              skillSelection,
 		})
-		assertUnsupported(t, appwire.MethodTurnSteer, err)
+		assertConsumed(t, appwire.MethodTurnSteer, err, called["steer"])
 	})
 	t.Run("turn/queue", func(t *testing.T) {
 		_, err := srv.handleAppTurnQueue(context.Background(), appwire.TurnQueueParams{
@@ -78,7 +74,7 @@ func TestTurnMutationsRejectSkillInputUntilWired(t *testing.T) {
 			ExpectedInstanceID: "th_1",
 			Input:              skillSelection,
 		})
-		assertUnsupported(t, appwire.MethodTurnQueue, err)
+		assertConsumed(t, appwire.MethodTurnQueue, err, called["queue"])
 	})
 	t.Run("turn/drainAsSteer", func(t *testing.T) {
 		_, err := srv.handleAppTurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
@@ -88,16 +84,33 @@ func TestTurnMutationsRejectSkillInputUntilWired(t *testing.T) {
 			ExpectedQueueRevision: 1,
 			Input:                 skillSelection,
 		})
-		assertUnsupported(t, appwire.MethodTurnDrainAsSteer, err)
+		assertConsumed(t, appwire.MethodTurnDrainAsSteer, err, called["drain"])
 	})
 
-	for method, invoked := range called {
-		if invoked {
-			t.Fatalf("%s seam ran for a skill-only selection", method)
-		}
+	if caps := srv.appCapabilities("idle", false); !caps.SkillInput {
+		t.Fatal("advertised ThreadCapabilities.SkillInput is false with all input-bearing turn mutations wired")
 	}
-	if caps := srv.appCapabilities("idle", false); caps.SkillInput {
-		t.Fatal("advertised ThreadCapabilities.SkillInput is true before runtime consumption is wired")
+
+	// A server that wired none of the input-bearing seams has nothing that
+	// consumes a selection, so it must not advertise the capability.
+	bare := NewServer(ServerConfig{})
+	bare.SetAppIdentity("local", "th_2")
+	if caps := bare.appCapabilities("idle", false); caps.SkillInput {
+		t.Fatal("advertised ThreadCapabilities.SkillInput is true with no input-bearing turn mutations wired")
+	}
+	// Partial wiring is not a consumable input surface either: the thread
+	// advertises skill input only when every input-bearing endpoint consumes
+	// selections, so a client reading the capability can trust every one of
+	// them.
+	partial := NewServer(ServerConfig{})
+	partial.SetAppIdentity("local", "th_3")
+	partial.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			return appwire.TurnQueueResponse{}, nil
+		},
+	})
+	if caps := partial.appCapabilities("idle", false); caps.SkillInput {
+		t.Fatal("advertised ThreadCapabilities.SkillInput is true with only part of the input surface wired")
 	}
 }
 
