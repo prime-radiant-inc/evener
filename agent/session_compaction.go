@@ -214,12 +214,20 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
 	}
-	commit.commitTranscriptsLocked()
+	markerLanded := commit.commitTranscriptsLocked()
 	var mergedTailWriteErrs []error
-	for _, turn := range rewriteTail {
-		turn.ContextReplay = true
-		if err := s.writeTranscriptDurableLocked(turn); err != nil {
-			mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+	// The rewrite exists only to carry these pairs PAST a marker this fold
+	// landed, because ResumeHistory anchors on the last one and discards
+	// everything before it. A fold that landed none moved no anchor, so the
+	// pairs' own entries are already on the surviving side and a copy is a
+	// pure duplicate: written anyway, an earlier fold's marker would make the
+	// anchored read return the pair twice.
+	if markerLanded {
+		for _, turn := range rewriteTail {
+			turn.ContextReplay = true
+			if err := s.writeTranscriptDurableLocked(turn); err != nil {
+				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+			}
 		}
 	}
 	s.attentionMu.Unlock()
@@ -329,9 +337,11 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // the note would stay globally visible, so a concurrent fold could re-inject
 // it, and an unconditional clear could erase a newer note pinned mid-fold.
 // commitTranscriptsLocked appends the fold's own transcript entries and MUST
-// run under the same attentionMu hold that decided the publish. flush
-// commits the remaining deferred effects, outside the locks. A losing fold
-// runs none of them.
+// run under the same attentionMu hold that decided the publish; it reports
+// whether a CHECKPOINT/SUMMARY marker actually landed, which is what decides
+// whether the tail rewrite has anything to carry past. flush commits the
+// remaining deferred effects, outside the locks. A losing fold runs none of
+// them.
 //
 // publishedRevision is the historyRevision this fold's publish produced,
 // set by the publisher inside the publish's s.mu critical section: flush
@@ -340,7 +350,7 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // runs first.
 type foldCommit struct {
 	claimNoteLocked              func()
-	commitTranscriptsLocked      func()
+	commitTranscriptsLocked      func() bool
 	flush                        func()
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
@@ -545,7 +555,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	var compactionTurnWriteErrs []error
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
-	commitTranscriptsLocked := func() {
+	commitTranscriptsLocked := func() bool {
 		compactionEventWriteErrs = make([]error, len(pendingCompactionEvents))
 		for i, event := range pendingCompactionEvents {
 			payload := event.Compaction()
@@ -555,10 +565,17 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
+		markerLanded := false
 		for i, turn := range pendingCompactionTurns {
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+			// The kinds ResumeHistory anchors on, and only those: a
+			// TurnContextCompaction record moves no anchor.
+			if compactionTurnWriteErrs[i] == nil && isSessionNameCompactionTurn(turn) {
+				markerLanded = true
+			}
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
+		return markerLanded
 	}
 	commit := &foldCommit{}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {

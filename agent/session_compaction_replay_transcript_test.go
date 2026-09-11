@@ -221,3 +221,67 @@ func TestCompactionReplay_ResumeHistoryRetainsReplayCopies(t *testing.T) {
 		}
 	}
 }
+
+// A fold publishes on every model request, whether or not its layers produced
+// a replacement marker (session_model_call.go's ManageContext block is gated
+// only on s.strategy != nil). The tail rewrite exists so pairs recorded DURING
+// a fold survive ResumeHistory's last-marker anchor, which discards everything
+// before that marker — but a fold that landed no marker moved no anchor, so
+// those pairs' own entries are already on the surviving side and a copy of
+// them is a pure duplicate. Writing one leaves the transcript holding both,
+// and against an EARLIER fold's marker the anchored branch returns the pair
+// twice.
+func TestCompactionReplay_NoMarkerFoldWritesNoReplayTail(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}),
+		withoutGitSnapshot(),
+	)
+	const durableText = "recorded while a marker-less fold was in flight"
+
+	s.mu.Lock()
+	histCopy := append([]schema.Turn{}, s.history...)
+	snapLen := len(s.history)
+	snapRevision := s.historyRevision
+	snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
+	s.mu.Unlock()
+
+	// The pair lands after the fold's snapshot, so it is exactly what the tail
+	// rewrite would re-append.
+	msg := llm.User(durableText)
+	if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+		t.Fatalf("durable append: %v", err)
+	}
+
+	// Stage and publish without running any layer: no checkpoint, no summary.
+	_, _, commit, _ := s.stageCompactionEffects(context.Background(), &histCopy)
+	if _, ok := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, nil); !ok {
+		t.Fatal("fold lost the publication race with nothing else publishing")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	markers, copies, originals := 0, 0, 0
+	for _, entry := range data.Entries {
+		switch {
+		case entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary:
+			markers++
+		case entry.Turn.ContextReplay:
+			copies++
+		case entry.Turn.Message.Text() == durableText:
+			originals++
+		}
+	}
+	if markers != 0 {
+		t.Fatalf("test setup: the fold landed %d replacement markers, so this is not the marker-less path", markers)
+	}
+	if originals != 1 {
+		t.Fatalf("durable pair reached the transcript %d times, want once", originals)
+	}
+	if copies != 0 {
+		t.Fatalf("marker-less fold wrote %d replay copies; nothing discards the originals, so each is a duplicate", copies)
+	}
+}
