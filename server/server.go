@@ -62,10 +62,16 @@ type MCPServerInfo struct {
 	Error  string   `json:"error,omitempty"`
 }
 
-// SkillInfo describes a discovered skill.
+// SkillInfo describes a discovered skill. The invocation-control and
+// availability fields are copies of the Stage 1 skill-catalog values
+// (agent/skill); the server adds no policy of its own.
 type SkillInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name                   string   `json:"name"`
+	Description            string   `json:"description"`
+	DisableModelInvocation bool     `json:"disable_model_invocation"`
+	UserInvocable          bool     `json:"user_invocable"`
+	Available              bool     `json:"available"`
+	AllowedTools           []string `json:"allowed_tools,omitempty"`
 }
 
 // PluginStatusInfo summarizes a loaded plugin.
