@@ -291,7 +291,9 @@ root_package_list_timeout_diagnostic() {
 }
 
 # root_package_list_group_survivors PGID — print `pid(state)` for every live
-# member of PGID, zombies excluded.
+# member of PGID, zombies excluded. Exit status 0 means the printed answer is
+# trustworthy; 2 means the process listing itself failed, so nothing is known
+# about the group and an empty answer must NOT be read as "gone".
 #
 # Zombies have to be excluded, and `kill -0 -- -PGID` cannot do it. A process
 # the kernel has finished with stays a member of its own group until its parent
@@ -300,15 +302,26 @@ root_package_list_timeout_diagnostic() {
 # shell had not got round to reaping it — a successful kill reported as a
 # survivor, purely on reap timing. Asking `ps` for the state instead makes the
 # answer independent of when anyone reaps.
+#
+# The status is separate from the output because the two failures look
+# identical otherwise. A `ps` that cannot run prints nothing, and a caller
+# reading that as "no live members" starts the next attempt while the timed-out
+# one is still writing its package list and holding Go's cache locks — the
+# exact race the stop exists to prevent.
 root_package_list_group_survivors() {
-	ps -axo pid=,pgid=,state= 2>/dev/null |
-		awk -v pgid="$1" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
+	local pgid="$1" listing
+	if ! listing="$(ps -axo pid=,pgid=,state= 2>/dev/null)" || [ -z "$listing" ]; then
+		return 2
+	fi
+	printf '%s\n' "$listing" |
+		awk -v pgid="$pgid" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
 }
 
 # stop_root_package_list_group PGID — stop one package-list attempt and prove
-# nothing of it is still running. Returns non-zero when the group still has a
-# live member after the escalation, which is the caller's signal to stop
-# retrying.
+# nothing of it is still running. Returns 0 when the group is confirmed empty,
+# 1 when it still has a live member after the escalation, and 2 when liveness
+# could not be determined at all. Only 0 permits a retry: both non-zero answers
+# mean the caller cannot show the attempt is gone.
 #
 # By group, not by process tree: a snapshot of descendants plus a signal to
 # what it showed misses a child forked after the snapshot, and one that
@@ -322,20 +335,22 @@ root_package_list_group_survivors() {
 # mode a background job is its own process group whose id is the job's pid,
 # which is why the caller can pass the pid it already holds.
 stop_root_package_list_group() {
-	local pgid="$1" signal waited ticks
+	local pgid="$1" signal waited ticks alive
 	ticks=$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))
 	for signal in TERM KILL; do
 		kill -"$signal" -- -"$pgid" 2>/dev/null || :
 		waited=0
 		while [ "$waited" -lt "$ticks" ]; do
-			if [ -z "$(root_package_list_group_survivors "$pgid")" ]; then
+			alive="$(root_package_list_group_survivors "$pgid")" || return 2
+			if [ -z "$alive" ]; then
 				return 0
 			fi
 			sleep 0.1
 			waited=$((waited + 1))
 		done
 	done
-	if [ -z "$(root_package_list_group_survivors "$pgid")" ]; then
+	alive="$(root_package_list_group_survivors "$pgid")" || return 2
+	if [ -z "$alive" ]; then
 		return 0
 	fi
 	return 1
@@ -343,7 +358,7 @@ stop_root_package_list_group() {
 
 run_root_package_list() {
 	local package_list="$1" package_list_stderr attempt attempt_list
-	local list_pid list_pgid started_at list_status descendant survivors
+	local list_pid list_pgid started_at list_status descendant survivors stop_status
 	package_list_stderr="${package_list}.stderr"
 	# Every attempt appends under its own heading, so the diagnostic still names
 	# one retained log and whoever reads it sees what each attempt said.
@@ -386,16 +401,23 @@ run_root_package_list() {
 						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" >&2
 					return 1
 				fi
-				if ! stop_root_package_list_group "$list_pid"; then
+				stop_status=0
+				stop_root_package_list_group "$list_pid" || stop_status=$?
+				if [ "$stop_status" -ne 0 ]; then
 					# Deliberately no wait: SIGKILL does not land on a
 					# process in uninterruptible sleep, which is exactly the
 					# stalled-volume case this bound exists for, and waiting
 					# on it would replace the bound with an indefinite hang.
-					# Name the survivors instead and fail.
-					survivors="$(root_package_list_group_survivors "$list_pid")"
+					# Name what is known instead and fail.
 					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
-					printf 'run-module-tests.sh: attempt %s would not stop: process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and not waiting on it.\n' \
-						"$attempt" "$list_pid" "${survivors:-<none at the final probe>}" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
+					if [ "$stop_status" -eq 2 ]; then
+						printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: the process listing that answers "is process group %s empty" would not run. Not retrying, because a retry that cannot see the previous attempt would race it.\n' \
+							"$attempt" "$list_pid" >&2
+					else
+						survivors="$(root_package_list_group_survivors "$list_pid")" || survivors=""
+						printf 'run-module-tests.sh: attempt %s would not stop: process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and not waiting on it.\n' \
+							"$attempt" "$list_pid" "${survivors:-<none at the final probe>}" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
+					fi
 					return 1
 				fi
 				# The group has no live member, so the leader is a zombie or
