@@ -1447,3 +1447,106 @@ func TestHubForkRefusesWhenItsTargetMovesUnderTheLocks(t *testing.T) {
 		})
 	}
 }
+
+// The roster is an asynchronous snapshot: a daemon rewrites its rendezvous
+// entry as it swaps sessions (cmd/evener/serve.go's clear hook, through
+// rvreg.UpdateSessionID), and the roster only learns of it when its watcher
+// next re-lists. A recheck that asks the roster therefore compares one stale
+// reading to the same stale reading and passes, so the post-lock recheck reads
+// the rendezvous directly — the source resumeOwnershipStep reads, and the
+// reason resumeThread's own recheck is not fooled.
+//
+// The fixture is that delayed watcher: hubRosterList keeps answering with the
+// pre-clear session for every call, while the real rendezvous entry in the run
+// dir moves to a new session id at the moment the pre-lock resolution happens.
+func TestHubForkRechecksItsTargetAgainstTheRendezvousNotTheRoster(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cleared bool
+	}{
+		{name: "rendezvous still names the resolved session"},
+		{name: "rendezvous moved while the roster stayed stale", cleared: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			retiredID := buildRPCParentSession(t, stateDir)
+			firstID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, firstID, t.TempDir())
+			buildRPCSessionWithWorkingDir(t, stateDir, secondID, t.TempDir())
+			runDir := t.TempDir()
+			daemonEntry := func(sessionID string) rendezvous.Entry {
+				return rendezvous.Entry{
+					PID: os.Getpid(), SourceID: "local", ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
+					WorkspaceRef: "local:" + retiredID, StateDir: stateDir,
+					Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+				}
+			}
+			writeRendezvous(t, runDir, daemonEntry(firstID))
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: firstID, status: appwire.ThreadStatusIdle})
+			roster.Refresh()
+			if _, found := roster.Find(retiredID); found {
+				t.Fatal("the roster answers the stable ref directly; this fixture does not exercise the workspace-ref scan")
+			}
+
+			// The watcher never runs: every roster answer stays pre-clear.
+			const resolutionCall = 2
+			calls := 0
+			previousList := hubRosterList
+			hubRosterList = func(*hubcore.Roster) []hubcore.LiveEntry {
+				calls++
+				if tc.cleared && calls == resolutionCall {
+					// thread/clear lands here, between the pre-lock resolution
+					// and the locks: the daemon's rendezvous entry moves to its
+					// replacement session while the roster still says otherwise.
+					writeRendezvous(t, runDir, daemonEntry(secondID))
+				}
+				return []hubcore.LiveEntry{{
+					Entry: daemonEntry(firstID), SessionID: firstID, Status: appwire.ThreadStatusIdle,
+				}}
+			}
+			t.Cleanup(func() { hubRosterList = previousList })
+
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			before, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			after, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if calls < resolutionCall {
+				t.Fatalf("admission consulted the roster %d times, so the clear this test stages never landed", calls)
+			}
+			if !tc.cleared {
+				if err != nil {
+					t.Fatalf("fork whose rendezvous still names the resolved session: %v", err)
+				}
+				if len(after) != len(before)+1 {
+					t.Fatalf("admitted fork branched %d children, want 1", len(after)-len(before))
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("fork branched a session the rendezvous had already stopped naming")
+			}
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeUnavailable || isTargetDeletedError(err) {
+				t.Fatalf("fork error=%v, want a retryable structured unavailable", err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+			}
+		})
+	}
+}

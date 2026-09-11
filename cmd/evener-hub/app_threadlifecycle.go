@@ -842,7 +842,18 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	// below would then reserve one session while the branch read another. Refuse
 	// instead, the same recheck resumeThread performs after acquiring these
 	// mutexes; the client re-reads and asks again.
-	if forkTargetSessionID(cfg, ref.ThreadID) != sessionID {
+	//
+	// Both sources the hub can read cheaply under the locks have to still agree
+	// with the pre-lock answer. The rendezvous is the one that catches a clear:
+	// the roster learns of it only when its watcher next re-lists, so asking the
+	// roster alone would compare the pre-lock reading to the same stale reading.
+	// Refreshing the roster here is not the alternative — that probes daemons
+	// while two per-session mutexes are held.
+	current, rendezvousErr := forkTargetSessionIDUnderLock(cfg, ref.ThreadID)
+	if rendezvousErr != nil {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("cannot verify session ownership: " + rendezvousErr.Error())
+	}
+	if current != sessionID || forkTargetSessionID(cfg, ref.ThreadID) != sessionID {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("session ownership changed; refresh before forking")
 	}
 	// Deletion across every identity first, then recovery across every
@@ -981,6 +992,44 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 	return hubForkRecoveryFenced(appwire.Thread{
 		Status: appwire.ThreadStatus{Type: owner.Status, ActiveFlags: owner.ActiveFlags},
 	})
+}
+
+// forkTargetSessionIDUnderLock resolves the session the requested thread names
+// right now, from the sources a clear updates synchronously: the rendezvous
+// entry the daemon rewrites as it swaps sessions (cmd/evener/serve.go's clear
+// hook writes it through rvreg.UpdateSessionID, before the replacement session
+// goes live, so the file is never behind the daemon), and the recovery locks'
+// own resolution for a redirect whose daemon has since exited. Those are the
+// two resumeOwnershipStep reads, which is why resumeThread's recheck is not
+// fooled by a roster that has not caught up.
+//
+// With no run dir configured, and for a thread nothing currently claims, it
+// answers the requested id — the same thing the roster-backed resolution
+// answers when no live daemon owns the thread.
+func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (string, error) {
+	if cfg.RunDir != "" {
+		entries, err := rendezvous.ListStrict(cfg.RunDir)
+		if err != nil {
+			return "", err
+		}
+		for _, entry := range entries {
+			if entry.SourceID != "" && entry.SourceID != "local" {
+				continue
+			}
+			if !slices.Contains(forceStopAliases(entry), threadID) {
+				continue
+			}
+			if id := cmp.Or(entry.SessionID, entry.ThreadID); id != "" {
+				return id, nil
+			}
+		}
+	}
+	if cfg.ResumeLocks != nil {
+		if id := cmp.Or(cfg.ResumeLocks.RecoveryState(threadID).ResumeSessionID, cfg.ResumeLocks.ResolvedSessionID(threadID)); id != "" {
+			return id, nil
+		}
+	}
+	return threadID, nil
 }
 
 // forkFenceTargets is every identity one fork has to reserve, in request order:
