@@ -539,15 +539,20 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 }
 
 // poisonLandedBytesLocked stops the writer when a failed write left bytes at
-// the tail of the file that no later append may run onto. A write that
-// transferred nothing left nothing to guard: the file and the position are as
-// they were, so the writer stays usable and a retry still lands. A whole line
-// that landed is a record a reader will see, so it spends its sequence number
-// and counts the failures it settles before the writer stops.
+// the tail of the file that no later append may run onto, and marks those bytes
+// for Close to flush. A write that transferred nothing left nothing to guard:
+// the file and the position are as they were, so the writer stays usable and a
+// retry still lands. A whole line that landed is a record a reader will see, so
+// it spends its sequence number and counts the failures it settles before the
+// writer stops.
 func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int) {
 	if written == 0 {
 		return
 	}
+	// Nothing synced what landed, and Close flushes only what it is told is
+	// dirty. An entry counted here but left out of that flush is one the writer
+	// reports and the disk may never receive.
+	w.dirty = true
 	if written == lineLen {
 		w.countAppendedEntryLocked(turn)
 	}

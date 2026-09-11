@@ -144,6 +144,12 @@ type partialWriteFile struct {
 	transferBeforeFailure int
 	writeFailure          error
 	truncateFailure       error
+	syncs                 int
+}
+
+func (f *partialWriteFile) Sync() error {
+	f.syncs++
+	return f.File.Sync()
 }
 
 func (f *partialWriteFile) Write(p []byte) (int, error) {
@@ -441,4 +447,24 @@ func TestAppend_RetriesAfterAFailedReposition(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	assertSingleLandedEntry(t, path, "lands at the end")
+}
+
+// A buffered write that landed the whole line before failing left bytes in the
+// file that nothing has synced. Close is the writer's last chance to make them
+// durable and it syncs only what it knows is dirty, so a failure path that
+// counts the entry and leaves the writer clean hands back a file whose last
+// record never reached the disk.
+func TestAppend_WholeLineFailureLeavesTheWriterDirtyForClose(t *testing.T) {
+	w, fs := armPartialWriteFailure(t, math.MaxInt32)
+
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("landed unsynced"))); err == nil {
+		t.Fatal("buffered append reported success over an injected write failure")
+	}
+	before := fs.file.syncs
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := fs.file.syncs - before; got != 1 {
+		t.Fatalf("Close made %d syncs, want the one that flushes the line the failed append left in the file", got)
+	}
 }
