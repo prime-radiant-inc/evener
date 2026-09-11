@@ -101,7 +101,8 @@ func (s *residualServeServer) SetClearFunc(f func(context.Context, appwire.Threa
 }
 func (s *residualServeServer) SetShutdownFunc(f func()) { s.shutdown = f }
 
-func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
+func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID string) {
+	t.Helper()
 	ctx := context.Background()
 	_ = s.escalate("missing", false)
 	_ = s.compact(ctx)
@@ -290,7 +291,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		}
 		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error { return boom }
 		d.serveHTTP = func(*http.Server, net.Listener) error {
-			exerciseResidualCallbacks(captured, sessionID)
+			exerciseResidualCallbacks(t, captured, sessionID)
 			data, err := captured.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
 			if err != nil {
 				t.Fatalf("jobs callback: %v", err)
