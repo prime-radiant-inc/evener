@@ -3890,3 +3890,65 @@ Verify each finding against the code before touching it; a finding that cannot o
 2. `make test-native` green with counts; for Medium 2 additionally `npx biome check --write` on the touched web file and `make test-web` from the worktree root.
 3. Do not push. Do not merge main. Match each file's house style (tabs vs spaces per file).
 4. Append a "Task 66" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-54-report.md` with RED/GREEN evidence per finding and the gate outputs; reply with status, commit SHAs, one-line test summary, concerns.
+
+## Task 67: PR #1105 round 15 (head 0707f7c) — local fork capability, RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1105 (branch codex/mobile-fork-capability), package `cmd/evener-hub`.
+
+### RoboRev verdict (verbatim, 3 reviewers; review 2 found no issues)
+
+## roborev: Combined Review (`0707f7c`)
+
+## Verdict: Logic is correct and well-reasoned, but the fork projection is computed on hot paths more often than it can change, with minor capability-admission and redirect-traversal gaps.
+
+**Medium**
+
+- **`cmd/evener-hub/app_threadlifecycle.go:1131`** — `forkRedirectSessionID` follows only one completed recovery redirect. If aliases resolve transitively (`A → B → C`), forking through `A` branches `B` instead of the current `C`; redirect cycles are also not detected. The under-lock resolver inherits the same one-hop behavior.
+  - *Fix:* Traverse completed redirects to a fixed point with cycle detection, while preserving pending-recovery fences and using the same resolver before and after locking.
+
+- **`cmd/evener-hub/web_workspace.go:120-124` and `cmd/evener-hub/web_api_tree.go:1113-1115`** — Workspace capability projection still derives `Fork` from `pastExists` or direct daemon capabilities, while the new hub fork admission rejects live delegates, recovery-fenced sessions, deletion-fenced sessions, and some stable-ref targets. REST/workspace clients can therefore hide a valid hub fork or advertise one that the RPC rejects.
+  - *Fix:* Route workspace/API capability generation through the same hub-owned fork projection, including stable-ref resolution and all recovery, ownership, and deletion fences.
+
+- **`cmd/evener-hub/app_relay.go:614-618`** — `ownsFork` is computed for every relayed notification on a local relay key, but its only consumers (`stampClosedThreadCapabilities`, `stampForkCapability`) both return the notification untouched unless `notification.Method == appwire.NotifyThreadStatusChanged`. `applyHubForkCapability` is not free: `hubCanForkThread` scans the roster's byPID map, `hubForkRecoveryFencedNow` calls `hubForkLiveStatusFenced` → `liveDaemonForThread`, then the projection resolves the target session a second time, then `hubForkDeletionFenced` performs up to two `DeletionStore.TargetState` lookups. The publish path is per-notification, so every `item/started` and `item/completed` frame of a subscribed session (i.e. every tool call, per subscribed client) now pays several roster scans and lock acquisitions to compute an answer it then discards. `enrichOutputImageNotification` on the line above already avoids this shape with a cheap method check before doing any work.
+  - *Fix:* Gate the computation on the method, mirroring the stampers' own precondition:
+    ```go
+    if strings.HasPrefix(target.relayKey, "local:") {
+        notification = enrichOutputImageNotification(...)
+        if notification.Method == appwire.NotifyThreadStatusChanged {
+            ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
+            notification = stampClosedThreadCapabilities(notification, ownsFork)
+            notification = stampForkCapability(notification, ownsFork)
+        }
+    }
+    ```
+
+**Low**
+
+- **`cmd/evener-hub/app_threadread.go:553` (via `app_restart_required.go:216`, `internal/hubcore/roster.go:625`)** — `applyHubForkCapability` runs once per entry on both thread/list sweeps (`app_threadlist.go:106` and the past-entry sweep at `app_threadread.go:722`). For any thread that is not a live daemon's current session — which is every saved/past session, the bulk of a list response — `hubForkRecoveryFencedNow` and then `forkTargetSessionID` each call `liveDaemonForThread`, whose `roster.Find` misses and falls through to `hubRosterList(roster)` → `Roster.List()`. `List` is not memoized: it allocates a map, deep-clones every entry (`cloneLiveEntry`, including the new `ActiveFlags`), and sorts. So one list request performs a full roster snapshot clone-and-sort per listed thread, twice over, for a question the fork RPC re-derives from scratch anyway.
+  - *Fix:* Resolve liveness once per projection pass (a `map[workspaceRef]LiveEntry` built from one `List()` call and threaded through the sweep), or hoist the resolution out of the per-entry builder and pass the already-resolved session id in. `hubRosterList` already exists as the seam for this.
+
+- **`cmd/evener-hub/app_threadread.go:444-448`, `internal/hubcore/roster.go:29,56,92,258,848,915`, `prober.go:141`, `navigation_projection.go:270`** — The `ActiveFlags` fence is unreachable in production. Nothing on the producing side writes `ThreadStatus.ActiveFlags` — the daemon builds `appwire.ThreadStatus{Type: appCapabilities(...)}` (`server/appwire_runtime.go:2267`), the projector does the same (`internal/appprojector/appwire_projection.go:1600`), and the only non-test assignments in the tree are the ones this diff added on the consuming side. The repo's own docs confirm this (`test/scenarios/web-model-switch-mid-session.md:157`, `docs/superpowers/specs/2026-06-06-evener-goal-design.md:361`: "zero non-test consumers"). The recovery fence therefore rests on the string literal `"resumeRequired"` in `hubForkRecoveryFenced`, which no producer emits and no constant in the repo defines, while the plumbing around it (roster field, defensive clone, fingerprint hashing on every refresh, prober copies, navigation clones, and the tests that script a prober to populate it) is carried for it. The real hub-side recovery signals this fence needs are already covered by `cfg.ResumeLocks.RecoveryState`, which the same functions consult.
+  - *Fix:* Either drop the active-flag branch and its roster plumbing until a producer exists, or make the flag name a shared constant used by both the daemon's status egress and this predicate, so the two cannot be spelled apart.
+
+*Review 2 found no issues. The fence and projection logic is correct and unusually well-reasoned — the RPC is stricter than the projection in every enumerated gap — but the projection is computed on two hot paths far more often than it can change and carries `ActiveFlags` machinery that no producer in the tree populates.*
+
+---
+*Reviewers: 3 done | Synthesis: codex, 29s | Total: 45m25s*
+
+
+### Coordinator rulings
+
+Verify each finding against the code before touching it; refute with file:line under DONE_WITH_CONCERNS where the described defect cannot occur (Global Constraint 7).
+
+- **Medium 1 (`forkRedirectSessionID` follows one redirect hop): verify first.** Read how `ResumeLocks` writes `RecoveryState(...).ResumeSessionID` and `ResolvedSessionID(...)` (internal/hubcore or wherever the store lives). If a recovered session can itself be recovered so that A→B and B→C both exist as separate records, the one-hop read is real: traverse completed redirects to a fixed point in `forkRedirectSessionID` (already the shared tail of both resolvers) with a visited set that stops on a cycle, RED-first with a two-hop fixture and a cycle fixture; pending-recovery fences are unchanged. If the store collapses chains (recovering B rewrites A's redirect to C, or a redirect target can never itself be an alias), refute with the writing site's file:line and add a characterization test that pins the collapse so the refutation stays true.
+- **Medium 2 (workspace/REST capability projection derives `Fork` from `pastExists`): verify what it gates, then decide by that.** `apiSessionCapabilities` (web_api_tree.go ~1108) and `liveWorkspaceSnapshot` (web_workspace.go ~120-124) feed the REST/workspace clients. Find the endpoint a web client calls when `Fork` is true. If that path ends in the same hub fork admission this PR built (`hubThreadFork` or the shared fences), the REST projection must answer from the same hub-owned projection (`applyHubForkCapability`) — same class as rounds 9–15, fix now, RED-first with a recovery-fenced and a deletion-fenced session that the REST capability must not advertise. If the REST fork path has its own admission that agrees with its own capability, refute with the endpoint's file:line, and leave a one-paragraph note in the report on whether the two should converge (the coordinator files the issue). Size valve: if routing the REST projection through the hub one needs more than a thin call (the WebServer lacks the thread record the projection wants), stop at NEEDS_CONTEXT with the assessment rather than restructuring.
+- **Medium 3 (`ownsFork` computed for every relayed notification): real, fix.** Gate the computation on `notification.Method == appwire.NotifyThreadStatusChanged`, mirroring the stampers' precondition. RED-first: a relayed non-status notification (e.g. an item/started frame) must not invoke the projection — count calls through the existing `hubRosterList` seam or an equivalent hook the tests already use; a status notification still gets stamped.
+- **Low 1 (liveness resolved twice per listed thread, one roster clone-and-sort each): fix the smallest half now.** Inside `applyHubForkCapability`, resolve `liveDaemonForThread` once and pass the result into both consumers (`hubForkRecoveryFencedNow`/`hubForkLiveStatusFenced` and `forkTargetSessionID`), removing the second lookup. The once-per-sweep memoisation (a map built from one `List()` and threaded through the sweep) is the restructure already tracked in #1146 — do not do it here; the coordinator adds this finding to that issue.
+- **Low 2 (`ActiveFlags` fence has no producer): document, do not remove.** The consumer-side plumbing was added at RoboRev's own request in rounds 5, 6 and 12 (Tasks 7, 29, 32, 38); removing it now re-opens those rounds. Fix: introduce one named constant in the hub package for the `resumeRequired` flag, used by `hubForkRecoveryFenced` (and any other spelling of the literal in `cmd/evener-hub`), with a comment stating that no producer emits it yet and that the hub-side recovery signal it complements is `cfg.ResumeLocks.RecoveryState`. Do NOT add anything to `appwire` (Global Constraint 8). The coordinator files the producer-side issue.
+
+### Requirements
+
+1. One commit per finding; RED-first for every code change; no existing test weakened or re-pointed (report contradictions instead).
+2. Gates: gofmt on touched files, `go vet ./...`, pinned golangci-lint 2.13.1 with 0 issues, `go test -count=1 ./cmd/evener-hub/...`, `-race` on the fork fence suite plus the new tests with the `-run` selector recorded verbatim.
+3. Do not push. Do not merge main.
+4. Append a "Task 67" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-32-report.md`; reply with status, commit SHAs, one-line test summary, concerns, and for Medium 1 and Medium 2 the verification outcome (real or refuted) with file:line.
