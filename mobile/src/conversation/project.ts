@@ -115,11 +115,18 @@ export function toolCallFailed(item: ThreadItem): boolean {
   return typeof item.exitCode === "number" && item.exitCode !== 0;
 }
 
+// The wire sends "inProgress" for a still-executing turn or item, never
+// "running" — turn and item active-status checks share this predicate so
+// they cannot drift apart.
+function isInProgressStatus(status: string | undefined): boolean {
+  return status === "inProgress";
+}
+
 // --- activity state ----------------------------------------------------------
 
 function activityState(item: ThreadItem): ActivityState {
   if (toolCallFailed(item)) return "failed";
-  if (item.status === "inProgress") return "running";
+  if (isInProgressStatus(item.status)) return "running";
   return "completed";
 }
 
@@ -303,10 +310,10 @@ function projectItem(
     };
   }
 
-  // Assistant message — streaming while the turn is running.
+  // Assistant message — streaming while the turn is still in progress.
   if (isAgentMessage(item)) {
     const markdown = `${item.text ?? ""}${item.delta ?? ""}`;
-    const streaming = turn.status === "running";
+    const streaming = isInProgressStatus(turn.status);
     return {
       kind: "final",
       item: { kind: "assistant", id: item.id, markdown, streaming },

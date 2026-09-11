@@ -313,7 +313,7 @@ describe("projectThread", () => {
         turn(
           "t1",
           [item({ id: "a1", type: "agentMessage", delta: "partial" })],
-          { status: "running" },
+          { status: "inProgress" },
         ),
       ]);
       const c = projectThread(t);
@@ -337,7 +337,7 @@ describe("projectThread", () => {
               delta: "streaming tail",
             }),
           ],
-          { status: "running" },
+          { status: "inProgress" },
         ),
       ]);
       const c = projectThread(t);
@@ -347,6 +347,20 @@ describe("projectThread", () => {
         expect(a.markdown).toBe("final textstreaming tail");
         expect(a.streaming).toBe(true);
       }
+    });
+
+    it("marks an agentMessage streaming for the wire's inProgress turn status", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "a1", type: "agentMessage", delta: "partial" })],
+          { status: "inProgress" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("assistant");
+      if (a?.kind === "assistant") expect(a.streaming).toBe(true);
     });
 
     it("marks a complete turn's agentMessage as not streaming", () => {
