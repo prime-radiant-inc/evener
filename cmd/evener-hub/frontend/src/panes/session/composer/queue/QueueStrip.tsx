@@ -57,7 +57,12 @@ export interface QueueStripProps {
   // processing" toast the composer's own submit paths already use, so a
   // drain can no longer silently omit a not-yet-encoded image from the
   // drained payload (w5-integration-wiring-report.md Concern #3).
-  getComposerText(): { text: string; attachments?: InputAttachment[]; hasPending: boolean };
+  getComposerText(): {
+    text: string;
+    attachments?: InputAttachment[];
+    hasPending: boolean;
+    skillNames?: readonly string[];
+  };
   // Restores a queued entry's full text into the composer - called BEFORE
   // cancelQueued on an edit (loser-safe order: a contract row - the text
   // must land even if the cancel that follows fails). `attachments` is
@@ -232,9 +237,17 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
-    const { text, attachments, hasPending } = getComposerText();
+    const { text, attachments, hasPending, skillNames } = getComposerText();
     if (hasPending) {
       toasts.push("error", "Image attachment is still processing");
+      return;
+    }
+    // The UI-side half of the skillInput gate, mirroring Composer's own
+    // submitAction: a target that does not advertise the capability keeps
+    // the draft and hears why instead of enqueueing a drain the store (and
+    // the hub) would refuse.
+    if ((skillNames?.length ?? 0) > 0 && model?.capabilities.skillInput !== true) {
+      toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
     let wonRecoveryResend = true;
@@ -247,6 +260,7 @@ export function QueueStrip({
           recoveryId: activeRecoveryId,
           text,
           attachments,
+          skillNames,
           onFailure: (err) => {
             toasts.push("error", sessionActionError("Drain failed", err));
           },
@@ -259,10 +273,11 @@ export function QueueStrip({
               "drain",
               text,
               attachments ?? [],
+              skillNames,
             );
             return;
           }
-          return threadsStore.getState().drainAsSteer(sessionRef, text, attachments);
+          return threadsStore.getState().drainAsSteer(sessionRef, text, attachments, skillNames);
         },
       );
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");

@@ -278,6 +278,42 @@ deployment honest:
   before forwarding — so the same request succeeds once the target that
   answers advertises `skillInput`.
 
+#### The web composer's canonical selections
+
+The hub's web composer keeps a selection as canonical data end to end, never
+as prose:
+
+- **Selecting.** The composer's inline slash menu lists skills (only those
+  both `available` and `userInvocable`) alongside commands. Choosing a skill
+  row removes only the typed completion token and adds a chip carrying the
+  skill's canonical name; surrounding text and attachment anchors are
+  untouched, and a pasted or typed inline `/name` mention that is never
+  explicitly selected stays ordinary text. Commands keep their existing
+  insert-then-execute behavior. A chip's remove control is labeled to
+  explain that the skill applies to the request independently of later prose
+  edits, and its details show the skill's description plus a diagnostic when
+  the live catalog no longer backs the selection.
+- **Drafts.** Each session's sticky draft persists as one structured
+  `{text, skillNames}` record, so selections survive a reload, a thread
+  switch, and a remount next to the text. Editing text never drops a
+  selection, and changing chips is a draft edit even when the text is
+  byte-identical — a delayed commit clears a draft only when both halves
+  still match what was submitted. An existing plain-text draft migrates by
+  reading the old value as literal text with an empty selection list: no
+  old value is JSON-decoded to guess selections, and no slash mention in it
+  is ever inferred as one.
+- **Submission.** Selections ride the existing input-bearing mutation as
+  `{type: "skill", name}` items appended after the text and image items —
+  there is no second wire shape, outbox, or recovery store for them. The
+  client gates on the same capability the hub does: when a target's
+  `skillInput` is false or absent, submission and resend are refused before
+  anything durable is written, the draft is retained, and the failure says
+  the target does not accept selections.
+- **Queue and recovery.** The names live in the durable mutation record's
+  own input, so queue drains, recovery edits and resends, and remounts all
+  restore them. Merging a recovered draft into a composer unions its
+  selections with the currently staged ones, deduplicated by canonical name.
+
 ### Reload selection at compaction
 
 Compaction can drop a loaded skill's instruction body, so both compaction

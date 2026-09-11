@@ -1,5 +1,14 @@
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { clearDraft, draftStorageKey, readDraft, writeDraft } from "./draft";
+import {
+  clearDraft,
+  composerDraftStorageKey,
+  draftStorageKey,
+  readComposerDraft,
+  readDraft,
+  readDraftRevision,
+  writeComposerDraft,
+  writeDraft,
+} from "./draft";
 
 // See shell/DockHost.test.tsx / shell/rail/Rail.test.tsx's identical
 // comment: Node 26 shadows jsdom's real window.localStorage with its own
@@ -100,4 +109,105 @@ test("clearDraft never throws when localStorage throws", () => {
 
 test("draftStorageKey namespaces by ref under the app's evener.* convention", () => {
   expect(draftStorageKey("local:01AAA")).toBe("evener.composer.draft.v1.local:01AAA");
+});
+
+// --- structured composer drafts (v2: {text, skillNames}) -------------------
+
+test("readComposerDraft returns an empty draft when nothing is stored for this ref", () => {
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "", skillNames: [] });
+});
+
+test("composerDraftStorageKey namespaces the structured draft under the v2 key convention", () => {
+  expect(composerDraftStorageKey("local:01AAA")).toBe("evener.composer.draft.v2.local:01AAA");
+});
+
+test("writeComposerDraft round-trips text and canonical skill selections", () => {
+  writeComposerDraft("local:01AAA", { text: "hello", skillNames: ["pkg:probe"] });
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "hello", skillNames: ["pkg:probe"] });
+});
+
+test("writing a structured draft stores one atomic v2 record and removes any old v1 value", () => {
+  localStorage.setItem(draftStorageKey("local:01AAA"), "legacy text");
+  writeComposerDraft("local:01AAA", { text: "new text", skillNames: ["pkg:probe"] });
+  expect(localStorage.getItem(composerDraftStorageKey("local:01AAA"))).toBe(
+    JSON.stringify({ text: "new text", skillNames: ["pkg:probe"] }),
+  );
+  expect(localStorage.getItem(draftStorageKey("local:01AAA"))).toBeNull();
+});
+
+test("an existing plain-text draft reads back as literal text with an empty selection list", () => {
+  localStorage.setItem(draftStorageKey("local:01AAA"), "plain words");
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "plain words", skillNames: [] });
+});
+
+test("an existing plain-text draft is never JSON-decoded to guess selections", () => {
+  localStorage.setItem(draftStorageKey("local:01AAA"), '{"text":"hijacked","skillNames":["evil:skill"]}');
+  expect(readComposerDraft("local:01AAA")).toEqual({
+    text: '{"text":"hijacked","skillNames":["evil:skill"]}',
+    skillNames: [],
+  });
+});
+
+test("an existing plain-text slash mention never becomes an inferred selection", () => {
+  localStorage.setItem(draftStorageKey("local:01AAA"), "/pkg:probe do the thing");
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "/pkg:probe do the thing", skillNames: [] });
+});
+
+test("text edits retain the draft's skill selections", () => {
+  writeComposerDraft("local:01AAA", { text: "first", skillNames: ["pkg:probe"] });
+  writeDraft("local:01AAA", "second");
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "second", skillNames: ["pkg:probe"] });
+});
+
+test("removing a selection persists the same text without inserting anything", () => {
+  writeComposerDraft("local:01AAA", { text: "hello [image 1]", skillNames: ["pkg:probe", "pkg:other"] });
+  writeComposerDraft("local:01AAA", { text: "hello [image 1]", skillNames: ["pkg:probe"] });
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "hello [image 1]", skillNames: ["pkg:probe"] });
+});
+
+test("a skill-only draft persists even though its text is blank", () => {
+  writeComposerDraft("local:01AAA", { text: "", skillNames: ["pkg:probe"] });
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "", skillNames: ["pkg:probe"] });
+  expect(localStorage.getItem(composerDraftStorageKey("local:01AAA"))).not.toBeNull();
+});
+
+test("blank text with no selections still stores nothing", () => {
+  localStorage.setItem(draftStorageKey("local:01AAA"), "legacy text");
+  writeComposerDraft("local:01AAA", { text: "", skillNames: [] });
+  expect(localStorage.getItem(composerDraftStorageKey("local:01AAA"))).toBeNull();
+  expect(localStorage.getItem(draftStorageKey("local:01AAA"))).toBeNull();
+});
+
+test("clearDraft removes both the v2 record and any legacy v1 value", () => {
+  writeComposerDraft("local:01AAA", { text: "draft", skillNames: ["pkg:probe"] });
+  clearDraft("local:01AAA");
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "", skillNames: [] });
+  expect(localStorage.getItem(composerDraftStorageKey("local:01AAA"))).toBeNull();
+});
+
+test("the draft revision increments on chip changes even when the text is identical", () => {
+  const ref = "local:01AAA";
+  const before = readDraftRevision(ref);
+  writeComposerDraft(ref, { text: "same", skillNames: [] });
+  const afterWrite = readDraftRevision(ref);
+  expect(afterWrite).toBeGreaterThan(before);
+  writeComposerDraft(ref, { text: "same", skillNames: ["pkg:probe"] });
+  const afterAdd = readDraftRevision(ref);
+  expect(afterAdd).toBeGreaterThan(afterWrite);
+  writeComposerDraft(ref, { text: "same", skillNames: [] });
+  expect(readDraftRevision(ref)).toBeGreaterThan(afterAdd);
+});
+
+test("readComposerDraft degrades to an empty draft when localStorage throws", () => {
+  vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+    throw new Error("storage disabled");
+  });
+  expect(readComposerDraft("local:01AAA")).toEqual({ text: "", skillNames: [] });
+});
+
+test("writeComposerDraft never throws when localStorage throws", () => {
+  vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    throw new Error("quota exceeded");
+  });
+  expect(() => writeComposerDraft("local:01AAA", { text: "some text", skillNames: ["pkg:probe"] })).not.toThrow();
 });

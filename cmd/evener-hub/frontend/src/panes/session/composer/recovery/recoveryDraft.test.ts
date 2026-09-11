@@ -64,6 +64,7 @@ test("projects durable image input into settled Composer attachment state", () =
         pending: false,
       },
     ],
+    skillNames: [],
   });
 });
 
@@ -120,12 +121,73 @@ test("falls back to the payload's own text when the record carries no composer t
   expect(draft.attachments.map((attachment) => attachment.marker)).toEqual([1]);
 });
 
+test("recovers canonical selections without converting them to prose", () => {
+  const draft = recoveryComposerDraft(
+    recoveryRecord(
+      [
+        { type: "text", text: "WIRE_818" },
+        { type: "skill", name: "pkg:probe" },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+      ],
+      {
+        composerText: "REQUEST_818 [image 3]",
+        attachments: [durableAttachment(3, "proof.png")],
+      },
+    ),
+  );
+  expect(draft.text).toBe("REQUEST_818 [image 3]");
+  expect(draft.skillNames).toEqual(["pkg:probe"]);
+  expect(draft.attachments).toEqual([
+    { marker: 3, name: "proof.png", mediaType: "image/png", data: "AQID", pending: false },
+  ]);
+});
+
+test("a skill-only recovery record restores its selections with no text", () => {
+  expect(recoveryComposerDraft(recoveryRecord([{ type: "skill", name: "pkg:probe" }]))).toEqual({
+    text: "",
+    attachments: [],
+    skillNames: ["pkg:probe"],
+  });
+});
+
+test("recovered selections are deduplicated in catalog order", () => {
+  const draft = recoveryComposerDraft(
+    recoveryRecord([
+      { type: "skill", name: "pkg:probe" },
+      { type: "skill", name: "pkg:probe" },
+      { type: "skill", name: "pkg:other" },
+    ]),
+  );
+  expect(draft.skillNames).toEqual(["pkg:probe", "pkg:other"]);
+});
+
 test("merging queue-like recovery keeps current text first and renumbers recovered markers", () => {
   const merged = mergeRecoveryComposerDraft("current [image 1]", [settledAttachment(1, "current.png", "AAAA")], {
     text: "failed [image 1]",
     attachments: [settledAttachment(1, "failed.png", "BBBB")],
+    skillNames: [],
   });
 
   expect(merged.text).toBe("current [image 1]\n\nfailed [image 2]");
   expect(merged.attachments.map((attachment) => attachment.marker)).toEqual([1, 2]);
+});
+
+test("merging unions recovered selections with the composer's current ones, deduplicated", () => {
+  const merged = mergeRecoveryComposerDraft(
+    "",
+    [],
+    { text: "recovered", attachments: [], skillNames: ["pkg:probe", "pkg:duplicate"] },
+    ["pkg:duplicate", "pkg:current"],
+  );
+  expect(merged.text).toBe("recovered");
+  expect(merged.skillNames).toEqual(["pkg:duplicate", "pkg:current", "pkg:probe"]);
+});
+
+test("merging without current selections keeps the recovered selections", () => {
+  const merged = mergeRecoveryComposerDraft("current", [], {
+    text: "recovered",
+    attachments: [],
+    skillNames: ["pkg:probe"],
+  });
+  expect(merged.skillNames).toEqual(["pkg:probe"]);
 });

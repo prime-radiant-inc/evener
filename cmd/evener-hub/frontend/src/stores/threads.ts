@@ -144,9 +144,13 @@ export interface ThreadsStoreState {
   watchThread(ref: string, opts?: { includeTurns?: boolean }): Promise<void>;
   releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
-  send(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
-  steer(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
-  queue(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
+  // skillNames carries the composer's canonical skill selections for the
+  // request. It is gated: a non-empty selection requires the target's
+  // advertised capabilities.skillInput to be true, and a refusal throws
+  // before anything durable is written (composerMutationIntent's own gate).
+  send(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
+  steer(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
+  queue(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
   // (if any) to the input queue, then drains the whole queue into the
@@ -154,7 +158,12 @@ export interface ThreadsStoreState {
   // B) - see this file's own describe block for why `text` is a required
   // param here, not the bare `drainAsSteer(ref)` the plan's terse pseudocode
   // showed.
-  drainAsSteer(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
+  drainAsSteer(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+  ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
   // the id the daemon minted for that queue position (QueueState.IDs) - a
@@ -856,12 +865,13 @@ export async function updateRecoveryMutation(
   targetRef: string,
   text: string,
   attachments: InputAttachment[],
+  skillNames?: readonly string[],
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
     clientMutationId,
-    buildInput(text, attachments),
+    buildInput(text, attachments, skillNames),
     durableAttachments(attachments),
     text,
   );
@@ -888,10 +898,11 @@ export async function resendRecoveryMutation(
   route: ComposerMutationRoute,
   text: string,
   attachments: InputAttachment[],
+  skillNames?: readonly string[],
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, text, attachments);
+  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
   const record = await runtime.storage.resendRecovery(clientMutationId, intent);
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
@@ -1148,13 +1159,22 @@ function composerMutationIntent(
   route: ComposerMutationRoute,
   text: string,
   attachments?: InputAttachment[],
+  skillNames?: readonly string[],
 ): MutationIntent {
   const model = trackedThreadModel(ref);
+  // The store-side half of the skillInput gate (Task 12 gates the hub's
+  // forwarding the same way): a target that does not advertise the
+  // capability never receives a request carrying a selection, so no queue
+  // entry, journal payload, or turn is created for it. An absent capability
+  // reads exactly like a false one - an older daemon never sends it.
+  if ((skillNames?.length ?? 0) > 0 && model?.capabilities?.skillInput !== true) {
+    throw new Error("skill selections are not supported on this target");
+  }
   // Translated HERE, not inside buildInput: this is the submit boundary. The
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildComposerInput(text, attachments);
+  const input = buildComposerInput(text, attachments, skillNames);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
@@ -2607,16 +2627,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
-  async send(ref, text, attachments) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments));
+  async send(ref, text, attachments, skillNames) {
+    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
   },
 
-  async steer(ref, text, attachments) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "steer", text, attachments));
+  async steer(ref, text, attachments, skillNames) {
+    await enqueueMutationIntent(composerMutationIntent(ref, "steer", text, attachments, skillNames));
   },
 
-  async queue(ref, text, attachments) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "queue", text, attachments));
+  async queue(ref, text, attachments, skillNames) {
+    await enqueueMutationIntent(composerMutationIntent(ref, "queue", text, attachments, skillNames));
   },
 
   async interrupt(ref) {
@@ -2634,8 +2654,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments));
+  async drainAsSteer(ref, text, attachments, skillNames) {
+    await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments, skillNames));
   },
 
   async promoteQueuedAsSteer(ref, index, expectedEntryId) {

@@ -27,7 +27,7 @@ import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
-import { readDraft } from "./draft";
+import { readComposerDraft, readDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import {
   flushPendingTurnsProjectionForTests,
@@ -1004,7 +1004,7 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   // The user keeps typing while the drain is in flight - a real, synchronous
   // DOM change event landing between the drain click and its settlement.
   fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original plus more" } });
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 
   resolveDrain?.();
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
@@ -1015,7 +1015,7 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   expect((textarea() as HTMLTextAreaElement).value).toBe("original plus more"); // NOT cleared - text changed since the drain was triggered
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 });
 
 test("clicking a queued row's Edit button restores its full text into an empty composer verbatim", async () => {

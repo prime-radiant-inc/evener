@@ -162,6 +162,7 @@ test("skills merge after commands with canonical labels, invocations, and descri
       label: "plugin:review",
       hint: "review with the skill",
       kind: "skill",
+      canonicalName: "plugin:review",
     },
   ]);
 });
@@ -254,6 +255,56 @@ test("command and skill rows with the same name retain distinct keys", () => {
     { key: "builtin:review", kind: "builtin", invocation: "/review" },
     { key: "skill:review", kind: "skill", invocation: "/review" },
   ]);
+});
+
+test("only skill rows carry a canonical name; a colliding command row keeps its own identity", () => {
+  const items = mergeSlashCommands(
+    [builtin("review", "review command")],
+    [],
+    [
+      {
+        name: "review",
+        description: "review skill",
+        disableModelInvocation: false,
+        userInvocable: true,
+        available: true,
+      },
+    ],
+  );
+  expect(items.map((item) => ({ key: item.key, kind: item.kind, canonicalName: item.canonicalName }))).toEqual([
+    { key: "builtin:review", kind: "builtin", canonicalName: undefined },
+    { key: "skill:review", kind: "skill", canonicalName: "review" },
+  ]);
+});
+
+test("completion offers only skills that are both available and user-invocable", () => {
+  const items = mergeSlashCommands(
+    [],
+    [],
+    [
+      { name: "ready", description: "usable", disableModelInvocation: false, userInvocable: true, available: true },
+      {
+        name: "unavailable",
+        description: "broken source",
+        disableModelInvocation: false,
+        userInvocable: true,
+        available: false,
+      },
+      {
+        name: "hidden",
+        description: "model only",
+        disableModelInvocation: false,
+        userInvocable: false,
+        available: true,
+      },
+    ],
+  );
+  expect(items.map((item) => item.label)).toEqual(["ready"]);
+});
+
+test("an inline pasted slash mention stays text: no trailing token means no completion", () => {
+  const pasted = "use /pkg:probe on this";
+  expect(parseSlashToken(pasted, pasted.length)).toBeNull();
 });
 
 test("qualified skill labels can be filtered and spliced with their canonical invocation", () => {
