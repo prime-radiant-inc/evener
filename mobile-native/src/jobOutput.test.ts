@@ -132,3 +132,59 @@ it("rejects malformed output without losing the loaded page or advancing its byt
     error: null,
   });
 });
+
+it("loads the earlier page requested while a refresh is in flight", async () => {
+	const requests: { beforeBytes?: number }[] = [];
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let holdNext = false;
+	const client = {
+		onNotification: () => () => {},
+		request: async (_method, params) => {
+			const { beforeBytes } = params as { beforeBytes?: number };
+			requests.push({ beforeBytes });
+			if (holdNext) {
+				holdNext = false;
+				await held;
+			}
+			return beforeBytes === undefined
+				? {
+						data: {
+							tail: "tail",
+							totalBytes: 20,
+							retainedStart: 14,
+							truncated: true,
+							hasEarlier: true,
+						},
+					}
+				: {
+						data: {
+							tail: "earlier",
+							totalBytes: 20,
+							retainedStart: 8,
+							truncated: true,
+							hasEarlier: true,
+						},
+					};
+		},
+	} as ConversationClientLike;
+	const log = new JobOutput(client, "local:owner", "job-id");
+	await log.refresh();
+
+	// A refresh is in flight when the user asks for the earlier page.
+	holdNext = true;
+	const refreshing = log.refresh();
+	const earlier = log.loadEarlier();
+	release();
+	await Promise.all([refreshing, earlier]);
+
+	expect(requests.map((r) => r.beforeBytes)).toEqual([
+		undefined,
+		undefined,
+		14,
+	]);
+	expect(log.getSnapshot().content).toBe("earliertail");
+	expect(log.getSnapshot().loading).toBe(false);
+});

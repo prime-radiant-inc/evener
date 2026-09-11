@@ -15,6 +15,7 @@ export class JobOutput {
   private disposed = false;
   private listeners = new Set<() => void>();
   private inFlight?: Promise<void>;
+  private queuedEarlier = false;
   constructor(
     private client: ConversationClientLike,
     private ref: string,
@@ -51,7 +52,15 @@ export class JobOutput {
       : Promise.resolve();
   private run(beforeBytes?: number): Promise<void> {
     if (this.disposed) return Promise.resolve();
-    if (this.inFlight) return this.inFlight;
+    if (this.inFlight) {
+      // An earlier page asked for during another request is queued rather
+      // than dropped — returning the unrelated in-flight promise silently
+      // discarded it. Only the direction is queued: its cursor is re-read
+      // from the refreshed state below, the way ActivityList takes a queued
+      // branch's continuation from the refreshed tree.
+      if (beforeBytes !== undefined) this.queuedEarlier = true;
+      return this.inFlight;
+    }
     this.inFlight = this.load(beforeBytes).finally(() => {
       this.inFlight = undefined;
     });
@@ -59,6 +68,17 @@ export class JobOutput {
   }
   private async load(beforeBytes?: number) {
     this.publish({ loading: true, error: null });
+    do {
+      await this.request(beforeBytes);
+      beforeBytes =
+        this.queuedEarlier && this.state.hasEarlier && this.state.earliestStart > 0
+          ? this.state.earliestStart
+          : undefined;
+      this.queuedEarlier = false;
+    } while (beforeBytes !== undefined && !this.disposed);
+    this.publish({ loading: false });
+  }
+  private async request(beforeBytes?: number) {
     try {
       const response = await this.client.request("evener/jobs/output", {
         ref: this.ref,
@@ -82,8 +102,11 @@ export class JobOutput {
       this.publish({
         error: sessionActionError("Could not load output", error),
       });
+      // A refresh that failed leaves the cursor a queued page would read
+      // unrefreshed, so the page is dropped — the same rule ActivityList
+      // applies when a full refresh fails with pages queued behind it.
+      if (beforeBytes === undefined) this.queuedEarlier = false;
     }
-    this.publish({ loading: false });
   }
   dispose() {
     this.disposed = true;
