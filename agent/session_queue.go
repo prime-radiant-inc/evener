@@ -1046,19 +1046,29 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 }
 
 // activeTurnOwner names the logical turn anything published right now belongs
-// to. A client-named turn owns the durable slot; a turn nothing outside the
-// session named owns only the id it minted for itself (nameTurnItself), which
-// is still the turn on screen and the turn a reader reloading the transcript
-// must find these records under.
+// to: the turn that is EXECUTING, which is not always the one holding the
+// durable slot.
+//
+// A self-minted name means a turn is running right now under it
+// (nameTurnItself records it for exactly that turn's duration), so it wins.
+// The durable slot can meanwhile be held by a mutation that was accepted and
+// has not started -- a continuation whose mint was refused with turnNameHeld
+// runs beside exactly that -- and attributing the running turn's timings,
+// steering and compaction to the turn that is not running splits its own entry
+// from everything it produced. ActiveTurnID answers when no direct turn is
+// executing, which is every client-mutation turn: those never mint a name of
+// their own, so the slot is the executing turn there.
 func (s *Session) activeTurnOwner() string {
-	if s.clientMutations != nil {
-		if active := s.clientMutations.snapshot().ActiveTurnID; active != "" {
-			return active
-		}
-	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.directTurnID
+	direct := s.directTurnID
+	s.mu.Unlock()
+	if direct != "" {
+		return direct
+	}
+	if s.clientMutations == nil {
+		return ""
+	}
+	return s.clientMutations.snapshot().ActiveTurnID
 }
 
 // appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
