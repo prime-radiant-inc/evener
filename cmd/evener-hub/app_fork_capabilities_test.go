@@ -841,3 +841,78 @@ func TestHubForkAdmitsPersistedDelegateOfCrashedParent(t *testing.T) {
 		t.Fatalf("child was not branched beside its parent: %v", err)
 	}
 }
+
+// delegateArrivalProber reports a live parent daemon that begins running one
+// in-process child only once it is armed, so a roster refreshed before that
+// arrival is stale about the child while the daemon itself stays healthy.
+type delegateArrivalProber struct {
+	sessionID string
+	childID   string
+	running   atomic.Bool
+}
+
+func (p *delegateArrivalProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
+	result := hubcore.ProbeResult{SessionID: p.sessionID, Status: appwire.ThreadStatusIdle, OK: true}
+	if p.running.Load() {
+		result.RunningSubagentIDs = []string{p.childID}
+		result.RunningSubagentStates = map[string]string{p.childID: appwire.ThreadStatusActive}
+	}
+	return result
+}
+
+// A delegate its parent daemon picked up after the hub's last roster scan is
+// daemon-owned by the time the fork arrives. Admission has to decide on a
+// roster it refreshed itself, or the fence answers from a snapshot that is
+// already out of date and the hub branches a transcript a daemon is writing.
+func TestHubForkRefusesDelegateThatWentLiveBeforeAdmission(t *testing.T) {
+	stateDir := t.TempDir()
+	parentID := buildRPCParentSession(t, stateDir)
+	childID, err := agent.ForkSession(stateDir, parentID, 1, "delegate", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.IsSubagent = true
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: os.Getpid(), SourceID: "local", ThreadID: parentID, SessionID: parentID, StateDir: stateDir,
+		Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+	})
+	prober := &delegateArrivalProber{sessionID: parentID, childID: childID}
+	roster := hubcore.NewRoster(runDir, prober)
+	roster.Refresh()
+	if roster.IsSubagentActive(childID) {
+		t.Fatal("the roster already lists the delegate; this fixture is not stale")
+	}
+
+	// The parent daemon starts running the delegate after that scan.
+	prober.running.Store(true)
+	before, err := schema.ListSessionMetas(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{StateDir: stateDir, Roster: roster}
+	_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+		Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+	})
+	if err == nil {
+		t.Fatal("fork of a delegate that went live before admission succeeded")
+	}
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("fork error=%v, want structured unavailable", err)
+	}
+	after, err := schema.ListSessionMetas(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+	}
+}

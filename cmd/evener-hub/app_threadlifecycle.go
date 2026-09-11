@@ -797,6 +797,14 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err := sessionActionRecoveryError(ctx, cfg, params.Ref, ref.ThreadID, epoch); err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
+	// One roster refresh serves every ownership fence below, and it has to land
+	// before them: a live-delegate fence read off the previous scan admits a
+	// delegate the parent daemon picked up since, and the incompatible-daemon
+	// check that used to carry this refresh runs after that fence has already
+	// answered.
+	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return appwire.ThreadForkResponse{}, err
+	}
 	entry, ok, entryErr := ownershipEntry(ctx, cfg, ref.ThreadID)
 	if entryErr != nil {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable(entryErr.Error())
@@ -817,9 +825,6 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		}
 		if stateDir == "" {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
-		}
-		if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
-			return appwire.ThreadForkResponse{}, err
 		}
 		childID, err := hubAsideSession(stateDir, ref.ThreadID)
 		if err != nil {
@@ -852,9 +857,6 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	if stateDir == "" {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
-	}
-	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
-		return appwire.ThreadForkResponse{}, err
 	}
 	var childID, originalInput string
 	if params.DeferInput {
