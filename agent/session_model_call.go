@@ -371,6 +371,45 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 	s.warnOutputReduction(profile, budget)
 
+	// rebuildForAppendedSkillTurns re-snapshots the history the appended typed
+	// skill turns (delivery reload notifications, compaction reload carriers,
+	// inventory reminders) joined, projects them as-is past the in-flight
+	// boundary, and rebuilds and re-budgets the request. Shared by the
+	// final-dispatch delivery reload path and the compacted-skill reload path.
+	// It reports whether any turn had actually been appended.
+	rebuildForAppendedSkillTurns := func() (bool, error) {
+		s.mu.Lock()
+		var appended []schema.Turn
+		if len(s.history) > len(historyTurns) {
+			appended = append(appended, s.history[len(historyTurns):]...)
+		}
+		historyTurns = append([]schema.Turn{}, s.history...)
+		s.mu.Unlock()
+		if len(appended) == 0 {
+			return false, nil
+		}
+		// The appended turns land after the in-flight boundary and project
+		// as-is; append them rather than re-running the delegate claim.
+		for _, notification := range appended {
+			history = append(history, scope.projectTurnMessage(notification, true))
+		}
+		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
+		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
+		if budgetErr != nil {
+			return true, budgetErr
+		}
+		req, budget = budgetedReq, budgeted
+		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
+		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
+		if budgetErr != nil {
+			return true, budgetErr
+		}
+		req, budget = budgetedReq, budgeted
+		s.warnOutputReduction(profile, budget)
+		return true, nil
+	}
+
 	// Final-dispatch skill delivery: revalidate every pending obligation
 	// against the actual projected request. A carrier lost to folding or
 	// projection is reloaded from its recorded source and re-admitted through
@@ -383,28 +422,27 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 	req = deliveryReq
 	if deliveryCommit.reloaded {
-		s.mu.Lock()
-		var appended []schema.Turn
-		if len(s.history) > len(historyTurns) {
-			appended = append(appended, s.history[len(historyTurns):]...)
-		}
-		historyTurns = append([]schema.Turn{}, s.history...)
-		s.mu.Unlock()
-		// The notification turns land after the in-flight boundary and project
-		// as-is; append them rather than re-running the delegate claim.
-		for _, notification := range appended {
-			history = append(history, scope.projectTurnMessage(notification, true))
-		}
-		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
-		if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+		if _, err := rebuildForAppendedSkillTurns(); err != nil {
 			return profile, sys, history, req, fullHistory, reasoningEffort, err
 		}
-		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
-		if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+	}
+	// Compacted-skill reloads: consume the pending compaction handoff
+	// receipts — reload the selected skills' current sources and deliver the
+	// fallback inventory reminder — then admit the prepared bodies in order
+	// against this request's remaining budget. The notification and carrier
+	// turns land in the same history the rebuild above projects, so the
+	// restored bodies and the reminder join this dispatch.
+	reloadBatch, reloadOutcomes, reloadErr := s.prepareCompactedSkillReloads(ctx)
+	if reloadErr != nil {
+		return profile, sys, history, req, fullHistory, reasoningEffort, reloadErr
+	}
+	if reloadBatch != nil {
+		if admitErr := s.admitCompactedSkillReloads(ctx, profile, &budget, reloadBatch, reloadOutcomes); admitErr != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, admitErr
+		}
+		if _, err := rebuildForAppendedSkillTurns(); err != nil {
 			return profile, sys, history, req, fullHistory, reasoningEffort, err
 		}
-		s.warnOutputReduction(profile, budget)
 	}
 	// Stage the mid-turn attention this round's request presents. The guard
 	// inside is the single gate, whichever path built the history; staging
