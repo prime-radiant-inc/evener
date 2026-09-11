@@ -1130,9 +1130,20 @@ func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
 // would leave a marker the two readings disagreed about, and every fork through
 // its alias would be refused for an ownership change that never happened.
 //
+// The two sides reach that rule through different mechanisms and neither should
+// be "simplified" into the other: the roster asks whether the PID exists at all
+// (processAlive's signal 0, internal/hubcore/roster_unix.go), while this probe
+// binds the process and verifies it is still the generation the rendezvous
+// describes (daemonprocess's pidfd on Linux, an O_NOFOLLOW handle plus verify()
+// on Darwin). They agree on the case that decides this — a PID confirmed gone
+// is dead to both — and the stricter one only ever withholds liveness from a
+// PID that has been reused, which is not an owner either.
+//
 // A process the controller cannot decide about stays a claim: resumeClaimTarget
 // then refuses an ambiguous alias, which is the safer of the two ways to be
-// wrong about it.
+// wrong about it. An ambiguous alias is therefore probed twice, here and again
+// in resumeClaimTarget's conflict branch; that is accepted rather than threaded
+// through, since only a contested alias pays it.
 func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.Entry) bool {
 	process, err := controller.Open(daemonprocess.Target{
 		PID:       entry.PID,
