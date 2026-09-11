@@ -16,6 +16,7 @@ export class JobOutput {
   private listeners = new Set<() => void>();
   private inFlight?: Promise<void>;
   private queuedEarlier = false;
+  private queuedRefresh = false;
   constructor(
     private client: ConversationClientLike,
     private ref: string,
@@ -53,12 +54,14 @@ export class JobOutput {
   private run(beforeBytes?: number): Promise<void> {
     if (this.disposed) return Promise.resolve();
     if (this.inFlight) {
-      // An earlier page asked for during another request is queued rather
-      // than dropped — returning the unrelated in-flight promise silently
-      // discarded it. Only the direction is queued: its cursor is re-read
+      // A request made during another one is queued rather than dropped —
+      // returning the unrelated in-flight promise silently discarded it, in
+      // both directions: a refresh fires on reconnect without a user press.
+      // Only the direction is queued; an earlier page's cursor is re-read
       // from the refreshed state below, the way ActivityList takes a queued
       // branch's continuation from the refreshed tree.
-      if (beforeBytes !== undefined) this.queuedEarlier = true;
+      if (beforeBytes === undefined) this.queuedRefresh = true;
+      else this.queuedEarlier = true;
       return this.inFlight;
     }
     this.inFlight = this.load(beforeBytes).finally(() => {
@@ -68,14 +71,27 @@ export class JobOutput {
   }
   private async load(beforeBytes?: number) {
     this.publish({ loading: true, error: null });
-    do {
+    let pending = true;
+    while (pending && !this.disposed) {
       await this.request(beforeBytes);
-      beforeBytes =
-        this.queuedEarlier && this.state.hasEarlier && this.state.earliestStart > 0
-          ? this.state.earliestStart
-          : undefined;
-      this.queuedEarlier = false;
-    } while (beforeBytes !== undefined && !this.disposed);
+      // Invalidation runs before pagination, the way ActivityList always
+      // refreshes before serving a queued page: the page's cursor is only
+      // meaningful against refreshed content.
+      if (this.queuedRefresh) {
+        this.queuedRefresh = false;
+        beforeBytes = undefined;
+      } else if (
+        this.queuedEarlier &&
+        this.state.hasEarlier &&
+        this.state.earliestStart > 0
+      ) {
+        this.queuedEarlier = false;
+        beforeBytes = this.state.earliestStart;
+      } else {
+        this.queuedEarlier = false;
+        pending = false;
+      }
+    }
     this.publish({ loading: false });
   }
   private async request(beforeBytes?: number) {
@@ -87,10 +103,14 @@ export class JobOutput {
       });
       const page = parseJobLogTail((response as { data: unknown }).data);
       if (!page) throw new Error("Invalid job output response");
+      // Queued requests run back to back inside one load, which clears the
+      // error only once on entry, so a request that succeeds after an earlier
+      // one failed has to clear it itself.
       if (beforeBytes !== undefined && page.retainedStart >= beforeBytes) {
-        this.publish({ hasEarlier: false });
+        this.publish({ error: null, hasEarlier: false });
       } else
         this.publish({
+          error: null,
           content:
             page.tail +
             (beforeBytes === undefined ? "" : (this.state.content ?? "")),

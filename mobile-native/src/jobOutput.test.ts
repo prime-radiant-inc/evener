@@ -134,57 +134,140 @@ it("rejects malformed output without losing the loaded page or advancing its byt
 });
 
 it("loads the earlier page requested while a refresh is in flight", async () => {
-	const requests: { beforeBytes?: number }[] = [];
-	let release!: () => void;
-	const held = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	let holdNext = false;
-	const client = {
-		onNotification: () => () => {},
-		request: async (_method, params) => {
-			const { beforeBytes } = params as { beforeBytes?: number };
-			requests.push({ beforeBytes });
-			if (holdNext) {
-				holdNext = false;
-				await held;
-			}
-			return beforeBytes === undefined
-				? {
-						data: {
-							tail: "tail",
-							totalBytes: 20,
-							retainedStart: 14,
-							truncated: true,
-							hasEarlier: true,
-						},
-					}
-				: {
-						data: {
-							tail: "earlier",
-							totalBytes: 20,
-							retainedStart: 8,
-							truncated: true,
-							hasEarlier: true,
-						},
-					};
-		},
-	} as ConversationClientLike;
-	const log = new JobOutput(client, "local:owner", "job-id");
-	await log.refresh();
+  const requests: { beforeBytes?: number }[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdNext = false;
+  const client = {
+    onNotification: () => () => {},
+    request: async (_method, params) => {
+      const { beforeBytes } = params as { beforeBytes?: number };
+      requests.push({ beforeBytes });
+      if (holdNext) {
+        holdNext = false;
+        await held;
+      }
+      return beforeBytes === undefined
+        ? {
+            data: {
+              tail: "tail",
+              totalBytes: 20,
+              retainedStart: 14,
+              truncated: true,
+              hasEarlier: true,
+            },
+          }
+        : {
+            data: {
+              tail: "earlier",
+              totalBytes: 20,
+              retainedStart: 8,
+              truncated: true,
+              hasEarlier: true,
+            },
+          };
+    },
+  } as ConversationClientLike;
+  const log = new JobOutput(client, "local:owner", "job-id");
+  await log.refresh();
 
-	// A refresh is in flight when the user asks for the earlier page.
-	holdNext = true;
-	const refreshing = log.refresh();
-	const earlier = log.loadEarlier();
-	release();
-	await Promise.all([refreshing, earlier]);
+  // A refresh is in flight when the user asks for the earlier page.
+  holdNext = true;
+  const refreshing = log.refresh();
+  const earlier = log.loadEarlier();
+  release();
+  await Promise.all([refreshing, earlier]);
 
-	expect(requests.map((r) => r.beforeBytes)).toEqual([
-		undefined,
-		undefined,
-		14,
-	]);
-	expect(log.getSnapshot().content).toBe("earliertail");
-	expect(log.getSnapshot().loading).toBe(false);
+  expect(requests.map((r) => r.beforeBytes)).toEqual([
+    undefined,
+    undefined,
+    14,
+  ]);
+  expect(log.getSnapshot().content).toBe("earliertail");
+  expect(log.getSnapshot().loading).toBe(false);
+});
+
+it("refreshes after an earlier page requested first is in flight", async () => {
+  const requests: { beforeBytes?: number }[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdNext = false;
+  const client = {
+    onNotification: () => () => {},
+    request: async (_method, params) => {
+      const { beforeBytes } = params as { beforeBytes?: number };
+      requests.push({ beforeBytes });
+      if (holdNext) {
+        holdNext = false;
+        await held;
+      }
+      return {
+        data: {
+          tail: beforeBytes === undefined ? "tail" : "earlier",
+          totalBytes: 20,
+          retainedStart: beforeBytes === undefined ? 14 : 8,
+          truncated: true,
+          hasEarlier: true,
+        },
+      };
+    },
+  } as ConversationClientLike;
+  const log = new JobOutput(client, "local:owner", "job-id");
+  await log.refresh();
+
+  // A reconnect refreshes without a user press while the earlier page is in
+  // flight; that refresh must not be dropped either.
+  holdNext = true;
+  const earlier = log.loadEarlier();
+  const refreshing = log.refresh();
+  release();
+  await Promise.all([earlier, refreshing]);
+
+  expect(requests.map((r) => r.beforeBytes)).toEqual([undefined, 14, undefined]);
+  expect(log.getSnapshot().content).toBe("tail");
+});
+
+it("clears the error when a queued refresh succeeds after a failed page", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdNext = false;
+  const client = {
+    onNotification: () => () => {},
+    request: async (_method, params) => {
+      const { beforeBytes } = params as { beforeBytes?: number };
+      if (holdNext) {
+        holdNext = false;
+        await held;
+        throw new Error("offline");
+      }
+      return {
+        data: {
+          tail: beforeBytes === undefined ? "tail" : "earlier",
+          totalBytes: 20,
+          retainedStart: beforeBytes === undefined ? 14 : 8,
+          truncated: true,
+          hasEarlier: true,
+        },
+      };
+    },
+  } as ConversationClientLike;
+  const log = new JobOutput(client, "local:owner", "job-id");
+  await log.refresh();
+
+  // The earlier page fails, and the refresh queued behind it succeeds in the
+  // same load — which publishes without clearing the failure.
+  holdNext = true;
+  const earlier = log.loadEarlier();
+  const refreshing = log.refresh();
+  release();
+  await Promise.all([earlier, refreshing]);
+
+  expect(log.getSnapshot().content).toBe("tail");
+  expect(log.getSnapshot().error).toBeNull();
 });
