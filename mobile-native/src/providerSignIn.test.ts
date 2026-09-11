@@ -50,6 +50,25 @@ it("polls the returned device flow at its interval and stops after authorization
   expect(calls).toHaveLength(2);
   flow.dispose();
 });
+it("clamps a huge device interval instead of overflowing into a tight poll loop", async () => {
+  vi.useFakeTimers();
+  const { flow, calls, io } = boundary();
+  // Beyond setTimeout's 32-bit range the delay wraps and fires immediately.
+  io.request = async (method: string) =>
+    method.endsWith("/start")
+      ? { ...device, intervalSeconds: 2 ** 31 }
+      : { state: "pending" };
+  await flow.start();
+  expect(flow.getSnapshot().phase).toBe("device");
+  expect(calls).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(calls).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(59_998);
+  expect(calls).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(calls).toHaveLength(2);
+  flow.dispose();
+});
 it("uses browser fallback and completes with its own flow ID", async () => {
   const { flow, calls, io } = boundary();
   io.request = async (method) =>

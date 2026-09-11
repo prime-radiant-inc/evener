@@ -21,6 +21,12 @@ interface SignInState {
   credentialState: "configured" | "unconfigured" | "unknown";
 }
 
+// The hub supplies the device-flow poll interval, so it is untrusted input.
+// Past setTimeout's 32-bit millisecond range the delay wraps and the timer
+// fires at once, turning a nonsense interval into a tight poll loop; a minute
+// is longer than any interval a device flow has reason to ask for.
+const MAX_POLL_SECONDS = 60;
+
 /** One sign-in flow bound to one provider instance on one hub connection. */
 export class ProviderSignIn {
   private state: SignInState = {
@@ -73,7 +79,9 @@ export class ProviderSignIn {
     )
       return;
     const interval = this.state.device?.intervalSeconds ?? 5;
-    const delay = Number.isFinite(interval) ? Math.max(1, interval || 5) : 5;
+    const delay = Number.isFinite(interval)
+      ? Math.min(MAX_POLL_SECONDS, Math.max(1, interval || 5))
+      : 5;
     this.timer = setTimeout(() => {
       void this.poll();
     }, delay * 1000);
