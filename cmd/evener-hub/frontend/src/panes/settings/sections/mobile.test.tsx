@@ -9,11 +9,14 @@ import { MobileSection } from "./mobile";
 // Lets one test simulate a rejected `import("qrcode.react")` chunk load: the
 // mock only throws while the flag is set, so every other test imports the
 // real renderer untouched.
-const qrChunkControl = vi.hoisted(() => ({ failChunkLoad: false }));
+const qrChunkControl = vi.hoisted(() => ({
+  failChunkLoad: false,
+  error: new Error("Simulated QR chunk load failure"),
+}));
 
 vi.mock("qrcode.react", async (importOriginal) => {
   if (qrChunkControl.failChunkLoad) {
-    throw new Error("Simulated QR chunk load failure");
+    throw qrChunkControl.error;
   }
   return importOriginal();
 });
@@ -39,6 +42,7 @@ function renderMobileSection() {
 }
 
 test("keeps the pairing link usable when the QR chunk fails to load", async () => {
+  const onCaughtError = vi.fn();
   const authURL = "https://hub.example.test/auth/mobile-secret";
   client.on("evener/mobile/pairing", () => ({ authUrl: authURL }));
 
@@ -63,6 +67,7 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
       <FreshClientProvider client={client}>
         <FreshMobileSection />
       </FreshClientProvider>,
+      { onCaughtError },
     );
 
     // The failure stays scoped to the QR slot: an error fallback instead of
@@ -72,6 +77,11 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
     expect(screen.getByRole("button", { name: "Copy pairing link" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Mobile app" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
+    expect(onCaughtError).toHaveBeenCalledTimes(1);
+    // Vitest wraps a rejected external-module factory; assert the original
+    // failure identity, not just the wrapper's generic mocking diagnostic.
+    expect(onCaughtError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(onCaughtError.mock.calls[0]?.[0].cause).toBe(qrChunkControl.error);
   } finally {
     qrChunkControl.failChunkLoad = false;
   }
