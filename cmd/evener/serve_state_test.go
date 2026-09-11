@@ -434,36 +434,28 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		t.Fatalf("projected turns do not contain incorporated pending input: %#v", projected.Turns)
 	})
 
-	// The serve loop publishes the live session's wire state at the tail of
-	// every input pass, including a pass that claimed nothing, and that state
-	// reads active from the moment turn/start durably accepts a start -- before
-	// the loop claims it and publishes its stable identity. Holding an
-	// unclaimed pass across turn/start reproduces that ordering, which CI hits
-	// on its own under load.
-	t.Run("start claimed after an unclaimed input pass", func(t *testing.T) {
-		lifecycle := startSessionControlLifecycle(t, &closedStreamAdapter{}, func(srv *sessionControlIdentityServer) {
-			srv.holdUnclaimedPass = true
-		})
-		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.unclaimedPassEntered, "unclaimed input pass entry")
-		start := startClientMutationTurn(t, lifecycle, "unclaimed-pass-start", "claim this turn")
-		lifecycle.server.unclaimedPassReleaseOnce.Do(func() { close(lifecycle.server.releaseUnclaimedPass) })
-		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
-		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
-		if activeTurnID == "" {
-			t.Fatal("thread/read published no active turn while processing")
-		}
-		if activeTurnID != start.Turn.ID {
-			t.Fatalf("published active turn = %q, durable start turn = %q", activeTurnID, start.Turn.ID)
-		}
-	})
-
+	// Stop runs with an unclaimed input pass held across turn/start. The serve
+	// loop publishes the live session's wire state at the tail of every input
+	// pass, including one that claimed nothing, and that state reads active
+	// from the moment turn/start durably accepts a start -- before the loop
+	// claims it and publishes its stable identity. This subtest reached that
+	// ordering on its own under CI load; holding the pass makes it every run,
+	// so the claimed identity below is pinned against the wake that produced
+	// the intermittent failure.
 	t.Run("stop", func(t *testing.T) {
 		adapter := newStopParkAdapter()
-		lifecycle := startSessionControlLifecycle(t, adapter)
+		lifecycle := startSessionControlLifecycle(t, adapter, func(srv *sessionControlIdentityServer) {
+			srv.mu.Lock()
+			srv.holdUnclaimedPass = true
+			srv.mu.Unlock()
+		})
 		lifecycle.server.mu.Lock()
 		lifecycle.server.holdTerminalProjection = true
 		lifecycle.server.mu.Unlock()
-		start := startHeldClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.unclaimedPassEntered, "unclaimed input pass entry")
+		start := startClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
+		lifecycle.server.unclaimedPassReleaseOnce.Do(func() { close(lifecycle.server.releaseUnclaimedPass) })
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
 		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
