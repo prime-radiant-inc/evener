@@ -28,7 +28,19 @@
     "Local keys and advanced editor remain reachable",
     "Endpoint overrides require destination and credential review",
     "Host-access switching preserves the separate pasted-key draft",
-    "Remote Ollama review uses the entered server destination"
+    "Remote Ollama review uses the entered server destination",
+    "A: zero-provider first-run start",
+    "A: first connection leads to first session",
+    "B: zero-provider first-run start",
+    "B: first connection leads to first session",
+    "C: zero-provider first-run start",
+    "C: first connection leads to first session",
+    "D: zero-provider first-run start",
+    "D: first connection leads to first session",
+    "E: zero-provider first-run start",
+    "E: first connection leads to first session",
+    "F: zero-provider first-run start",
+    "F: first connection leads to first session"
   ],
   "errors": [],
   "scope": "Design-prototype browser checks only; no production integration or real auth verified"

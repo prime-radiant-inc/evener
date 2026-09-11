@@ -252,6 +252,8 @@ try {
   await panelCheck('Host-access switching preserves the separate pasted-key draft', async () => {
     await open('a', '&screen=credential&provider=anthropic');
     await page.locator('#api-key').fill('volatile-key-draft');
+    assert.equal(await page.locator('[data-action="source-host"]').isVisible(), false);
+    await page.locator('#advanced summary').click();
     await page.locator('[data-action="source-host"]').click();
     assert.equal(await page.locator('input[required]').count(), 0);
     await page.locator('[data-action="source-key"]').click();
@@ -273,6 +275,30 @@ try {
     await page.locator('#connect-form button[type="submit"]').click();
     assert.match(await page.locator('.callout').textContent(), /New credential supplied/);
   });
+  for (const concept of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    await panelCheck(`${concept.toUpperCase()}: zero-provider first-run start`, async () => {
+      await open(concept);
+      assert(await page.locator('[data-empty-state]').isVisible());
+      assert.equal(await page.locator('#next-model').count(), 0);
+      assert.equal(await page.locator('.provider.selected').count(), 0);
+    });
+    await panelCheck(`${concept.toUpperCase()}: first connection leads to first session`, async () => {
+      await open(concept);
+      await chooseAnthropic(concept);
+      await page.locator('[data-action="fill-demo"]').click();
+      await page.locator('#connect-form button[type="submit"]').click();
+      await page.locator('[data-action="done"]').click();
+      assert(await page.locator('#first-session-prompt').isVisible());
+      assert.equal(await page.locator('[data-session-connection]').getAttribute('data-session-connection'), 'anthropic');
+      await page.locator('#first-session-prompt').fill('Help me understand this project');
+      assert.equal(await page.locator('#first-session-prompt').inputValue(), 'Help me understand this project');
+      await page.screenshot({ path: `${output}/${concept}-first-session.png`, fullPage: true });
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  await page.goto(new URL('index.html', base).href);
+  await noOverflow('Final gallery desktop');
+  await page.screenshot({ path: `${output}/gallery.png`, fullPage: true });
   assert.deepEqual(failures, [], 'Browser console and network must be clean');
   const report = { passed: true, checks, errors: failures, scope: 'Design-prototype browser checks only; no production integration or real auth verified' };
   await writeFile(`${output}/verification.json`, JSON.stringify(report, null, 2) + '\n');

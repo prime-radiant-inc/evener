@@ -8,19 +8,19 @@ Connect **one provider** to get started. Add others later.
 
 For a standard API-key connection, **the key is the only field you need to fill in**. Leave **Advanced settings** closed. An API key is a secret code that lets Evener use your provider account.
 
-1. Open provider setup from Settings or the model chooser.
+1. On Evener’s welcome screen, choose your first provider. No providers are configured yet; the displayed providers are available choices.
 2. Choose your provider, such as **Anthropic** for Claude, **OpenAI**, **Google Gemini**, or **OpenRouter**.
 3. Follow the appropriate access route:
    - **API key:** open the linked provider console, create a key, and paste it into **API key**. Choose **Save & check connection**.
    - **ChatGPT:** choose **ChatGPT sign-in**, then **Continue with ChatGPT**. Approve access in OpenAI and return to Evener. Check the linked current requirements for availability and usage limits.
 4. Evener saves the access details on the host running Evener and checks the provider’s model list. It does not send a prompt or generate a response.
-5. After a successful check, choose a model and return to your task. Your global default does not change.
+5. After a successful check, choose a model and continue to your first session. You can now enter what you want to work on. Your global default does not change.
 
 A Claude chat subscription does not include Claude API access. Create a Claude Console API key; API usage is billed separately. A Gemini chat subscription is not an API key either. OpenAI API-key access and ChatGPT sign-in are separate Evener connections: `openai` and `openai-codex`.
 
 ## Already have credentials on the Evener host?
 
-Choose **Check existing access**, or **Use existing host access instead** in the key step. Review the provider, destination, and active credential source, with secret values hidden. Check the connection before choosing a model.
+Open **Already configured access on this host?**, then choose **Check existing access**. In the key step, **Use existing host access instead** is inside **Advanced settings**. These are secondary routes; first-run setup assumes you have not configured Evener yet. Review the provider, destination, and active credential source, with secret values hidden. Check the connection before choosing a model.
 
 Environment or header credentials can take precedence over a saved key. The live flow must show the resolved source, rather than assume the key just pasted is active. If you use a remote Evener host, its environment variables and credential files matter, not this browser’s machine.
 

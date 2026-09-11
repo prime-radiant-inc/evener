@@ -7,6 +7,8 @@ Source baseline: `2664cc881d128d8b0c4a0af96683126e70d13cd7`.
 
 A first-time user spent about 20 minutes trying to complete the full provider form and would have abandoned setup. The cited document describes configuration internals rather than a usable setup journey. Explore six genuinely different interaction patterns, get independent agent critiques, revise, and present options before implementation.
 
+**Primary scenario:** a new user opening Evener with zero providers configured. Every option must lead from that empty state through one provider connection into the first session. Existing-host access and later provider management are secondary.
+
 ## Design invariants
 
 - Choose a recognizable provider first. Show a short curated group, then searchable all-providers and local/custom paths. The shortlist is a design hypothesis, not measured popularity.
@@ -28,12 +30,12 @@ The signature is deliberate absence: a whole provider connection reduced to one 
 
 | Direction | Interaction difference | Best context | Cost or risk |
 |---|---|---|---|
-| A. Quick connect | Compact provider picker replaces itself with one credential step | Universal default from settings and launch | A screen transition hides the directory |
-| B. Inline cards | Chosen provider expands in the settings page | Add another provider | Page grows and can become busy |
-| C. Guided setup | Full-page journey with a persistent progress rail | First-run onboarding | Too much ceremony for repeat setup |
+| A. Quick connect | Compact provider picker replaces itself with one credential step | Shortest provider-first onboarding path | A screen transition hides the directory |
+| B. Inline cards | Chosen provider expands inside the welcome screen | First connection without changing screens | Page grows and can become busy |
+| C. Guided setup | Full-page journey with a persistent progress rail | First-run onboarding | More visual structure than A |
 | D. Model first | Choose the desired model family, then connect an explicit provider | Empty model picker | Model availability and routing can be ambiguous |
 | E. Access first | Start from ChatGPT sign-in, an API key, or a local/company endpoint | Users who know what access they have | Asks about authentication before provider identity |
-| F. Provider directory | Searchable master list with a stable detail panel | Settings, frequent provider changes | More on-screen structure for a beginner |
+| F. Provider directory | Searchable master list with a stable detail panel | Browse unfamiliar providers beside setup guidance | More on-screen structure for a beginner |
 
 All six share the same credential and outcome design so comparison tests navigation rather than six different levels of form quality. Each has a distinct initial screen and a complete illustrative key path. OAuth, cloud, local/custom, advanced, and failure states are inspectable. These are design prototypes, not an Evener implementation.
 
@@ -41,7 +43,7 @@ All six share the same credential and outcome design so comparison tests navigat
 
 Three independent reviewers examined the initial designs through first-run comprehension, authentication truth, and accessibility lenses. Their rankings and every finding’s disposition are in [reviews.md](reviews.md). The original designs are preserved in commit `5ccfbd8ce`.
 
-**Recommendation:** compare A, Quick connect, as the shared flow with C, Guided setup, for first run. Two panelists favored A; the first-run panelist favored C. All six alternatives remain available. Agent critique is heuristic review, not observed usability research.
+**Recommendation under the clarified first-run priority:** lead with C, Guided setup, using the compact required-only credential step shared with A. Keep A as the leaner comparison. The original panel ranked broader contexts; its first-run reviewer favored C. All six now start explicitly empty and lead to the first-session composer. Agent critique is heuristic review, not observed usability research.
 
 ## Open the study
 
@@ -52,6 +54,8 @@ python3 -m http.server 43127 --bind 127.0.0.1 --directory docs/design/provider-c
 ```
 
 Open <http://127.0.0.1:43127/>. The gallery links to every initial screen and credential step. Select a simulated outcome in the toolbar, choose a provider, and use **Fill demo details**. Never enter real credentials. Closing or resetting the prototype discards its in-memory draft; it does not use browser storage or provider APIs.
+
+For remote review, use `--bind 0.0.0.0` and open port `43127` on the host’s reachable address. This exposes the design directory without authentication; use a trusted network. The current review server uses this all-IPv4-interface bind at Jesse’s request.
 
 - [Research and source audit](research.md)
 - [Panel findings and revisions](reviews.md)

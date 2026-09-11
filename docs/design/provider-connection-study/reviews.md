@@ -12,7 +12,7 @@ agent heuristic critiques, not observed user-study results.
 | Technical truth and maintainability | A, F, B, C, E, D | A as the shared connector; F for Settings; preserve the full editor |
 | Accessibility and interaction | A, C, E, D, F, B | A generally; C for onboarding after shared interaction repairs |
 
-**Synthesis:** A is the strongest general-purpose starting point. C deserves a
+**Original synthesis, before the clarified first-run priority:** A is the strongest general-purpose starting point. C deserves a
 side-by-side first-run trial. B and F remain Settings alternatives; D and E
 explore recognition by desired model or existing access. All six remain available.
 
@@ -104,3 +104,31 @@ errors. [The independent results](screenshots/panel-verification.json) and
 [the final reusable-verifier results](screenshots/verification.json) are retained.
 The complete gallery and representative desktop/mobile credential screens were
 also visually inspected. Production behavior remains unchanged.
+
+## First-run priority correction, 2026-09-11
+
+Jesse clarified that the primary audience is new users with no providers set up.
+The original synthesis gave repeat setup and provider management too much weight.
+The recommendation is now **C’s guided onboarding with the compact credential
+step shared with A**. A remains the leaner comparison; the earlier panel rankings
+above are preserved as historical findings, not recast as a new vote.
+
+All six alternatives now explicitly start with no connected providers. B and F
+describe available choices rather than existing connections. Their other rows
+are alternatives, not a list the newcomer must configure. Existing-host access
+remains reachable behind disclosures. All successful connection paths continue
+to the first-session composer instead of returning to provider settings.
+
+The verifier includes an empty-start and first-session-handoff check for every
+option. Each new check failed before this revision and passed after it. The
+credential, failure-recovery, accessibility, and no-provider-traffic checks remain
+in place. These are still design-only simulations.
+
+The first-run reviewer independently exercised all six Anthropic demo-key flows
+at desktop size and C again at 390px. It found no new blockers: the empty state,
+available-choice framing, acquisition instructions, single required key,
+collapsed advanced settings, and first-session handoff all passed. It ranked C
+ahead of A for novice orientation. All observed requests were local GETs; no
+provider request was attempted. [The focused results](screenshots/first-run-review.json)
+are retained. This verifies the ordinary demo success journey, not every auth
+method, actual novice usability, or a submitted production session.

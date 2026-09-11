@@ -505,7 +505,7 @@
         "text": "The provider rejected access",
         "visible": true,
         "focused": true,
-        "top": 432.25
+        "top": 457.25
       }
     },
     {
@@ -515,7 +515,7 @@
         "text": "Couldn’t reach the provider",
         "visible": true,
         "focused": true,
-        "top": 432.25
+        "top": 457.25
       }
     },
     {
@@ -525,7 +525,7 @@
         "text": "Saved · check unavailable",
         "visible": true,
         "focused": true,
-        "top": 432.25
+        "top": 457.25
       }
     },
     {
@@ -535,7 +535,7 @@
         "text": "Anthropic is connected",
         "visible": true,
         "focused": true,
-        "top": 500.25
+        "top": 525.25
       }
     },
     {
@@ -545,7 +545,7 @@
         "text": "Saved, not checked",
         "visible": true,
         "focused": true,
-        "top": 500.25
+        "top": 525.25
       }
     },
     {
@@ -555,7 +555,7 @@
         "text": "Credentials are missing",
         "visible": true,
         "focused": true,
-        "top": 432.25
+        "top": 457.25
       }
     },
     {
@@ -565,7 +565,7 @@
         "text": "Review the connection settings",
         "visible": true,
         "focused": true,
-        "top": 432.25
+        "top": 457.25
       }
     },
     {
@@ -575,7 +575,7 @@
         "text": "Access details were not saved",
         "visible": true,
         "focused": true,
-        "top": 432.25
+        "top": 457.25
       }
     },
     {
@@ -585,7 +585,7 @@
         "text": "Setup is only partly saved",
         "visible": true,
         "focused": true,
-        "top": 432.25
+        "top": 457.25
       }
     },
     {
@@ -615,8 +615,8 @@
       "status": "PASS",
       "detail": {
         "provider": "groq",
-        "top": 393.9375,
-        "bottom": 456.9375
+        "top": 488.078125,
+        "bottom": 551.078125
       }
     },
     {
@@ -624,8 +624,8 @@
       "status": "PASS",
       "detail": {
         "provider": "groq",
-        "top": 453.9375,
-        "bottom": 516.9375
+        "top": 568.21875,
+        "bottom": 631.21875
       }
     },
     {
