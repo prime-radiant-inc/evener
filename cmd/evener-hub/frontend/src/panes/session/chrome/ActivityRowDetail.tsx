@@ -5,7 +5,6 @@
 // except the one output-tail fetch; ActivityTree owns the detailID state and
 // passes the row plus its ticking `now` straight through.
 import { Fragment, type JSX, useEffect, useState } from "react";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
@@ -16,7 +15,7 @@ import { Markdown } from "../../../widgets/markdown";
 import { formatClockTime, splitMandate } from "../transcript/messages/format";
 import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
-import type { ActivityDelegateRow, ActivityJobRow } from "./activityRows";
+import { type ActivityDelegateRow, type ActivityJobRow, activityDelegateState } from "./activityRows";
 
 const CLASS = {
   detailStrip: requireClass(styles.detailStrip, "activitypanel.module.css", "detailStrip"),
@@ -55,7 +54,7 @@ function subjectOf(row: ActivityJobRow | ActivityDelegateRow): DetailSubject {
   }
   const { delegate } = row;
   const subject: DetailSubject = {
-    status: stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown",
+    status: activityDelegateState(delegate).status,
     startedAt: delegate.runStartedAt,
     outputBytes: 0,
     quietForMs: delegate.quietForMs,
