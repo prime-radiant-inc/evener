@@ -805,14 +805,18 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
-	entry, ok, entryErr := ownershipEntry(ctx, cfg, ref.ThreadID)
+	sessionID := forkTargetSessionID(cfg, ref.ThreadID)
+	entry, ok, entryErr := ownershipEntry(ctx, cfg, sessionID)
 	if entryErr != nil {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable(entryErr.Error())
 	}
 	if !ok {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
 	}
-	if hubForkLiveDelegateFenced(cfg, ref.ThreadID) {
+	// Both identities are fenced: the transcript about to be branched, and the
+	// one the capability projection answered for, so the RPC stays at least as
+	// strict as the action it advertised.
+	if hubForkLiveDelegateFenced(cfg, ref.ThreadID) || hubForkLiveDelegateFenced(cfg, sessionID) {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("a delegate running inside a live daemon cannot be forked")
 	}
 	if params.Aside {
@@ -826,7 +830,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if stateDir == "" {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
 		}
-		childID, err := hubAsideSession(stateDir, ref.ThreadID)
+		childID, err := hubAsideSession(stateDir, sessionID)
 		if err != nil {
 			return appwire.ThreadForkResponse{}, err
 		}
@@ -860,9 +864,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	var childID, originalInput string
 	if params.DeferInput {
-		childID, originalInput, err = hubForkSessionAt(stateDir, ref.ThreadID, turn, params.Label)
+		childID, originalInput, err = hubForkSessionAt(stateDir, sessionID, turn, params.Label)
 	} else {
-		childID, err = hubForkSession(stateDir, ref.ThreadID, turn, params.EditedInput, params.Label)
+		childID, err = hubForkSession(stateDir, sessionID, turn, params.EditedInput, params.Label)
 	}
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
@@ -880,6 +884,25 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		},
 		OriginalInput: originalInput,
 	}, nil
+}
+
+// forkTargetSessionID resolves the transcript a fork request names. A daemon
+// keeps its stable workspace ref across thread/clear while its session id moves
+// on (cmd/evener/serve.go's clear hook writes the replacement id into the
+// rendezvous entry and leaves WorkspaceRef alone), and both the live read and
+// the capability projection answer that stable ref with the CURRENT session. A
+// fork has to branch the transcript the client was reading; the requested ref
+// stays the identity for recovery and deletion fencing, which reserve the
+// alias the client asked about.
+func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
+	if cfg.Roster == nil {
+		return threadID
+	}
+	owner, ok := liveDaemonForThread(cfg.Roster, threadID)
+	if !ok || owner.SessionID == "" {
+		return threadID
+	}
+	return owner.SessionID
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {

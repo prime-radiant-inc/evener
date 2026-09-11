@@ -916,3 +916,46 @@ func TestHubForkRefusesDelegateThatWentLiveBeforeAdmission(t *testing.T) {
 		t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
 	}
 }
+
+// thread/clear mints a replacement session behind the daemon's STABLE workspace
+// ref: cmd/evener/serve.go's clear hook moves the rendezvous ThreadID/SessionID
+// to the new session (rvreg.UpdateSessionID) and leaves WorkspaceRef alone, so a
+// client keeps holding local:<first session>. A read of that ref returns the
+// current session's transcript and the hub advertises fork on it, so a fork by
+// the same ref has to branch the session the client was reading — not the
+// retired one the ref happens to be named after.
+func TestHubForkByStableRefBranchesTheCurrentSession(t *testing.T) {
+	stateDir := t.TempDir()
+	retiredID := buildRPCParentSession(t, stateDir)
+	currentID := buildRPCSessionWithWorkingDir(t, stateDir, "02xNz6Uyw2D4Ivu1N9HDfC", t.TempDir())
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: os.Getpid(), SourceID: "local", ThreadID: currentID, SessionID: currentID, InstanceID: currentID,
+		WorkspaceRef: "local:" + retiredID, StateDir: stateDir,
+		Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+	})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
+	roster.Refresh()
+	if owner, ok := roster.Find(currentID); !ok || owner.WorkspaceRef != "local:"+retiredID {
+		t.Fatalf("roster owner=%+v ok=%v, want the current session behind the retired session's stable ref", owner, ok)
+	}
+
+	cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+	thread := appwire.Thread{ID: currentID, SessionID: currentID, Evener: appwire.EvenerThread{Ref: "local:" + retiredID}}
+	if !applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn {
+		t.Fatal("the stable ref was not advertised as forkable; this fixture cannot reach the handler")
+	}
+	resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+		Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+	})
+	if err != nil {
+		t.Fatalf("fork by the daemon's stable workspace ref: %v", err)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ParentSessionID != currentID {
+		t.Fatalf("fork branched %q, want the daemon's current session %q", meta.ParentSessionID, currentID)
+	}
+}
