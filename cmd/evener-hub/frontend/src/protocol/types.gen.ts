@@ -810,6 +810,7 @@ export interface LaunchConfigLayer {
   mcps?: MCPServerSpec[];
   env?: Record<string, string>;
   verbose?: boolean;
+  apiLog?: boolean;
   traceFile?: string;
   cpuProfile?: string;
   exportATIFPath?: string;

@@ -65,6 +65,7 @@ type runCLIFlags struct {
 	systemPromptAppend          stringSliceFlag
 	sandbox                     *string
 	sandboxNet                  *string
+	apiLog                      *string
 	runTimeout                  *time.Duration
 }
 
@@ -234,6 +235,7 @@ func mainWithDeps(deps mainDeps) {
 		providerIdleTimeout:         *flags.providerIdleTimeout,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
+		apiLog:                      *flags.apiLog,
 		runTimeout:                  *flags.runTimeout,
 		stdout:                      deps.stdout,
 		stderr:                      deps.stderr,
@@ -293,6 +295,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
 	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	flags.runTimeout = fs.Duration("timeout", 0, "overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback)")
 
 	fs.Usage = func() {
