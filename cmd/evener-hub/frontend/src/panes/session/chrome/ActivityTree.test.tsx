@@ -581,7 +581,7 @@ describe("ActivityTree", () => {
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
     const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
 
-    shellRow.focus();
+    act(() => shellRow.focus());
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(delegateRow);
     await user.keyboard("{ArrowDown}");
@@ -606,7 +606,7 @@ describe("ActivityTree", () => {
     expect(screen.getByText("npm test")).toBeTruthy();
 
     // Enter on the fold row toggles the fold.
-    foldRow.focus();
+    act(() => foldRow.focus());
     await user.keyboard("{Enter}");
     expect(onToggleFold).toHaveBeenCalledWith(FOLD_ID);
     expect(openTranscript).not.toHaveBeenCalled();
@@ -624,7 +624,7 @@ describe("ActivityTree", () => {
     // #884 round 3). Modified arrows must neither move row focus nor be
     // preventDefaulted here.
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
-    shellRow.focus();
+    act(() => shellRow.focus());
     for (const event of [
       { key: "ArrowDown", altKey: true },
       { key: "ArrowUp", ctrlKey: true },
@@ -655,7 +655,7 @@ describe("ActivityTree", () => {
 
     // Enter on the chevron remains the chevron's own activation (the detail
     // strip), never the row's transcript activation.
-    chevron.focus();
+    act(() => chevron.focus());
     await user.keyboard("{Enter}");
     expect(openTranscript).not.toHaveBeenCalled();
   });
