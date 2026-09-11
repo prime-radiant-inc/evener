@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<title>NotificationCard Open last-line layoutguard</title>
+<title>NotificationCard trailing-slot layoutguard</title>
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="resolved.css">
 <style>
@@ -10,22 +10,45 @@
   html, body { margin:0; background:var(--surface-0); color:var(--ink-hi); }
   body { padding:20px; font-family:var(--font-sans); }
   .fixtures { display:flex; flex-direction:column; gap:16px; }
-  iframe { border:0; height:150px; }
+  iframe { border:0; height:560px; }
 </style>
 </head>
 <body data-font-size="m">
 <div class="fixtures"></div>
 <script>
 const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+// A long secondary that wraps at every fixture width, so the trailing slots
+// ride a genuinely multi-line text block in all three shapes.
 const SECONDARY = "Inspect the complete delegated implementation and verify every browser geometry invariant against the narrow transcript surface before reporting the final result";
+const TITLE_ONLY = "A delegate finished aligning the transcript's speaker rows across every breakpoint without a secondary line or a transcript reference to open";
 
 function openButton() {
   return `<span class="inline"><button type="button" class="button quiet sm" data-open aria-label="Open subagent" title="Open"><span class="icon" aria-hidden="true">${OPEN_SVG}</span></button></span>`;
 }
 
+function chevron() {
+  return `<span class="chevron" data-chevron aria-hidden="true">${CHEVRON_SVG}</span>`;
+}
+
+// The card's three summary shapes. Every branch renders its chevron inside an
+// atomic .secondaryTail unit with the words it opens (roborev #1143: a bare
+// inline chevron stranded on its own wrapped line at 8 of 56 swept widths);
+// the first additionally carries the Open control in the same unit.
+function shapes() {
+  const cut = SECONDARY.lastIndexOf(" ") + 1;
+  const titleCut = TITLE_ONLY.lastIndexOf(" ") + 1;
+  return [
+    { shape: "secondary-with-open", body: `<span class="headingText"><span class="title">Delegate completed</span><span class="secondary"><span data-text-leading>${SECONDARY.slice(0, cut)}</span><span class="secondaryTail"><span class="secondaryTailText" data-tail-text>${SECONDARY.slice(cut)}</span><span class="openTrailing">${openButton()}</span>${chevron()}</span></span></span>` },
+    { shape: "secondary-no-ref", body: `<span class="headingText"><span class="title">Job completed</span><span class="secondary"><span data-text-leading>${SECONDARY.slice(0, cut)}</span><span class="secondaryTail"><span class="secondaryTailText" data-tail-text>${SECONDARY.slice(cut)}</span>${chevron()}</span></span></span>` },
+    { shape: "title-only", body: `<span class="headingText"><span class="title" data-text-leading>${TITLE_ONLY.slice(0, titleCut)}</span><span class="secondaryTail"><span class="title secondaryTailText" data-tail-text>${TITLE_ONLY.slice(titleCut)}</span>${chevron()}</span></span>` },
+  ];
+}
+
 function frameDocument(mode) {
   const width = mode === "phone" ? 390 : 920;
   const contentWidth = mode === "phone" ? 320 : 290;
+  const cards = shapes().map((s) => `<details data-shape="${s.shape}"><summary class="head" data-head>${s.body}</summary></details>`).join("\n");
   return `<!doctype html><html lang="en" data-theme="dark"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=${width}, initial-scale=1"><base href="${location.href}">
     <link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css">
@@ -33,14 +56,9 @@ function frameDocument(mode) {
       *, *::before, *::after { box-sizing:border-box; transition:none !important; animation:none !important; }
       html, body { margin:0; background:var(--surface-0); color:var(--ink-hi); }
       body { padding:16px; font-family:var(--font-sans); font-size:var(--font-size-body); line-height:var(--line-height-body); }
-      details { width:${contentWidth}px; }
+      details { width:${contentWidth}px; margin-bottom:12px; }
     </style></head><body data-font-size="m">
-      <details><summary class="head" data-head>
-        <span class="headingText" data-heading>
-          <span class="title">Delegate completed</span>
-          <span class="secondary" data-secondary><span data-secondary-leading>${SECONDARY.slice(0, SECONDARY.lastIndexOf(" ") + 1)}</span><span class="secondaryTail"><span class="secondaryTailText" data-secondary-tail>${SECONDARY.slice(SECONDARY.lastIndexOf(" ") + 1)}</span><span class="openTrailing">${openButton()}</span></span></span>
-        </span>
-      </summary></details>
+    ${cards}
     </body></html>`;
 }
 
@@ -62,33 +80,58 @@ function ready({ frame }) {
 }
 function box(r) { return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; }
 
-function measureFrame(spec) {
-  const doc = spec.frame.contentDocument;
-  const win = spec.frame.contentWindow;
-  const textParts = [doc.querySelector("[data-secondary-leading]"), doc.querySelector("[data-secondary-tail]")];
+// One measurement per summary shape per viewport: the tail text's last line,
+// the chevron's box, and (shape 1) the Open control's box. The assertions
+// hold each trailing slot to the same last-line adjacency and centering
+// contract regardless of which controls the unit carries.
+function measureFixture(doc, win, card) {
+  const shape = card.getAttribute("data-shape");
+  // The final text line of the WHOLE text block (leading + tail word, or the
+  // full title), not the tail word alone - the tail unit is atomic, so its
+  // own text never wraps away from its trailing slots.
+  const textParts = [card.querySelector("[data-text-leading]"), card.querySelector("[data-tail-text]")].filter(Boolean);
   const lines = textParts.flatMap((part) => {
     const range = doc.createRange();
     range.selectNodeContents(part);
     return [...range.getClientRects()].map(box);
   });
   const lastLine = lines.at(-1);
-  const open = box(doc.querySelector("[data-open]").getBoundingClientRect());
-  const gap = parseFloat(win.getComputedStyle(doc.querySelector("[data-head]")).gap);
+  const chevron = box(card.querySelector("[data-chevron]").getBoundingClientRect());
+  const openEl = card.querySelector("[data-open]");
+  const open = openEl ? box(openEl.getBoundingClientRect()) : null;
+  const gap = parseFloat(win.getComputedStyle(card.querySelector("[data-head]")).gap);
   return {
-    mode:spec.mode,
-    viewportWidth:win.innerWidth,
-    lineCount:lines.length,
+    shape,
+    lineCount: lines.length,
     lastLine,
+    chevron,
     open,
     gap,
-    sharesLastLine:open.top < lastLine.bottom - 1 && open.bottom > lastLine.top + 1,
-    textToOpenGap:open.left - lastLine.right,
+    sharesLastLine: chevron.top < lastLine.bottom - 1 && chevron.bottom > lastLine.top + 1,
+    // The chevron's immediate predecessor is the Open control when one sits
+    // between the text and the chevron; adjacency is measured from that.
+    textToChevronGap: chevron.left - (open ? open.right : lastLine.right),
+    ...(open ? {
+      openSharesLastLine: open.top < lastLine.bottom - 1 && open.bottom > lastLine.top + 1,
+      textToOpenGap: open.left - lastLine.right,
+    } : {}),
   };
 }
 
 window.measure = async () => {
   await Promise.all(frames.map(ready));
-  return frames.map(measureFrame);
+  const out = [];
+  for (const spec of frames) {
+    const doc = spec.frame.contentDocument;
+    const win = spec.frame.contentWindow;
+    for (const card of doc.querySelectorAll("details[data-shape]")) {
+      const m = measureFixture(doc, win, card);
+      m.mode = spec.mode;
+      m.viewportWidth = win.innerWidth;
+      out.push(m);
+    }
+  }
+  return out;
 };
 </script>
 </body>
