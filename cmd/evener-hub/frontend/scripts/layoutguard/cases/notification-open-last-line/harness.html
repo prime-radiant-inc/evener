@@ -17,10 +17,15 @@
 <div class="fixtures"></div>
 <script>
 const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
 const SECONDARY = "Inspect the complete delegated implementation and verify every browser geometry invariant against the narrow transcript surface before reporting the final result";
 
 function openButton() {
   return `<span class="inline"><button type="button" class="button quiet sm" data-open aria-label="Open subagent" title="Open"><span class="icon" aria-hidden="true">${OPEN_SVG}</span></button></span>`;
+}
+
+function chevron() {
+  return `<span class="chevron" data-chevron aria-hidden="true">${CHEVRON_SVG}</span>`;
 }
 
 function frameDocument(mode) {
@@ -38,7 +43,7 @@ function frameDocument(mode) {
       <details><summary class="head" data-head>
         <span class="headingText" data-heading>
           <span class="title">Delegate completed</span>
-          <span class="secondary" data-secondary><span data-secondary-leading>${SECONDARY.slice(0, SECONDARY.lastIndexOf(" ") + 1)}</span><span class="secondaryTail"><span class="secondaryTailText" data-secondary-tail>${SECONDARY.slice(SECONDARY.lastIndexOf(" ") + 1)}</span><span class="openTrailing">${openButton()}</span></span></span>
+          <span class="secondary" data-secondary><span data-secondary-leading>${SECONDARY.slice(0, SECONDARY.lastIndexOf(" ") + 1)}</span><span class="secondaryTail"><span class="secondaryTailText" data-secondary-tail>${SECONDARY.slice(SECONDARY.lastIndexOf(" ") + 1)}</span><span class="openTrailing">${openButton()}</span>${chevron()}</span></span></span>
         </span>
       </summary></details>
     </body></html>`;
@@ -73,6 +78,7 @@ function measureFrame(spec) {
   });
   const lastLine = lines.at(-1);
   const open = box(doc.querySelector("[data-open]").getBoundingClientRect());
+  const chevronBox = box(doc.querySelector("[data-chevron]").getBoundingClientRect());
   const gap = parseFloat(win.getComputedStyle(doc.querySelector("[data-head]")).gap);
   return {
     mode:spec.mode,
@@ -80,6 +86,7 @@ function measureFrame(spec) {
     lineCount:lines.length,
     lastLine,
     open,
+    chevron: chevronBox,
     gap,
     sharesLastLine:open.top < lastLine.bottom - 1 && open.bottom > lastLine.top + 1,
     textToOpenGap:open.left - lastLine.right,

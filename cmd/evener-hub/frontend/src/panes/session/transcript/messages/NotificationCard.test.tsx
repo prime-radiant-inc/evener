@@ -265,6 +265,49 @@ test("binds Open to the final notification text fragment instead of permitting a
   // Real line geometry is pinned by layoutguard/notification-open-last-line.
 });
 
+// A collapsed card gives no other expand affordance (the native details marker
+// is suppressed), so the summary owes the reader the same trailing chevron
+// every other disclosure row in the transcript shows (ThinkBlock, ToolRow).
+test("the summary shows a trailing disclosure chevron that turns when the card opens", () => {
+  renderTools(<NotificationCard notification={notif({ tone: "neutral", title: "explorer finished" })} />);
+  const chevron = screen.getByTestId("notification-chevron");
+  expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  expect(chevron.getAttribute("data-open")).toBe("false");
+  fireEvent.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-chevron").getAttribute("data-open")).toBe("true");
+});
+
+// The app's row grammar (ToolRow's): the chevron rides INLINE at the end of the
+// words it opens, after the Open control and inside the same atomic tail unit —
+// never a flex sibling that could strand alone on a wrapped line.
+test("with a transcript ref the chevron rides inside the atomic tail unit after the Open control", () => {
+  render(
+    <NotificationCard notification={notif({ secondary: "Inspect the workspace", transcriptRef: "local:child" })} />,
+  );
+  const chevron = screen.getByTestId("notification-chevron");
+  const button = screen.getByRole("button", { name: "Open subagent" });
+  const openTrailing = button.parentElement?.parentElement;
+  const secondaryTail = openTrailing?.parentElement;
+  expect(chevron.parentElement).toBe(secondaryTail);
+  const tailChildren = [...(secondaryTail?.children ?? [])];
+  expect(tailChildren.indexOf(openTrailing!)).toBeLessThan(tailChildren.indexOf(chevron));
+});
+
+test("with a title-only card the chevron follows the title it opens", () => {
+  renderTools(<NotificationCard notification={notif({ secondary: undefined, transcriptRef: undefined })} />);
+  const chevron = screen.getByTestId("notification-chevron");
+  expect(chevron.parentElement?.textContent).toContain("Job completed");
+  expect(chevron.previousElementSibling?.textContent).toBe("Job completed");
+});
+
+test("with a secondary and no transcript ref the chevron follows the secondary text", () => {
+  renderTools(<NotificationCard notification={notif({ secondary: "shell · exit 2 · boom" })} />);
+  const chevron = screen.getByTestId("notification-chevron");
+  const parent = chevron.parentElement;
+  expect(parent?.textContent).toContain("shell · exit 2 · boom");
+  expect(parent?.contains(screen.getByText("Job completed"))).toBe(false);
+});
+
 test("opening a child restores the notification owner as main when an unrelated session is focused", async () => {
   seedLocation("local:owner", "local:owner");
   workspaceStore.setState({

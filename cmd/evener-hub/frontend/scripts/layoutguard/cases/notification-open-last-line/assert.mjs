@@ -1,4 +1,5 @@
 const ADJACENCY_SLACK_PX = 4;
+const CENTER_SLACK_PX = 1;
 
 export default function assert(measurement) {
   const failures = [];
@@ -18,6 +19,19 @@ export default function assert(measurement) {
         `${fixture.mode}: Open is ${fixture.textToOpenGap.toFixed(1)}px after the final text edge, expected 0..${(fixture.gap + ADJACENCY_SLACK_PX).toFixed(1)}px; it is not adjacent to the item it opens`,
       );
     }
+    for (const [name, slot] of [
+      ["Open", fixture.open],
+      ["chevron", fixture.chevron],
+    ]) {
+      const slotCenter = (slot.top + slot.bottom) / 2;
+      const lineCenter = (fixture.lastLine.top + fixture.lastLine.bottom) / 2;
+      const delta = slotCenter - lineCenter;
+      if (Math.abs(delta) > CENTER_SLACK_PX) {
+        failures.push(
+          `${fixture.mode}: ${name} center sits ${delta.toFixed(1)}px off the final text line's center (limit ${CENTER_SLACK_PX}px); the trailing slot no longer centers on the line (half-leading regression)`,
+        );
+      }
+    }
   }
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };
   return {
@@ -25,7 +39,7 @@ export default function assert(measurement) {
     reason: measurement
       .map(
         (f) =>
-          `${f.mode} ${f.viewportWidth}px: ${f.lineCount} secondary lines, Open overlaps last line and follows its text edge by ${f.textToOpenGap.toFixed(1)}px`,
+          `${f.mode} ${f.viewportWidth}px: ${f.lineCount} secondary lines, Open overlaps last line, follows its text edge by ${f.textToOpenGap.toFixed(1)}px, and centers on it`,
       )
       .join(" | "),
   };

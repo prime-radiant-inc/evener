@@ -19,7 +19,7 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Card, Chip, Markdown } from "../../../../widgets";
+import { Card, Chevron, Chip, Markdown } from "../../../../widgets";
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import {
@@ -48,6 +48,7 @@ const CLASS = {
   secondaryTail: requireClass(styles.secondaryTail, "notificationcard.module.css", "secondaryTail"),
   secondaryTailText: requireClass(styles.secondaryTailText, "notificationcard.module.css", "secondaryTailText"),
   openTrailing: requireClass(styles.openTrailing, "notificationcard.module.css", "openTrailing"),
+  chevron: requireClass(styles.chevron, "notificationcard.module.css", "chevron"),
   metadata: requireClass(styles.metadata, "notificationcard.module.css", "metadata"),
   field: requireClass(styles.field, "notificationcard.module.css", "field"),
   fieldLabel: requireClass(styles.fieldLabel, "notificationcard.module.css", "fieldLabel"),
@@ -232,6 +233,23 @@ export function NotificationCard({
   const chip = toneChip(notification.tone);
   const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
+  // The head suppresses the native details marker (the old text glyphs were
+  // font-dependent and overhung their boxes - see widgets/chevron), so this is
+  // the reader's only expand affordance: the same trailing <Chevron> idiom
+  // ThinkBlock's summary uses, riding at the end of the words it opens. Where
+  // a tail unit exists it rides INSIDE it, after the Open control - the
+  // ToolRow grammar's "text, Open, chevron" order, never a flex sibling that
+  // could strand alone on a wrapped line.
+  const chevron = (
+    <span
+      className={CLASS.chevron}
+      aria-hidden="true"
+      data-open={open ? "true" : "false"}
+      data-testid="notification-chevron"
+    >
+      <Chevron />
+    </span>
+  );
   return (
     <details className={CLASS.disclosure} open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
@@ -249,13 +267,17 @@ export function NotificationCard({
         {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
         <span className={CLASS.headingText}>
           {secondaryParts || !transcriptRef ? (
-            <span className={CLASS.title}>{notification.title}</span>
+            <>
+              <span className={CLASS.title}>{notification.title}</span>
+              {!secondaryParts && chevron}
+            </>
           ) : (
             <span className={CLASS.secondaryTail}>
               <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{notification.title}</span>
               <span className={CLASS.openTrailing}>
                 <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
               </span>
+              {chevron}
             </span>
           )}
           {secondaryParts ? (
@@ -272,10 +294,14 @@ export function NotificationCard({
                         label="Open subagent"
                       />
                     </span>
+                    {chevron}
                   </span>
                 </>
               ) : (
-                notification.secondary
+                <>
+                  {notification.secondary}
+                  {chevron}
+                </>
               )}
             </span>
           ) : null}
