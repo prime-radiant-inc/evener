@@ -397,9 +397,11 @@ func registerNoteClaim(ctx context.Context, claimLocked func()) bool {
 func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), *foldCommit, func() int) {
 	preCompactRan := false
 	artifactProduced := false
-	// Capture the owner once for this fold. The active owner is a mutation
-	// snapshot, so this read does not acquire s.mu while the publication
-	// transaction later holds attentionMu.
+	// Capture the owner once for this fold: every publication path reads this
+	// value, so a fold still in flight when the next turn opens keeps the
+	// identity of the turn it staged under. Read here, before the publication
+	// transaction holds attentionMu — a turn that named itself keeps its id
+	// under s.mu, which that transaction nests inside attentionMu.
 	compactionOwner := s.activeTurnOwner()
 	var existingArtifacts []schema.Turn
 	if history != nil {

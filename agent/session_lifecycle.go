@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -1020,6 +1022,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			stopSettledThisTurn = stopFinalized
 		}
 		processCtx = context.WithValue(processCtx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{})
+		// The self-minted name belongs to the turn that just ran; the next
+		// one mints its own.
+		s.mu.Lock()
+		s.directTurnID = ""
+		s.mu.Unlock()
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
 		nextImages = nil
@@ -1990,9 +1997,25 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	}
 	s.mu.Unlock()
 
+	stableTurnID := queuedIdentity.StableTurnID
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
-			s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+			// Nothing outside the session named this turn, so it names
+			// itself: the id rides the persisted entry and the USER_INPUT
+			// event below, and activeTurnOwner reports it for everything
+			// published while the turn runs. Without it the live projector
+			// and the transcript projection each invent a turn_%d of their
+			// own and disagree about every item's transcript key. Minted in
+			// memory, like the environment entry's own id — an unserved
+			// session has no client to address the turn, so it must not pay
+			// a durable client-mutation write for the name.
+			turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+			turn.StableTurnID = "turn_direct_" + ulid.Make().String()
+			stableTurnID = turn.StableTurnID
+			s.mu.Lock()
+			s.directTurnID = turn.StableTurnID
+			s.mu.Unlock()
+			s.recordTurn(turn, turn)
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
@@ -2045,7 +2068,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		Text:             input,
 		Images:           userInputImagesFromAttachments(images),
 		ClientMutationID: queuedIdentity.ClientMutationID,
-		StableTurnID:     queuedIdentity.StableTurnID,
+		StableTurnID:     stableTurnID,
 		Turn:             userInputTurn,
 	})
 	s.launchInitialPromptNamer(s.sessionCtx, input)

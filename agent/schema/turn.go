@@ -251,7 +251,8 @@ type Turn struct {
 	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
-	// recovery for both client input and daemon goal continuations.
+	// recovery for client input, daemon goal continuations, and an input turn
+	// that arrived with no client-mutation reservation and named itself.
 	ClientMutationID string `json:"client_mutation_id,omitempty"`
 	StableTurnID     string `json:"stable_turn_id,omitempty"`
 	// OwningTurnID identifies the logical turn that owns a steering or timing

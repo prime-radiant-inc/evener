@@ -1046,11 +1046,20 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
 }
 
+// activeTurnOwner names the logical turn anything published right now belongs
+// to. A client-named turn owns the durable slot; a turn a bare ProcessInput
+// caller started owns only the id it minted for itself, which is still the
+// turn on screen and the turn a reader reloading the transcript must find
+// these records under.
 func (s *Session) activeTurnOwner() string {
-	if s.clientMutations == nil {
-		return ""
+	if s.clientMutations != nil {
+		if active := s.clientMutations.snapshot().ActiveTurnID; active != "" {
+			return active
+		}
 	}
-	return s.clientMutations.snapshot().ActiveTurnID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.directTurnID
 }
 
 // appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
