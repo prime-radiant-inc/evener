@@ -851,6 +851,68 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 	}
 }
 
+// A fold appends replay-tail copies stamped ContextReplay after the entries it
+// re-presents, so a transcript can hold both. When the fold landed a
+// CHECKPOINT or SUMMARY, ResumeHistory anchors on it and the copies are the
+// only record of those turns it reaches — the case
+// TestCompactionReplay_ResumeHistoryRetainsReplayCopies pins. With no marker
+// in the transcript there is no anchor, every entry comes back, and the copies
+// are duplicates of originals sitting in the same list: the conversation and
+// its tool round would be replayed to the model twice.
+func TestResumeHistoryFromTranscript_NoCompactionDropsReplayCopies(t *testing.T) {
+	t.Parallel()
+	const callID = "resume-no-anchor-call"
+	toolCall := delegateAttentionToolCall(callID)
+	toolResult := llm.ToolResultNamed(callID, "probe", "ok", false)
+	replay := func(kind schema.TurnKind, message llm.Message, seq int) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.ContextReplay = true
+		return transcript.Entry{Kind: "entry", Seq: seq, Turn: turn}
+	}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("Hello"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, toolCall)},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, toolResult)},
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("Done"))},
+		// The fold's tail rewrite: copies of the three entries above, and no
+		// marker landed ahead of them.
+		replay(schema.TurnAssistant, toolCall, 4),
+		replay(schema.TurnToolResults, toolResult, 5),
+		replay(schema.TurnAssistant, llm.Assistant("Done"), 6),
+	}
+
+	history := ResumeHistory(entries)
+
+	if len(history) != 4 {
+		shape := make([]string, len(history))
+		for i, turn := range history {
+			shape[i] = fmt.Sprintf("%s(replay=%v)", turn.Kind, turn.ContextReplay)
+		}
+		t.Fatalf("resume history = %d turns %v, want the 4 originals with no replay copies", len(history), shape)
+	}
+	expectedKinds := []schema.TurnKind{schema.TurnUserInput, schema.TurnAssistant, schema.TurnToolResults, schema.TurnAssistant}
+	calls, results := 0, 0
+	for i, turn := range history {
+		if turn.Kind != expectedKinds[i] {
+			t.Errorf("turn %d kind = %q, want %q", i, turn.Kind, expectedKinds[i])
+		}
+		if turn.ContextReplay {
+			t.Errorf("turn %d carried the durable replay marker: %#v", i, turn)
+		}
+		for _, part := range turn.Message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == callID {
+				calls++
+			}
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				results++
+			}
+		}
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("resume history rebuilt the tool round as %d calls and %d results, want exactly one of each", calls, results)
+	}
+}
+
 func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 	t.Parallel()
 	entries := make([]transcript.Entry, 10)

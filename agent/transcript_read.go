@@ -142,7 +142,23 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 
 // ResumeHistory extracts the history needed for session resume from transcript entries.
 // If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
-// Otherwise returns all turns.
+// Otherwise returns all turns except the replay copies.
+//
+// A fold re-appends the PERSISTED forms of the pairs recorded during it after
+// its compaction markers, stamped ContextReplay, so the last-marker anchor
+// does not drop them (publishFoldTransaction's tail rewrite). Which side of
+// the anchor those copies are the record of decides what resume must do with
+// them:
+//
+//   - With an anchor, everything before it is discarded, so the copies are the
+//     ONLY record of those turns and are kept.
+//   - With no anchor nothing is discarded, so each copy sits in the same list
+//     as the original it was copied from, and keeping both would replay that
+//     stretch of conversation — tool calls and their results included — to the
+//     model twice. They are dropped.
+//
+// The flag is cleared on what is returned either way: it describes a durable
+// transcript entry's role, not a turn in the resumed session's history.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1
@@ -155,11 +171,14 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	}
 
 	if compactionIdx < 0 {
-		// No compaction: return all turns.
-		turns := make([]schema.Turn, len(entries))
-		for i, e := range entries {
-			turns[i] = e.Turn
-			turns[i].ContextReplay = false
+		// No anchor: every original is still here, so a copy of one is a
+		// duplicate rather than the only record of it.
+		turns := make([]schema.Turn, 0, len(entries))
+		for _, e := range entries {
+			if e.Turn.ContextReplay {
+				continue
+			}
+			turns = append(turns, e.Turn)
 		}
 		repaired, _ := repairOrphanedToolResults(turns)
 		return repaired
