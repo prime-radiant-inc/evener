@@ -679,6 +679,11 @@ export function useTranscriptScroll({
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
+  // The geometry the previous measurement saw. Read only to classify the NEXT
+  // scroll event: an offset that never moved backwards under grown content is
+  // the virtualizer correcting its own estimates, where the same event with the
+  // offset moved back is the reader leaving the bottom (see handleScroll).
+  const lastScrollGeometryRef = useRef<ScrollMetrics>({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 });
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
   const initializedRef = useRef(false);
@@ -989,6 +994,7 @@ export function useTranscriptScroll({
       const count = renderedRowCountRef.current;
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const m = measure(el);
+      lastScrollGeometryRef.current = m;
       wasAtBottomRef.current = isAtBottom(m);
       setAwayFromBottom(!wasAtBottomRef.current);
       firstTurnIdRef.current = firstTurnId;
@@ -1013,6 +1019,44 @@ export function useTranscriptScroll({
       // possibility.
       if (!el) return;
       const m = measure(el);
+      // Content measured in BELOW a transcript that was already at the true
+      // bottom, in the SAME scroll port, with the offset never moving
+      // backwards: the virtualizer correcting its own estimates, not the reader
+      // leaving. Only the reader moves a transcript back from the bottom, so an
+      // offset that held or advanced cannot be them; and a correction only ever
+      // changes how much content there is, never the size of the box holding
+      // it, so a clientHeight that moved is a resized (or first-ever-measured)
+      // viewport, which is not this case and keeps the pill it would otherwise
+      // suppress.
+      //
+      // The end-anchor is meant to hold the end across those corrections, but
+      // its follow can under-count one that lands after the scroll-to-end
+      // reconcile has already torn down (virtual-core's reconcileScroll settles
+      // on the first frame whose target stops moving) - measured in the
+      // transcript scroll guard as scrollHeight 17076 -> 17221 against an offset
+      // that moved only 16374 -> 16432. Past the anchor's own 4px threshold it
+      // disengages, and nothing moves the transcript again: a session the reader
+      // has never touched is stranded short of the latest content, offering a
+      // jump-to-latest pill at mount.
+      //
+      // So re-pin to the new true bottom - exact from the geometry in hand,
+      // whatever the estimates say, the same pin jumpToBottom lands on - and
+      // leave the trackers describing the bottom they already described. Arrival
+      // is confirmed by the pin's own scroll event, like every other landing
+      // here; a pin that a further correction leaves short is simply corrected
+      // again by the next one.
+      const previous = lastScrollGeometryRef.current;
+      lastScrollGeometryRef.current = m;
+      if (
+        wasAtBottomRef.current &&
+        !isAtBottom(m) &&
+        m.clientHeight === previous.clientHeight &&
+        m.scrollHeight > previous.scrollHeight &&
+        m.scrollTop >= previous.scrollTop
+      ) {
+        el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
+        return;
+      }
       wasAtBottomRef.current = isAtBottom(m);
       setAwayFromBottom(!wasAtBottomRef.current);
       if (wasAtBottomRef.current) clearPill();

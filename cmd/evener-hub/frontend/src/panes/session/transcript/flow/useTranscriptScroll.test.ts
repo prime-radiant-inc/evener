@@ -554,6 +554,95 @@ describe("jumpToBottom landing reliability", () => {
     expect(el.scrollTop).toBe(SCROLLED_AWAY.scrollHeight - SCROLLED_AWAY.clientHeight);
   });
 
+  // The transcript scroll guard's "pill is visible at mount" failure, root-caused
+  // in headless Chrome: the virtualizer's scroll-to-end reconcile loop settles
+  // after ONE frame whose target stopped moving (virtual-core 3.17
+  // reconcileScroll, STABLE_FRAMES = 1), so a measurement batch landing after
+  // that frame grows the content with the loop already torn down. The end-anchor
+  // that is meant to hold the end then follows only part of the growth - measured
+  // there as scrollHeight 17076 -> 17221 while the offset moved 16374 -> 16432,
+  // leaving 87px - and 87px is far past its own 4px threshold, so it disengages
+  // for good. The geometry then never moves again (the guard held it still for
+  // 3s), and a session the reader has not touched sits short of the latest
+  // content offering a jump-to-latest pill.
+  test("content measured in below a transcript already at the bottom re-pins to the new bottom rather than reading as the reader leaving", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+    expect(result.current.pillVisible).toBe(false);
+
+    act(() => {
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+    expect(result.current.pillVisible).toBe(false);
+  });
+
+  test("a reader scrolling back while content is still measuring in keeps their position and gets the pill", () => {
+    // The same growth, but the offset moved BACKWARDS - only the reader moves a
+    // transcript away from the bottom, so this must not be re-pinned. This is
+    // the discriminator the correction above turns on; without it the correction
+    // would fire on any scroll-away that happened to carry grown geometry.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 12000;
+
+    act(() => {
+      set({ scrollTop: 12000, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(12000);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a scroll port that changed size is not a content correction - the reader keeps the pill", () => {
+    // The correction above reads "more content in the same box". A clientHeight
+    // that moved means the box itself changed (a resized pane, or geometry
+    // measured for the first time), which this must not silently re-pin away
+    // from: the reader ends up away from the bottom and needs the offer.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      set({ scrollHeight: 17221, clientHeight: 400 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16374);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("the error-anchor jump does NOT pin to the bottom - it lands on the failed turn", () => {
     const { ref, el } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
