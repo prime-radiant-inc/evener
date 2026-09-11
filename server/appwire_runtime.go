@@ -2329,7 +2329,14 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 		out.MCP = append(out.MCP, appwire.EvenerMCPServerInfo{Name: srv.Name, Tools: append([]string(nil), srv.Tools...), Status: srv.Status, Error: srv.Error})
 	}
 	for _, skill := range ds.Skills {
-		out.Skills = append(out.Skills, appwire.EvenerSkillInfo{Name: skill.Name, Description: skill.Description})
+		out.Skills = append(out.Skills, appwire.EvenerSkillInfo{
+			Name:                   skill.Name,
+			Description:            skill.Description,
+			DisableModelInvocation: skill.DisableModelInvocation,
+			UserInvocable:          skill.UserInvocable,
+			Available:              skill.Available,
+			AllowedTools:           append([]string(nil), skill.AllowedTools...),
+		})
 	}
 	for _, plugin := range ds.Plugins {
 		out.Plugins = append(out.Plugins, appwire.EvenerPluginInfo{

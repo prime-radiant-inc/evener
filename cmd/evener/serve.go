@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -1612,8 +1613,23 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 	for _, m := range ds.MCP {
 		out.MCP = append(out.MCP, server.MCPServerInfo{Name: m.Name, Tools: m.Tools, Status: m.Status, Error: m.Error})
 	}
+	// Real invocation controls and availability come from the inspection
+	// catalog; Skills is its user-advertisement view, so each listed skill is
+	// matched back to its descriptor. Values are Stage 1 copies, never
+	// re-derived here.
+	descriptors := make(map[string]skill.Descriptor, len(ds.SkillCatalog))
+	for _, descriptor := range ds.SkillCatalog {
+		descriptors[descriptor.CatalogName] = descriptor
+	}
 	for _, s := range ds.Skills {
-		out.Skills = append(out.Skills, server.SkillInfo{Name: s.Name, Description: s.Description})
+		info := server.SkillInfo{Name: s.Name, Description: s.Description}
+		if descriptor, ok := descriptors[s.Name]; ok {
+			info.DisableModelInvocation = descriptor.Controls.DisableModelInvocation
+			info.UserInvocable = descriptor.Controls.UserInvocable
+			info.Available = !descriptor.Unavailable
+			info.AllowedTools = append([]string(nil), s.AllowedTools...)
+		}
+		out.Skills = append(out.Skills, info)
 	}
 	for _, p := range ds.Plugins {
 		out.Plugins = append(out.Plugins, server.PluginStatusInfo{

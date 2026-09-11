@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
+	"sort"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -96,5 +98,66 @@ func TestTurnMutationsRejectSkillInputUntilWired(t *testing.T) {
 	}
 	if caps := srv.appCapabilities("idle", false); caps.SkillInput {
 		t.Fatal("advertised ThreadCapabilities.SkillInput is true before runtime consumption is wired")
+	}
+}
+
+// TestThreadReadAdvertisesRealSkillControls proves the daemon-sourced wire
+// keeps the Stage 1 invocation controls through the whole projection: a
+// server-side skill inventory with real control values reaches
+// EvenerDiagnostics.Skills on thread/read with those values intact, so
+// completion (Available && UserInvocable) can trust the wire instead of
+// reading placeholder false booleans.
+func TestThreadReadAdvertisesRealSkillControls(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "sess_1", State: "idle"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.detailedStatus = DetailedStatus{Skills: []SkillInfo{
+			{Name: "clean", Description: "a plain user skill", UserInvocable: true, Available: true, AllowedTools: []string{"read_file", "grep"}},
+			{Name: "hidden", Description: "hidden from the model", DisableModelInvocation: true, UserInvocable: true, Available: true},
+			{Name: "stale", Description: "no longer readable", UserInvocable: false, Available: false},
+		}}
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	diagnostics := data.Thread.Evener.Diagnostics
+	if diagnostics == nil || len(diagnostics.Skills) != 3 {
+		t.Fatalf("diagnostics skills = %+v, want 3 entries", diagnostics)
+	}
+	byName := map[string]appwire.EvenerSkillInfo{}
+	for _, s := range diagnostics.Skills {
+		byName[s.Name] = s
+	}
+	clean := byName["clean"]
+	if !clean.Available || !clean.UserInvocable || clean.DisableModelInvocation ||
+		len(clean.AllowedTools) != 2 || clean.AllowedTools[0] != "read_file" || clean.AllowedTools[1] != "grep" {
+		t.Fatalf("clean wire skill = %+v, want available user-invocable with [read_file grep]", clean)
+	}
+	hidden := byName["hidden"]
+	if !hidden.DisableModelInvocation || !hidden.UserInvocable || !hidden.Available {
+		t.Fatalf("hidden wire skill = %+v, want disable-model-invocation with user-invocable available", hidden)
+	}
+	// The completion predicate over the WIRE values: Available && UserInvocable
+	// keeps the user-invocable skills and excludes the unavailable one. A
+	// projection that dropped the controls would collapse every skill to
+	// false/false/false and empty the completion set.
+	var kept []string
+	for _, s := range diagnostics.Skills {
+		if s.Available && s.UserInvocable {
+			kept = append(kept, s.Name)
+		}
+	}
+	sort.Strings(kept)
+	if !slices.Equal(kept, []string{"clean", "hidden"}) {
+		t.Fatalf("wire completion predicate kept = %v, want [clean hidden]", kept)
 	}
 }
