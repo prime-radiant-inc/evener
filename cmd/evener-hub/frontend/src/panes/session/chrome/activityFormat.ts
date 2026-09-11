@@ -34,8 +34,9 @@ export function quietAnchorMillis(job: { lastOutputAt?: string; startedAt: strin
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-// isFailedStatus is the single source for the danger set, shared by row dots,
-// fold-row failure counts, and terminal meta text.
+// isFailedStatus is the danger set for the status dot: it reads a displayed
+// status string, not an entry's verdict. Terminal failure - fold-row counts and
+// terminal meta text - comes from the outcome instead, through jobIsFailed.
 export function isFailedStatus(status: string): boolean {
   return isActivityFailure(undefined, status);
 }
