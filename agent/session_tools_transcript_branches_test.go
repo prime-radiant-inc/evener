@@ -886,6 +886,15 @@ func TestPublicTranscriptEntry(t *testing.T) {
 			t.Fatalf("expected ok=false for attention resolution")
 		}
 	})
+	t.Run("context replay copy excluded", func(t *testing.T) {
+		entry := transcript.Entry{
+			Turn: schema.Turn{Kind: schema.TurnAssistant, ContextReplay: true},
+		}
+		_, ok := publicTranscriptEntry(entry)
+		if ok {
+			t.Fatalf("expected ok=false for a context replay copy")
+		}
+	})
 }
 
 func TestPublicTranscriptEntries(t *testing.T) {
@@ -976,6 +985,20 @@ func TestPublicTranscriptLine(t *testing.T) {
 		}
 		if include {
 			t.Fatalf("expected include=false for attention resolution")
+		}
+	})
+	t.Run("context replay copy excluded", func(t *testing.T) {
+		entry := map[string]any{
+			"kind": "entry",
+			"turn": map[string]any{"kind": "ASSISTANT", "context_replay": true},
+		}
+		line, _ := json.Marshal(entry)
+		_, include, err := publicTranscriptLine(line, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if include {
+			t.Fatalf("expected include=false for a context replay copy")
 		}
 	})
 	t.Run("invalid json line", func(t *testing.T) {
