@@ -51,6 +51,7 @@ export interface ActivitySummaryStoreState {
     onFailure?: (sentence: string) => void,
     force?: boolean,
   ): number | null;
+  issuePendingRootFetch(ref: string): void;
   publishRootFetch(ref: string, requestID: number, counts: ActivityCounts): void;
   publishContinuationCounts(ref: string, requestID: number, counts: ActivityCounts): void;
   publishContinuationFailure(ref: string, requestID: number): void;
@@ -176,18 +177,13 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     }
     const panelRequestID = activityPanelStore.getState().beginFetch(ref);
     // Re-issues whatever refresh was queued while this request was in flight,
-    // through the queued caller's own fetch/onFailure.
+    // unless a continuation now owns the panel: a root fetch started here
+    // would take the panel's request ID and the continuation's already
+    // requested page would be discarded on arrival. The panel store drains
+    // the queue once that continuation settles and merges.
     const issuePendingBump = () => {
-      let pending: PendingRootFetch | undefined;
-      set((state) => {
-        const entry = state.entries.get(ref);
-        if (!entry?.pendingBump) return state;
-        pending = entry.pendingBump;
-        const entries = new Map(state.entries);
-        entries.set(ref, { ...entry, pendingBump: undefined });
-        return { entries };
-      });
-      if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
+      if (activityPanelStore.getState().entries.get(ref)?.pending?.kind === "continuation") return;
+      get().issuePendingRootFetch(ref);
     };
     const ownsPanel = () => activityPanelStore.getState().entries.get(ref)?.requestID === panelRequestID;
     const settleSupersededRoot = () => {
@@ -228,6 +224,20 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         issuePendingBump();
       });
     return requestID;
+  },
+
+  // Re-issues a queued refresh through the queued caller's own fetch/onFailure.
+  issuePendingRootFetch(ref) {
+    let pending: PendingRootFetch | undefined;
+    set((state) => {
+      const entry = state.entries.get(ref);
+      if (!entry?.pendingBump) return state;
+      pending = entry.pendingBump;
+      const entries = new Map(state.entries);
+      entries.set(ref, { ...entry, pendingBump: undefined });
+      return { entries };
+    });
+    if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
   },
 
   publishRootFetch(ref, requestID, counts) {

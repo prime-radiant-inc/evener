@@ -181,3 +181,21 @@ test("a later continuation failure keeps successful pages fresh while the old ro
   expect(backgroundFetch).not.toHaveBeenCalled();
   expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(2);
 });
+
+test("a queued root refresh waits for the continuation it would otherwise discard", async () => {
+  const settleRoot = heldRoot();
+  const queued = vi.fn(async () => tree(["first", "second", "third"]));
+  expect(activitySummaryStore.getState().refreshRoot(ref, 30, queued)).toBeNull();
+  const page = activityPanelStore.getState().beginFetch(ref, { nodeID });
+  await settleRoot();
+  expect(queued).not.toHaveBeenCalled();
+  activityPanelStore.getState().publishFetch(ref, page, { kind: "ready", tree: tree(["second"]) });
+  expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(2);
+  expect(queued).toHaveBeenCalledOnce();
+  await rootSettled();
+  expect(activitySummaryStore.getState().entries.get(ref)).toMatchObject({
+    lastFetchedBump: 30,
+    loading: false,
+    counts: { active: 3 },
+  });
+});

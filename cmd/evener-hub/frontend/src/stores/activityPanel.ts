@@ -152,6 +152,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
   },
 
   publishFetch(ref, requestID, result) {
+    let settledContinuation = false;
     set((state) => {
       const current = state.entries.get(ref);
       if (!current || current.requestID !== requestID) return state;
@@ -160,6 +161,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       let next = current;
 
       if (pending.kind === "continuation") {
+        settledContinuation = true;
         if (result.kind !== "ready")
           activitySummaryStore.getState().publishContinuationFailure(ref, pending.summaryRequestID);
         if (result.kind === "continuation-failed") {
@@ -264,6 +266,9 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       entries.set(ref, next);
       return { entries };
     });
+    // A root refresh queued while this continuation was in flight waited for
+    // the merge above rather than replacing the panel tree mid-page.
+    if (settledContinuation) activitySummaryStore.getState().issuePendingRootFetch(ref);
   },
 
   setExpanded(ref, expandedIDs) {
