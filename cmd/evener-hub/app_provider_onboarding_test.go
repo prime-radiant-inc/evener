@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -45,11 +44,7 @@ func TestZeroProviderOnboarding_SaveCheckListAtHTTPBoundary(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		opts := []registry.Option{
-			registry.WithOffline(true), registry.WithoutCache(), registry.WithStateRoot(f.stateDir),
-			registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
-			registry.WithEnv(func(name string) (string, bool) { v, ok := env[name]; return v, ok }),
-		}
+		opts := testProbeRegistryOptions(f.stateDir, store, func(name string) (string, bool) { v, ok := env[name]; return v, ok })
 		if noUserLayer {
 			opts = append(opts, registry.WithNoUserLayer())
 		} else {

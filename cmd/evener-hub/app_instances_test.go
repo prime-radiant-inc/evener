@@ -37,6 +37,25 @@ type instancesFixture struct {
 	store     *credentials.Store
 }
 
+// testProbeRegistryOptions is the registry composition the instances fixture
+// and the credential-probe override share - everything except the config layer,
+// which each caller picks (a path, or no user layer at all). Keeping the shared
+// options in one place means a new option cannot land on only one of them and
+// silently probe a different composition than the fixture builds.
+func testProbeRegistryOptions(
+	stateDir string,
+	store *credentials.Store,
+	env func(string) (string, bool),
+) []registry.Option {
+	return []registry.Option{
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithStateRoot(stateDir),
+		registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
+		registry.WithEnv(env),
+	}
+}
+
 // newTestInstancesController builds an instances controller whose registry
 // reads tomlPath as its user layer, with credentials at credsDir and OAuth
 // state at stateDir.
@@ -54,17 +73,13 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 	auth.stateDir = stateDir
 	auth.providersConfigPath = tomlPath
 	auth.reg = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-		opts := []registry.Option{
-			registry.WithOffline(true),
-			registry.WithoutCache(),
-			registry.WithConfigPath(tomlPath),
-			registry.WithStateRoot(stateDir),
-			registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
-			registry.WithEnv(func(name string) (string, bool) {
+		opts := append(
+			testProbeRegistryOptions(stateDir, store, func(name string) (string, bool) {
 				v, ok := lookup[name]
 				return v, ok
 			}),
-		}
+			registry.WithConfigPath(tomlPath),
+		)
 		r, err := registry.Load(append(opts, extra...)...)
 		return r, store, err
 	})

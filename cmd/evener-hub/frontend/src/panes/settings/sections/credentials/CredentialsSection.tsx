@@ -86,6 +86,11 @@ export interface CredentialsSectionProps {
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
   /** The connector's escape must retain the full editor, not reopen itself. */
+  // fullEditor selects the raw add-instance entry (the form that authors
+  // providers.toml) instead of the guided connector. Only
+  // ConnectProviderDialog's own "Full provider settings" view passes it; the
+  // Settings pane renders the section without it so its header action opens the
+  // guided flow, which is the reachable path to the full editor from there.
   fullEditor?: boolean;
 }
 
@@ -220,9 +225,17 @@ export function CredentialsSection({ fullEditor = false }: CredentialsSectionPro
   return (
     <div className={CLASS.root}>
       <div className={CLASS.headerRow}>
+        {/* Only the raw add-instance action authors providers.toml, so only it
+            is gated by the write refusal. The guided connector stays reachable:
+            its credential writes go to the credential store (a different file),
+            and a registry whose user layer failed to load still serves the
+            curated/implicit providers it did read (cmd/evener-hub/main_test.go's
+            broken-layer case), so disabling the entry point would hide a path
+            that works. The connector's own configuration step surfaces the
+            refusal when it needs a config write. */}
         <Button
           onClick={() => (fullEditor ? setOpenEditor({ kind: "add" }) : setConnecting(true))}
-          disabled={writesRefused}
+          disabled={fullEditor && writesRefused}
         >
           {fullEditor ? "+ Add provider instance" : "Connect provider"}
         </Button>

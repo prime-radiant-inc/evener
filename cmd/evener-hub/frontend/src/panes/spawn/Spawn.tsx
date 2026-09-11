@@ -206,12 +206,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [modelHandoff, setModelHandoff] = useState<{ name?: string }>();
   // Save/reload can make new models appear before Continue. Once this draft
   // enters onboarding, do not substitute the legacy untouched-model fallback
-  // for its explicit choice, including after cancellation.
-  const providerChoicePending = useRef(false);
-  const openProviderSetup = useCallback(() => {
-    providerChoicePending.current = true;
-    setConnectingProvider(true);
-  }, []);
+  // for its explicit choice, including after cancellation. The scope recorded
+  // is the draft's own harness+directory, so the suppression ends when the
+  // draft's scope does (see openProviderSetup below).
+  const providerChoiceScope = useRef<string | null>(null);
   const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
   const providerConnected = useCallback(
     (name?: string) => {
@@ -236,14 +234,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [model, setModel] = useState(""); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [cwd, setCwd] = useState("");
-  // providerChoicePending is scoped to one draft, not to the pane mount: a new
-  // working directory or harness is a different catalog scope whose own
-  // defaults were never overridden by an onboarding the user walked away from.
-  // Cancelling inside one scope keeps the flag (see its own comment above),
-  // because that draft's explicit choice is still in play.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: harness/cwd are trigger-only deps - the body only resets a ref, but the reset must re-run when the draft's catalog scope changes (same idiom as the catalog settle effect below)
-  useEffect(() => {
-    providerChoicePending.current = false;
+  // Entering onboarding records the draft's own scope; the fallback below is
+  // suppressed for exactly that harness+directory. A later scope in the same
+  // pane mount still gets its own default, and a connection-driven re-render -
+  // which never changes the draft scope - cannot clear the choice.
+  const openProviderSetup = useCallback(() => {
+    providerChoiceScope.current = `${harness}\0${cwd}`;
+    setConnectingProvider(true);
   }, [harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [branch, setBranch] = useState(""); // display-only (floor §1.7)
@@ -820,7 +817,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
           const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
           const fallback = models[0];
-          if (!defaultCredentialed && fallback && !providerChoicePending.current) {
+          if (!defaultCredentialed && fallback && providerChoiceScope.current !== `${harness}\0${cwd}`) {
             setModel(`${fallback.provider}/${fallback.model}`);
           }
         },
@@ -837,7 +834,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, advancedOverrides, resolveConfig, loadModels]);
+  }, [cwd, advancedOverrides, resolveConfig, loadModels, harness]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's

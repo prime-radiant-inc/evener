@@ -775,7 +775,7 @@ describe("diagnostics and writesRefused", () => {
     expect(screen.queryByText("Warnings")).toBeNull();
   });
 
-  test("writesRefused disables Add and each sheet's Remove/make default, but not Test credentials/Set key/Clear", async () => {
+  test("writesRefused gates the raw add-instance action, not the guided connector or credential-only actions", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK, PERSONAL],
@@ -786,7 +786,11 @@ describe("diagnostics and writesRefused", () => {
     await screen.findByText("work");
     const user = userEvent.setup();
 
-    expect((screen.getByRole("button", { name: "Connect provider" }) as HTMLButtonElement).disabled).toBe(true);
+    // Credentials go to the credential store, not providers.toml, and the
+    // registry still serves the curated/implicit set when the user layer fails
+    // to load - so the guided entry point must stay usable while writes are
+    // refused.
+    expect((screen.getByRole("button", { name: "Connect provider" }) as HTMLButtonElement).disabled).toBe(false);
 
     const workInspector = await openSheet(user, "work");
     expect((within(workInspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
@@ -805,6 +809,15 @@ describe("diagnostics and writesRefused", () => {
     expect(
       (within(personalInspector).getByRole("button", { name: /make default/i }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  test("writesRefused disables the raw add-instance action that authors providers.toml", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [], writesRefused: true }));
+    render(<CredentialsSection sectionId="credentials" fullEditor />);
+    await screen.findByText("work");
+
+    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
