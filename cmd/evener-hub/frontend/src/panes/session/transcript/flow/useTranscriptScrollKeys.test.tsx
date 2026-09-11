@@ -48,6 +48,22 @@ function renderPaneKeys(paneId: string, { mounted = true }: { mounted?: boolean 
   return { el, scrollToIndex, jumpToBottom, markGesture, markedAt, unmount: hook.unmount };
 }
 
+// jsdom's scrollTop is an unclamped slot, so a chord that a real browser would
+// refuse (scrolling down at the bottom) still "moves" it. These tests need the
+// browser's own clamp to exist, since the gesture marker now turns on whether
+// the write moved anything.
+function clampScrollTop(el: HTMLElement, scrollHeight: number): void {
+  let value = 0;
+  Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+  Object.defineProperty(el, "scrollTop", {
+    configurable: true,
+    get: () => value,
+    set: (next: number) => {
+      value = Math.max(0, Math.min(next, scrollHeight - el.clientHeight));
+    },
+  });
+}
+
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   installKeybindings();
@@ -216,19 +232,55 @@ test("mobile: no transcript scroll handlers register at all (the rail.toggle ine
 // straight to the element, dispatched from `window` - a listener on the scroll
 // port never sees them (roborev medium 1 on f998582) - so they announce
 // themselves through the marker instead.
-test("the line and page scroll chords mark a reader gesture before writing scrollTop", () => {
+test("the line and page scroll chords mark a reader gesture when the write moves the port", () => {
   const a = renderPaneKeys("pane_a");
   workspaceStore.setState({ focusedPaneId: "pane_a" });
+  clampScrollTop(a.el, 4000);
   a.el.scrollTop = 500;
 
   document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true }));
 
-  expect(a.markedAt).toEqual([500]);
   expect(a.el.scrollTop).toBe(500 - TRANSCRIPT_LINE_SCROLL_PX);
+  expect(a.markGesture).toHaveBeenCalledTimes(1);
 
   document.body.dispatchEvent(keydown({ key: "ArrowUp", altKey: true, shiftKey: true }));
 
-  expect(a.markedAt).toEqual([500, 500 - TRANSCRIPT_LINE_SCROLL_PX]);
+  expect(a.markGesture).toHaveBeenCalledTimes(2);
+});
+
+// roborev medium on fb07321. scrollTop assignments clamp, so a chord aimed past
+// an edge writes nothing - and marking a gesture there vetoes a late measurement
+// correction landing in the same frame, which (a veto records the reader as away
+// from the bottom) disarms the re-pin until they return to the bottom.
+test.each([
+  ["Alt+ArrowDown", { key: "ArrowDown", altKey: true }],
+  ["Alt+Shift+ArrowDown", { key: "ArrowDown", altKey: true, shiftKey: true }],
+])("%s at the bottom writes nothing and marks no gesture", (_label, chord) => {
+  const a = renderPaneKeys("pane_a");
+  workspaceStore.setState({ focusedPaneId: "pane_a" });
+  clampScrollTop(a.el, 2000);
+  a.el.scrollTop = 4000; // clamped to the true bottom, 2000 - 500
+  expect(a.el.scrollTop).toBe(1500);
+
+  document.body.dispatchEvent(keydown(chord));
+
+  expect(a.el.scrollTop).toBe(1500);
+  expect(a.markGesture).not.toHaveBeenCalled();
+});
+
+test.each([
+  ["Alt+ArrowUp", { key: "ArrowUp", altKey: true }],
+  ["Alt+Shift+ArrowUp", { key: "ArrowUp", altKey: true, shiftKey: true }],
+])("%s at the top writes nothing and marks no gesture", (_label, chord) => {
+  const a = renderPaneKeys("pane_a");
+  workspaceStore.setState({ focusedPaneId: "pane_a" });
+  clampScrollTop(a.el, 2000);
+  a.el.scrollTop = 0;
+
+  document.body.dispatchEvent(keydown(chord));
+
+  expect(a.el.scrollTop).toBe(0);
+  expect(a.markGesture).not.toHaveBeenCalled();
 });
 
 test("a chord an unfocused pane declines marks no gesture on it", () => {

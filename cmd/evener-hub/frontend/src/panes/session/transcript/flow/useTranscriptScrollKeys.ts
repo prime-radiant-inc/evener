@@ -12,7 +12,9 @@
 //   - line/page steps write the scroll element's scrollTop directly, the
 //     same adjustment useTranscriptScroll's own anchor-restore paths use
 //     (el.scrollTop += delta). The native scroll listener that hook attaches
-//     keeps wasAtBottom/the new-content pill in step afterward.
+//     keeps wasAtBottom/the new-content pill in step afterward. Every such
+//     write goes through scrollPortBy, which reports whether it MOVED anything
+//     so only a real scroll announces itself as a reader gesture.
 //   - scrollTop uses the virtualizer's scrollToIndex(0, { align: "start" }).
 //   - scrollBottom is the hook's own jumpToBottom (error-anchor aware, pill
 //     clearing) - the exact action NewContentPill's click target runs.
@@ -44,10 +46,28 @@ export interface UseTranscriptScrollKeysOptions {
    * element's scrollTop directly, and they are dispatched from `window`, so the
    * scroll port's own gesture listeners never see them - without this the
    * transcript's bottom-hold correction can read a keyboard scroll-up as a
-   * measurement correction and pin the reader back. Called immediately BEFORE
-   * each write, so the correction classifier sees the gesture in the same frame
-   * as the scroll event it produces. */
+   * measurement correction and pin the reader back. Called only when the write
+   * actually moved the port, and in the same task as it, which is what the
+   * classifier needs: the browser delivers the scroll event later, in the
+   * frame's own scroll steps, never synchronously from the assignment. */
   markGesture: () => void;
+}
+
+// Scrolls the port by `delta` and reports whether the offset actually changed.
+// scrollTop assignments CLAMP, so a step aimed past an edge - Alt+ArrowDown at
+// the bottom, Alt+ArrowUp at the top - writes nothing at all. Announcing a
+// reader gesture for one of those is a false veto, and a false veto is not a
+// lost frame: useTranscriptScroll's correction falls through to recording the
+// reader as away from the bottom, so every later correction fails its at-bottom
+// clause until the reader genuinely returns there.
+//
+// The browser's own clamp is the authority here rather than a recomputed
+// scrollHeight - clientHeight target: it needs no second copy of the clamping
+// rule, and it stays right for fractional and zoom-scaled offsets.
+function scrollPortBy(el: HTMLElement, delta: number): boolean {
+  const before = el.scrollTop;
+  el.scrollTop = before + delta;
+  return el.scrollTop !== before;
 }
 
 export function useTranscriptScrollKeys({
@@ -76,32 +96,28 @@ export function useTranscriptScrollKeys({
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        markGestureRef.current();
-        el.scrollTop -= TRANSCRIPT_LINE_SCROLL_PX;
+        if (scrollPortBy(el, -TRANSCRIPT_LINE_SCROLL_PX)) markGestureRef.current();
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptLineDown, () => {
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        markGestureRef.current();
-        el.scrollTop += TRANSCRIPT_LINE_SCROLL_PX;
+        if (scrollPortBy(el, TRANSCRIPT_LINE_SCROLL_PX)) markGestureRef.current();
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptPageUp, () => {
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        markGestureRef.current();
-        el.scrollTop -= el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO;
+        if (scrollPortBy(el, -el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO)) markGestureRef.current();
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptPageDown, () => {
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        markGestureRef.current();
-        el.scrollTop += el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO;
+        if (scrollPortBy(el, el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO)) markGestureRef.current();
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptScrollTop, () => {
