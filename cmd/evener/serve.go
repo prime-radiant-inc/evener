@@ -61,8 +61,8 @@ type serveServer interface {
 	ReplaceAppIdentity(server.PreparedAppIdentity, func())
 	SetSandboxEscalationResolveFunc(func(string, bool) error)
 	SetCompactFunc(func(context.Context) error)
-	SetSteerFunc(func(string))
-	SetSteerWithImagesFunc(func(string, []server.ImageAttachment))
+	SetSteerFunc(func(string) error)
+	SetSteerWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetQueueFunc(func(string) error)
 	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
@@ -78,7 +78,7 @@ type serveServer interface {
 	SetVisionModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
 	SetNameFunc(func(string))
-	SetReasoningEffortFunc(func(string))
+	SetReasoningEffortFunc(func(string) error)
 	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
 	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
 	// the live session's registry resolution of an instance/model reference.
@@ -595,7 +595,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
-			sess.SetReasoningEffort(effort.Value)
+			if err := sess.SetReasoningEffort(effort.Value); err != nil {
+				sess.Close()
+				return fmt.Errorf("set reasoning effort: %w", err)
+			}
 		}
 		reportServeResume(os.Stderr, resumedMeta, modelRef, resumeProvider, resumeModel, strings.TrimSpace(*model) != "")
 	} else {
@@ -924,9 +927,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// The steer RPC carries human-sent steering, so it takes the user-sourced
 	// entry points: UIs render it as a user message, not a system steering
 	// divider (issue #24).
-	srv.SetSteerFunc(func(text string) { getSession().SteerFromUser(text) })
-	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) {
-		getSession().SteerFromUserWithImages(text, images)
+	srv.SetSteerFunc(func(text string) error { return getSession().SteerFromUser(text) })
+	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) error {
+		return getSession().SteerFromUserWithImages(text, images)
 	})
 	srv.SetQueueFunc(func(text string) error { return getSession().Enqueue(ctx, text) })
 	srv.SetQueueWithImagesFunc(func(text string, images []server.ImageAttachment) error {
@@ -997,7 +1000,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return nil
 	})
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
-	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
+	srv.SetReasoningEffortFunc(func(effort string) error { return getSession().SetReasoningEffort(effort) })
 	// Resolve the session per call like the model/effort hooks above: binding one
 	// session's method value here would pin the hook to the pre-thread/clear session.
 	srv.SetVisionModelFunc(func(v string) error { return getSession().SetVisionModel(v) })

@@ -636,7 +636,9 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 		defer cancel()
 		_ = sess.Enqueue(ctx, op.Text)
 	case opFollowUp:
-		sess.FollowUp(op.Text)
+		if err := sess.FollowUp(op.Text); err != nil {
+			panic(fmt.Sprintf("FollowUp unexpectedly failed: %v", err))
+		}
 	case opSetGoal:
 		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
 		defer cancel()

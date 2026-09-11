@@ -992,9 +992,13 @@ func TestCovSteeringQueueSnapshot(t *testing.T) {
 func TestCovFollowUp(t *testing.T) {
 	s := &Session{}
 	// Empty message — no-op.
-	s.FollowUp("")
+	if err := s.FollowUp(""); err != nil {
+		t.Fatal(err)
+	}
 	// Whitespace message — no-op.
-	s.FollowUp("  ")
+	if err := s.FollowUp("  "); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
 	if len(s.followups) != 0 {
 		t.Fatalf("empty/whitespace should be no-op: %d", len(s.followups))
@@ -1002,7 +1006,9 @@ func TestCovFollowUp(t *testing.T) {
 	s.mu.Unlock()
 
 	// Valid message.
-	s.FollowUp("do something")
+	if err := s.FollowUp("do something"); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
 	if len(s.followups) != 1 || s.followups[0] != "do something" {
 		t.Fatalf("followups: %+v", s.followups)

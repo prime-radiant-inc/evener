@@ -1121,7 +1121,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {
-			subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask)
+			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+				disposeUnadopted()
+				return nil, err
+			}
 		}
 	}
 
@@ -1343,8 +1346,7 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 		// (sub.driving) is in flight just like a running one: the drive turn absorbs
 		// the steered input at its tool-round boundary (spec §3, A7 steer-into-drive)
 		// rather than launching a second concurrent run.
-		subSess.SteerKind(input, events.SteeringKindAgentMessage)
-		return false, nil
+		return false, subSess.SteerKind(input, events.SteeringKindAgentMessage)
 	}
 
 	// Agent is idle — start a new ProcessInput round. Enroll the resumed run in
@@ -2278,7 +2280,9 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	}
 	stopResult := a.sess.hookRunner.RunSubagentStop(a.sess.apiLogContext(ctx), input)
 	for _, m := range stopResult.ModelContext {
-		a.sess.deliverHookContext(m)
+		if steerErr := a.sess.deliverHookContext(m); steerErr != nil {
+			return res, errors.Join(err, steerErr)
+		}
 	}
 	for _, m := range stopResult.UserMessages {
 		a.sess.deliverHookUserMessage(m)

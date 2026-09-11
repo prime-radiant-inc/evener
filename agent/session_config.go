@@ -624,7 +624,7 @@ type spawnConfig struct {
 	// injection is attributable to the watch delivery that produced it, and the
 	// events.SteeringKind* naming what was sent so the caller's transcript
 	// labels it from ground truth.
-	parentSteer func(string, *provenance.Causal, string)
+	parentSteer func(string, *provenance.Causal, string) error
 
 	// parentSystemNotification routes a child-owned restart notice up the live
 	// session tree to the callback receiver.

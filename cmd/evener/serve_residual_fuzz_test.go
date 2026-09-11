@@ -31,8 +31,8 @@ type residualServeServer struct {
 	input          chan server.InputMessage
 	escalate       func(string, bool) error
 	compact        func(context.Context) error
-	steer          func(string)
-	steerImages    func(string, []server.ImageAttachment)
+	steer          func(string) error
+	steerImages    func(string, []server.ImageAttachment) error
 	queue          func(string) error
 	queueImages    func(string, []server.ImageAttachment) error
 	goal           func(string) (bool, error)
@@ -45,7 +45,7 @@ type residualServeServer struct {
 	model          func(string) error
 	visionModel    func(string) error
 	name           func(string)
-	effort         func(string)
+	effort         func(string) error
 	tasks          func() any
 	jobs           func(appwire.JobsListParams) (any, error)
 	jobOutput      func(string, int64, int64) (any, bool, error)
@@ -62,8 +62,8 @@ func (s *residualServeServer) SetSandboxEscalationResolveFunc(f func(string, boo
 	s.escalate = f
 }
 func (s *residualServeServer) SetCompactFunc(f func(context.Context) error) { s.compact = f }
-func (s *residualServeServer) SetSteerFunc(f func(string))                  { s.steer = f }
-func (s *residualServeServer) SetSteerWithImagesFunc(f func(string, []server.ImageAttachment)) {
+func (s *residualServeServer) SetSteerFunc(f func(string) error)            { s.steer = f }
+func (s *residualServeServer) SetSteerWithImagesFunc(f func(string, []server.ImageAttachment) error) {
 	s.steerImages = f
 }
 func (s *residualServeServer) SetQueueFunc(f func(string) error) { s.queue = f }
@@ -84,12 +84,12 @@ func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, i
 func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
 	s.envelopeSource = src
 }
-func (s *residualServeServer) RefreshThreadEnvelope()                  {}
-func (s *residualServeServer) SetModelFunc(f func(string) error)       { s.model = f }
-func (s *residualServeServer) SetVisionModelFunc(f func(string) error) { s.visionModel = f }
-func (s *residualServeServer) SetNameFunc(f func(string))              { s.name = f }
-func (s *residualServeServer) SetReasoningEffortFunc(f func(string))   { s.effort = f }
-func (s *residualServeServer) SetTasksFunc(f func() any)               { s.tasks = f }
+func (s *residualServeServer) RefreshThreadEnvelope()                      {}
+func (s *residualServeServer) SetModelFunc(f func(string) error)           { s.model = f }
+func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.visionModel = f }
+func (s *residualServeServer) SetNameFunc(f func(string))                  { s.name = f }
+func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
+func (s *residualServeServer) SetTasksFunc(f func() any)                   { s.tasks = f }
 func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }
@@ -105,8 +105,12 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	ctx := context.Background()
 	_ = s.escalate("missing", false)
 	_ = s.compact(ctx)
-	s.steer("x")
-	s.steerImages("x", nil)
+	if err := s.steer("x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.steerImages("x", nil); err != nil {
+		t.Fatal(err)
+	}
 	_ = s.queue("queued")
 	_ = s.queueImages("queued", nil)
 	_, _ = s.goal(" ")
@@ -131,7 +135,9 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_ = s.model("test2")
 	_ = s.visionModel("off")
 	s.name("renamed")
-	s.effort("low")
+	if err := s.effort("low"); err != nil {
+		t.Fatal(err)
+	}
 	_ = s.tasks()
 	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
 	_, _, _ = s.jobOutput("job_1", 0, 1024)

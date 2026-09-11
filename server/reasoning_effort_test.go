@@ -11,7 +11,7 @@ func TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue(t *testing.
 	s := NewServer(ServerConfig{})
 	var got string
 	called := false
-	s.SetReasoningEffortFunc(func(e string) { got = e; called = true })
+	s.SetReasoningEffortFunc(func(e string) error { got = e; called = true; return nil })
 
 	if _, err := s.handleAppThreadReasoningEffortSet(context.Background(), appwire.ThreadReasoningEffortSetParams{ReasoningEffort: "  high  "}); err != nil {
 		t.Fatalf("handleAppThreadReasoningEffortSet: %v", err)
@@ -27,7 +27,7 @@ func TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue(t *testing.
 func TestHandleAppThreadReasoningEffortSet_RejectsUnknownEffort(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	called := false
-	s.SetReasoningEffortFunc(func(string) { called = true })
+	s.SetReasoningEffortFunc(func(string) error { called = true; return nil })
 
 	if _, err := s.handleAppThreadReasoningEffortSet(context.Background(), appwire.ThreadReasoningEffortSetParams{ReasoningEffort: "hihg"}); err == nil {
 		t.Fatal("expected an error for an unknown reasoning-effort value")
@@ -41,7 +41,7 @@ func TestHandleAppThreadReasoningEffortSet_NoneStaysNone(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	var got string
 	called := false
-	s.SetReasoningEffortFunc(func(e string) { got = e; called = true })
+	s.SetReasoningEffortFunc(func(e string) error { got = e; called = true; return nil })
 
 	if _, err := s.handleAppThreadReasoningEffortSet(context.Background(), appwire.ThreadReasoningEffortSetParams{ReasoningEffort: "off"}); err != nil {
 		t.Fatalf("handleAppThreadReasoningEffortSet: %v", err)

@@ -42,6 +42,11 @@ func (s *Session) SetKickFunc(f func(prompt string)) {
 // pending, where an idle /goal must kick normally, exactly as it would on
 // SessionIdle.
 func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, err error) {
+	release, admissionErr := s.beginRetirementMutation("autonomous")
+	if admissionErr != nil {
+		return false, admissionErr
+	}
+	defer release()
 	_ = ctx
 	objective = strings.TrimSpace(objective)
 	if objective == "" {

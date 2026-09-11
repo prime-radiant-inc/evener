@@ -36,8 +36,9 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 		emit: func(_ events.EventKind, data events.EventData) {
 			h.emitted = append(h.emitted, data)
 		},
-		steer: func(text, _ string) {
+		steer: func(text, _ string) error {
 			h.steers = append(h.steers, text)
+			return nil
 		},
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{

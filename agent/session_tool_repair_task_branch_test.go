@@ -76,7 +76,7 @@ func TestExecTool_TaskListMisfiledEntrySurfacesTargetedPrevalidation(t *testing.
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{
 		emit:           func(events.EventKind, events.EventData) {},
-		steer:          func(string, string) {},
+		steer:          func(string, string) error { return nil },
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore {
@@ -103,7 +103,7 @@ func TestExecTool_TaskListBriefSurfacesTargetedPrevalidation(t *testing.T) {
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{
 		emit:           func(events.EventKind, events.EventData) {},
-		steer:          func(string, string) {},
+		steer:          func(string, string) error { return nil },
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore {

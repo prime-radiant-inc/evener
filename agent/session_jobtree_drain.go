@@ -1272,7 +1272,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// only user-sourced steering, so a carrier turn stands down
 					// before any model call — which is exactly how an earlier
 					// attempt at this shipped inert.
-					s.SteerKind(text, events.SteeringKindNotification)
+					if err := s.SteerKind(text, events.SteeringKindNotification); err != nil {
+						bgAnnounced[setKey]--
+						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("job announcement admission failed: %v", err)})
+						return lastResult, err
+					}
 					deliveredBefore := s.jobNotificationsDelivered()
 					res, perr := process(ctx, "", nil, EntryNotification)
 					if perr != nil {

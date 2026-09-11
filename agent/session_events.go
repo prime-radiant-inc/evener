@@ -455,7 +455,9 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 	input.Reason = message
 	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
-		s.deliverHookContext(m)
+		if err := s.deliverHookContext(m); err != nil {
+			s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+		}
 	}
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)

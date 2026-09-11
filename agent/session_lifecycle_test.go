@@ -36,7 +36,9 @@ func TestSession_FollowUp_ProcessesAfterCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	sess.FollowUp("do second")
+	if err := sess.FollowUp("do second"); err != nil {
+		t.Fatal(err)
+	}
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

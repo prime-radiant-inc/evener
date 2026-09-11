@@ -52,9 +52,13 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 				return appwire.TurnSteerResponse{}, appwire.Unavailable("steer with images not available")
 			}
 			if steerImages != nil {
-				steerImages(text, images)
+				if err := steerImages(text, images); err != nil {
+					return appwire.TurnSteerResponse{}, err
+				}
 			} else {
-				steer(text)
+				if err := steer(text); err != nil {
+					return appwire.TurnSteerResponse{}, err
+				}
 			}
 			return appwire.TurnSteerResponse{}, nil
 		}

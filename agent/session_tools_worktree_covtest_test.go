@@ -442,7 +442,7 @@ func TestCovTrySteerEnqueue_Closed(t *testing.T) {
 	s.mu.Lock()
 	s.state = SessionClosed
 	s.mu.Unlock()
-	if s.trySteerEnqueue("msg", nil, nil, "", "") {
+	if ok, err := s.trySteerEnqueue("msg", nil, nil, "", ""); err != nil || ok {
 		t.Fatal("closed session should return false")
 	}
 }
@@ -450,10 +450,10 @@ func TestCovTrySteerEnqueue_Closed(t *testing.T) {
 // TestCovTrySteerEnqueue_EmptyMsg covers empty message + no images.
 func TestCovTrySteerEnqueue_EmptyMsg(t *testing.T) {
 	s := &Session{}
-	if s.trySteerEnqueue("", nil, nil, "", "") {
+	if ok, err := s.trySteerEnqueue("", nil, nil, "", ""); err != nil || ok {
 		t.Fatal("empty msg + no images should return false")
 	}
-	if s.trySteerEnqueue("  ", nil, nil, "", "") {
+	if ok, err := s.trySteerEnqueue("  ", nil, nil, "", ""); err != nil || ok {
 		t.Fatal("whitespace msg should return false")
 	}
 }
@@ -461,7 +461,7 @@ func TestCovTrySteerEnqueue_EmptyMsg(t *testing.T) {
 // TestCovTrySteerEnqueue_Success covers a successful enqueue.
 func TestCovTrySteerEnqueue_Success(t *testing.T) {
 	s := &Session{}
-	if !s.trySteerEnqueue("hello", nil, nil, "", "") {
+	if ok, err := s.trySteerEnqueue("hello", nil, nil, "", ""); err != nil || !ok {
 		t.Fatal("valid msg should return true")
 	}
 	s.mu.Lock()
@@ -474,7 +474,7 @@ func TestCovTrySteerEnqueue_Success(t *testing.T) {
 // TestCovTrySteerEnqueue_UserSource covers the user-source path (skips persist).
 func TestCovTrySteerEnqueue_UserSource(t *testing.T) {
 	s := &Session{}
-	if !s.trySteerEnqueue("user msg", nil, nil, events.SteeringSourceUser, "") {
+	if ok, err := s.trySteerEnqueue("user msg", nil, nil, events.SteeringSourceUser, ""); err != nil || !ok {
 		t.Fatal("user source should return true")
 	}
 	// User-sourced steering is not persisted by the snapshot; verify it's queued.

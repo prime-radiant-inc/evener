@@ -32,8 +32,8 @@ type toolDeps struct {
 	emit func(kind events.EventKind, data events.EventData)
 
 	// steering queue access for the communicate handler.
-	steer               func(msg, kind string)
-	steerTaskCompletion func(msg string, blockingDelegateIDs []string)
+	steer               func(msg, kind string) error
+	steerTaskCompletion func(msg string, blockingDelegateIDs []string) error
 	drainSteering       func() []steeringMessage
 	prependSteering     func(entries []steeringMessage)
 
@@ -142,14 +142,14 @@ type toolDeps struct {
 // with the pre-metadata contract: their generic steer callback still delivers
 // the model-visible machine payload and tasks-done kind. Normal sessions take
 // the typed callback branch and retain the parallel event metadata as well.
-func (d *toolDeps) sendTaskCompletionSteering(msg string, blockingDelegateIDs []string) {
+func (d *toolDeps) sendTaskCompletionSteering(msg string, blockingDelegateIDs []string) error {
 	if d.steerTaskCompletion != nil {
-		d.steerTaskCompletion(msg, blockingDelegateIDs)
-		return
+		return d.steerTaskCompletion(msg, blockingDelegateIDs)
 	}
 	if d.steer != nil {
-		d.steer(msg, events.SteeringKindTasksDone)
+		return d.steer(msg, events.SteeringKindTasksDone)
 	}
+	return nil
 }
 
 type artifactReadSeekCloser interface {

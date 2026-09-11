@@ -414,7 +414,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				if manuallyStartedID != 0 {
 					// Inside the task_list handler: the tool is registered by
 					// construction, so the steering may name it.
-					deps.steer(formatCurrentTaskSteering(afterByID[manuallyStartedID], true), events.SteeringKindCurrentTask)
+					if err := deps.steer(formatCurrentTaskSteering(afterByID[manuallyStartedID], true), events.SteeringKindCurrentTask); err != nil {
+						return nil, err
+					}
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
@@ -439,7 +441,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
 								finalTasks = auto.After
 								started[next.ID] = true
-								deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
+								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
+									return nil, err
+								}
 							}
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
@@ -450,7 +454,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 								if deps.blockingDelegateIDs != nil {
 									blockingDelegateIDs = deps.blockingDelegateIDs()
 								}
-								deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs)
+								if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
+									return nil, err
+								}
 								if len(blockingDelegateIDs) == 0 {
 									if summary.AllDone() {
 										msg.WriteString("All tasks complete. ")

@@ -1115,7 +1115,9 @@ func TestAskUser_BoundaryDrainPreservesFollowUp(t *testing.T) {
 		"test-only: calls Session.FollowUp mid-round, simulating a concurrent caller racing the asking round",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, any) (any, error) {
-			sess.FollowUp("investigate the flaky test next")
+			if err := sess.FollowUp("investigate the flaky test next"); err != nil {
+				t.Fatal(err)
+			}
 			return "queued", nil
 		})
 

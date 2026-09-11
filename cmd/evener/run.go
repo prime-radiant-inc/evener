@@ -379,7 +379,10 @@ func run(ctx context.Context, cfg runConfig) error {
 			resumeWithCommitted = true
 		}
 		if effort.Set {
-			sess.SetReasoningEffort(effort.Value)
+			if err := sess.SetReasoningEffort(effort.Value); err != nil {
+				sess.Close()
+				return fmt.Errorf("set reasoning effort: %w", err)
+			}
 		}
 		if strings.TrimSpace(cfg.model) != "" {
 			fmt.Fprintf(cfg.stderr, "[resumed] session %s with model override %s (was %s/%s)\n", meta.ID, modelRef.Qualified(), resumeProvider, resumeModel) //nolint:errcheck

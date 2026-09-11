@@ -252,7 +252,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 		spawn: spawnConfig{
 			parentSessionID:      "01PARENT",
 			parentToolCallID:     "call_abc",
-			parentSteer:          func(string, *provenance.Causal, string) {},
+			parentSteer:          func(string, *provenance.Causal, string) error { return nil },
 			subagentTask:         "do the thing",
 			depth:                3,
 			sharedTaskStore:      task.NewTaskStore("", "01PARENT"),

@@ -904,6 +904,11 @@ func (s *Session) processInputWithProvenance(ctx context.Context, input string, 
 }
 
 func (s *Session) processInputKindWithProvenance(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (string, error) {
+	release, admissionErr := s.beginRetirementMutation("turn")
+	if admissionErr != nil {
+		return "", admissionErr
+	}
+	defer release()
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
@@ -2028,7 +2033,9 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		hi.UserPrompt = input
 		result := s.hookRunner.RunUserPromptSubmit(s.apiLogContext(ctx), hi)
 		for _, m := range result.ModelContext {
-			s.deliverHookContext(m)
+			if err := s.deliverHookContext(m); err != nil {
+				return err
+			}
 		}
 		for _, m := range result.UserMessages {
 			s.deliverHookUserMessage(m)

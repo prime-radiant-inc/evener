@@ -101,6 +101,11 @@ func (s *Session) ensureClientMutationStore() error {
 }
 
 func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return appwire.TurnQueueResponse{}, err
+	}
+	defer release()
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
@@ -202,6 +207,11 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 // reserved ids, not a freshly minted one, so the id the client was told in its
 // Applied receipt is the id that actually runs.
 func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+	release, admissionErr := s.beginRetirementMutation("turn")
+	if admissionErr != nil {
+		return "", false, admissionErr
+	}
+	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
 	}
@@ -275,6 +285,12 @@ func steeringCarrierTurnIDFromContext(ctx context.Context) string {
 // prompted the wake, if still queued, stays queued for whichever turn runs
 // next; nothing is lost by waiting.
 func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
+	release, admissionErr := s.beginRetirementMutation("input")
+	if admissionErr != nil {
+		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering carrier admission failed: %v", admissionErr)})
+		return "", false
+	}
+	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return "", false
@@ -444,6 +460,11 @@ func clientMutationInput(text string, images []ImageAttachment) []appwire.InputI
 }
 
 func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return appwire.TurnSteerResponse{}, err
+	}
+	defer release()
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
@@ -563,6 +584,11 @@ func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (app
 }
 
 func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, err
+	}
+	defer release()
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
@@ -679,6 +705,11 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 }
 
 func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
+	}
+	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
@@ -767,6 +798,11 @@ func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPr
 }
 
 func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return appwire.TurnCancelQueuedResponse{}, err
+	}
+	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnCancelQueuedResponse{}, err
 	}

@@ -2067,8 +2067,7 @@ func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params app
 	if err := llm.ValidateReasoningEffort(effort); err != nil {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("invalid reasoning effort: " + params.ReasoningEffort)
 	}
-	fn(effort)
-	return appwire.EmptyResponse{}, nil
+	return appwire.EmptyResponse{}, fn(effort)
 }
 
 func (s *Server) requireRootMutationTarget(rawRef, threadID string) error {

@@ -18,6 +18,11 @@ import (
 // Runs all compaction layers (observation masking, thinking clearing,
 // checkpoint, and LLM summarization). Safe to call while idle.
 func (s *Session) Compact(ctx context.Context) error {
+	release, admissionErr := s.beginRetirementMutation("turn")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	// Attribute the summarizer's LLM side calls to this session in the
 	// per-session API log (the per-attempt context only covers turn model calls).
 	ctx = llm.WithAPILogContext(ctx, s.id)
@@ -314,7 +319,9 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 		return
 	}
 	ref := encodeRef("", s.id)
-	s.steerKindForFold("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"outline\"}), then read a focused range with read_transcript({\"transcript_ref\": \""+ref+"\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>", events.SteeringKindTranscriptPointer, publishedRevision)
+	if err := s.steerKindForFold("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"outline\"}), then read a focused range with read_transcript({\"transcript_ref\": \""+ref+"\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>", events.SteeringKindTranscriptPointer, publishedRevision); err != nil {
+		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+	}
 }
 
 // foldCommit carries one fold attempt's staged side effects to its

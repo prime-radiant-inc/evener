@@ -398,7 +398,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 				// per-round via prepareModelRequestWithError while it is in progress; it
 				// must not overwrite the session's configured effort.
 				if current, ok := store.CurrentInProgress(); ok {
-					s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask)
+					if err := s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+					}
 				}
 			}
 		}
@@ -1912,7 +1914,9 @@ func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind)
 
 func (s *Session) deliverSessionStartHookResult(result hooks.RunResult) {
 	for _, m := range result.ModelContext {
-		s.deliverHookContext(m)
+		if err := s.deliverHookContext(m); err != nil {
+			s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+		}
 	}
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)

@@ -241,8 +241,9 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 	return state
 }
 
-// TryClaim never waits for admitted work. Only controller state is checked here;
-// the complete runtime predicate must be integrated before this can be activated.
+// TryClaim never waits for admitted work. The root input predicate runs behind
+// the admission fence without holding mu. Full tree proof is still required
+// before automatic retirement can be activated.
 func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, RetirementSnapshot, error) {
 	// The injected clock is a callback boundary too; do not call it under mu.
 	var now time.Time
@@ -262,7 +263,22 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	c.phase = "preparing"
 	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation}
-	return c.claim, c.snapshotLocked(), nil
+	claim := c.claim
+	c.mu.Unlock()
+	blockers := claim.root.retirementInputBlockers()
+	c.mu.Lock()
+	if !c.validClaimLocked(claim) {
+		return nil, c.snapshotLocked(), ErrRetirementUnavailable
+	}
+	c.blockers = blockers
+	if len(blockers) != 0 {
+		claim.finished = true
+		c.claim = nil
+		c.phase = "resident"
+		c.eligibleSince = time.Time{}
+		return nil, c.snapshotLocked(), nil
+	}
+	return claim, c.snapshotLocked(), nil
 }
 
 func (c *RetirementController) validClaimLocked(claim *RetirementClaim) bool {

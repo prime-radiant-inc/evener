@@ -12,11 +12,18 @@ import (
 type HandlerFunc func(context.Context, json.RawMessage) (any, error)
 
 type Router struct {
-	handlers map[string]HandlerFunc
+	handlers  map[string]HandlerFunc
+	admission func(context.Context, string) (func(), error)
 }
 
 func NewRouter() *Router {
 	return &Router{handlers: map[string]HandlerFunc{}}
+}
+
+// SetAdmission installs handler-scoped resource admission before serving.
+// Response serialization and subscription lifetime do not retain the lease.
+func (r *Router) SetAdmission(fn func(context.Context, string) (func(), error)) {
+	r.admission = fn
 }
 
 func (r *Router) Handle(method string, fn HandlerFunc) {
@@ -50,6 +57,13 @@ func (r *Router) Dispatch(ctx context.Context, req appwire.Request) (any, error)
 	fn, ok := r.handlers[req.Method]
 	if !ok {
 		return nil, appwire.MethodNotFound(req.Method)
+	}
+	if r.admission != nil {
+		release, err := r.admission(ctx, req.Method)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	out, err := fn(ctx, req.Params)
 	if err != nil {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -141,7 +142,13 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context")), events.SteeringKindCompactNudge)
+	if err := s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context")), events.SteeringKindCompactNudge); err != nil {
+		s.mu.Lock()
+		s.nudgedSinceCompact = false
+		s.mu.Unlock()
+		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("compact nudge admission failed: %v", err)})
+		return false
+	}
 	return true
 }
 

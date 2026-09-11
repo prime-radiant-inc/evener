@@ -1151,11 +1151,16 @@ func (s *Session) CostFor(ref string) *registry.Cost {
 
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
-func (s *Session) SetReasoningEffort(effort string) {
+func (s *Session) SetReasoningEffort(effort string) error {
+	release, err := s.beginRetirementMutation("admission")
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	// Normalize disable-aliases (off/false/...) to the canonical "none" so a
 	// runtime off stays an explicit off through buildModelRequest, matching
@@ -1167,7 +1172,7 @@ func (s *Session) SetReasoningEffort(effort string) {
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
-	s.maybeAutoSave()
+	return s.saveMeta()
 }
 
 // resolveProfileForRef resolves a model ref to a *provider.Profile. When the
@@ -1235,6 +1240,11 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // switch, cfg.ModelFallbacks entries that no longer validate against the new
 // profile are dropped; see DroppedModelFallbacksFromLastSwitch.
 func (s *Session) SetModel(model string) error {
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1349,6 +1359,11 @@ func (s *Session) SetModel(model string) error {
 // the client. It takes effect on the next image read and persists with the
 // session config; it never alters the active model itself.
 func (s *Session) SetVisionModel(ref string) error {
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	ref = strings.TrimSpace(ref)
 	ref = canonicalVisionModelOff(ref)
 	s.mu.Lock()
@@ -1904,23 +1919,22 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 // maybeAutoSave persists the session metadata if StateDir is configured.
 // Writes only lightweight SessionMeta (~500 bytes), not the full history.
 // The conversation history is already durably recorded by the transcript JSONL.
-func (s *Session) maybeAutoSave() {
+func (s *Session) saveMeta() error {
 	if s.stateDir == "" {
-		return
+		return nil
 	}
-	err := func() error {
-		s.metaSaveMu.Lock()
-		defer s.metaSaveMu.Unlock()
-		meta := s.Meta()
-		if fs := s.cfg.testOnly.metaFS; fs != nil {
-			return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
-		}
-		return schema.SaveSessionMeta(s.stateDir, meta)
-	}()
-	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf("auto-save failed: %v", err),
-		})
+	s.metaSaveMu.Lock()
+	defer s.metaSaveMu.Unlock()
+	meta := s.Meta()
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+	}
+	return schema.SaveSessionMeta(s.stateDir, meta)
+}
+
+func (s *Session) maybeAutoSave() {
+	if err := s.saveMeta(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", err)})
 	}
 }
 

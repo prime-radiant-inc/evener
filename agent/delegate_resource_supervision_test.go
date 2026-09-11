@@ -115,7 +115,9 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work")
+			if err := root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work"); err != nil {
+				t.Fatal(err)
+			}
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
 		bare, bare, bare, bare,
@@ -169,7 +171,9 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 		func(llm.Request) llm.Response {
-			root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work")
+			if err := root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work"); err != nil {
+				t.Fatal(err)
+			}
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
 		bare, bare, bare, bare,

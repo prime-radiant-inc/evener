@@ -474,7 +474,9 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 	// enqueue time if a newer fold has published since this flush's check.
 	if s.taskStore != nil {
 		if reminder := taskReminderFull(s.taskStore); reminder != "" {
-			s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision)
+			if err := s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision); err != nil {
+				s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+			}
 		}
 	}
 }

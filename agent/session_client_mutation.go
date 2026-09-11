@@ -246,6 +246,11 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 // accepted pending execution in the journal, and an identical retry returns
 // the same stable turn rather than creating another logical turn.
 func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	defer release()
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
@@ -341,12 +346,17 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 // start lifecycle. In addition to accepted starts, restore may expose a queued
 // turn that crashed after claim under the same stable turn identity.
 func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return queuedInput{}, false, err
+	}
+	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		return queuedInput{}, false, err
 	}
 	var claimed queuedInput
 	claimedQueue := false
-	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		for id, pending := range snapshot.PendingExecutions {
 			if pending.Method != clientMutationMethodStart ||
 				(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
@@ -440,6 +450,11 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 // ProcessClientMutationStart claims and processes the next durable start using
 // the payload and identity stored by AcceptClientMutationStart.
 func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+	release, admissionErr := s.beginRetirementMutation("turn")
+	if admissionErr != nil {
+		return "", false, admissionErr
+	}
+	defer release()
 	turnID, runnable := s.runnableClientMutationStartTurnID()
 	if !runnable {
 		return "", false, nil
@@ -505,6 +520,11 @@ func (s *Session) InterruptClientMutation(
 	params appwire.TurnInterruptParams,
 	cancelAndWait func(),
 ) (appwire.TurnInterruptResponse, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return appwire.TurnInterruptResponse{}, err
+	}
+	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}

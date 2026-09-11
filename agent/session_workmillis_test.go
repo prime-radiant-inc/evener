@@ -141,7 +141,9 @@ func TestWorkMillis_MultiTurnDrainEachCounts(t *testing.T) {
 			return finalResponse("second reply")
 		},
 	))
-	sess.FollowUp("do second")
+	if err := sess.FollowUp("do second"); err != nil {
+		t.Fatal(err)
+	}
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.

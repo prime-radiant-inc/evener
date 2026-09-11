@@ -1186,7 +1186,7 @@ func TestClientMutation_CommunicateEndTurnDefersClientSteering(t *testing.T) {
 		t.Fatalf("clientMutationSteer: %v", err)
 	}
 	daemonImage := ImageAttachment{MediaType: "image/png", Data: []byte("daemon-image"), Name: "daemon.png"}
-	if !sess.trySteerWithImages("daemon reminder", []ImageAttachment{daemonImage}) {
+	if ok, err := sess.trySteerWithImages("daemon reminder", []ImageAttachment{daemonImage}); err != nil || !ok {
 		t.Fatal("queue daemon steering")
 	}
 
