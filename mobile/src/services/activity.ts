@@ -118,21 +118,21 @@ export class ActivityProjectionError extends Error {
 
 // --- tone classification -----------------------------------------------------
 
-export const RUNNING_STATUSES = new Set([
+const RUNNING_STATUSES: ReadonlySet<string> = new Set([
   "running",
   "in_progress",
   "inProgress",
   "active",
 ]);
-export const IDLE_STATUSES = new Set(["idle", "waiting", "paused"]);
-export const TERMINAL_STATUSES = new Set([
+const IDLE_STATUSES: ReadonlySet<string> = new Set(["idle", "waiting", "paused"]);
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   "completed",
   "done",
   "finished",
   "succeeded",
   "success",
 ]);
-export const FAILED_STATUSES = new Set([
+const FAILED_STATUSES: ReadonlySet<string> = new Set([
   "failed",
   "error",
   "errored",
@@ -142,7 +142,7 @@ export const FAILED_STATUSES = new Set([
   "stopped",
 ]);
 
-export function classifyTone(
+function classifyTone(
   status: string,
   terminal: boolean | undefined,
   exitCode: number | undefined,
@@ -163,7 +163,7 @@ export function classifyTone(
 
 // --- output size formatting --------------------------------------------------
 
-export function formatOutputBytes(bytes: number): string {
+function formatOutputBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) {
@@ -295,6 +295,8 @@ function validateHierarchy(
 
 // --- work projection ---------------------------------------------------------
 
+// The label uses jobType (the operation name), never the task/prompt/command
+// text — the same rule its delegate twin below follows.
 export function projectJobEntry(job: EvenerJobInfo): WorkEntry {
   const tone = classifyTone(job.status, undefined, job.exitCode, undefined);
   const kind: WorkKind = job.fromWatch === true ? "watch" : "job";
@@ -310,7 +312,7 @@ export function projectJobEntry(job: EvenerJobInfo): WorkEntry {
 
 export function projectDelegateEntry(
   dlg: EvenerDelegateInfo,
-  children: WorkEntry[],
+  children: WorkEntry[] = [],
 ): WorkEntry {
   const tone = classifyTone(dlg.status, dlg.terminal, undefined, dlg.outcome);
   // Use the type (operation name) only, never description/task prompt — those

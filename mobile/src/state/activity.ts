@@ -267,7 +267,7 @@ function patchLive(
     case "evener/delegate/updated": {
       const params = n.params as ParamsOf<"evener/delegate/updated">;
       const dlg = params.delegate;
-      const entry = projectDelegateEntry(dlg, []);
+      const entry = projectDelegateEntry(dlg);
       // Detect duplicate same-kind IDs: ambiguous delegate ID → rehydrate.
       if (countEntriesById(view.work, dlg.delegateId) > 1) return "rehydrate";
       const found = findEntryById(view.work, dlg.delegateId);
