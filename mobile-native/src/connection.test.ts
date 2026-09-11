@@ -83,9 +83,10 @@ describe("hub connections", () => {
 		expect((await profiles.list()).map((p) => p.id)).toEqual(["b"]);
 		expect(await profiles.token("b")).toBe("second");
 	});
-	it("degrades to an empty roster for a corrupt index and reports a corrupt record", async () => {
-		const data = new Map<string, string>();
-		const profiles = new HubProfiles({
+	// Hub profiles over a plain map, so a test can plant exactly the stored
+	// bytes it wants to see survive.
+	function profilesBackedBy(data: Map<string, string>): HubProfiles {
+		return new HubProfiles({
 			getItemAsync: async (k) => data.get(k) ?? null,
 			setItemAsync: async (k, v) => {
 				data.set(k, v);
@@ -94,6 +95,10 @@ describe("hub connections", () => {
 				data.delete(k);
 			},
 		});
+	}
+	it("degrades to an empty roster for a corrupt index and reports a corrupt record", async () => {
+		const data = new Map<string, string>();
+		const profiles = profilesBackedBy(data);
 		// A corrupt index is unreadable, not fatal: the roster is empty.
 		data.set("evener.hubs", "{not json");
 		expect(await profiles.list()).toEqual([]);
@@ -103,13 +108,49 @@ describe("hub connections", () => {
 		await expect(profiles.token("a")).rejects.toThrow(
 			"Saved hub could not be read.",
 		);
-		// A record that parses to null is just as unreadable.
-		data.set("evener.hub.a", "null");
+		// list() still degrades around the unreadable record.
+		expect(await profiles.list()).toEqual([]);
+	});
+	it("reports a record that parses to null as unreadable", async () => {
+		const data = new Map<string, string>([
+			["evener.hubs", JSON.stringify(["a"])],
+			["evener.hub.a", "null"],
+		]);
+		const profiles = profilesBackedBy(data);
+		// Without the null guard this reads a property off null and throws a
+		// raw TypeError past the domain error.
 		await expect(profiles.token("a")).rejects.toThrow(
 			"Saved hub could not be read.",
 		);
-		// list() still degrades around the unreadable record.
 		expect(await profiles.list()).toEqual([]);
+	});
+	// Characterization, not regression: every public path already rebuilds its
+	// own object, so a stored extra cannot reach a caller whichever way read()
+	// returns. This pins that contract against a future projection change.
+	it("hands back only the saved hub fields from a record carrying extras", async () => {
+		const data = new Map<string, string>([
+			["evener.hubs", JSON.stringify(["a"])],
+			[
+				"evener.hub.a",
+				JSON.stringify({
+					id: "a",
+					name: "Local",
+					origin: "https://hub.test",
+					token: "secret",
+					role: "admin",
+				}),
+			],
+		]);
+		const profiles = profilesBackedBy(data);
+		expect(await profiles.list()).toEqual([
+			{ id: "a", name: "Local", origin: "https://hub.test" },
+		]);
+		expect(Object.keys((await profiles.list())[0] ?? {}).sort()).toEqual([
+			"id",
+			"name",
+			"origin",
+		]);
+		expect(await profiles.token("a")).toBe("secret");
 	});
 	it("retains both hubs when secure writes overlap", async () => {
 		const data = new Map<string, string>();
