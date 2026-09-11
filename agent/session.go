@@ -174,7 +174,9 @@ type Session struct {
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
 	// nil until the first ENVIRONMENT turn is emitted (or restored from a prior
 	// session), so a session that has said nothing about its environment yet
-	// persists nothing. Guarded by mu (see setEnvContextState).
+	// persists nothing. Guarded by mu; appendEnvironmentContext advances it with
+	// the entry it commits and resetEnvContextTrackerLocked clears it with the
+	// tracker.
 	envContextState *envctx.State
 
 	// --- Synchronization / lock discipline ---
