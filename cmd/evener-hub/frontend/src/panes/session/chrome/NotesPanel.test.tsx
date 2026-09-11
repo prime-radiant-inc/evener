@@ -330,7 +330,7 @@ test("standalone Notes navigation hides when capability is unset", () => {
   expect(screen.queryByRole("button", { name: "Notes" })).toBeNull();
 });
 
-test.each(["idle", "ended", "notLoaded"] as const)(
+test.each(["idle", "ended", "notLoaded", "restartRequired"] as const)(
   "imperative Notes opening rechecks capability for %s sessions",
   async (status) => {
     const user = userEvent.setup();
@@ -356,7 +356,7 @@ test.each(["idle", "ended", "notLoaded"] as const)(
 
 // The sheet's Notes button is read navigation, not a forbidden edit trigger.
 // Hiding it on all non-live sessions would remove this supported read path.
-test.each(["ended", "closed", "notLoaded"] as const)(
+test.each(["ended", "closed", "notLoaded", "restartRequired"] as const)(
   "Notes sheet opens saved %s content without editor or removal controls",
   async (status) => {
     const user = userEvent.setup();
@@ -388,6 +388,22 @@ test("notes panel is read-only when ended: values shown, no editor, no remove bu
   openPanel(
     testModel({
       status: { type: "ended" },
+      humanNote: "human hello",
+      agentNote: "agent hello",
+      sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }],
+    }),
+  );
+  expect(screen.getByTestId("shared-notes-section")).toBeTruthy();
+  expect(screen.getByTestId("shared-notes-human").textContent).toMatch(/human hello/);
+  expect(screen.getByTestId("shared-notes-agent").textContent).toMatch(/agent hello/);
+  expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
+  expect(screen.queryByTestId("shared-notes-url-remove-u1")).toBeNull();
+});
+
+test("notes panel is read-only when restartRequired: values shown, no editor, no remove buttons", () => {
+  openPanel(
+    testModel({
+      status: { type: "restartRequired" },
       humanNote: "human hello",
       agentNote: "agent hello",
       sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }],

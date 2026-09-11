@@ -5,6 +5,7 @@ import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import type { SessionURL } from "../../../protocol/types.gen";
 import {
   blurHumanNote,
+  canWriteHumanNote,
   editHumanNote,
   focusHumanNote,
   syncHumanNote,
@@ -62,13 +63,6 @@ const CLASS = {
   linkUrl: requireClass(styles.linkUrl, "notespanel.module.css", "linkUrl"),
   dim: requireClass(styles.dim, "notespanel.module.css", "dim"),
 };
-
-// The wire statuses that mean this session's story is over for shared-notes
-// affordances. Restated here (not imported) because Composer.tsx's
-// ENDED_STATUSES is module-private by reviewer decision; keep the three
-// values ("ended", "closed", "notLoaded") in sync with DetailsPanel's copy
-// until that copy is deleted with the section move.
-const NOTES_ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -134,7 +128,9 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   const saving = !!state?.submitted && !state.error;
   const saved = state?.saved ?? false;
   const error = state?.error ?? null;
-  const live = !NOTES_ENDED_STATUSES.has(model.status.type);
+  // Editability here tracks the store's own write gate: rendering controls that
+  // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
+  const live = canWriteHumanNote(model);
   const idleWake = live && model.status.type === "idle";
   useEffect(() => {
     syncHumanNote(sessionRef, model.humanNote);
