@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1631,12 +1632,14 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
 		// RenderDiff advances the tracker before the transcript write so it can
-		// render the diff. Restore that state when durability fails, allowing a
-		// retry to emit the environment block. attentionMu keeps compaction
-		// from replacing the tracker during this transaction.
-		s.mu.Lock()
-		s.envTracker = envctx.NewTracker(before)
-		s.mu.Unlock()
+		// render the diff. Rewind it when the failed write left nothing behind,
+		// allowing a retry to emit the environment block. attentionMu keeps
+		// compaction from replacing the tracker during this transaction.
+		if s.environmentEntryAbsentAfterFailedWriteLocked(turn, err) {
+			s.mu.Lock()
+			s.envTracker = envctx.NewTracker(before)
+			s.mu.Unlock()
+		}
 		s.attentionMu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		return err
@@ -1651,6 +1654,37 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
 	}
 	return nil
+}
+
+// environmentEntryAbsentAfterFailedWriteLocked reports whether a failed
+// environment append definitely left nothing in the transcript, which is what
+// makes rewinding the tracker safe: the next turn re-renders the same
+// observation, and there is no earlier entry for it to duplicate. A rollback
+// failure removes that guarantee — the entry's line may still be in the file —
+// so the outcome is reconciled by the entry's stable ID instead, and the
+// tracker is rewound only once the transcript is confirmed not to hold it.
+// Anything that leaves the answer unknown keeps the advanced tracker: a
+// silent environment on one turn costs the model a diff it can rebuild, while
+// a second entry for the same observation is duplicate context no reader of
+// the transcript can tell apart. The caller holds attentionMu, so no other
+// writer can append between the failure and this read.
+func (s *Session) environmentEntryAbsentAfterFailedWriteLocked(turn schema.Turn, err error) bool {
+	if !errors.Is(err, transcript.ErrRollbackFailed) {
+		return true
+	}
+	if durabilityErr := s.attachedTranscript().EstablishDurability(); durabilityErr != nil {
+		return false
+	}
+	data, readErr := readTranscriptFull(s.TranscriptPath())
+	if readErr != nil {
+		return false
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.StableTurnID == turn.StableTurnID {
+			return false
+		}
+	}
+	return true
 }
 
 // resetEnvContextTrackerAfterCompaction clears the environment-context tracker

@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -17,9 +19,10 @@ import (
 
 type environmentSyncFailureFS struct {
 	afero.Fs
-	mu        sync.Mutex
-	failure   error
-	onFailure func()
+	mu              sync.Mutex
+	failure         error
+	rollbackFailure error
+	onFailure       func()
 }
 
 type environmentSyncFailureFile struct {
@@ -50,7 +53,43 @@ func (file *environmentSyncFailureFile) Sync() error {
 	return file.File.Sync()
 }
 
+// Truncate is the writer's rollback of a failed durable append. Failing it
+// leaves the entry's line in the file with nothing to say whether it landed.
+func (file *environmentSyncFailureFile) Truncate(size int64) error {
+	file.fs.mu.Lock()
+	failure := file.fs.rollbackFailure
+	file.fs.rollbackFailure = nil
+	file.fs.mu.Unlock()
+	if failure != nil {
+		return failure
+	}
+	return file.File.Truncate(size)
+}
+
 func attachEnvironmentSyncFailure(t *testing.T, sess *Session, failure error, onFailure func()) {
+	t.Helper()
+	fs := attachEnvironmentFailureFS(t, sess)
+	fs.mu.Lock()
+	fs.failure = failure
+	fs.onFailure = onFailure
+	fs.mu.Unlock()
+}
+
+// attachEnvironmentAmbiguousWrite makes the next durable transcript write fail
+// its sync and then fail the rollback that would take the entry back out.
+func attachEnvironmentAmbiguousWrite(t *testing.T, sess *Session, syncFailure, rollbackFailure error) {
+	t.Helper()
+	fs := attachEnvironmentFailureFS(t, sess)
+	fs.mu.Lock()
+	fs.failure = syncFailure
+	fs.rollbackFailure = rollbackFailure
+	fs.mu.Unlock()
+}
+
+// attachEnvironmentFailureFS swaps in a writer over a faultable filesystem and
+// returns it unarmed: attaching flushes held turns through the same file, so
+// callers arm their faults only once the swap has settled.
+func attachEnvironmentFailureFS(t *testing.T, sess *Session) *environmentSyncFailureFS {
 	t.Helper()
 	if err := sess.closeAttachedTranscript(); err != nil {
 		t.Fatal(err)
@@ -61,10 +100,24 @@ func attachEnvironmentSyncFailure(t *testing.T, sess *Session, failure error, on
 		t.Fatal(err)
 	}
 	sess.attachTranscript(writer)
-	fs.mu.Lock()
-	fs.failure = failure
-	fs.onFailure = onFailure
-	fs.mu.Unlock()
+	return fs
+}
+
+// durableEnvironmentTurnIDs lists the stable IDs of every ENVIRONMENT entry a
+// reader of the session's transcript would see, in file order.
+func durableEnvironmentTurnIDs(t *testing.T, sess *Session) []string {
+	t.Helper()
+	data, err := readTranscriptFull(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnEnvironment {
+			ids = append(ids, entry.Turn.StableTurnID)
+		}
+	}
+	return ids
 }
 
 func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
@@ -197,5 +250,39 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 	}
 	if count := countEnvironmentTurns(sess); count != 1 {
 		t.Fatalf("environment turns=%d, want one durable retry", count)
+	}
+}
+
+// TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry: a durable environment
+// append whose sync fails and whose rollback also fails leaves the entry's
+// line in the transcript. Rewinding the tracker there — the plain
+// durability-failure response — makes the next turn render the same
+// observation again under a fresh identity, so the transcript carries the
+// environment twice and every reader projecting it shows duplicate context.
+// The append's outcome is unknown, so it has to be reconciled against the
+// transcript by the entry's stable ID before any retry.
+func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	syncFailure := errors.New("environment transcript durability failure")
+	rollbackFailure := errors.New("environment transcript rollback failure")
+	attachEnvironmentAmbiguousWrite(t, sess, syncFailure, rollbackFailure)
+
+	err := sess.maybeAppendEnvironmentContext()
+	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
+		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
+	}
+	ambiguous := durableEnvironmentTurnIDs(t, sess)
+	if len(ambiguous) != 1 || ambiguous[0] == "" {
+		t.Fatalf("durable environment entries after the failed rollback = %v, want the one entry rollback could not remove", ambiguous)
+	}
+	if got := countEnvironmentTurns(sess); got != 0 {
+		t.Fatalf("failed environment append entered model history %d times", got)
+	}
+
+	if err := sess.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := durableEnvironmentTurnIDs(t, sess); !reflect.DeepEqual(got, ambiguous) {
+		t.Fatalf("durable environment entries after the next turn = %v, want only the reconciled entry %v", got, ambiguous)
 	}
 }

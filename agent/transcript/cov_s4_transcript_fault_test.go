@@ -278,6 +278,9 @@ func TestAppendDurable_WriteFailsRollbackAlsoFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "rollback failed") {
 		t.Fatalf("error = %q, want a rollback-failed suffix", err.Error())
 	}
+	if !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("error = %v, want an indeterminate-append outcome callers can reconcile on", err)
+	}
 }
 
 // When the durable Sync faults (index 6), rollback runs; a compounding fault on a
@@ -319,6 +322,9 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantRollback) {
 				t.Fatalf("error = %q, want rollback detail %q", err.Error(), tc.wantRollback)
+			}
+			if !errors.Is(err, ErrRollbackFailed) {
+				t.Fatalf("error = %v, want an indeterminate-append outcome callers can reconcile on", err)
 			}
 		})
 	}

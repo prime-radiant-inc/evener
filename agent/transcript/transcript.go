@@ -43,6 +43,14 @@ var ErrInvalidRecordBoundary = errors.New("invalid transcript record boundary")
 // configured framing limit.
 var ErrLineTooLong = errors.New("transcript line too long")
 
+// ErrRollbackFailed marks a durable append that failed and could not be taken
+// back out of the file. The entry's line may still be there, so the append's
+// outcome is unknown: a caller that simply retries can record the same turn
+// twice under two identities. Reconcile the entry against the transcript —
+// EstablishDurability makes what a reader can see authoritative — before
+// deciding whether to write it again.
+var ErrRollbackFailed = errors.New("rollback failed")
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
@@ -454,7 +462,7 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		if err := w.file.Sync(); err != nil {
 			if forceSync {
 				if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
-					return fmt.Errorf("sync transcript entry: %w; rollback failed: %w", err, rollbackErr)
+					return fmt.Errorf("sync transcript entry: %w; %w: %w", err, ErrRollbackFailed, rollbackErr)
 				}
 				w.dirty = previousDirty
 				return fmt.Errorf("sync transcript entry: %w", err)
@@ -489,7 +497,7 @@ func (w *Writer) writeLineLocked(line []byte) error {
 
 func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64) error {
 	if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
-		return fmt.Errorf("%s: %w; rollback failed: %w", operation, err, rollbackErr)
+		return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
 	}
 	return fmt.Errorf("%s: %w", operation, err)
 }
