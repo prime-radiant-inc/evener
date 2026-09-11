@@ -259,11 +259,10 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	}
 }
 
-// TestCovDelegateInputWasPreseeded covers delegateInputWasPreseeded
-// (delegate_runtime.go lines 767-769).
-func TestCovDelegateInputWasPreseeded(t *testing.T) {
-	// No context value — false.
-	if delegateInputWasPreseeded(context.Background(), "sess_1", "hello") {
+// TestCovDelegatePreseededTurnID covers delegatePreseededTurnID.
+func TestCovDelegatePreseededTurnID(t *testing.T) {
+	// No context value — absent.
+	if _, ok := delegatePreseededTurnID(context.Background(), "sess_1", "hello"); ok {
 		t.Fatal("no context value should return false")
 	}
 
@@ -271,18 +270,23 @@ func TestCovDelegateInputWasPreseeded(t *testing.T) {
 	ctx := context.WithValue(context.Background(), delegatePreseededInputContextKey{}, delegatePreseededInput{
 		sessionID: "sess_1",
 		input:     "hello",
+		turnID:    "turn_direct_cov4",
 	})
-	if !delegateInputWasPreseeded(ctx, "sess_1", "hello") {
+	turnID, ok := delegatePreseededTurnID(ctx, "sess_1", "hello")
+	if !ok {
 		t.Fatal("matching preseeded should return true")
+	}
+	if turnID != "turn_direct_cov4" {
+		t.Fatalf("matching preseeded turn id = %q, want the id the preseed stamped", turnID)
 	}
 
 	// Non-matching sessionID.
-	if delegateInputWasPreseeded(ctx, "sess_2", "hello") {
+	if _, ok := delegatePreseededTurnID(ctx, "sess_2", "hello"); ok {
 		t.Fatal("non-matching session should return false")
 	}
 
 	// Non-matching input.
-	if delegateInputWasPreseeded(ctx, "sess_1", "world") {
+	if _, ok := delegatePreseededTurnID(ctx, "sess_1", "world"); ok {
 		t.Fatal("non-matching input should return false")
 	}
 }

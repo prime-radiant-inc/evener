@@ -1057,11 +1057,6 @@ func (c *delegateTreeController) stableDelegateOwnerRuntime(lease delegateLease)
 	return parent.runtime
 }
 
-func delegateInputWasPreseeded(ctx context.Context, sessionID, input string) bool {
-	_, ok := delegatePreseededTurnID(ctx, sessionID, input)
-	return ok
-}
-
 // delegatePreseededTurnID reports the identity minted for a preseeded delegate
 // input, and whether ctx carries a preseed for this session and input at all.
 func delegatePreseededTurnID(ctx context.Context, sessionID, input string) (string, bool) {
