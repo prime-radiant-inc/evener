@@ -848,7 +848,10 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	// the roster learns of it only when its watcher next re-lists, so asking the
 	// roster alone would compare the pre-lock reading to the same stale reading.
 	// Refreshing the roster here is not the alternative — that probes daemons
-	// while two per-session mutexes are held.
+	// while two per-session mutexes are held. The roster is still asked because
+	// a snapshot that HAS caught up has to agree too: a move the roster already
+	// knows about is refused by this same recheck rather than waiting for the
+	// rendezvous read to notice it independently.
 	current, rendezvousErr := forkTargetSessionIDUnderLock(cfg, ref.ThreadID)
 	if rendezvousErr != nil {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("cannot verify session ownership: " + rendezvousErr.Error())
@@ -1002,6 +1005,16 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 // own resolution for a redirect whose daemon has since exited. Those are the
 // two resumeOwnershipStep reads, which is why resumeThread's recheck is not
 // fooled by a roster that has not caught up.
+//
+// It diverges from resumeOwnershipStep in two deliberate ways. A ListStrict
+// failure refuses the fork as unverifiable, where resumeOwnershipStep degrades
+// to the roster: a recheck that fell back to the reading it exists to
+// second-guess would answer nothing, and a retryable refusal is the safe
+// direction for a mutation. And it takes the first matching entry in directory
+// order rather than running resumeClaimTarget's conflict check, because a
+// thread two daemons both claim is refused downstream by ownershipEntry's
+// ambiguous-ownership error, which
+// TestHubForkCapabilityAdvertisesAheadOfOwnershipResolution pins.
 //
 // With no run dir configured, and for a thread nothing currently claims, it
 // answers the requested id — the same thing the roster-backed resolution
