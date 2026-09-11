@@ -1,7 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mergeConfig } from "vite";
+import { isSharedNodeModules } from "./editorial-preview-install.mjs";
 import base from "../vite.config.ts";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
@@ -36,7 +35,7 @@ const isolated = mergeConfig(base, {
   },
 });
 // No broad workspace root or shared install is required: run npm ci locally.
-if (fs.realpathSync(path.join(frontend, "node_modules")) !== path.join(frontend, "node_modules")) {
+if (isSharedNodeModules(frontend)) {
   throw new Error("Editorial preview requires its own npm ci, not a shared writable install");
 }
 export default isolated;
