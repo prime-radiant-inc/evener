@@ -12520,6 +12520,45 @@ describe("ConversationStore", () => {
       );
     });
 
+    it("keeps a member frozen by a live delta while a rehydrate is in flight", async () => {
+      const stale = [
+        toolItem("wire-a", "key-a", "call-a", "first"),
+        toolItem("wire-b", "key-b", "call-b", "second"),
+      ];
+      const { store, service } = await openProjectedWithItems(stale);
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => {
+        release = resolve;
+      });
+      const rehydrating = store.getState().rehydrate(service, createFakeSink());
+
+      // In flight, a live delta pushes the later member over the limit, so it
+      // truncates and freezes under its own identity.
+      toolOutputDelta(
+        store,
+        "wire-b",
+        "call-b",
+        "b".repeat(MAX_ITEM_BYTES + 100),
+      );
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+      const frozenOutput = clusterMembers(store, "wire-a")[1]?.detail.output;
+
+      // The reread carries the stale snapshot — it never saw the delta, so it
+      // cannot be authoritative about that member.
+      release(
+        makeReadProjectionResult(
+          makeThread({ turns: [makeTurn({ id: "t0", items: stale })] }),
+        ),
+      );
+      await rehydrating;
+
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+      toolOutputDelta(store, "wire-b", "call-b", " MORE");
+      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
+        frozenOutput,
+      );
+    });
+
     it("unfreezes a later clustered member the reread returns short", async () => {
       const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
       const { store, service } = await openProjectedWithItems([

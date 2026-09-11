@@ -127,25 +127,30 @@ function mergeLiveActivityMembers(
   currentItems: MobileTimelineItem[],
   revisions: Map<string, number>,
   entryRevision: number,
-): MobileTimelineItem[] | undefined {
+): { rows: MobileTimelineItem[]; supersededIdentities: string[] } | undefined {
   const liveMembers = new Map<string, ActivityMember>();
   for (const candidate of currentItems) {
     if (candidate.kind !== "activity") continue;
     for (const member of candidate.members ?? [candidate]) {
-      const identity = member.transcriptKey ?? member.id;
+      const identity = activityIdentity(member);
       if ((revisions.get(identity) ?? 0) > entryRevision) {
         liveMembers.set(identity, member);
       }
     }
   }
-  let changed = false;
+  // Report which member identities the live side actually won, not the whole
+  // cluster: a member the snapshot still owns is answerable to the reread, and
+  // naming it superseded would carry its freeze forward for good.
+  const supersededIdentities: string[] = [];
   const members = (snapshot.members ?? [snapshot]).map((member) => {
-    const current = liveMembers.get(member.transcriptKey ?? member.id);
-    if (current) changed = true;
+    const identity = activityIdentity(member);
+    const current = liveMembers.get(identity);
+    if (current) supersededIdentities.push(identity);
     return current ?? member;
   });
+  if (supersededIdentities.length === 0) return undefined;
   // Reuse the lifecycle projector so failed members retain their own rows.
-  return changed ? projectActivityMembers(members) : undefined;
+  return { rows: projectActivityMembers(members), supersededIdentities };
 }
 
 function itemsAbsentFromSnapshot(
@@ -1861,8 +1866,15 @@ export function createConversationStore() {
               if (item.kind === "activity") {
                 const replacement = mergeLiveActivityMembers(item, currentConvForMerge.items, liveOwnedRevs, entryLiveRev);
                 if (replacement) {
+                  // Supersession is per member, like truncation and freezing:
+                  // the live delta that won a later member owns that member's
+                  // identity, and recording only the cluster's top-level one
+                  // loses the member's freeze at reconciliation.
                   supersededIds.add(identity);
-                  supersededVersions.set(identity, replacement);
+                  for (const member of replacement.supersededIdentities) {
+                    supersededIds.add(member);
+                  }
+                  supersededVersions.set(identity, replacement.rows);
                 }
                 continue;
               }
