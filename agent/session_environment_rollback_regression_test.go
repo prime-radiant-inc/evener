@@ -839,3 +839,41 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	}
 	assertOneTurnFailedSessionEnd(t, drainPendingEvents(sess))
 }
+
+// TestPoisonedWriterLeavesAQueuedMessageQueued: the drain pops the queue head
+// durably at the bottom of an iteration and the gate refuses at the top of the
+// next one, so a message taken off the queue for a turn that never runs is a
+// message nobody has any more — it is not in the transcript, not in the queue,
+// and not in the session. A turn the gate will refuse must not consume one:
+// the message stays queued for the restart that recovers the transcript.
+func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
+	var requests atomic.Int32
+	steps := countingFinalResponses(&requests, 3)
+	sess := newTestSessionForEnvctx(t, withSteps(steps...))
+	sendOneUserInput(t, sess, "first")
+
+	fs := attachEnvironmentFailureFS(t, sess)
+	steps[1] = func(llm.Request) llm.Response {
+		requests.Add(1)
+		// Past the durable assistant record, onto the buffered tool-results
+		// one, so this turn finishes with the writer already poisoned.
+		armEnvironmentPartialWriteAfter(fs, 1)
+		return finalResponse("ok")
+	}
+	if err := sess.Enqueue(t.Context(), "waits for the restart"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	drainPendingEvents(sess)
+
+	_, err := sess.ProcessInput(t.Context(), "poisons mid-turn", nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("turn behind the poisoning = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("model requests = %d, want the queued message never to have run", got)
+	}
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
+	}
+	assertOneTurnFailedSessionEnd(t, drainPendingEvents(sess))
+}

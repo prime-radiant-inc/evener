@@ -1199,6 +1199,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		}
 		var queued queuedInput
 		if strings.TrimSpace(fu) == "" {
+			// The pop is durable and the turn it feeds runs on the next
+			// iteration, past the gate at the top of this loop. Refuse before
+			// taking the message rather than after: a message popped for a turn
+			// that is then refused is in no transcript, no queue and no session.
+			// Left queued, it is waiting when the restart recovers the writer.
+			if err := s.refuseTurnOnPoisonedTranscript(); err != nil {
+				return strings.Join(outputs, "\n"), err
+			}
 			// kata 111a / t5j6: each drained queued message becomes a distinct user
 			// turn; its image attachments ride along as ContentImage parts.
 			queued = s.popQueueHead()
