@@ -12179,6 +12179,37 @@ describe("ConversationStore", () => {
       expect(row?.kind === "activity" && row.state).toBe("completed");
     });
 
+    it("projects a status-less tool item naming another turn as completed", async () => {
+      const store = await openWithActiveTurn();
+      startItem(store, {
+        type: "commandExecution",
+        id: "tool-1",
+        turnId: "t0",
+        toolName: "shell",
+        callId: "call-1",
+      });
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(row?.kind).toBe("activity");
+      expect(row?.kind === "activity" && row.state).toBe("completed");
+    });
+
+    it("projects a status-less tool item naming no turn as running while a turn is active", async () => {
+      const store = await openWithActiveTurn();
+      startItem(store, {
+        type: "commandExecution",
+        id: "tool-1",
+        toolName: "shell",
+        callId: "call-1",
+      });
+      const row = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(row?.kind).toBe("activity");
+      expect(row?.kind === "activity" && row.state).toBe("running");
+    });
+
     it("projects a status-less reasoning item started in the active turn as running", async () => {
       const store = await openWithActiveTurn();
       startItem(store, {

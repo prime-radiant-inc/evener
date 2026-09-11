@@ -2794,6 +2794,11 @@ export function createConversationStore() {
             // A sparse completion carries no text, so the accumulated output
             // must come from the row the event settles — which is a clustered
             // member whenever this item runs beside its neighbours.
+            // Asymmetry, inherited from the lookup this replaced: the row is
+            // found by wire id, but replaced below by canonical identity
+            // (eventIdentity). A member whose wire id changes across the
+            // lifecycle while its transcriptKey holds is still replaced, yet
+            // misses this lookup and settles with output undefined.
             const existing = findActivityTarget(
               conv.items,
               params.item.id,
