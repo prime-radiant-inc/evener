@@ -448,6 +448,150 @@ unchanged reclamation tests. Tests remain in the task's new test file. Preparati
 release and timer activation remain later work. The Task 3 brief also carries
 the populated delegate-source/receipt preservation obligation from Task 2 review.
 
+Ruling: Also authorize `agent/delegate_tree_stop.go` for admission/handoff at
+`StopSubtree`, `StopSubtreeAndDrive`, `CloseResumability`, and
+`Close`/`closeRuntimeTree`, including directly related continuations. Parent
+confirmed these enter controller locks before durable stop/close effects; an
+outer lease cannot be acquired inside locked authorization. Preserve admitted
+continuation ownership, terminal close, stop identity/retry and retained delivery.
+If wrong, the cost is localized stop/close ordering churn. New direct race and
+original-record tests remain in the task's new test file; the additional
+`(cd agent && go test -race . -run '^TestDelegateController' -count=1)` gate must
+cover existing stop/close/restore tests without editing them. Retirement release
+remains separate future work.
+
+Ruling: Also authorize `agent/delegate_tree_start.go` and
+`agent/delegate_tree_work.go` for direct reservation/work admission and completion
+notification handoff. Parent inspected `ReserveCreate`, `ReserveAttention`,
+`ReserveStart` and `BeginShellWork`; admission must precede controller locks and
+ID/capacity/token/work effects. Existing exact tokens retain continuation authority;
+completion notifications follow unlocking. If wrong, the cost is localized
+reservation/work ordering churn, bounded by direct real-owner tests, the existing
+controller race gate and full-agent tests. Existing tests and unrelated behavior
+remain unchanged. The implementer reports initial cold/create behavioral RED;
+full evidence remains pending.
+
+Ruling: Also authorize `agent/delegate_tree_restore.go` and
+`agent/delegate_tree_steer.go` for direct `Reconcile`, `BeginSteerPersistence`
+and `beginCallerSteerPersistence` admission and settlement handoff. Parent
+confirmed the first locks and effects. Preserve evidence-version/exact-token
+checks and ownership across caller-to-root handoff and returned effect plans.
+Existing accepted and live-generation continuations retain their authority.
+If wrong, the cost is localized recovery/steering ordering churn, bounded by
+direct original-record tests and existing controller/race/full gates. No
+`delegate_tree_finish.go` edits or blanket ownership are authorized.
+
+### Task 3 delivered; independent review pending
+
+- Commit `c5792a1943bf72c127a927672e1f2271d7db71a2`, 18 owned files. Parent
+  verified HEAD, scope and diff check; prior reclamation/retirement tests unchanged.
+- Required race gate passed, `job:job_034MgUgSANwaKiUBNAhDgW_eaQLoSNhqj5a`;
+  supplemental controller race passed, `job:job_034MgUgSANwaKiUBNAhDgW_OyUfWTQR1eSu`.
+- Initial full-agent gate failed the deadline-comment audit. Rationale comments
+  moved beside the existing literals without changing bounds/assertions. Corrected
+  full-agent gate passed, `job:job_034MgUgSANwaKiUBNAhDgW_YGJ9Lm9xvEAF` (181.087s).
+  Parent read the actual complete final outputs.
+- Parent ran the new tests with `-v`: exit 0, 5.326s, no warnings or skips.
+  Populated outcome/watch source cases and real create/send/reconstruction barriers
+  genuinely ran. FIFO portability remains an explicit test-environment limitation.
+- Report distinguishes behavioral RED from fixture/compiler failures and later
+  already-green regressions. Those later cases lack separate preimplementation RED;
+  no stronger process evidence is claimed.
+- Combined spec/quality review is running. Task 3 remains unaccepted. Full
+  non-terminal preservation and non-delegate obligations remain later tasks.
+
+### Task 4 preflight setter ownership
+
+Task 4 remains undispatched while Task 3 review runs. Its extracted brief carries
+the direct-setter and populated-source handoffs.
+
+Ruling: Authorize `agent/session.go`, `server/server.go`,
+`server/appwire_runtime.go` and `cmd/evener/serve.go` only for direct
+Rename/ClearGoal callback admission and error propagation. Exact caller-test
+ownership is recorded in the Task 4 brief: goal/notification/concurrency/rename
+tests, affected fuzz callers, server surface/retirement tests and the tagged
+serve residual fixture. Parent enumerated current calls and inspected route
+effects. Existing assertions remain; server retirement tests may add real routed
+refusal evidence. If wrong, the cost is localized setter/callback churn, bounded
+by direct/routed races, positive regressions, tagged gates and final `make test`.
+No Task 4 implementation begins before Task 3 acceptance.
+
+### Task 3 independent review and fix round 1
+
+Independent review: spec issues, quality **Needs fixes**, no Critical findings,
+three Important findings and one Minor. Parent read the complete report.
+
+- Cold idle attachment acquires/releases outer admission while its caller holds
+  the subagent-manager mutex. Preserve atomic close-versus-bind publication while
+  moving admission/notification outside all owner locks.
+- Direct `CloseResumability` drops its lease before returning update effects.
+  Carry ownership through their application and test the direct handoff.
+- Required evidence is missing for populated attention, admitted-first outcome
+  acknowledgement, reconciliation/steering/stop-driver/close handoffs, shell
+  claim-first refusal, and the exact-pointer retirement release interface.
+
+All three enter one consolidated fix round through the original implementer,
+with behavioral RED for production repairs and scoped re-review afterward.
+The review positively verified the existing original outcome/watch source
+oracles. Non-delegate source and full-preservation obligations remain later work.
+
+Ruling: Retain missing historical per-case RED as an explicit deferred Minor for
+final review. Later GREEN cannot establish past execution order; do not delete
+working code or relabel results to manufacture it. New production repairs still
+require observed behavioral RED, and all Important findings must be resolved
+before Task 3 acceptance. If wrong, the cost is weaker historical TDD assurance
+for the disclosed earlier regression cases. This does not waive current safety
+assertions or required missing tests.
+
+Ruling: Test I3's bound-runtime boundary through a real running binding that
+blocks TryClaim, followed by direct no-fence release refusal and unchanged
+runtime/durable state. Source inspection confirms successful retirement cannot
+coexist with that binding through admitted entry. This does not exercise the
+defensive binding guard under a fence; no forged fence is authorized. Separate
+real claimed-idle exact/replacement-pointer cases remain required. Caller-to-root
+steering evidence must retain original persisted root input after real caller
+settlement, prove that input independently blocks, and consume/settle it before
+eligibility. A claim attempt after persistence proves a handoff, not a paused
+persistence race. If wrong, the cost is narrower interleaving/defensive-branch
+evidence, explicitly subject to scoped review. Other I3 requirements remain.
+
+Ruling: Authorize exact I1 maintenance in `agent/delegate_tree_controller_test.go`:
+classify `beginIdleRuntimeInstallation`, migrate the reconstruction expected
+reference to that method at count 1, and add its newly classified direct
+`AttachIdleRuntime` caller at count 1. Preserve `AttachIdleRuntime` classification,
+all unrelated rows and guard assertions. Parent inspected the required lock-order
+repair and reproduced the obsolete-reference failure (exit 1). If wrong, the cost
+is a static inventory blind spot, bounded by exact references, unchanged guards
+and the direct installation test. Inventory, controller race and full-agent gates
+must run again after maintenance; this permission does not waive failing tests.
+
+### Task 3 fix delivered; scoped review pending
+
+- Fix commit `9fca1b774df2e84ed65d309b6970e1a2e9c76c8c`, five authorized
+  files. Parent verified the exact scope, report appendix and diff check.
+- Actual I1/I2 behavioral RED and corrected GREEN were inspected. Later I3
+  additions remain regression evidence, with the stated reachable-state limits.
+- Final focused verbose, retirement race, controller race and tagged compile
+  completed in one `&&` chain, exit 0. Focused output has no warnings or skips.
+- Final full-agent gate passed, root 175.104s, all listed subpackages cached.
+  Parent read the actual final outputs, not only the implementer's summaries.
+- Scoped independent I1–I3 and fix-breakage review is running. Task 3 remains
+  unaccepted; Task 4 is still preflight only.
+
+### Task 3 acceptance
+
+- Scoped re-review: I1, I2 and I3 addressed; spec and quality PASS under the
+  recorded evidence rulings; no new Critical/Important/Minor breakage.
+- Parent read the full review and reran the two repaired ownership cases plus
+  the previously failing inventory test at the committed HEAD: exit 0, 0.914s,
+  all three RUN/PASS, no diagnostics or skips. Final covering gates are above.
+- Task 3 accepted. Historical M1 remains a disclosed deviation for final review.
+  Bound-pointer and caller-steering evidence retain their stated limits. The
+  reviewer also noted that direct release tests check pointer/state/journal
+  effects but discard error returns; that coverage limitation remains visible.
+- Task 4 receives the accepted interfaces and both mandatory setter/source
+  handoffs. Later blocker, preservation and activation tasks are still pending.
+
 ## Remaining workflow
 
 Subagent-driven TDD implementation with specification and quality review → fresh
