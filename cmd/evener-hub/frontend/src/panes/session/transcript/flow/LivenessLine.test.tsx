@@ -61,7 +61,6 @@ function seedRunningChildren(count: number) {
     upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
       rowKey: `dlg:${delegate.delegateId}`,
       delegateId: delegate.delegateId,
-      kind: "running",
       resultPreview: "",
     });
   }
@@ -94,8 +93,8 @@ test("renders 'Waiting on N subagents' (plural) once past the quiet threshold, p
 
 test("a done/failed row alone does not explain a wait - falls back to the ordinary stalled decision", () => {
   const scopeKey = turnScopeKey("s1", "turn_0");
-  upsertSubagentRow(scopeKey, { rowKey: "dlg:1", kind: "done", resultPreview: "ok" });
-  upsertSubagentRow(scopeKey, { rowKey: "dlg:2", kind: "failed", resultPreview: "boom" });
+  upsertSubagentRow(scopeKey, { rowKey: "dlg:1", receiptStatus: "done", resultPreview: "ok" });
+  upsertSubagentRow(scopeKey, { rowKey: "dlg:2", receiptStatus: "failed", resultPreview: "boom" });
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
   expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
 });
@@ -110,7 +109,6 @@ test("a historical running receipt cannot explain a current wait without owner e
   upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
     rowKey: "dlg:1",
     delegateId: "dlg_1",
-    kind: "running",
     receiptStatus: "running",
     resultPreview: "",
   });
@@ -121,7 +119,6 @@ test("a historical running receipt cannot explain a current wait without owner e
 test("an explicitly in-flight launch can explain a current wait before owner evidence arrives", () => {
   upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
     rowKey: "call:1",
-    kind: "running",
     launching: true,
     resultPreview: "",
   });

@@ -450,6 +450,29 @@ test.each([false, true])(
   },
 );
 
+test("retained-parent Back: prefers the session pane when both session and transcript share a ref", async () => {
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
+  // Open the transcript FIRST so it precedes the session in the pane array —
+  // a bare panes.find would match the transcript, not the session.
+  const sharedTranscript = workspace.openPane(
+    "transcript",
+    { ref: "local:shared", parentRef: "local:owner" },
+    { slot: "secondary" },
+  );
+  const sharedSession = workspace.openPane("session", { ref: "local:shared" }, { slot: "secondary" });
+  // The focused leaf's parentRef is "local:shared"; Back should focus the
+  // SESSION pane for that ref, not the transcript.
+  workspace.openPane("transcript", { ref: "local:leaf", parentRef: "local:shared" }, { slot: "secondary" });
+  render(<StackHost />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(sharedSession);
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(sharedTranscript);
+  expect(workspaceStore.getState().panes).toHaveLength(4);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+});
+
 test.each([
   {
     shape: "reciprocal",

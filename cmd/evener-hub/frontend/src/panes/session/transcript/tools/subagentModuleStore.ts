@@ -11,8 +11,6 @@ export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unkno
 
 export interface SubagentRow {
   rowKey: string;
-  /** Historical receipt classification; never proof of current lifecycle. */
-  kind: SubagentRowKind;
   receiptStatus?: string;
   launching?: boolean;
   resumable?: boolean;

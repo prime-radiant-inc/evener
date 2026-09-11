@@ -71,10 +71,19 @@ export function openTranscript(ref: string, parentRef?: string): void {
     if (mainRef === undefined || !context.includes(mainRef)) {
       let ownerRef: string | undefined;
       for (const contextRef of context) {
-        const location = selectLocation(contextRef)(navigationStore.getState())?.data as
-          | NavigationSessionLocation
-          | undefined;
-        if (location) {
+        const resource = selectLocation(contextRef)(navigationStore.getState());
+        // During a reconnect or generation change the store retains the
+        // previous payload while marking it stale, so an obsolete
+        // top_level_ref could promote the wrong session. Require settled,
+        // non-stale, error-free data before trusting the location.
+        if (
+          resource?.data &&
+          !resource.stale &&
+          !resource.loading &&
+          resource.error === null &&
+          resource.loadedRevision !== null
+        ) {
+          const location = resource.data as NavigationSessionLocation;
           ownerRef = location.top_level_ref ?? contextRef;
           break;
         }

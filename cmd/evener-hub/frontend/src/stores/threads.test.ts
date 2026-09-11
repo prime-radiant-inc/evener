@@ -6062,7 +6062,7 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
     const scope = turnScopeKey("ref_a", "turn_1");
-    upsertSubagentRow(scope, { rowKey: "dlg:1", kind: "running", resultPreview: "" });
+    upsertSubagentRow(scope, { rowKey: "dlg:1", resultPreview: "" });
     const { result: row } = renderHook(() => useSubagentRow(scope, "dlg:1"));
 
     act(() => threadsStore.getState().releaseThread("ref_a"));

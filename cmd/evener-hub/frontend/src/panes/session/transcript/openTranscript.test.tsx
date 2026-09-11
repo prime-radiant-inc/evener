@@ -72,6 +72,49 @@ test("canonicalizes a child opened without a parent when its owning session is l
   expect(workspaceStore.getState().focusedPaneId).toBe(child[0]?.id);
 });
 
+test("does not promote an owner from a stale navigation location during a reconnect", () => {
+  // Seed a stale location: the store retains the previous payload during a
+  // reconnect or generation change, but its top_level_ref may be obsolete.
+  const key = { kind: "location", ref: "local:nested" } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: {
+      generation_id: "generation_old",
+      revision: 1,
+      ref: "local:nested",
+      top_level_ref: "local:stale-owner",
+      top_level: false,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag",
+    loading: false,
+    stale: true,
+    error: null,
+    generationID: "generation_old",
+  });
+  navigationStore.setState({ resources });
+
+  const workspace = workspaceStore.getState();
+  const mainId = workspace.replacePrimary("session", { ref: "local:owner" });
+  const nestedId = workspace.openPane("session", { ref: "local:nested" });
+  workspace.focusPane(nestedId);
+
+  openTranscript("local:child", "local:nested");
+
+  // The stale location's top_level_ref is not trusted: the retained main
+  // session is preserved and the child opens beside it.
+  const state = workspaceStore.getState();
+  expect(state.mainPane()?.id).toBe(mainId);
+  expect(state.panes.some((pane) => pane.id === nestedId)).toBe(true);
+  expect(sessionPane("local:stale-owner")).toBeUndefined();
+  const child = transcriptPanes("local:child");
+  expect(child).toHaveLength(1);
+  expect(child[0]?.params).toEqual({ ref: "local:child", parentRef: "local:nested" });
+});
+
 test("canonicalizes a child pane across parent contexts without disturbing a retained main session", () => {
   openTranscript("local:child", "local:owner-a");
   openTranscript("local:other", "local:other-owner");

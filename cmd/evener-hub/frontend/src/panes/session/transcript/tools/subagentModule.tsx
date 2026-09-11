@@ -18,7 +18,6 @@ import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseJSONObject, str } from "./helpers";
 import {
-  classifyJobStatus,
   effectiveRowKind,
   resolveRowKey,
   type SubagentRow,
@@ -365,7 +364,6 @@ export function rowFromDelegateItem(
     rowKey,
     migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,
     row: {
-      kind: status === undefined && (live || item.status === "inProgress") ? "running" : classifyJobStatus(status),
       receiptStatus: status,
       launching: live || item.status === "inProgress",
       delegateId,

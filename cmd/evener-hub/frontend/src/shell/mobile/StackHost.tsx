@@ -316,7 +316,13 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
           panes.find(
             (pane) =>
               pane.id !== focusedPaneId &&
-              (pane.type === "session" || pane.type === "transcript") &&
+              pane.type === "session" &&
+              (pane.params as { ref?: unknown }).ref === params.parentRef,
+          ) ??
+          panes.find(
+            (pane) =>
+              pane.id !== focusedPaneId &&
+              pane.type === "transcript" &&
               (pane.params as { ref?: unknown }).ref === params.parentRef,
           );
         target = ancestor?.id;
@@ -333,11 +339,12 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
           ancestor =
             transcriptOpenOrigin(ancestor) ??
             (typeof parentRef === "string" && parentRef !== ""
-              ? panes.find(
-                  (pane) =>
-                    (pane.type === "session" || pane.type === "transcript") &&
-                    (pane.params as { ref?: unknown }).ref === parentRef,
-                )
+              ? (panes.find(
+                  (pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === parentRef,
+                ) ??
+                panes.find(
+                  (pane) => pane.type === "transcript" && (pane.params as { ref?: unknown }).ref === parentRef,
+                ))
               : undefined);
         }
       }
