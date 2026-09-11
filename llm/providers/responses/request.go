@@ -171,7 +171,11 @@ func reasoningObject(req llm.Request, caps registry.Caps) map[string]any {
 	}
 	out := map[string]any{}
 	if req.ReasoningEffort != nil && caps.EffortCapable() {
-		out["effort"] = *req.ReasoningEffort
+		// A row that lists no ladder vouches for no level, so the object
+		// carries none rather than one the provider may reject.
+		if v := llm.VouchedEffort(*req.ReasoningEffort, caps.EffortValues); v != "" {
+			out["effort"] = v
+		}
 	}
 	summary := registry.StringValue(caps.ReasoningSummary)
 	if summary == "none" {

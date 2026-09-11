@@ -49,31 +49,39 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 		}
 		wire = llm.ClampReasoningEffort("medium", caps.EffortValues)
 	}
+	// A field that spells the level (reasoning_effort, reasoning.effort,
+	// thinking) is written only for a level the row's ladder vouches for. A
+	// row with no ladder — an uncatalogued model — gets no level rather than
+	// one a provider may reject. The dialects' non-level enable objects below
+	// still fire unconditionally, so a mandatory-thinking row keeps thinking
+	// on without being told a level it cannot accept.
+	level := llm.VouchedEffort(wire, caps.EffortValues)
 	switch format {
 	case "", "openai":
-		if capable {
-			body["reasoning_effort"] = wire
+		if capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "openrouter":
-		if explicit {
-			body["reasoning"] = map[string]any{"effort": wire}
-		} else {
+		switch {
+		case explicit && level != "":
+			body["reasoning"] = map[string]any{"effort": level}
+		case alwaysOn:
 			body["reasoning"] = map[string]any{"enabled": true}
 		}
 	case "zai":
 		body["thinking"] = map[string]any{"type": "enabled", "clear_thinking": false}
-		if explicit && capable {
-			body["reasoning_effort"] = wire
+		if explicit && capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "deepseek":
 		body["thinking"] = map[string]any{"type": "enabled"}
-		if explicit && capable {
-			body["reasoning_effort"] = wire
+		if explicit && capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "together":
 		body["reasoning"] = map[string]any{"enabled": true}
-		if explicit && capable {
-			body["reasoning_effort"] = wire
+		if explicit && capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "qwen":
 		body["enable_thinking"] = true
@@ -84,6 +92,8 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 			body["chat_template_kwargs"] = caps.ChatTemplateKwargs
 		}
 	case "string-thinking":
-		body["thinking"] = wire
+		if level != "" {
+			body["thinking"] = level
+		}
 	}
 }

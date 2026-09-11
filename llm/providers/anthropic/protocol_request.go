@@ -122,8 +122,8 @@ func applyThinkingShape(body map[string]any, req llm.Request, res registry.Resol
 			thinking["display"] = display
 		}
 		body["thinking"] = thinking
-		if effort != "" {
-			body["output_config"] = map[string]any{"effort": effort}
+		if v := llm.VouchedEffort(effort, caps.EffortValues); v != "" {
+			body["output_config"] = map[string]any{"effort": v}
 		}
 	case "budget", "budget+effort":
 		if effort == "" {
@@ -137,7 +137,9 @@ func applyThinkingShape(body map[string]any, req llm.Request, res registry.Resol
 			body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 		}
 		if registry.StringValue(caps.ThinkingShape) == "budget+effort" {
-			body["output_config"] = map[string]any{"effort": effort}
+			if v := llm.VouchedEffort(effort, caps.EffortValues); v != "" {
+				body["output_config"] = map[string]any{"effort": v}
+			}
 		}
 	}
 }
