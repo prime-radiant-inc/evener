@@ -190,6 +190,12 @@ func (s *Session) armLaneReLockRetryTimer() {
 func (s *Session) fireLaneReLockRetry() {
 	work, ok := s.beginEnvWork("lane-relock-retry")
 	if !ok {
+		// Admission was refused for this one-shot firing (a real TryClaim
+		// preparing window, or close). Do not consume the only firing: re-arm
+		// the existing retry timer so a later firing still retries the retained
+		// pending re-lock. The arming helper is closing-gated, so a
+		// stop-during-close stays stopped.
+		s.armLaneReLockRetryTimer()
 		return
 	}
 	defer s.endEnvWork(work)

@@ -1043,6 +1043,20 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	s.sclock().AfterFunc(delay, func() {
 		release, err := s.beginJobNotifyCallback()
 		if err != nil {
+			// Admission was refused for this one-shot firing (a real TryClaim
+			// preparing window). Do not consume the only firing: clear the
+			// armed flag and synchronously re-arm under the owner lock so the
+			// backoff chain survives the refusal and a later firing still
+			// delivers the retained source. Only a still-current generation
+			// owns the armed flag: a superseded one was invalidated by
+			// resetJobNotificationRetry or a newer schedule, and re-arming it
+			// would resurrect a stale wake the owner already settled.
+			s.pendingJobNotifsMu.Lock()
+			if s.jobNotifyRetry.generation == generation {
+				s.jobNotifyRetry.active = false
+				s.scheduleJobNotificationRetryLocked()
+			}
+			s.pendingJobNotifsMu.Unlock()
 			return
 		}
 		defer release()

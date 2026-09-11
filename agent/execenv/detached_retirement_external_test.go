@@ -56,6 +56,8 @@ func detachedObservedAwait(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-done:
+	// TRIPWIRE: hang guard only; the real signal is the fixture process's own
+	// completion receipt, which settles in milliseconds absent a deadlock.
 	case <-time.After(5 * time.Second):
 		t.Fatal("original fixture process did not settle")
 	}

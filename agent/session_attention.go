@@ -804,6 +804,20 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	s.sclock().AfterFunc(delay, func() {
 		release, err := s.beginAttentionCallback()
 		if err != nil {
+			// Admission was refused for this one-shot firing (a real TryClaim
+			// preparing window). Do not consume the only firing: clear the
+			// armed flag and synchronously re-arm under the owner lock so the
+			// backoff chain survives the refusal and a later firing still
+			// wakes the retained source. Only a still-current generation owns
+			// the armed flag: a superseded one was invalidated by
+			// resetRootAttentionRetryLocked or a newer schedule, and re-arming
+			// it would resurrect a stale wake the owner already settled.
+			s.attentionMu.Lock()
+			if s.rootAttentionRetry.generation == generation {
+				s.rootAttentionRetry.active = false
+				s.scheduleRootAttentionRetryLocked()
+			}
+			s.attentionMu.Unlock()
 			return
 		}
 		defer release()

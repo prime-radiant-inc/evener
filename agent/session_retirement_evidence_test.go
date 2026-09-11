@@ -465,6 +465,94 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 	assertRetirementEvidenceEligible(t, c)
 }
 
+// A one-shot root-attention retry callback fired inside a real TryClaim
+// preparing window is refused admission. Before the repair it returned with
+// rootAttentionRetry.active still set and no live timer, stranding the retained
+// source; this case requires the refusal to clear the armed flag and
+// synchronously re-arm so the next firing wakes delivery of the original
+// source.
+func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
+	clk := agenttest.NewFakeClock()
+	adapter := &retirementAttentionAdapter{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}}
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
+	c := retirementEvidenceController(t, root)
+	var wakes atomic.Int32
+	root.SetNotifyFunc(func() { wakes.Add(1) })
+	d := root.createDelegate(context.Background(), delegateArgs{Task: "refused attention retry source"})
+	if d.Err != nil {
+		t.Fatal(d.Err)
+	}
+	sub := root.subagents.get(d.ChildSessionID)
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	retirementAwait(t, done)
+	path := transcriptPath(root.stateDir, root.id)
+	original, err := readDelegateAttentionFold(path, root.id)
+	if err != nil || len(original.pendingIDs()) != 1 {
+		t.Fatalf("actual delegate result did not create original attention: %+v %v", original.pendingIDs(), err)
+	}
+	id := original.pendingIDs()[0]
+	adapter.fail.Store(true)
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); !errors.Is(err, context.Canceled) {
+		t.Fatalf("provider failure = %v", err)
+	}
+	adapter.fail.Store(false)
+	root.attentionMu.Lock()
+	active := root.rootAttentionRetry.active
+	root.attentionMu.Unlock()
+	if !active {
+		t.Fatal("failed original attention turn did not arm retry")
+	}
+	clk.BlockUntil(1)
+
+	// Park the real evidence pass inside its preparing window on the job
+	// manager's own lock; the root attention source keeps the grant refused.
+	root.jobManager.mu.Lock()
+	type claimResult struct {
+		claim *RetirementClaim
+		state RetirementSnapshot
+		err   error
+	}
+	resultCh := make(chan claimResult, 1)
+	go func() {
+		claim, state, err := c.TryClaim(true)
+		resultCh <- claimResult{claim, state, err}
+	}()
+	// TRIPWIRE: bounded wait for the real preparing phase; the evidence pass is
+	// parked on the owner lock held above, so preparing is a stable state.
+	waitForCondition(t, 5*time.Second, "real TryClaim preparing window", func() bool {
+		return c.Snapshot().Phase == "preparing"
+	})
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	root.jobManager.mu.Unlock()
+	res := <-resultCh
+	if res.err != nil || res.claim != nil {
+		t.Fatalf("pending attention source escaped preparing: %+v %v", res.state, res.err)
+	}
+	preserved, err := readDelegateAttentionFold(path, root.id)
+	if err != nil || !reflect.DeepEqual(preserved, original) {
+		t.Fatalf("refused claim changed original pending source: %v", err)
+	}
+
+	beforeWake := wakes.Load()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if wakes.Load() != beforeWake+1 {
+		t.Fatalf("re-armed attention retry did not fire: before=%d after=%d", beforeWake, wakes.Load())
+	}
+	beforeRequests := len(adapter.Requests())
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := readDelegateAttentionFold(path, root.id)
+	if err != nil || !reflect.DeepEqual(settled.content[id], original.content[id]) || settled.resolutions[id] != delegateAttentionConsumed || len(settled.pendingIDs()) != 0 || !requestsContain(adapter.Requests()[beforeRequests:], original.content[id].Text()) {
+		t.Fatalf("original source did not reach provider and settle: %v %+v", err, settled.resolutions)
+	}
+	assertRetirementEvidenceEligible(t, c)
+}
+
 // A delegate attention arm that failed and owes a retry is session-level
 // pending work: sessionWorkPending already includes
 // hasPendingDelegateAttentionArmRetry, so retirement evidence must read the
@@ -784,6 +872,178 @@ func TestRetirementAutonomousSweep(t *testing.T) {
 			assertRetirementEvidenceEligible(t, c)
 		})
 	}
+}
+
+// The one-shot P3 open-sweep timer firing inside a real TryClaim preparing
+// window is refused admission. Before the repair the callback returned with no
+// live timer, so the retained environment obligation never got its pass. This
+// case requires the refusal to synchronously re-arm the existing sweep timer so
+// a later firing runs the real pass.
+func TestRetirementAutonomousSweepRefusedRearms(t *testing.T) {
+	cfg := worktreeTestSessionConfig()
+	clk := agenttest.NewFakeClock()
+	cfg.clock = clk
+	r := newWorktreeRepoWithConfig(t, cfg)
+	root := r.s
+	c := retirementEvidenceController(t, root)
+	assertRetirementEvidenceEligible(t, c)
+	before, err := gitRunner(t.Context(), root.currentEnv())("worktree", "list", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		next := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			calls.Add(1)
+			return next(args...)
+		}
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v %v", state, err)
+	}
+	// The armed one-shot fires inside the preparing window and is refused.
+	clk.Advance(laneSweepDelay)
+	clk.Drain()
+	if calls.Load() != 0 {
+		t.Fatalf("refused sweep performed %d Git calls", calls.Load())
+	}
+	if err := c.Abort(claim, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The re-armed one-shot fires after the window closes and runs the real pass.
+	clk.Advance(laneSweepDelay)
+	clk.Drain()
+	if calls.Load() == 0 {
+		t.Fatal("re-armed sweep never performed Git work")
+	}
+	after, err := gitRunner(t.Context(), root.currentEnv())("worktree", "list", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("maintenance changed original registry: before %q after %q", before, after)
+	}
+	assertRetirementEvidenceEligible(t, c)
+}
+
+// The dedicated one-shot re-lock retry timer firing inside a real TryClaim
+// preparing window is refused admission. Before the repair the callback
+// returned with no live timer, so the retained pending re-lock never got its
+// retry. This case requires the refusal to synchronously re-arm the existing
+// retry timer so a later firing reclaims the original lane.
+func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
+	cfg := worktreeTestSessionConfig()
+	clk := agenttest.NewFakeClock()
+	cfg.clock = clk
+	cfg.StateDir = t.TempDir()
+	cfg.testOnly.minimalWorktreeToolRegistry = false
+	mainRoot := t.TempDir()
+	copyWorktreeBaseRepo(t, mainRoot)
+	root := newSession(t, withDir(mainRoot), withConfig(cfg))
+	r := &wtRepo{s: root, mainRoot: mainRoot, stateDir: cfg.StateDir}
+	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	result := root.createDelegate(t.Context(), delegateArgs{Task: "retained refused relock source", Isolation: "worktree"})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	retirementSettleDelegate(t, root, result)
+	if result.Worktree == nil {
+		t.Fatal("real isolated delegate omitted worktree")
+	}
+	lane := result.Worktree.Path
+	original := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID)
+	c := retirementEvidenceController(t, root)
+	assertRetirementEvidenceEligible(t, c)
+	wtGit(t, r.mainRoot, "worktree", "unlock", lane)
+	var calls atomic.Int32
+	var failLock atomic.Bool
+	failLock.Store(true)
+	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		next := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			calls.Add(1)
+			if len(args) > 1 && args[0] == "worktree" && args[1] == "lock" && failLock.Load() {
+				return "", errors.New("fixture Git lock refusal")
+			}
+			return next(args...)
+		}
+	}
+	root.resumeReLockOwnLanes()
+	root.mu.Lock()
+	pending := slices.Clone(root.pendingReLock)
+	root.mu.Unlock()
+	if len(pending) != 1 || pending[0].delegateID != result.DelegateID || pending[0].path != lane {
+		t.Fatalf("original pending retry: %+v", pending)
+	}
+	failLock.Store(false)
+	// Isolate the dedicated retry timer from the P3 open sweep timer (a
+	// top-level session's retry normally piggybacks on it), so the only
+	// callback that can perform Git work is the re-armed retry itself.
+	root.stopLaneResidueSweepTimer()
+	root.armLaneReLockRetryTimer()
+
+	// Park the real evidence pass inside its preparing window on the job
+	// manager's own lock; the retained re-lock source keeps the grant refused.
+	root.jobManager.mu.Lock()
+	type claimResult struct {
+		claim *RetirementClaim
+		state RetirementSnapshot
+		err   error
+	}
+	resultCh := make(chan claimResult, 1)
+	go func() {
+		claim, state, err := c.TryClaim(true)
+		resultCh <- claimResult{claim, state, err}
+	}()
+	// TRIPWIRE: bounded wait for the real preparing phase; the evidence pass is
+	// parked on the owner lock held above, so preparing is a stable state.
+	waitForCondition(t, 5*time.Second, "real TryClaim preparing window", func() bool {
+		return c.Snapshot().Phase == "preparing"
+	})
+	select {
+	case r := <-resultCh:
+		root.jobManager.mu.Unlock()
+		t.Fatalf("real TryClaim completed before the timer fired: %+v", r)
+	default:
+	}
+	// The armed retry fires inside the preparing window and is refused.
+	beforeRefused := calls.Load()
+	clk.Advance(laneSweepDelay)
+	clk.Drain()
+	root.jobManager.mu.Unlock()
+	if got := calls.Load(); got != beforeRefused {
+		t.Fatalf("refused relock retry performed %d Git calls", got-beforeRefused)
+	}
+	res := <-resultCh
+	if res.err != nil || res.claim != nil {
+		t.Fatalf("retained relock source escaped preparing: %+v %v", res.state, res.err)
+	}
+	root.mu.Lock()
+	retained := slices.Clone(root.pendingReLock)
+	root.mu.Unlock()
+	if !reflect.DeepEqual(pending, retained) {
+		t.Fatalf("refused retry consumed original source: %+v", retained)
+	}
+	if entry := r.porcelainEntry(t, lane); entry.Locked {
+		t.Fatal("refused retry changed original lane")
+	}
+
+	// The re-armed retry fires after the window closes and reclaims the lane.
+	calls.Store(0)
+	clk.Advance(laneSweepDelay)
+	clk.Drain()
+	if calls.Load() == 0 {
+		t.Fatal("re-armed relock retry never performed Git work")
+	}
+	if entry := r.porcelainEntry(t, lane); !entry.Locked || entry.LockReason != worktree.FormatDelegateMarker(result.DelegateID, root.ID()) {
+		t.Fatalf("original lane not reclaimed: %+v", entry)
+	}
+	if current := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID); !reflect.DeepEqual(original, current) {
+		t.Fatal("retirement/relock changed original delegate source")
+	}
+	assertRetirementEvidenceEligible(t, c)
 }
 
 func TestRetirementAutonomousReLock(t *testing.T) {
@@ -1932,6 +2192,94 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 	root.pendingJobNotifsMu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("settled callbacks retained %d registrations", remaining)
+	}
+	assertRetirementEvidenceEligible(t, c)
+}
+
+// A one-shot notification retry callback that fires inside a real TryClaim
+// preparing window is refused admission. Before the repair it returned with
+// jobNotifyRetry.active still set and no live timer, so the backoff chain was
+// dead once the window closed. This case requires the refusal to clear the
+// armed flag and synchronously re-arm the one-shot, so the next firing wakes
+// delivery of the original source.
+func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("refused-retry source settled") },
+	}}
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
+	c := retirementEvidenceController(t, root)
+	var wakes atomic.Int32
+	root.SetNotifyFunc(func() { wakes.Add(1) })
+
+	rec, err := root.jobManager.createShell(createShellOpts{Command: "refused-retry-shell"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "fixture-settled", nil); err != nil {
+		t.Fatal(err)
+	}
+	before, err := root.jobManager.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[rec.JobID] == nil || before[rec.JobID].NotifyState != jobstore.NotifyPending || before[rec.JobID].TerminalGen == "" {
+		t.Fatalf("source not armed: %+v", before[rec.JobID])
+	}
+	queued := root.drainJobNotifications()
+	if len(queued) != 1 || queued[0].JobID != rec.JobID {
+		t.Fatalf("source notification missing: %+v", queued)
+	}
+	root.requeueJobNotifications(queued)
+	clk.BlockUntil(1)
+
+	// Park the real evidence pass inside its preparing window on the job
+	// manager's own lock; the live pending source keeps the grant refused.
+	root.jobManager.mu.Lock()
+	type claimResult struct {
+		claim *RetirementClaim
+		state RetirementSnapshot
+		err   error
+	}
+	resultCh := make(chan claimResult, 1)
+	go func() {
+		claim, state, err := c.TryClaim(true)
+		resultCh <- claimResult{claim, state, err}
+	}()
+	// TRIPWIRE: bounded wait for the real preparing phase; the evidence pass is
+	// parked on the owner lock held above, so preparing is a stable state.
+	waitForCondition(t, 5*time.Second, "real TryClaim preparing window", func() bool {
+		return c.Snapshot().Phase == "preparing"
+	})
+	// The armed one-shot fires now and is refused for the whole window.
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	root.jobManager.mu.Unlock()
+	res := <-resultCh
+	if res.err != nil || res.claim != nil {
+		t.Fatalf("pending source escaped preparing: %+v %v", res.state, res.err)
+	}
+
+	// The re-armed one-shot fires after the window closes and wakes delivery of
+	// the original source.
+	beforeWake := wakes.Load()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if wakes.Load() != beforeWake+1 {
+		t.Fatalf("re-armed retry did not fire: before=%d after=%d", beforeWake, wakes.Load())
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := root.jobManager.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := settled[rec.JobID]; got == nil || got.TerminalGen != before[rec.JobID].TerminalGen || got.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("original receipt not settled: %+v", got)
+	}
+	if !requestsContain(adapter.Requests(), rec.JobID) || root.peekNotifications() != 0 {
+		t.Fatal("original source did not reach provider and settle")
 	}
 	assertRetirementEvidenceEligible(t, c)
 }
