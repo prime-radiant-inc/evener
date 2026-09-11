@@ -23,7 +23,7 @@ func TestApplyHubAPILogDefault(t *testing.T) {
 		wantOn  bool
 		wantHub bool // the floor recorded provenance "hub"
 	}{
-		{name: "hub off leaves unset alone", layer: launchconfig.Layer{}, hubOn: false, wantNil: true},
+		{name: "hub off pins false", layer: launchconfig.Layer{}, hubOn: false, wantOn: false, wantHub: true},
 		{name: "hub on fills unset", layer: launchconfig.Layer{}, hubOn: true, wantOn: true, wantHub: true},
 		{name: "layer true wins over hub on", layer: launchconfig.Layer{APILog: new(true)}, hubOn: true, wantOn: true},
 		{name: "layer false wins over hub on", layer: launchconfig.Layer{APILog: new(false)}, hubOn: true, wantOn: false},
@@ -59,8 +59,9 @@ func TestApplyHubAPILogDefault(t *testing.T) {
 // TestHubSpawnerSpawnAPILog pins the hub.toml api_log floor at the real spawn
 // boundary: hub api_log=true passes --api-log on only when no launch layer set
 // api_log, an explicit launch-layer value wins in both directions, and the
-// default (hub off, layers unset) passes no flag at all so the daemon's own
-// default applies.
+// floor is pinned in both directions — hub off passes --api-log off rather
+// than deferring to the child binary's own default, which a pre-change
+// evener sets to recording.
 func TestHubSpawnerSpawnAPILog(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -68,7 +69,7 @@ func TestHubSpawnerSpawnAPILog(t *testing.T) {
 		layerAPI *bool
 		wantArg  string // "" means the flag must be absent
 	}{
-		{name: "default passes no flag", hubOn: false, layerAPI: nil, wantArg: ""},
+		{name: "hub off pins off", hubOn: false, layerAPI: nil, wantArg: "off"},
 		{name: "hub on injects on", hubOn: true, layerAPI: nil, wantArg: "on"},
 		{name: "launch layer false overrides hub on", hubOn: true, layerAPI: new(false), wantArg: "off"},
 		{name: "launch layer true passes on without hub default", hubOn: false, layerAPI: new(true), wantArg: "on"},
@@ -128,7 +129,8 @@ exit 2
 // TestHubSpawnerResumeAPILog pins the same floor at the resume boundary:
 // buildResumeArgs passes the resolved api_log through to the daemon, so an
 // explicit launch-layer value must beat the hub-wide api_log=true, and the
-// hub floor must fill a request whose layers left api_log unset.
+// hub floor must fill a request whose layers left api_log unset, in both
+// directions.
 func TestHubSpawnerResumeAPILog(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -136,7 +138,7 @@ func TestHubSpawnerResumeAPILog(t *testing.T) {
 		layerAPI *bool
 		wantArg  string // "" means the flag must be absent
 	}{
-		{name: "default passes no flag", hubOn: false, layerAPI: nil, wantArg: ""},
+		{name: "hub off pins off", hubOn: false, layerAPI: nil, wantArg: "off"},
 		{name: "hub on injects on", hubOn: true, layerAPI: nil, wantArg: "on"},
 		{name: "launch layer false overrides hub on", hubOn: true, layerAPI: new(false), wantArg: "off"},
 		{name: "launch layer true passes on without hub default", hubOn: false, layerAPI: new(true), wantArg: "on"},
@@ -280,7 +282,7 @@ func TestLaunchResolveAppliesHubAPILogDefault(t *testing.T) {
 		}
 	})
 
-	t.Run("hub default off reports builtin false", func(t *testing.T) {
+	t.Run("hub default off reports the pinned hub false", func(t *testing.T) {
 		c := newHubLaunchControllerWithEnv(t.TempDir(), emptyEnv, false)
 		got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: canonicalTempDir(t)})
 		if err != nil {
@@ -289,8 +291,8 @@ func TestLaunchResolveAppliesHubAPILogDefault(t *testing.T) {
 		if got.Effective.APILog == nil || *got.Effective.APILog {
 			t.Fatalf("effective apiLog = %v, want false (builtin)", got.Effective.APILog)
 		}
-		if got.Provenance["api_log"] != "builtin" {
-			t.Fatalf("api_log provenance = %q, want builtin", got.Provenance["api_log"])
+		if got.Provenance["api_log"] != "hub" {
+			t.Fatalf("api_log provenance = %q, want hub", got.Provenance["api_log"])
 		}
 	})
 }

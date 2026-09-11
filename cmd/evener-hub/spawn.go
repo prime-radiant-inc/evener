@@ -285,13 +285,18 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 // applyHubAPILogDefault fills the hub.toml api_log setting into a resolved
 // launch config as the floor default: it applies only when every launch layer
 // left api_log unset, so an explicit per-session choice (either direction)
-// always wins over the hub-wide default. Mutating the copy in req.Resolved is
-// safe because Resolved was copied by value out of the resolver.
+// always wins over the hub-wide default. The floor pins BOTH directions into
+// the child argv rather than deferring to the child binary's own default:
+// an evener predating the api_log flag still records by default, which would
+// silently defeat the hub's opt-out, so the hub-wide policy must be explicit
+// even when it matches what a current binary would do anyway. Mutating the
+// copy in req.Resolved is safe because Resolved was copied by value out of
+// the resolver.
 func applyHubAPILogDefault(resolved *launchconfig.Resolved, apiLog bool) {
-	if resolved == nil || resolved.Effective.APILog != nil || !apiLog {
+	if resolved == nil || resolved.Effective.APILog != nil {
 		return
 	}
-	value := true
+	value := apiLog
 	resolved.Effective.APILog = &value
 	if resolved.Provenance == nil {
 		resolved.Provenance = map[string]launchconfig.LayerName{}
