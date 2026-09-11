@@ -79,13 +79,24 @@ test("one startup deadline aborts the pending HTTP readiness phase", async () =>
  */
 function silentEndpoint(ignoredRequests) {
   let requests = 0;
+  let announceRequest;
+  let announceClose;
+  const firstRequest = new Promise((resolve) => {
+    announceRequest = resolve;
+  });
+  const firstConnectionClosed = new Promise((resolve) => {
+    announceClose = resolve;
+  });
   // A net.Server stays a live handle on the event loop until every connection
   // it accepted is gone, and an abandoned attempt leaves its socket on this
   // side too - so they are destroyed by hand when the test ends.
   const sockets = new Set();
   const server = createServer((socket) => {
     sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
+    socket.on("close", () => {
+      sockets.delete(socket);
+      announceClose();
+    });
     socket.on("error", () => {});
     let received = "";
     socket.on("data", (chunk) => {
@@ -94,6 +105,7 @@ function silentEndpoint(ignoredRequests) {
       for (let head = received.indexOf("\r\n\r\n"); head >= 0; head = received.indexOf("\r\n\r\n")) {
         received = received.slice(head + 4);
         requests++;
+        announceRequest();
         if (requests > ignoredRequests) {
           socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
         }
@@ -102,6 +114,8 @@ function silentEndpoint(ignoredRequests) {
   });
   return {
     requestCount: () => requests,
+    firstRequest: () => firstRequest,
+    firstConnectionClosed: () => firstConnectionClosed,
     listen: () =>
       new Promise((resolve) => {
         server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}/json/version`));
@@ -190,6 +204,59 @@ test("the shipped attempt bound leaves room to retry inside the startup deadline
     PROBE_ATTEMPT_TIMEOUT_MS * 5 <= STARTUP_DEADLINE_MS,
     `one attempt may hold ${PROBE_ATTEMPT_TIMEOUT_MS}ms of a ${STARTUP_DEADLINE_MS}ms phase: too few fit for a poll to be a poll`,
   );
+});
+
+// An attempt is not always what ends its own race. A Chrome that exits
+// mid-probe settles the failure promise, waitForHttp rejects with it, and the
+// request that was racing is still connected - to an endpoint nobody is waiting
+// on any more. Clearing the attempt's timer on the way out does not take that
+// socket down; only aborting its controller does.
+test("a probe abandoned because the browser died does not leave its request running", async (context) => {
+  const endpoint = silentEndpoint(Number.MAX_SAFE_INTEGER);
+  context.onTestFinished(() => endpoint.close());
+  const url = await endpoint.listen();
+  const deadline = createStartupDeadline(30_000);
+  context.onTestFinished(() => deadline.clear());
+  const died = new Error("Chrome exited before DevTools readiness (code 1, signal none)");
+
+  await assert.rejects(
+    waitForHttp(url, "chrome devtools endpoint", () => null, {
+      signal: deadline.signal,
+      // Chrome dies only once its request is on the wire, so this pins the
+      // abandoned-mid-flight case and not a race with connection setup.
+      failure: endpoint.firstRequest().then(() => died),
+      // Far longer than this test can run: the attempt's own bound must not be
+      // what eventually closes the socket, or it would pass without the fix.
+      attemptTimeoutMs: 600_000,
+    }),
+    /Chrome exited before DevTools readiness/,
+  );
+
+  // Without the abort this never resolves and the test dies of its own timeout.
+  await endpoint.firstConnectionClosed();
+});
+
+// waitForHttp's total bound is the caller's deadline, and for most of this
+// module's life a caller could simply not pass one - 300 attempts at their own
+// bound apiece, ten minutes of polling, with nothing to stop it. Callers now
+// get a deadline whether they bring one or not.
+test("a poll with no caller deadline arms one of its own", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const before = liveTimers();
+  const pending = waitForHttp("http://127.0.0.1:1/json/version", "vite dev server", () => null, {
+    fetchImpl: () => new Promise(() => {}),
+  });
+  const rejected = assert.rejects(pending, (error) => {
+    assert.match(error.message, new RegExp(`browser startup deadline exceeded after ${STARTUP_DEADLINE_MS}ms`));
+    assert.match(error.message, /vite dev server/);
+    return true;
+  });
+
+  await vi.advanceTimersByTimeAsync(STARTUP_DEADLINE_MS);
+  await rejected;
+  // The fallback is a timer this module armed itself; leaving it behind would
+  // hold a guard's event loop open for the rest of its budget.
+  assert.ok(liveTimers() <= before, `live timers went from ${before} to ${liveTimers()}: the fallback deadline outlived its poll`);
 });
 
 const cdpModuleUrl = new URL("./browserGuardCdp.mjs", import.meta.url).href;

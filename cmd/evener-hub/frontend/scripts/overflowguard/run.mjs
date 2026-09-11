@@ -43,14 +43,13 @@ import {
   clearViewportOverride,
   connectPage,
   createStartupDeadline,
-  devtoolsHttpURL,
   evaluate,
   navigateTo,
   realizedViewport,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
-import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -1025,29 +1024,7 @@ async function main() {
     } finally {
       viteDeadline.clear();
     }
-    const startupDeadline = createStartupDeadline();
-    try {
-      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
-      await waitForHttp(
-        devtoolsHttpURL(cdpEndpoint, "/json/version"),
-        "chrome devtools endpoint",
-        guard.getChromeLaunchError,
-        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
-      );
-    } catch (err) {
-      throw new Error(
-        describeBrowserStartupFailure({
-          error: err,
-          subsystem: "chrome",
-          chromeBinary: guard.chromeBinary,
-          chromeArgv: guard.getChromeArgv(),
-          chromeStderr: guard.getChromeError(),
-          viteStderr: guard.getViteError(),
-        }),
-      );
-    } finally {
-      startupDeadline.clear();
-    }
+    cdpEndpoint = await waitForBrowserReady(guard);
 
     for (const width of sweep.filter((candidate) => candidate < 900 || candidate === 900)) {
       const sendMeasurements = await measureComposerSend(

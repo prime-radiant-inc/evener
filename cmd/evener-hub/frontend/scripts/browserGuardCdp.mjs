@@ -119,13 +119,28 @@ export const PROBE_ATTEMPT_TIMEOUT_MS = 2000;
  * running, and the loser here is a live socket. Composing with the caller's
  * signal is what still lets the startup deadline cancel the request in flight
  * instead of leaving it holding the guard's event loop open.
+ *
+ * Which is also why clear() ABORTS an unsettled request rather than only
+ * clearing the timer. The attempt is not always what ends the race: a Chrome
+ * that exits mid-probe settles the failure promise instead, and the request it
+ * was racing stays connected to an endpoint nobody is waiting for any more -
+ * a live socket outliving the wait that owned it, until its own bound expires
+ * seconds later. A request that already answered is left alone; aborting that
+ * would only tear down a response the caller has in hand.
  */
 function boundAttempt(signal, ms) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`probe attempt exceeded ${ms}ms`)), ms);
+  let settled = false;
   return {
     signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
-    clear: () => clearTimeout(timer),
+    settle: () => {
+      settled = true;
+    },
+    clear: () => {
+      clearTimeout(timer);
+      if (!settled) controller.abort(new Error("probe attempt abandoned before it answered"));
+    },
   };
 }
 
@@ -178,10 +193,11 @@ export function createStartupDeadline(ms = STARTUP_DEADLINE_MS) {
  *
  * Every attempt carries its own bound (PROBE_ATTEMPT_TIMEOUT_MS) so that one
  * request the endpoint accepts and never answers cannot stand in for the whole
- * poll. THE CALLER OWNS THE TOTAL BUDGET and must pass a signal: the attempt
- * cap below is a backstop against an endless loop, not a wall-clock bound, and
- * with per-attempt bounds it no longer approximates one. A phase polled without
- * a deadline can sit here for minutes.
+ * poll. The total bound is the caller's deadline, and a caller that does not
+ * pass one gets STARTUP_DEADLINE_MS of its own: the attempt cap below is a
+ * backstop against an endless loop, not a wall-clock bound, and with
+ * per-attempt bounds it no longer approximates one - 300 silent attempts would
+ * otherwise be ten minutes of polling nobody asked for.
  */
 export async function waitForHttp(
   url,
@@ -189,39 +205,45 @@ export async function waitForHttp(
   launchFailed = () => null,
   { signal, failure = null, fetchImpl = fetch, attemptTimeoutMs = PROBE_ATTEMPT_TIMEOUT_MS } = {},
 ) {
+  const ownDeadline = signal ? null : createStartupDeadline();
+  const deadline = signal ?? ownDeadline.signal;
   let attempts = 0;
   let lastAttempt = "none";
   try {
     for (let attempt = 0; attempt < 300; attempt++) {
-      if (signal?.aborted) throw abortReason(signal);
+      if (deadline.aborted) throw abortReason(deadline);
       const launchError = launchFailed();
       if (launchError) throw launchError;
-      const bound = boundAttempt(signal, attemptTimeoutMs);
+      const bound = boundAttempt(deadline, attemptTimeoutMs);
       attempts++;
       lastAttempt = "still in flight";
       try {
-        const response = await raceWithFailure(raceWithAbort(fetchImpl(url, { signal: bound.signal }), signal), failure);
+        const request = fetchImpl(url, { signal: bound.signal });
+        request.then(bound.settle, bound.settle);
+        const response = await raceWithFailure(raceWithAbort(request, deadline), failure);
         if (response.ok) return;
         lastAttempt = `answered HTTP ${response.status}`;
       } catch (error) {
-        if (startupFailures.has(error) || signal?.aborted) throw startupFailures.has(error) ? error : abortReason(signal);
+        if (startupFailures.has(error) || deadline.aborted) throw startupFailures.has(error) ? error : abortReason(deadline);
         // The child process is still starting, or this attempt outlasted its
         // own bound and the next one gets a fresh connection.
         lastAttempt = error.message;
       } finally {
         bound.clear();
       }
-      await raceWithFailure(delay(100, signal), failure);
+      await raceWithFailure(delay(100, deadline), failure);
     }
+    throw new Error(`${label} never came up at ${url} ${describeAttempts(attempts, lastAttempt)}`);
   } catch (error) {
     // The deadline's own message stays the prefix: that is what the runners
     // frame as an environment problem rather than a test case failure.
-    if (attempts > 0 && signal && error === abortReason(signal)) {
+    if (attempts > 0 && error === abortReason(deadline)) {
       throw new Error(`${error.message} while polling ${url} for ${label} ${describeAttempts(attempts, lastAttempt)}`);
     }
     throw error;
+  } finally {
+    ownDeadline?.clear();
   }
-  throw new Error(`${label} never came up at ${url} ${describeAttempts(attempts, lastAttempt)}`);
 }
 
 /**

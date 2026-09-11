@@ -21,13 +21,12 @@ import {
   clearViewportOverride,
   connectPage,
   createStartupDeadline,
-  devtoolsHttpURL,
   evaluate,
   navigateTo,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
-import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -70,29 +69,7 @@ async function main() {
     } finally {
       viteDeadline.clear();
     }
-    const startupDeadline = createStartupDeadline();
-    try {
-      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
-      await waitForHttp(
-        devtoolsHttpURL(cdpEndpoint, "/json/version"),
-        "chrome devtools endpoint",
-        guard.getChromeLaunchError,
-        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
-      );
-    } catch (error) {
-      throw new Error(
-        describeBrowserStartupFailure({
-          error,
-          subsystem: "chrome",
-          chromeBinary: guard.chromeBinary,
-          chromeArgv: guard.getChromeArgv(),
-          chromeStderr: guard.getChromeError(),
-          viteStderr: guard.getViteError(),
-        }),
-      );
-    } finally {
-      startupDeadline.clear();
-    }
+    cdpEndpoint = await waitForBrowserReady(guard);
 
     const page = await connectPage(cdpEndpoint);
     const { send } = page;
