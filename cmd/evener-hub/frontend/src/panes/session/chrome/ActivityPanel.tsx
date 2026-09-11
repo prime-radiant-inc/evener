@@ -122,8 +122,9 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         return;
       }
       const requestID = activityPanelStore.getState().beginContinuationFetch(sessionRef, continuation.nodeID);
-      // Refused while a root refresh is in flight: that refresh is about to
-      // replace this tree and the token this click carried.
+      // Refused while anything else is already out: a root refresh is about to
+      // replace this tree and the token this click carried, and another
+      // branch's page holds the one request this panel can have in flight.
       if (requestID === null) return;
       void threadsStore
         .getState()
