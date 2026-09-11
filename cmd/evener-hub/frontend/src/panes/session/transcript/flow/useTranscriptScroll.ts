@@ -652,6 +652,9 @@ function failedTurnCount(model: ThreadModel | undefined): number {
  */
 type ScrollDirection = 1 | -1;
 
+/** PointerEvent.buttons bit for the middle (auxiliary) button. */
+const MIDDLE_BUTTON_BIT = 4;
+
 /**
  * Can the PORT still move that way? Uses the same at-bottom band the rest of the
  * hook decides by, so this agrees with what wasAtBottom will say. The band's
@@ -801,6 +804,7 @@ export function useTranscriptScroll({
   const gesturePendingRef = useRef(false);
   const gestureClearFrameRef = useRef<number | null>(null);
   const pointerDraggingRef = useRef(false);
+  const middleButtonHeldRef = useRef(false);
   const lastTouchYRef = useRef<number | null>(null);
   // The geometry the previous measurement saw. Read only to classify the NEXT
   // scroll event (see handleScroll). Deliberately NOT reset alongside the other
@@ -848,13 +852,12 @@ export function useTranscriptScroll({
   //     sideways swipe and a swipe a nested scroller answers are both ignored.
   //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
   //     that moves without scrolling marks a gesture, which no handler can tell
-  //     from a scrollbar drag or a middle-button autoscroll that does scroll.
-  //     It marks only while the pointer MOVES, so the stationary phase of an
-  //     autoscroll - held still off the anchor while the port keeps scrolling -
-  //     goes unmarked and a correction there re-pins over the reader. Ruled out
-  //     are a finger (it has the touch path, which is more exact), a secondary
-  //     button, a drag that is over (no button held), and one that has left the
-  //     port.
+  //     from a scrollbar drag that does scroll. The PRIMARY button marks only
+  //     while the pointer moves, so a held one is never a standing veto; a held
+  //     MIDDLE button is an autoscroll in progress and vetoes for as long as it
+  //     is down, stationary pointer included. Ruled out are a finger (it has the
+  //     touch path, which is more exact), a secondary button, a drag that is
+  //     over (no button held), and one that has left the port.
   const startPointerDrag = useCallback((event: PointerEvent) => {
     // A finger produces BOTH event streams. The touch path knows about
     // direction and nested scrollers; adopting the same finger here as a drag
@@ -868,17 +871,26 @@ export function useTranscriptScroll({
     // a drag that moves nothing: the same trade the path already makes for a
     // selection drag.
     //
-    // A mark comes from pointermove and lasts one frame, so this covers the
-    // MOVING phase only: an autoscroll held still off its anchor keeps scrolling
-    // the port while nothing marks, and a correction landing then re-pins over
-    // the reader. The alternative - letting the drag flag veto directly in the
-    // scroll listener - would make every held primary or middle button a
-    // standing veto, so a selection drag or a middle-button hold during content
-    // growth would produce the permanent false veto this design treats as the
-    // harmful direction. Under-marking the stationary phase is the safe side of
-    // that trade.
+    // The two buttons are tracked differently, because their held states mean
+    // opposite things.
+    //
+    // A mark comes from pointermove and lasts one frame, which is the whole
+    // story for the PRIMARY button: a selection drag holds it for as long as the
+    // reader is choosing text and scrolls nothing while they pause, so a held
+    // primary button must never be a standing veto - that is the permanent false
+    // veto this design treats as the harmful direction.
+    //
+    // A held MIDDLE button is the opposite: native autoscroll scrolls the port
+    // continuously while the pointer sits still, producing a stream of scroll
+    // events with no pointermove to mark any of them. So it is tracked as a
+    // state rather than an event, and the scroll listener reads it. The trade is
+    // the platform where a middle-button hold does nothing at all: there it is a
+    // standing veto over a transcript that is not moving, which needs the reader
+    // to press and hold the middle button over the transcript while content
+    // grows.
     if (event.pointerType === "touch") return;
     if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
+    if (event.button === 1) middleButtonHeldRef.current = true;
     pointerDraggingRef.current = true;
   }, []);
   // A mouse pointer gets no implicit capture, so a drag released outside the
@@ -893,6 +905,9 @@ export function useTranscriptScroll({
       // Ahead of both reading AND writing the flag: a finger must neither mark
       // a mouse drag nor end one.
       if (event.pointerType === "touch") return;
+      // The middle bit going away ends the autoscroll even when another button
+      // is still down, and even when the release never reaches this port.
+      if ((event.buttons & MIDDLE_BUTTON_BIT) === 0) middleButtonHeldRef.current = false;
       if (event.buttons === 0) {
         pointerDraggingRef.current = false;
         return;
@@ -909,6 +924,7 @@ export function useTranscriptScroll({
   // of the trade.
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
+    middleButtonHeldRef.current = false;
   }, []);
   const markWheel = useCallback(
     (event: WheelEvent) => {
@@ -1262,6 +1278,7 @@ export function useTranscriptScroll({
         gestureClearFrameRef.current = null;
       }
       pointerDraggingRef.current = false;
+      middleButtonHeldRef.current = false;
       lastTouchYRef.current = null;
     }
     prevHasContentRef.current = hasContent;
@@ -1304,8 +1321,10 @@ export function useTranscriptScroll({
       if (!el) return;
       const m = measure(el);
       // Consumed here, not merely read: see markGesture on why the frame
-      // boundary alone cannot be trusted to clear it.
-      const gestured = gesturePendingRef.current;
+      // boundary alone cannot be trusted to clear it. A held middle button is
+      // read rather than consumed - native autoscroll scrolls the port for as
+      // long as it is down, so every scroll event it produces is the reader's.
+      const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
       gesturePendingRef.current = false;
       // Content measured in BELOW a transcript that was already at the true
       // bottom, in the SAME scroll port, with the offset never moving

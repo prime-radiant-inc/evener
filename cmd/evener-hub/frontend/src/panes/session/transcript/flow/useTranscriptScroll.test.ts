@@ -1110,6 +1110,65 @@ describe("jumpToBottom landing reliability", () => {
     expect(result.current.pillVisible).toBe(true);
   });
 
+  // Native autoscroll keeps scrolling the port while the pointer sits still, so
+  // there are no further pointermoves to mark and the one from the initial move
+  // has long expired. These run that expiry explicitly through the frame stub
+  // rather than waiting on a real frame.
+  function holdButtonThenLetTheMarkExpire(el: HTMLElement, down: PointerEventInit, drag: PointerEventInit) {
+    const frames = captureFrames();
+    const forMove = frames.scheduledBy(() =>
+      act(() => {
+        el.dispatchEvent(pointerEvent("pointerdown", down));
+        el.dispatchEvent(pointerEvent("pointermove", drag));
+      }),
+    );
+    act(() => frames.run(forMove));
+    frames.restore();
+  }
+
+  test("a held middle button keeps vetoing while the pointer sits still", () => {
+    const { el, set, result } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a held PRIMARY button is not a standing veto - the correction still re-pins", () => {
+    // A selection drag holds the primary button for as long as the reader is
+    // choosing text, and it scrolls nothing while they pause.
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MOUSE_DOWN, MOUSE_DRAG);
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("releasing the middle button ends the standing veto", () => {
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => el.dispatchEvent(pointerEvent("pointerup", { ...MIDDLE_DRAG, button: 1, buttons: 0 })));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a move that no longer carries the middle button ends the standing veto", () => {
+    // The release can arrive as a plain move whose buttons have dropped the
+    // middle bit, with no pointerup on the port at all.
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => el.dispatchEvent(pointerEvent("pointermove", { ...MIDDLE_DRAG, buttons: 0 })));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
   test("a ctrl-wheel is zoom, not a scroll - the correction still re-pins", () => {
     // Browser zoom, and what a macOS trackpad pinch arrives as. It never moves
     // the port, so marking it is pure over-marking.
