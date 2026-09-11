@@ -884,8 +884,17 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return appwire.ThreadForkResponse{}, err
 		}
 	}
-	if hubForkLiveStatusFenced(cfg, ref.ThreadID) {
-		return appwire.ThreadForkResponse{}, sessionResumeRequiredError()
+	// Over the same targets as the two passes above, and for the same reason:
+	// the capability projection fences both identities on this signal
+	// (hubForkRecoveryFencedNow for the alias, hubForkResolvedSessionFenced for
+	// the session it resolves to), so the RPC states the rule the same way
+	// rather than a second time in a second shape. Both identities land on one
+	// roster entry whenever a daemon is live, so this costs a Find for the
+	// resolved id and changes no answer.
+	for _, id := range targets {
+		if hubForkLiveStatusFenced(cfg, id) {
+			return appwire.ThreadForkResponse{}, sessionResumeRequiredError()
+		}
 	}
 	entry, ok, entryErr := ownershipEntry(ctx, cfg, sessionID)
 	if entryErr != nil {

@@ -534,7 +534,8 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 // workspace ref resolves to a different current session, that session is the
 // transcript a fork would branch and hubThreadFork fences it as a live
 // delegate, as a daemon announcing recovery in its status, and against the
-// hub's recovery locks. The alias's own copies of those checks are
+// hub's recovery locks — the RPC over forkFenceTargets, this over the one
+// resolution the projection already made. The alias's own copies of those checks are
 // hubCanForkThread's and hubForkRecoveryFencedNow's; this covers the session
 // neither of them sees. Deletion is the same question for the same pair and is
 // hubForkDeletionFenced's, which takes the same resolution.

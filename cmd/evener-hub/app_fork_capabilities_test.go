@@ -2033,3 +2033,61 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 		})
 	}
 }
+
+// The fork RPC and the capability projection both fence on the daemon's own
+// reported status, and both now state that over every identity a fork touches.
+// The two identities cannot disagree on this signal: hubForkLiveStatusFenced
+// answers from liveDaemonForThread, which reaches the alias through the
+// workspace-ref scan and the resolved session through Find, and with a daemon
+// live those are one and the same roster entry — the resolved session IS that
+// entry's session id, so the flags it carries are the same flags. This pins
+// that agreement in the shape where the two ids differ, so a future change that
+// lets them diverge fails here rather than becoming another round of the RPC
+// and the projection disagreeing.
+func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
+	for _, flags := range [][]string{nil, {"resumeRequired"}} {
+		name := map[bool]string{false: "daemon reports a recovery flag", true: "daemon reports none"}[flags == nil]
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			aliasID := buildRPCParentSession(t, stateDir)
+			currentID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID: os.Getpid(), SourceID: "local", ThreadID: currentID, SessionID: currentID, InstanceID: currentID,
+				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+			})
+			roster := hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: currentID, flags: flags})
+			roster.Refresh()
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
+				t.Fatalf("the alias resolves to %q, want the daemon's current session %q", got, currentID)
+			}
+
+			alias, resolved := hubForkLiveStatusFenced(cfg, aliasID), hubForkLiveStatusFenced(cfg, currentID)
+			if alias != resolved {
+				t.Fatalf("live-status fence disagrees across the identities of one daemon: alias=%v resolved=%v", alias, resolved)
+			}
+			if want := flags != nil; alias != want {
+				t.Fatalf("live-status fence=%v, want %v for flags %v", alias, want, flags)
+			}
+
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if flags == nil {
+				if err != nil {
+					t.Fatalf("fork of an unfenced daemon's alias: %v", err)
+				}
+				return
+			}
+			if !isSessionRecoveryAdmissionError(err) {
+				t.Fatalf("fork error=%v, want the recovery refusal the daemon's status calls for", err)
+			}
+		})
+	}
+}
