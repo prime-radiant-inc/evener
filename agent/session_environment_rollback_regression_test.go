@@ -22,11 +22,13 @@ import (
 
 type environmentSyncFailureFS struct {
 	afero.Fs
-	mu              sync.Mutex
-	failure         error
-	rollbackFailure error
-	seekFailure     error
-	onFailure       func()
+	mu                         sync.Mutex
+	failure                    error
+	rollbackFailure            error
+	seekFailure                error
+	writeFailure               error
+	transferBeforeWriteFailure int
+	onFailure                  func()
 }
 
 type environmentSyncFailureFile struct {
@@ -68,6 +70,24 @@ func (file *environmentSyncFailureFile) Truncate(size int64) error {
 		return failure
 	}
 	return file.File.Truncate(size)
+}
+
+// Write stops partway through the line it is given and then fails, which is the
+// shape no rollback can undo.
+func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
+	file.fs.mu.Lock()
+	failure := file.fs.writeFailure
+	file.fs.writeFailure = nil
+	transfer := min(file.fs.transferBeforeWriteFailure, len(p))
+	file.fs.mu.Unlock()
+	if failure == nil {
+		return file.File.Write(p)
+	}
+	n, err := file.File.Write(p[:transfer])
+	if err != nil {
+		return n, err
+	}
+	return n, failure
 }
 
 // Seek closes the writer's rollback after the truncate. Failing it reports the
@@ -140,6 +160,19 @@ func attachEnvironmentUnverifiableWrite(t *testing.T, sess *Session, syncFailure
 		fs.onFailure = nil
 		fs.mu.Unlock()
 	}
+	fs.mu.Unlock()
+}
+
+// attachEnvironmentPoisoningWrite makes the next durable transcript write stop
+// partway through its line and fails the rollback that would take those bytes
+// back out, which is what leaves the writer refusing every later append.
+func attachEnvironmentPoisoningWrite(t *testing.T, sess *Session, writeFailure, rollbackFailure error) {
+	t.Helper()
+	fs := attachEnvironmentFailureFS(t, sess)
+	fs.mu.Lock()
+	fs.writeFailure = writeFailure
+	fs.transferBeforeWriteFailure = 12
+	fs.rollbackFailure = rollbackFailure
 	fs.mu.Unlock()
 }
 
@@ -623,5 +656,42 @@ func TestEnvironmentEntryOutcomeZeroValueIsConservative(t *testing.T) {
 	var outcome environmentEntryOutcome
 	if outcome != environmentEntryUnknown {
 		t.Fatalf("zero-valued outcome = %d, want environmentEntryUnknown (%d) so an unset outcome cannot commit a turn nobody confirmed", outcome, environmentEntryUnknown)
+	}
+}
+
+// TestEnvironmentPoisonedWriterFailsEveryTurnLoudly: a transcript nothing
+// further can safely be added to must say so on every turn. The session's
+// answer to a poisoned writer is its ordinary transcript-failure path — the
+// error its caller aborts on and the warning a client sees — never a turn that
+// quietly proceeds without the environment it owes the model.
+func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	writeFailure := errors.New("environment transcript write failure")
+	rollbackFailure := errors.New("environment transcript rollback failure")
+	attachEnvironmentPoisoningWrite(t, sess, writeFailure, rollbackFailure)
+	drainPendingEvents(sess)
+
+	if err := sess.maybeAppendEnvironmentContext(); !errors.Is(err, writeFailure) || !errors.Is(err, rollbackFailure) {
+		t.Fatalf("partial-write append error = %v, want both the write and the rollback failure", err)
+	}
+	if err := sess.maybeAppendEnvironmentContext(); !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("turn after the poisoning = %v, want transcript.ErrWriterPoisoned", err)
+	}
+	if got := durableEnvironmentTurnIDs(t, sess); len(got) != 0 {
+		t.Fatalf("durable environment entries = %v, want none: neither append produced a record", got)
+	}
+	if got := countEnvironmentTurns(sess); got != 0 {
+		t.Fatalf("refused environment appends entered model history %d times", got)
+	}
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+
+	warnings := 0
+	for _, event := range drainPendingEvents(sess) {
+		if event.Kind == events.EventWarning {
+			warnings++
+		}
+	}
+	if warnings != 2 {
+		t.Fatalf("transcript-failure warnings = %d, want one for each refused turn", warnings)
 	}
 }

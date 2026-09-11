@@ -51,6 +51,16 @@ var ErrLineTooLong = errors.New("transcript line too long")
 // deciding whether to write it again.
 var ErrRollbackFailed = errors.New("rollback failed")
 
+// ErrWriterPoisoned marks a writer that refuses further appends. An append
+// that failed partway and could not be rolled back leaves bytes at the tail
+// that are not a record: appending after them would run the next entry onto
+// the remains of the last and make the whole file unreadable. The writer stops
+// rather than produce that, so the failure surfaces on every later append
+// instead of being discovered by whoever next reads the transcript. Recovery is
+// to reopen the transcript, which rebuilds the writer from the complete records
+// the file still holds.
+var ErrWriterPoisoned = errors.New("transcript writer refuses further appends after an unresolved partial append")
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
@@ -243,6 +253,12 @@ type Writer struct {
 	dirty    bool
 	lastSync time.Time
 
+	// poisoned records an append that failed partway and could not be rolled
+	// back: the file's tail may be the remains of a record rather than a
+	// record, and nothing this writer could append after it would be readable.
+	// See ErrWriterPoisoned.
+	poisoned bool
+
 	// failures counts the session's failed tool calls as they are written, for
 	// the live figure a running session reports. Nil until TrackFailures
 	// installs it, and a nil counter reports ABSENT rather than zero: a writer
@@ -428,6 +444,9 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w.closed.Load() {
 		return nil
 	}
+	if w.poisoned {
+		return ErrWriterPoisoned
+	}
 
 	entry := Entry{
 		Kind: "entry",
@@ -449,10 +468,11 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		}
 	}
 
+	line := append(data, '\n')
 	previousDirty := w.dirty
-	if err := w.writeLineLocked(append(data, '\n')); err != nil {
+	if written, err := w.writeLineLocked(line); err != nil {
 		if forceSync {
-			return w.appendFailureLocked("write transcript entry", err, startOffset)
+			return w.appendFailureLocked("write transcript entry", err, startOffset, turn, written == len(line))
 		}
 		return fmt.Errorf("write transcript entry: %w", err)
 	}
@@ -490,31 +510,48 @@ func (w *Writer) countAppendedEntryLocked(turn schema.Turn) {
 	w.failures.Observe(turn)
 }
 
-func (w *Writer) writeLineLocked(line []byte) error {
+// writeLineLocked writes the whole line, reporting how much of it reached the
+// file. The count is what decides whether a failed write left a record behind
+// or only the remains of one.
+func (w *Writer) writeLineLocked(line []byte) (int, error) {
+	written := 0
 	for len(line) > 0 {
 		n, err := w.file.Write(line)
+		written += n
 		if err != nil {
-			return err
+			return written, err
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			return written, io.ErrShortWrite
 		}
 		line = line[n:]
 	}
-	return nil
+	return written, nil
 }
 
-// appendFailureLocked reports a write that failed partway. What it leaves at
-// startOffset is at most a partial line, and a reader never reads an entry out
-// of it either way: while those bytes are the file's tail the reader skips
-// them, and once a later append follows them the concatenation is a corrupt
-// complete line that rejects the whole file. So the entry's sequence number
-// stays unspent whether or not the rollback could remove the bytes.
-func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64) error {
-	if _, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
-		return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
+// appendFailureLocked reports a write that failed, having transferred the whole
+// line or only part of one. A rollback that takes those bytes back out settles
+// it: nothing was written, nothing is spent.
+//
+// A rollback that fails does not settle it, and the two shapes it can leave
+// differ. A retained WHOLE line is a record a reader will see, so it spends its
+// sequence number and counts the failures it settles, the way the retained
+// entry of a failed sync does. A retained PARTIAL line is not a record and
+// spends nothing — a reader skips it while it is the file's tail, and rejects
+// the whole file once a later append runs onto it. Either way the writer is
+// poisoned: after a rollback that did not complete it can promise nothing about
+// where the file ends, so it refuses to append rather than write a record no
+// reader can get back out.
+func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64, turn schema.Turn, wholeLine bool) error {
+	removed, rollbackErr := w.rollbackAppendLocked(startOffset)
+	if rollbackErr == nil {
+		return fmt.Errorf("%s: %w", operation, err)
 	}
-	return fmt.Errorf("%s: %w", operation, err)
+	if !removed && wholeLine {
+		w.countAppendedEntryLocked(turn)
+	}
+	w.poisoned = true
+	return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
 }
 
 // rollbackAppendLocked takes the entry written at startOffset back out of the

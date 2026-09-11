@@ -1870,6 +1870,17 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 // written before attachTranscript is held; everything after goes straight
 // through. Both report a held turn as written (nil error), which is accurate —
 // it has not failed, it has not been flushed yet.
+//
+// A poisoned writer (transcript.ErrWriterPoisoned) is the opposite case and
+// needs no special handling here: an append that failed partway and could not
+// be rolled back leaves the writer refusing every later append, so each one
+// returns that error through these same doors and reaches the caller's ordinary
+// transcript-failure path — the warning, and for a turn-bearing caller the
+// aborted turn. That is the intended behaviour for a transcript nothing further
+// can safely be added to: every turn fails loudly until the session is
+// restarted against the records the file still holds. What must never happen is
+// the silent success a nil writer gives, which is why the writer answers with an
+// error rather than dropping the turn.
 
 // writeTranscript records a turn in the durable transcript, holding it if the
 // session has not yet decided whether it has one.
