@@ -818,10 +818,14 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	// resolution here is the roster as it stands, which may be a scan old —
 	// acceptable for an answer that is terminal whichever way it lands, and
 	// re-derived below once the refresh has run. These reads take no lock; the
-	// locked pass still re-reads both identities under theirs.
-	for _, id := range forkFenceTargets(ref.ThreadID, forkTargetSessionID(cfg, ref.ThreadID)) {
-		if err := deletionFenceErrorNaming(cfg, refFor(id), id, params.Ref, ""); err != nil {
-			return appwire.ThreadForkResponse{}, err
+	// locked pass still re-reads both identities under theirs. With no deletion
+	// store there is nothing to read, and resolving for it would be a roster
+	// lookup per fork for an answer that cannot exist.
+	if cfg.DeletionStore != nil {
+		for _, id := range forkFenceTargets(ref.ThreadID, forkTargetSessionID(cfg, ref.ThreadID)) {
+			if err := deletionFenceErrorNaming(cfg, refFor(id), id, params.Ref, ""); err != nil {
+				return appwire.ThreadForkResponse{}, err
+			}
 		}
 	}
 	// One roster refresh serves every fence below, and it has to land before

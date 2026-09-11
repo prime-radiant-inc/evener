@@ -499,9 +499,12 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool
 // completed keeps being refused until it reconnects, even once the recovery has
 // cleared and this projection says the session is forkable again. Projecting
 // per connection would mean per-connection state on a shared broadcast, which
-// is a larger design question than this fence. The refusal that connection
-// meets is the retryable resume-required error, which names the action that
-// clears it, and the window closes on reconnect.
+// is a larger design question than this fence. The refusal that connection meets
+// is sessionConnectionRecoveryError's stale branch — "session recovery requires
+// Resume on a fresh connection before submitting another action", which
+// sessionActionRecoveryError reaches before any session-level fence — and it is
+// retryable and names the action that clears it: the window closes on
+// reconnect.
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {
