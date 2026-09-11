@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1274,7 +1275,7 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 		commit.publishedRevision = s.historyRevision
 		s.mu.Unlock()
 		s.attentionMu.Lock()
-		commit.commitTranscriptsLocked()
+		commit.commitTranscriptsLocked(true)
 		s.attentionMu.Unlock()
 		commit.flush()
 	}
@@ -1962,5 +1963,148 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 	}
 	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
 		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite's tagged copy was not durable, and the original entry outside the fold's run is the one ResumeHistory discards")
+	}
+}
+
+// failReplayCopyWriteFS fails the durable write of a fold's replay copies and
+// lets every other record through, which is the transient failure the
+// publication has to survive without lying about what is on disk.
+type failReplayCopyWriteFS struct {
+	afero.Fs
+	failed atomic.Bool
+}
+
+func (fs *failReplayCopyWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &failReplayCopyWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *failReplayCopyWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &failReplayCopyWriteFile{File: file, fs: fs}, nil
+}
+
+type failReplayCopyWriteFile struct {
+	afero.File
+	fs *failReplayCopyWriteFS
+}
+
+func (file *failReplayCopyWriteFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"context_replay":true`)) {
+		file.fs.failed.Store(true)
+		return 0, errors.New("injected replay-copy write failure")
+	}
+	return file.File.Write(p)
+}
+
+// TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor pins the publication
+// against a half-written run. The marker is what makes ResumeHistory discard
+// everything before it, and the copies are what carries the turns recorded
+// during the fold past it — so a marker written when a copy could not be is an
+// anchor that discards originals it has nothing to replace. The fold stays
+// published in memory; what must not happen is a durable anchor claiming a run
+// that is not there.
+func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "failed-copy-write-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failReplayCopyWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+
+	var warnings []string
+	var warningsMu sync.Mutex
+	go func() {
+		for event := range s.Events() {
+			if data, ok := event.Data.(events.WarningData); ok {
+				warningsMu.Lock()
+				warnings = append(warnings, data.Message)
+				warningsMu.Unlock()
+			}
+		}
+	}()
+
+	compactErr := make(chan error, 1)
+	go func() { compactErr <- s.Compact(context.Background()) }()
+	<-entered
+
+	const concurrentText = "turn recorded while the fold was running"
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(concurrentText))
+	s.recordTurn(turn, turn)
+
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no replay copy write was attempted, so nothing failed")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
+			t.Fatalf("a %s anchored a fold whose replay copies could not be written; every original before it is discarded with nothing to replace them", entry.Turn.Kind)
+		}
+	}
+	resumed := ResumeHistory(data.Entries)
+	seen := 0
+	for _, rt := range resumed {
+		if rt.Message.Text() == concurrentText {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("the turn recorded during the fold appears %d times in the resumed history, want exactly once", seen)
+	}
+	// Nothing anchored, so nothing was discarded: the transcript's earliest
+	// record is still the start of the resumed history.
+	earliest := ""
+	for _, entry := range data.Entries {
+		if !entry.Turn.ContextReplay {
+			earliest = entry.Turn.Message.Text()
+			break
+		}
+	}
+	if earliest == "" {
+		t.Fatal("test setup: the transcript holds no record to resume from")
+	}
+	if indexOfTurnText(resumed, earliest) < 0 {
+		t.Fatalf("the transcript's earliest record %q was discarded even though no marker anchored the fold", earliest)
+	}
+	warningsMu.Lock()
+	got := append([]string(nil), warnings...)
+	warningsMu.Unlock()
+	anchored := false
+	for _, message := range got {
+		if strings.Contains(message, "not anchored") {
+			anchored = true
+		}
+	}
+	if !anchored {
+		t.Fatalf("no warning said the fold was left un-anchored on disk: %q", got)
 	}
 }

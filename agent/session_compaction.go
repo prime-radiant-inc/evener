@@ -233,19 +233,30 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// The rewrite still only happens for a fold that HAS a marker: without one
 	// nothing discards the originals, so a copy carries nothing.
 	var mergedTailWriteErrs []error
+	// The marker and the copies are one claim: the marker discards everything
+	// before it, the copies are what carries the turns recorded during the
+	// fold past it. A copy that could not be written makes writing the marker
+	// the worst of both — an anchor that discards originals it has nothing to
+	// replace. So the anchor is withheld, and only the anchor: the fold stands
+	// in memory (its summary and context estimate are real), the records that
+	// describe it still land, and the copies that did land carry a fold id no
+	// marker claims, which every reader already drops. The next resume replays
+	// the pre-fold transcript — a compaction lost, not turns.
+	tailComplete := true
 	if commit.writesCompactionMarker() {
 		for _, turn := range rewriteTail {
 			turn.ContextReplay = true
 			turn.CompactionFoldID = commit.foldID
 			if err := s.writeTranscriptDurableLocked(turn); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+				tailComplete = false
 			}
 		}
 	}
-	commit.commitTranscriptsLocked()
+	commit.commitTranscriptsLocked(tailComplete)
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v; this compaction was not anchored on disk, so a restart replays the transcript from before it", err)})
 	}
 	if hook := s.cfg.testOnly.beforeFoldSideEffectsFlush; hook != nil {
 		hook()
@@ -351,8 +362,10 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // it, and an unconditional clear could erase a newer note pinned mid-fold.
 // commitTranscriptsLocked appends the fold's own transcript entries and MUST
 // run under the same attentionMu hold that decided the publish, AFTER the tail
-// rewrite that same hold writes first. writesCompactionMarker answers, before
-// either write, whether the tail has an anchor to be carried past at all.
+// rewrite that same hold writes first; its anchor argument withholds the
+// marker when a copy in that rewrite could not be written.
+// writesCompactionMarker answers, before either write, whether the tail has an
+// anchor to be carried past at all.
 // flush commits the remaining deferred effects, outside the locks. A losing
 // fold runs none of them.
 //
@@ -363,7 +376,7 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // runs first.
 type foldCommit struct {
 	claimNoteLocked         func()
-	commitTranscriptsLocked func()
+	commitTranscriptsLocked func(anchor bool)
 	// writesCompactionMarker reports whether this fold produced a
 	// CHECKPOINT/SUMMARY to write, answerable before any write happens.
 	writesCompactionMarker func() bool
@@ -580,7 +593,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	var compactionTurnWriteErrs []error
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
-	commitTranscriptsLocked := func() {
+	// anchor is false when a replay copy could not be written: the fold's own
+	// records still land, but the marker that would discard everything before
+	// them does not. See publishFoldTransaction.
+	commitTranscriptsLocked := func(anchor bool) {
 		compactionEventWriteErrs = make([]error, len(pendingCompactionEvents))
 		for i, event := range pendingCompactionEvents {
 			payload := event.Compaction()
@@ -591,8 +607,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
-		for i, turn := range pendingCompactionTurns {
-			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+		if anchor {
+			for i, turn := range pendingCompactionTurns {
+				compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+			}
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
