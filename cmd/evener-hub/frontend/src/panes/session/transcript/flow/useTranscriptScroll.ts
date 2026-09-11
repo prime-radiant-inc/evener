@@ -821,8 +821,8 @@ export function useTranscriptScroll({
   // That frame may never arrive - requestAnimationFrame does not run while the
   // tab is hidden, and the first frame after it becomes visible again can be
   // arbitrarily far away - so the scroll listener also CONSUMES the flag on the
-  // event it explains. Between the two, a gesture vetoes the event it caused and
-  // nothing later.
+  // event it explains, and the document going hidden clears it outright. Between
+  // the three, a gesture vetoes the event it caused and nothing later.
   //
   // Over-marking is the dangerous direction, not under-marking. A veto falls
   // through to the ordinary path below, which records the reader as away from
@@ -944,8 +944,21 @@ export function useTranscriptScroll({
   const endAutoscrollOnFocusLoss = useCallback(() => {
     middleButtonHeldRef.current = false;
   }, []);
-  const endAutoscrollWhenHidden = useCallback(() => {
-    if (document.visibilityState === "hidden") middleButtonHeldRef.current = false;
+  // A hidden document stops the clearing frame as well as hiding the scroll, so
+  // it bounds the pending MARKER too, not just the autoscroll: a drag marks
+  // without producing any scroll event of its own, and that marker would
+  // otherwise survive until the first scroll after return - which, if content
+  // grew meanwhile, is the measurement correction it would then veto. Blur needs
+  // no equivalent: a blurred window is still rendering, so the frame boundary is
+  // still the marker's bound there.
+  const forgetGesturesWhenHidden = useCallback(() => {
+    if (document.visibilityState !== "hidden") return;
+    middleButtonHeldRef.current = false;
+    gesturePendingRef.current = false;
+    if (gestureClearFrameRef.current !== null) {
+      cancelAnimationFrame(gestureClearFrameRef.current);
+      gestureClearFrameRef.current = null;
+    }
   }, []);
   const markWheel = useCallback(
     (event: WheelEvent) => {
@@ -1458,7 +1471,7 @@ export function useTranscriptScroll({
     el.addEventListener("pointercancel", endPointerDrag, { passive: true });
     el.addEventListener("pointerleave", endPointerDrag, { passive: true });
     window.addEventListener("blur", endAutoscrollOnFocusLoss, { passive: true });
-    document.addEventListener("visibilitychange", endAutoscrollWhenHidden, { passive: true });
+    document.addEventListener("visibilitychange", forgetGesturesWhenHidden, { passive: true });
     return () => {
       el.removeEventListener("scroll", handleScroll);
       el.removeEventListener("wheel", markWheel);
@@ -1472,7 +1485,7 @@ export function useTranscriptScroll({
       el.removeEventListener("pointercancel", endPointerDrag);
       el.removeEventListener("pointerleave", endPointerDrag);
       window.removeEventListener("blur", endAutoscrollOnFocusLoss);
-      document.removeEventListener("visibilitychange", endAutoscrollWhenHidden);
+      document.removeEventListener("visibilitychange", forgetGesturesWhenHidden);
     };
     // firstTurnId is intentionally NOT a dependency: it's only read inside
     // the initializedRef-guarded one-time block above, which - since
@@ -1510,7 +1523,7 @@ export function useTranscriptScroll({
     continuePointerDrag,
     endPointerDrag,
     endAutoscrollOnFocusLoss,
-    endAutoscrollWhenHidden,
+    forgetGesturesWhenHidden,
   ]);
 
   // A mode change commits a different row set into the same VirtualList. This

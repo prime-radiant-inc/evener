@@ -1187,6 +1187,88 @@ describe("jumpToBottom landing reliability", () => {
     }
   });
 
+  // A pointer drag marks without producing any scroll event of its own - the
+  // least exact marker, deliberately kept - and the clearing frame does not run
+  // while the document is hidden. So a marker set just before the tab goes away
+  // survives until the first scroll event after return, which after content grew
+  // meanwhile is the measurement correction it then vetoes.
+  //
+  // requestAnimationFrame is stubbed to never fire, which is what a hidden
+  // document does to it.
+  function dragMarksWhileFramesAreStalled(el: HTMLElement) {
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+      el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+    });
+  }
+
+  test("a marker pending when the document goes hidden does not veto the correction after return", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const { el, set } = mountAtBottom();
+
+      dragMarksWhileFramesAreStalled(el);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+      if (original) Object.defineProperty(Document.prototype, "visibilityState", original);
+      raf.mockRestore();
+    }
+  });
+
+  test("the hidden document cancels the pending clearing frame and frees its handle", () => {
+    // Same reason the session switch does it: without the null, markGesture sees
+    // a non-null handle on the next gesture, returns early, and that marker
+    // never gets a clearing frame at all.
+    const frames = captureFrames();
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const { el, set } = mountAtBottom();
+
+      const forFirst = frames.scheduledBy(() => dragMarksWhileFramesAreStalled(el));
+      expect(forFirst).toHaveLength(1);
+
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      expect(frames.cancelled).toContain(forFirst[0]);
+
+      const forSecond = frames.scheduledBy(() => dragMarksWhileFramesAreStalled(el));
+      expect(forSecond).toHaveLength(1);
+
+      act(() => frames.run(forSecond));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+      if (original) Object.defineProperty(Document.prototype, "visibilityState", original);
+      frames.restore();
+    }
+  });
+
+  test("a visibilitychange back to visible leaves a pending marker alone", () => {
+    // The counterpart of the standing-veto control below: the marker's clear is
+    // for the hidden edge too, not for any visibilitychange.
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, result } = mountAtBottom();
+
+      dragMarksWhileFramesAreStalled(el);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+      expect(result.current.pillVisible).toBe(true);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
   test("a visibilitychange back to visible does NOT end the standing veto", () => {
     // The clear is for the hidden edge only: a tab coming back to the front
     // while the reader still holds the button is still an autoscroll.
