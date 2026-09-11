@@ -212,13 +212,16 @@ function thinkBlockPropsEqual(prev: ItemRenderProps, next: ItemRenderProps): boo
 export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRef, contentFree }: ItemRenderProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
-  // The content-free projection never renders the thought's text, so it short
-  // circuits before any disclosure state is read.
-  if (contentFree) return <ContentFreeThinkBlock item={item} />;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  // isDisclosureOpen IS a custom hook (it wraps zustand's useStore - see
+  // disclosureStore's own note), so it must be called unconditionally before
+  // any early return: an entry that toggles contentFree on a mounted row would
+  // otherwise change the hook order between renders.
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
+  // The content-free projection never renders the thought's text.
+  if (contentFree) return <ContentFreeThinkBlock item={item} />;
   const isLive = (live || item.status === "inProgress") && isCurrentThought(item, turn);
   if (isLive) return <LiveThinkBlock item={item} />;
 
