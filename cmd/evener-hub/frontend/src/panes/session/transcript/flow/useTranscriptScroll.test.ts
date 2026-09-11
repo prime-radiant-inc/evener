@@ -581,6 +581,7 @@ describe("jumpToBottom landing reliability", () => {
     expect(result.current.pillVisible).toBe(false);
 
     act(() => {
+      el.scrollTop = 16432;
       set({ scrollTop: 16432, scrollHeight: 17221 });
       el.dispatchEvent(new Event("scroll"));
     });
@@ -613,12 +614,18 @@ describe("jumpToBottom landing reliability", () => {
 
     act(() => {
       el.dispatchEvent(new Event("wheel"));
-      // The same net geometry the pure-correction test above re-pins on.
+      // The DOM and the measurement seam move TOGETHER, as they do in a
+      // browser: by the time the listener runs, the event's net offset is
+      // already committed. The veto's job is not to restore the pre-event
+      // offset - nothing can, the reader is where the event left them - it is
+      // to leave that offset alone instead of pinning it to the bottom.
+      el.scrollTop = 16432;
       set({ scrollTop: 16432, scrollHeight: 17221 });
       el.dispatchEvent(new Event("scroll"));
     });
 
-    expect(el.scrollTop).toBe(16374);
+    expect(el.scrollTop).toBe(16432);
+    expect(el.scrollTop).not.toBe(17221 - 702);
     expect(result.current.pillVisible).toBe(true);
   });
 
@@ -635,7 +642,7 @@ describe("jumpToBottom landing reliability", () => {
   ])("%s in the same frame vetoes the correction re-pin too", (_label, gesture) => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
-    renderHook(() =>
+    const { result } = renderHook(() =>
       useTranscriptScroll({
         ref: "ref_a",
         model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
@@ -648,11 +655,13 @@ describe("jumpToBottom landing reliability", () => {
 
     act(() => {
       gesture(el);
+      el.scrollTop = 16432;
       set({ scrollTop: 16432, scrollHeight: 17221 });
       el.dispatchEvent(new Event("scroll"));
     });
 
-    expect(el.scrollTop).toBe(16374);
+    expect(el.scrollTop).toBe(16432);
+    expect(result.current.pillVisible).toBe(true);
   });
 
   test("typing and a bare click are not gestures - the correction still re-pins", () => {
@@ -675,6 +684,7 @@ describe("jumpToBottom landing reliability", () => {
     act(() => {
       el.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
       el.dispatchEvent(new Event("pointerdown"));
+      el.scrollTop = 16432;
       set({ scrollTop: 16432, scrollHeight: 17221 });
       el.dispatchEvent(new Event("scroll"));
     });
