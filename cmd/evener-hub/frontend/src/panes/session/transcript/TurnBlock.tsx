@@ -289,6 +289,7 @@ export function TurnBlock({
         agentLabel={agentLabel}
         projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
         contentFree={entry.kind === "thinking"}
+        redacted={entry.kind === "critical" && entry.redacted}
         renderContext={itemRenderContext}
         thread={thread}
         threadFingerprint={threadFingerprintForItem(

@@ -44,6 +44,12 @@ export type ProjectedEntry =
       sourceItemId?: string;
       item: ItemModel;
       summary: string;
+      /**
+       * A critical reasoning item whose text must not render because the
+       * `reasoning` content flag is off. The renderer shows a neutral failure
+       * summary instead of the thought's live body, preview, or disclosure.
+       */
+      redacted: boolean;
     };
 
 type ProjectedCriticalEntry = Extract<ProjectedEntry, { kind: "critical" }>;
@@ -203,7 +209,23 @@ function intentEntry(item: ItemModel, turnId: string, sourceIndex: number): Proj
   };
 }
 
-function criticalEntry(item: ItemModel, turnId: string, sourceIndex: number): ProjectedCriticalEntry {
+function criticalEntry(
+  item: ItemModel,
+  turnId: string,
+  sourceIndex: number,
+  redacted: boolean,
+): ProjectedCriticalEntry {
+  let summary: string;
+  if (item.type === "commandExecution") {
+    summary = toolSummary(item);
+  } else if (item.type === "reasoning") {
+    // A reasoning item's summary must never be its own text: a critical
+    // reasoning row is only ever reached with the content flag off, where any
+    // thought text would defeat the setting.
+    summary = "Thought not shown";
+  } else {
+    summary = itemSummary(item);
+  }
   return {
     kind: "critical",
     id: item.id,
@@ -211,7 +233,8 @@ function criticalEntry(item: ItemModel, turnId: string, sourceIndex: number): Pr
     sourceIndex,
     sourceItemId: item.id,
     item,
-    summary: item.type === "commandExecution" ? toolSummary(item) : itemSummary(item),
+    summary,
+    redacted,
   };
 }
 
@@ -295,6 +318,14 @@ function eligibleDisclosure(item: ItemModel): boolean {
   return item.type === "systemMessage" && item.eventKind !== undefined && item.eventKind !== "";
 }
 
+// A reasoning item projected as critical while the `reasoning` content flag is
+// off must render redacted: the reader asked not to see thoughts, and a broken
+// turn is no licence to show them. The renderer shows a neutral failure summary
+// instead (see ProjectedEntry's critical.redacted).
+function redactsReasoning(item: ItemModel, vector: ContentVector): boolean {
+  return item.type === "reasoning" && !vector.reasoning;
+}
+
 function addAnchor(anchors: ProjectedAnchor[], entry: ProjectedEntry, index: number): void {
   anchors.push({
     id: entry.id,
@@ -307,13 +338,14 @@ function addAnchor(anchors: ProjectedAnchor[], entry: ProjectedEntry, index: num
 function terminalFallbackEntry(
   turn: TurnModel,
   sourceIndexByItem: ReadonlyMap<ItemModel, number>,
+  vector: ContentVector,
 ): ProjectedCriticalEntry | undefined {
   if (!isTerminalTurn(turn)) return undefined;
   const sourceItem = turn.items.at(-1);
   if (!sourceItem) return undefined;
   const sourceIndex = sourceIndexByItem.get(sourceItem);
   if (sourceIndex === undefined) return undefined;
-  return criticalEntry(sourceItem, turn.id, sourceIndex);
+  return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
 }
 
 export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
@@ -344,7 +376,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       } else if (decision === "intent") {
         entry = intentEntry(item, turn.id, itemSourceIndex);
       } else {
-        entry = criticalEntry(item, turn.id, itemSourceIndex);
+        entry = criticalEntry(item, turn.id, itemSourceIndex, redactsReasoning(item, vector));
       }
       visibleItems.push(item);
       entries.push(entry);
@@ -361,7 +393,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       }
     }
     if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem);
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector);
       if (fallback) {
         visibleItems.push(fallback.item);
         entries.push(fallback);

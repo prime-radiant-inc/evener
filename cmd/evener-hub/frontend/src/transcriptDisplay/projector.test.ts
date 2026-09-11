@@ -390,7 +390,16 @@ describe("transcript projector", () => {
     });
     const model = { ...threadWith(), turns: [interrupted] } as ThreadModel;
 
-    expect(entriesFor(model, preset("tools"))).toEqual([expect.objectContaining({ kind: "critical", id: "think" })]);
+    const entries = entriesFor(model, preset("tools"));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "critical",
+      id: "think",
+      redacted: true,
+      // The summary must never be the thought's own text.
+      summary: "Thought not shown",
+    });
+    expect(entries[0]).not.toMatchObject({ summary: "cut short" });
   });
 
   test("keeps the typed failure marker for failed and interrupted turns", () => {

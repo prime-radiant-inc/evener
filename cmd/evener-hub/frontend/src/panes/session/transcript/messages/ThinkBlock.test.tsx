@@ -113,6 +113,32 @@ test("contentFree with no chunks yet shows the label alone, never a fabricated t
   expect(screen.queryByText(/tokens/)).toBeNull();
 });
 
+// --- redacted: critical reasoning on a broken turn, no thought text ---------
+
+test("redacted renders a neutral failure summary and none of the thought text, preview, or body", () => {
+  render(
+    <ThinkBlock
+      item={item({ status: "failed", reasoningSummaries: [["abcdefghijklmnop"]] })}
+      turn={turn}
+      live={false}
+      redacted={true}
+    />,
+  );
+  expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(document.querySelector("details")).toBeNull();
+});
+
+test("redacted without a failed item status uses the neutral label", () => {
+  render(
+    <ThinkBlock item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })} turn={turn} live={false} redacted={true} />,
+  );
+  expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought not shown");
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+  expect(document.querySelector("details")).toBeNull();
+});
+
 // Jesse's review call: a blinking caret inside a read-only reasoning view
 // reads as an edit cursor. Liveness is carried by the "Thinking…" eyebrow
 // and the visibly growing text, so the live view mounts no StreamingText at

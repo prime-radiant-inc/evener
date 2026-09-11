@@ -87,6 +87,20 @@ test("wires a content-free thinking entry through TurnBlock to the placeholder (
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
 });
 
+test("redacts a critical reasoning row on a terminal turn", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const projected = turn(
+    [item({ type: "reasoning", status: "failed", reasoningSummaries: [["abcdefghijklmnop"]] })],
+    { status: "interrupted" },
+    config,
+  );
+  render(withConfig(config, <TurnBlock turn={projected} />));
+  expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(document.querySelector("details")).toBeNull();
+});
+
 test("the turn root remains a centered, shrinkable reading column", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");

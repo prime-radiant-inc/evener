@@ -182,6 +182,22 @@ function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
   );
 }
 
+// The redacted counterpart for a critical reasoning row while the reasoning
+// content flag is off: a failed or interrupted turn still explains itself, but
+// never by showing the thought. Only the icon and a neutral failure summary
+// render - no preview, no disclosure, and no body.
+function RedactedThinkBlock({ item }: { item: ItemModel }) {
+  const failed = item.status === "failed" || item.status === "interrupted";
+  return (
+    <div className={CLASS.block} data-testid="think-block" data-redacted="true">
+      <span className={CLASS.label} data-testid="think-block-redacted">
+        {thoughtIcon}
+        {failed ? "Thought failed" : "Thought not shown"}
+      </span>
+    </div>
+  );
+}
+
 // isCurrentThought: whether this reasoning item is still the turn's CURRENT
 // activity - the tail of turn.items. The wire never emits item/completed for
 // a reasoning item (only turn/completed settles it; TurnBlock's isItemLive
@@ -209,7 +225,14 @@ function thinkBlockPropsEqual(prev: ItemRenderProps, next: ItemRenderProps): boo
   return ignoringTurn(prev, next) && isCurrentThought(prev.item, prev.turn) === isCurrentThought(next.item, next.turn);
 }
 
-export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRef, contentFree }: ItemRenderProps) {
+export const ThinkBlock = memo(function ThinkBlock({
+  item,
+  turn,
+  live,
+  sessionRef,
+  contentFree,
+  redacted,
+}: ItemRenderProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
@@ -220,8 +243,9 @@ export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRe
   // any early return: an entry that toggles contentFree on a mounted row would
   // otherwise change the hook order between renders.
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
-  // The content-free projection never renders the thought's text.
+  // Neither content-free state reads the thought's text.
   if (contentFree) return <ContentFreeThinkBlock item={item} />;
+  if (redacted) return <RedactedThinkBlock item={item} />;
   const isLive = (live || item.status === "inProgress") && isCurrentThought(item, turn);
   if (isLive) return <LiveThinkBlock item={item} />;
 

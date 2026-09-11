@@ -23,6 +23,14 @@ so the row cannot leak the thought. The renderer draws just
 reasoning stream, so a real count would be fabricated). The placeholder
 disappears the moment the thought stops being the turn's current activity.
 
+A critical reasoning row (a failed or interrupted turn, still projected as
+critical so the turn explains itself) renders redacted: a neutral "Thought
+failed" / "Thought not shown" summary, with no thought body, preview, or
+disclosure. This narrows the 2026-08-25 "preserve terminal transcript failures"
+behavior for reasoning specifically - a broken turn still explains itself, but
+not by showing content the reader disabled. The projector no longer derives a
+reasoning critical entry's summary from the item's own text.
+
 This is the one approved exception to the motion budget's ban on pulses and
 shimmer on live data (design-system.md §5). The grid pulses while the
 placeholder is shown and, unlike Cadence, is not gated on deltas actually

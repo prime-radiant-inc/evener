@@ -34,6 +34,11 @@ export interface ItemRenderProps {
   // not read the item's own text. Set for every entry kind by TurnBlock, so a
   // memoized renderer can compare it by value.
   contentFree?: boolean;
+  // True when a critical reasoning row must render with no thought text at all
+  // (the content flag is off and the row is only on the failure path). The
+  // renderer shows a neutral failure summary instead of the thought's body,
+  // preview, or disclosure.
+  redacted?: boolean;
   /** Snapshot inputs relevant to this item; stable when an unrelated delta lands. */
   threadFingerprint?: string;
   thread?: ThreadModel;
@@ -83,6 +88,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.agentLabel === next.agentLabel &&
     prev.projectedSummary === next.projectedSummary &&
     prev.contentFree === next.contentFree &&
+    prev.redacted === next.redacted &&
     prev.renderContext === next.renderContext &&
     prev.threadFingerprint === next.threadFingerprint
   );
