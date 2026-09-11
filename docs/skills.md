@@ -38,9 +38,20 @@ in plugin commands.
 
 ## Skills
 
-A skill is a directory containing a `SKILL.md` with YAML frontmatter
-(`name` and `description` required, `allowed-tools` optional). Evener
-discovers skills from the set bundled with evener itself (the base layer),
+A skill is a directory containing a `SKILL.md` with YAML frontmatter.
+`name` and `description` are required strings. `disable-model-invocation` and
+`user-invocable` are optional strict YAML booleans, defaulting to `false` and
+`true` respectively. Quoted booleans and loose values such as `yes` are invalid;
+Evener marks the skill unavailable and reports a machine-readable diagnostic
+with its source and invalid field. Other descriptive metadata remains inert
+data. Unsupported behavioral metadata such as `context: fork` is diagnosed but
+not acted on.
+
+`allowed-tools` may be one string or an ordered array of strings. Evener
+preserves it and diagnoses that it is not enforced: it neither grants nor
+restricts tool access.
+
+Evener discovers skills from the set bundled with evener itself (the base layer),
 from `skills/` directories walking the git root down to your cwd, from the
 automatic user-global `skills` directory, from any `skills_dirs` launch-config
 entries, and from plugins. Among the bare-named sources, later ones shadow
