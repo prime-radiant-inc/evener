@@ -1,4 +1,9 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  type ActivityCounts,
+  type ActivityTree as ActivityTreeData,
+  parseActivityTree,
+} from "../../../protocol/activityData";
 import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
@@ -11,7 +16,6 @@ import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
-import { type ActivityCounts, type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
 import styles from "./activitypanel.module.css";
 
 export interface ActivityPanelProps {
@@ -117,7 +121,11 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         );
         return;
       }
-      const requestID = activityPanelStore.getState().beginFetch(sessionRef, { nodeID: continuation.nodeID });
+      const requestID = activityPanelStore.getState().beginContinuationFetch(sessionRef, continuation.nodeID);
+      // Refused while anything else is already out: a root refresh is about to
+      // replace this tree and the token this click carried, and another
+      // branch's page holds the one request this panel can have in flight.
+      if (requestID === null) return;
       void threadsStore
         .getState()
         .listJobs(sessionRef, continuation.token)
@@ -243,6 +251,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
               continuationFailures={entry.continuationFailures}
               onContinue={handleContinue}
               loadingContinuationID={entry.continuationLoadingID}
+              rootRefreshing={entry.pending?.kind === "root"}
             />
           </div>
         ) : null}

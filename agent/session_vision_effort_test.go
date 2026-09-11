@@ -57,7 +57,7 @@ func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
 	desc := sess.describeImage(context.Background(), tool.ExecResult{
 		ImageData:      []byte("fake-png-bytes"),
 		ImageMediaType: "image/png",
-		ImageIntent:    "what is in this image",
+		ImagePrompt:    "what is in this image",
 	})
 	if desc != visionOutputSentinel {
 		t.Fatalf("describeImage output sentinel = %q", desc)

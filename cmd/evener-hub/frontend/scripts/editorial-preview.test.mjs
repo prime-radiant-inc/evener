@@ -7,11 +7,22 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer, resolveConfig } from "vite";
 import { findAvailablePort, parseViteReadyAnnouncement } from "./browserGuardProcess.mjs";
+import { isSharedNodeModules } from "./editorial-preview-install.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const configFile = fileURLToPath(new URL("./editorial-preview.vite.config.mjs", import.meta.url));
+// A fleet worktree shares node_modules through a symlink; the preview's
+// isolation contract (fs.allow pinned to the checkout, private dep cache)
+// cannot hold there, so the config refuses to load and its tests skip with
+// this reason. CI's fresh npm ci checkout is where they actually run.
+const sharedInstall = isSharedNodeModules(frontend);
+const skipIfSharedInstall = (t) =>
+  t.skip(
+    "fleet worktree shares node_modules with other lanes; the isolated preview requires its own npm ci install",
+  );
 
-test("editorial preview removes RESOLVED inherited proxy and restricts filesystem", async () => {
+test("editorial preview removes RESOLVED inherited proxy and restricts filesystem", async (t) => {
+  if (sharedInstall) return skipIfSharedInstall(t);
   const config = await resolveConfig({ root: frontend, configFile }, "serve");
   assert.equal(config.server.proxy, undefined);
   assert.equal(config.server.host, "0.0.0.0");
@@ -23,7 +34,8 @@ test("editorial preview removes RESOLVED inherited proxy and restricts filesyste
   assert.equal(config.server.fs.strict, true);
 });
 
-test("normal app-route reloads remain fixture-backed; backend and outside files denied", async () => {
+test("normal app-route reloads remain fixture-backed; backend and outside files denied", async (t) => {
+  if (sharedInstall) return skipIfSharedInstall(t);
   const phase = (message) => {
     if (process.env.EDITORIAL_ISOLATION_TRACE) console.error(`[editorial-isolation] ${message}`);
   };
@@ -88,7 +100,8 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
   }
 });
 
-test("browserguard wrapper serves a passed fixture config on its announced port", async () => {
+test("browserguard wrapper serves a passed fixture config on its announced port", async (t) => {
+  if (sharedInstall) return skipIfSharedInstall(t);
   // The editorial-preview runner goes through startBrowserGuard, which spawns
   // the Node wrapper rather than a `vite` binary, so the fixture config must
   // reach the wrapper as an argument (the runner's old spawn-argument rewrite
