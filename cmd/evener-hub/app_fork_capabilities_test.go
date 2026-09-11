@@ -1253,3 +1253,70 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 		}
 	}
 }
+
+// A deleted target and a recovery-fenced one are refused differently — deletion
+// is terminal and carries MutationOutcomeTargetDeleted, a recovery fence is
+// retryable once the session is resumed — so which one a client is told about
+// must not depend on how two session ids happen to sort. Both orders are
+// exercised: the alias is deleted and the session the fork resolves to is
+// recovery-fenced, whichever of the two sorts first.
+func TestHubForkReportsDeletionBeforeRecoveryWhicheverIdentitySortsFirst(t *testing.T) {
+	first, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first >= second {
+		t.Fatalf("session ids are not increasing: %q, %q", first, second)
+	}
+	for _, tc := range []struct {
+		name            string
+		aliasID, liveID string
+	}{
+		{name: "deleted alias sorts first", aliasID: first, liveID: second},
+		{name: "deleted alias sorts second", aliasID: second, liveID: first},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			buildRPCSessionWithWorkingDir(t, stateDir, tc.aliasID, t.TempDir())
+			buildRPCSessionWithWorkingDir(t, stateDir, tc.liveID, t.TempDir())
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID: os.Getpid(), SourceID: "local", ThreadID: tc.liveID, SessionID: tc.liveID, InstanceID: tc.liveID,
+				WorkspaceRef: "local:" + tc.aliasID, StateDir: stateDir,
+				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+			})
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: tc.liveID, status: appwire.ThreadStatusIdle})
+			roster.Refresh()
+			store, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Begin("project-order-0123456789", []hubcore.DeletionTarget{{
+				Ref: localAppRef(tc.aliasID), ThreadID: tc.aliasID,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			locks := hubcore.NewResumeLocks()
+			finish := locks.BeginForceStop([]string{tc.liveID})
+			if err := locks.PersistForceStop([]string{tc.liveID}, tc.liveID); err != nil {
+				t.Fatal(err)
+			}
+			finish(true)
+			cfg := hubcore.WebConfig{
+				StateDir: stateDir, RunDir: runDir, Roster: roster,
+				ResumeLocks: locks, DeletionStore: store,
+			}
+
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + tc.aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if !isTargetDeletedError(err) {
+				t.Fatalf("fork error=%v, want the deleted target reported ahead of the recovery fence", err)
+			}
+		})
+	}
+}

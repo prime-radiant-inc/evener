@@ -831,13 +831,22 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			unlock()
 		}
 	}()
-	for _, id := range targets {
+	lockOrder := slices.Clone(targets)
+	slices.Sort(lockOrder)
+	for _, id := range lockOrder {
 		unlockTargets = append(unlockTargets, lockDeletionTarget(cfg, refFor(id), id))
 	}
+	// Deletion across every identity first, then recovery across every
+	// identity: the two refusals differ in kind — a deleted target is terminal
+	// and carries MutationOutcomeTargetDeleted, a recovery fence is retryable
+	// once the session is resumed — so which one a client is told about must
+	// not depend on the order the locks above happened to need.
 	for _, id := range targets {
 		if err := deletionFenceError(cfg, refFor(id), id, ""); err != nil {
 			return appwire.ThreadForkResponse{}, err
 		}
+	}
+	for _, id := range targets {
 		if err := sessionActionRecoveryError(ctx, cfg, refFor(id), id, epochs[id]); err != nil {
 			return appwire.ThreadForkResponse{}, err
 		}
@@ -957,16 +966,16 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 	})
 }
 
-// forkFenceTargets is every identity one fork has to reserve: the alias the
-// client asked about, and the session the branch actually reads when the two
-// differ. Sorted and deduplicated so the per-session locks are always taken in
-// one order.
+// forkFenceTargets is every identity one fork has to reserve, in request order:
+// the alias the client asked about, then the session the branch actually reads
+// when the two differ. Fences are checked in this order so a refusal reports
+// the identity the client named whenever both are fenced the same way; the
+// locks are taken over a sorted copy, which is a separate concern.
 func forkFenceTargets(requestedID, sessionID string) []string {
 	targets := []string{requestedID}
 	if sessionID != "" && sessionID != requestedID {
 		targets = append(targets, sessionID)
 	}
-	slices.Sort(targets)
 	return targets
 }
 
