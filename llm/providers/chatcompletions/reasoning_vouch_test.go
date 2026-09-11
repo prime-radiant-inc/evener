@@ -3,7 +3,6 @@ package chatcompletions
 import (
 	"testing"
 
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -20,8 +19,9 @@ func emptyLadderCaps(format string) registry.Resolved {
 }
 
 // A row that lists no effort ladder vouches for no level, so no name-carrying
-// reasoning field may reach the wire. A task override of "medium" on an
-// uncatalogued gateway model is exactly how the reported 400 happened.
+// reasoning field may reach the wire — the bug class that let a task override
+// of "medium" 400 on an uncatalogued gateway model. openrouter is the
+// documented exception and is covered separately.
 func TestBuildBody_EmptyLadderNeverWritesAnEffortName(t *testing.T) {
 	high := "high"
 	for _, format := range []string{"", "openai", "zai", "deepseek", "together", "string-thinking"} {
@@ -59,15 +59,18 @@ func TestBuildBody_EmptyLadderAlwaysOnBackstopWritesNothing(t *testing.T) {
 	}
 }
 
-// openrouter's enable object is its non-level way to keep thinking on. An
-// unvouched explicit level becomes no effort, not reasoning.effort; an
-// always-on row still keeps its enable object.
-func TestBuildBody_EmptyLadderOpenrouterDropsEffort(t *testing.T) {
+// openrouter is the documented exception to the vouch gate: it normalizes
+// reasoning.effort itself and its model listing often omits supported efforts,
+// so an explicit level passes through even with an empty ladder
+// (docs/llm-providers.md pins the dialect as "unconditionally"). With no
+// effort at all, an always-on row still gets its enable object.
+func TestBuildBody_OpenrouterKeepsExplicitEffortOnAnEmptyLadder(t *testing.T) {
 	high := "high"
-	notAlwaysOn := build(t, func() llm.Request { r := userReq("hi"); r.ReasoningEffort = &high; return r }(),
-		emptyLadderCaps("openrouter"))
-	if v, has := notAlwaysOn["reasoning"]; has {
-		t.Fatalf("unvouched effort wrote reasoning = %v, want nothing", v)
+	req := userReq("hi")
+	req.ReasoningEffort = &high
+	body := build(t, req, emptyLadderCaps("openrouter"))
+	if got := jsonOf(t, body["reasoning"]); got != jsonOf(t, map[string]any{"effort": "high"}) {
+		t.Fatalf("openrouter reasoning = %s, want the requested effort passed through", got)
 	}
 
 	alwaysOn := resolved(func(c *registry.Caps) {
@@ -76,9 +79,8 @@ func TestBuildBody_EmptyLadderOpenrouterDropsEffort(t *testing.T) {
 		c.ThinkingFormat = new("openrouter")
 		c.ThinkingAlwaysOn = new(true)
 	})
-	body := build(t, userReq("hi"), alwaysOn)
-	if got := jsonOf(t, body["reasoning"]); got != jsonOf(t, map[string]any{"enabled": true}) {
-		t.Fatalf("always-on empty-ladder row reasoning = %s, want the enable object", got)
+	if got := jsonOf(t, build(t, userReq("hi"), alwaysOn)["reasoning"]); got != jsonOf(t, map[string]any{"enabled": true}) {
+		t.Fatalf("always-on row with no effort reasoning = %s, want the enable object", got)
 	}
 }
 

@@ -9,10 +9,12 @@ import (
 
 // An empty ladder vouches for no level, so the Responses reasoning object must
 // not spell one. This is the same bug class as the lunaroute 400 on the
-// chat-completions side.
+// chat-completions side. ReasoningControls must list "effort" so the row is
+// effort-capable and the vouch gate actually runs.
 func TestReasoningObject_EmptyLadderWritesNoEffort(t *testing.T) {
 	high := "high"
-	if got := reasoningObject(llm.Request{ReasoningEffort: &high}, registry.Caps{Reasoning: new(true)}); got != nil {
+	caps := registry.Caps{Reasoning: new(true), ReasoningControls: []string{"effort"}}
+	if got := reasoningObject(llm.Request{ReasoningEffort: &high}, caps); got != nil {
 		t.Fatalf("empty-ladder row got reasoning = %v, want nil", got)
 	}
 }
