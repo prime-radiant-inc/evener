@@ -153,15 +153,16 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
   },
 
   // The caller-facing way to start a page, and the mirror of activitySummary's
-  // continuationPending guard: the two request kinds stay serialized per ref. A
-  // root refresh is replacing this whole tree, every branch's continuation token
-  // included, so a page started now would take the panel's request ID - the
-  // root's own answer would be dropped on arrival and this page's counts would
-  // mark the root's bump fresh against a tree that never received its snapshot.
-  // Null means the caller must not issue the request; the refreshed tree offers
-  // its own token to page from.
+  // continuationPending guard: one activity request per ref, whichever started
+  // first. An entry holds a single pending request, so a page started now would
+  // take the panel's request ID and whatever is already out would be dropped on
+  // arrival - the root's own snapshot, with this page's counts then marking its
+  // bump fresh against a tree that never received it, or another branch's page,
+  // discarded without even a failure to show for it. Null means the caller must
+  // not issue the request: a refreshed tree arrives with its own token, and a
+  // branch whose turn has not come keeps the one it already has.
   beginContinuationFetch(ref, nodeID) {
-    if (get().entries.get(ref)?.pending?.kind === "root") return null;
+    if (get().entries.get(ref)?.pending) return null;
     return get().beginFetch(ref, { nodeID });
   },
 

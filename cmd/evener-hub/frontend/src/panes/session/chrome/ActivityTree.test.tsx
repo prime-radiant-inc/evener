@@ -832,6 +832,27 @@ describe("ActivityTree", () => {
     expect(openTranscript).not.toHaveBeenCalled();
   });
 
+  test("every continuation control waits while another branch is loading", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const continuedTree: ActivityTreeData = {
+      revision: 1,
+      root: { ...TREE.root, branch: { continuation: "tok_root" } },
+    };
+    render(
+      <ActivityTree
+        tree={continuedTree}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+        onContinue={vi.fn()}
+        loadingContinuationID="delegate:dlg_other"
+      />,
+    );
+    // The panel carries one page at a time, so a branch that is not the one
+    // loading still cannot start a second.
+    expect(screen.getByRole("button", { name: "Load more" }).hasAttribute("disabled")).toBe(true);
+  });
+
   test("continuation failure message renders when the load failed", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);

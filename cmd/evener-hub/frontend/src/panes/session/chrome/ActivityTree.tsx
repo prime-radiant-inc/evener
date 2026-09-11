@@ -44,7 +44,9 @@ export interface ActivityTreeProps {
   onContinue?: (targetID: string, continuation: string) => void;
   loadingContinuationID?: string;
   // A root refresh in flight is about to replace this tree, every branch's
-  // continuation token included, so no page may be requested against it.
+  // continuation token included, so no page may be requested against it. A page
+  // already loading blocks the others the same way: the panel carries one
+  // request at a time, so only the branch that asked first can be answered.
   rootRefreshing?: boolean;
 }
 
@@ -488,7 +490,7 @@ const ContinuationStripView = memo(function ContinuationStripView({
           variant="quiet"
           size="xs"
           tabIndex={-1}
-          disabled={rootRefreshing || loadingContinuationID === strip.targetID}
+          disabled={rootRefreshing || loadingContinuationID !== undefined}
           onClick={(event) => {
             event.stopPropagation();
             onContinue(strip.targetID, strip.token ?? "");
