@@ -350,6 +350,23 @@ describe("transcript projector", () => {
     ]);
   });
 
+  test("hides an in-progress reasoning item while the turn is live when reasoning is off", () => {
+    const liveTurn = turn([item("think", "reasoning", { status: "inProgress", text: "in-flight thought" })], {
+      status: "inProgress",
+    });
+    const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
+
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("tools"))).toEqual([]);
+    expect(
+      entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false })),
+    ).toEqual([]);
+
+    // With reasoning on, the same live item is ordinary (streaming) content.
+    expect(entriesFor(model, preset("full")).map((entry) => entry.id)).toEqual(["think"]);
+    expect(entriesFor(model, preset("full")).map((entry) => entry.kind)).toEqual(["item"]);
+  });
+
   test("keeps the typed failure marker for failed and interrupted turns", () => {
     const model = {
       ...threadWith(),

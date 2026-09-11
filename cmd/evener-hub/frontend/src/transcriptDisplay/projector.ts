@@ -244,7 +244,12 @@ function decisionFor(
 
   if (item.type === "reasoning") {
     if (vector.reasoning) return "item";
-    return hasFailureStatus(item) || isActiveItem(item, turn) || isTerminalTurn(turn) ? "critical" : "hidden";
+    // An in-progress reasoning item is deliberately NOT escalated. Its renderer
+    // streams the thought open while it is the turn's current activity, so
+    // projecting an active thought here would show the full reasoning stream
+    // even with `reasoning` disabled. Failure and terminal-turn visibility stay
+    // so a broken turn still explains itself.
+    return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
   }
 
   if (item.type === "systemMessage") return systemDecision(item, config);
