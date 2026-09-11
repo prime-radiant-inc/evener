@@ -3545,6 +3545,78 @@ describe("ConversationStore", () => {
       expect(conv?.items[0]?.id).toBe("item-0");
     });
 
+    it("loadOlder dedupes an attachment for a clustered member by transcriptKey, not just top-level id", async () => {
+      // The current conversation has ONE clustered activity whose SECOND
+      // (non-first) member carries transcriptKey "key-A" and wire id
+      // "wire-A". Its own identity lives only inside .members[], invisible
+      // to a dedup set seeded from top-level timelineIdentity alone.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "wire-X",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: { output: "first", callId: "call-x" },
+            members: [
+              {
+                id: "wire-X",
+                label: "shell",
+                family: "tool",
+                state: "completed",
+                detail: { output: "first", callId: "call-x" },
+                transcriptKey: "key-X",
+              },
+              {
+                id: "wire-A",
+                label: "shell",
+                family: "tool",
+                state: "completed",
+                detail: { output: "second", callId: "call-a" },
+                transcriptKey: "key-A",
+              },
+            ],
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // An older page replays an attachment FOR the "key-A" member under a
+      // DIFFERENT wire id ("wire-B") — same source key, different reference.
+      // A control attachment for a genuinely unrelated source is included
+      // too, and must still be admitted.
+      service.olderItems = {
+        items: [
+          {
+            kind: "attachments",
+            id: "wire-B:attachments",
+            items: [{ id: "att-1", src: "https://example.com/dup.png" }],
+            sourceTranscriptKey: "key-A",
+          },
+          {
+            kind: "attachments",
+            id: "wire-C:attachments",
+            items: [{ id: "att-2", src: "https://example.com/new.png" }],
+            sourceTranscriptKey: "unrelated-key",
+          },
+        ],
+        nextCursor: "next-cursor",
+      };
+      await store.getState().loadOlder(service);
+
+      const conv = store.getState().conversation;
+      const ids = conv?.items.map((i) => i.id);
+      // The duplicate (same source key as an existing cluster member) is
+      // dropped, not retained.
+      expect(ids).not.toContain("wire-B:attachments");
+      // A genuinely new attachment for an unrelated source is still admitted.
+      expect(ids).toContain("wire-C:attachments");
+    });
+
     it("loadOlder retains newest 500 and disables further paging at cap", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();

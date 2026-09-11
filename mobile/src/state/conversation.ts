@@ -1994,7 +1994,7 @@ export function createConversationStore() {
             // the seen set during traversal, preserving order and first
             // occurrence semantics.
             const existingIds = new Set(
-              currentConv.items.map(timelineIdentity),
+              currentConv.items.flatMap((item) => [...timelineIdentities(item)]),
             );
             const currentIds = new Set(existingIds);
             const deduped: MobileTimelineItem[] = [];
@@ -2008,7 +2008,7 @@ export function createConversationStore() {
               // pending ask cannot legitimately be older than newer continuation
               // turns; page-local projection otherwise resurrects settled calls.
               if (item.kind === "question") continue;
-              existingIds.add(identity);
+              for (const id of timelineIdentities(item)) existingIds.add(id);
               deduped.push(item);
             }
             // I3: Record page-owned item IDs — these are items loaded from
