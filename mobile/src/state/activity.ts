@@ -37,17 +37,14 @@
 import { create } from "zustand";
 import type {
   AnyNotification,
-  EvenerDelegateInfo,
-  EvenerJobInfo,
   ThreadCapabilities,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import {
   deriveOpenTaskCount,
+  projectDelegateEntry,
+  projectJobEntry,
   type ActivityView,
-  type RedactedDiagnostic,
   type WorkEntry,
-  type WorkKind,
-  type WorkTone,
 } from "../services/activity";
 
 export type ActivityStatus = "idle" | "open" | "error";
@@ -108,113 +105,6 @@ type NotificationOf<M extends AnyNotification["method"]> = Extract<
 >;
 type ParamsOf<M extends AnyNotification["method"]> =
   NotificationOf<M>["params"];
-
-// --- tone classification -----------------------------------------------------
-
-function classifyTone(
-  status: string,
-  terminal: boolean | undefined,
-  exitCode: number | undefined,
-  outcome: string | undefined,
-): WorkTone {
-  if (exitCode !== undefined && exitCode !== 0) return "failed";
-  if (terminal && outcome !== undefined && FAILED_OUTCOMES.has(outcome)) {
-    return "failed";
-  }
-  if (FAILED_STATUSES.has(status)) return "failed";
-  if (RUNNING_STATUSES.has(status)) return "running";
-  if (IDLE_STATUSES.has(status)) return "idle";
-  if (terminal || TERMINAL_STATUSES.has(status)) return "terminal";
-  return "unknown";
-}
-
-const RUNNING_STATUSES = new Set([
-  "running",
-  "in_progress",
-  "inProgress",
-  "active",
-]);
-const IDLE_STATUSES = new Set(["idle", "waiting", "paused"]);
-const TERMINAL_STATUSES = new Set([
-  "completed",
-  "done",
-  "finished",
-  "succeeded",
-  "success",
-]);
-const FAILED_STATUSES = new Set([
-  "failed",
-  "error",
-  "errored",
-  "cancelled",
-  "canceled",
-  "exhausted",
-  "stopped",
-]);
-const FAILED_OUTCOMES = new Set([
-  "failed",
-  "error",
-  "errored",
-  "cancelled",
-  "canceled",
-  "exhausted",
-  "stopped",
-]);
-
-function formatOutputBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) {
-    const kb = bytes / 1024;
-    return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
-  }
-  const mb = bytes / (1024 * 1024);
-  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
-}
-
-// Project a wire EvenerJobInfo into a sanitized WorkEntry. The label uses
-// jobType (the operation name), never the task/prompt/command text.
-function projectJobEntry(job: EvenerJobInfo): WorkEntry {
-  const tone = classifyTone(job.status, undefined, job.exitCode, undefined);
-  const kind: WorkKind = job.fromWatch === true ? "watch" : "job";
-  return {
-    kind,
-    label: job.jobType,
-    tone,
-    outputSummary: formatOutputBytes(job.outputBytes),
-    diagnostics: {
-      rawId: job.jobId,
-      operationName: job.jobType,
-      statusClass: job.status,
-      outputBytes: job.outputBytes,
-      exitCode: job.exitCode,
-    } as RedactedDiagnostic,
-  };
-}
-
-// Project a wire EvenerDelegateInfo into a sanitized WorkEntry. The label
-// uses the delegate type (the operation name) only — never description, task
-// prompt, transcriptRef, or profile ID.
-function projectDelegateEntry(dlg: EvenerDelegateInfo): WorkEntry {
-  const tone = classifyTone(dlg.status, dlg.terminal, undefined, dlg.outcome);
-  const label = dlg.type && dlg.type.length > 0 ? dlg.type : "Delegate";
-  return {
-    kind: "delegate",
-    label,
-    tone,
-    durationMs: dlg.durationMs,
-    diagnostics: {
-      rawId: dlg.delegateId,
-      operationName: dlg.type,
-      statusClass: dlg.status,
-      startedAt: dlg.runStartedAt,
-      endedAt: dlg.runEndedAt,
-      durationMs: dlg.durationMs,
-      profileId:
-        dlg.resolvedProfileId !== undefined ? ("redacted" as const) : undefined,
-    } as RedactedDiagnostic,
-  };
-}
 
 // Count how many work entries share a rawId anywhere in the tree. Used to
 // detect duplicate same-kind IDs: when more than one entry carries the same
@@ -377,7 +267,7 @@ function patchLive(
     case "evener/delegate/updated": {
       const params = n.params as ParamsOf<"evener/delegate/updated">;
       const dlg = params.delegate;
-      const entry = projectDelegateEntry(dlg);
+      const entry = projectDelegateEntry(dlg, []);
       // Detect duplicate same-kind IDs: ambiguous delegate ID → rehydrate.
       if (countEntriesById(view.work, dlg.delegateId) > 1) return "rehydrate";
       const found = findEntryById(view.work, dlg.delegateId);

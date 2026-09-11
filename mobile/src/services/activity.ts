@@ -118,21 +118,21 @@ export class ActivityProjectionError extends Error {
 
 // --- tone classification -----------------------------------------------------
 
-const RUNNING_STATUSES = new Set([
+export const RUNNING_STATUSES = new Set([
   "running",
   "in_progress",
   "inProgress",
   "active",
 ]);
-const IDLE_STATUSES = new Set(["idle", "waiting", "paused"]);
-const TERMINAL_STATUSES = new Set([
+export const IDLE_STATUSES = new Set(["idle", "waiting", "paused"]);
+export const TERMINAL_STATUSES = new Set([
   "completed",
   "done",
   "finished",
   "succeeded",
   "success",
 ]);
-const FAILED_STATUSES = new Set([
+export const FAILED_STATUSES = new Set([
   "failed",
   "error",
   "errored",
@@ -142,7 +142,7 @@ const FAILED_STATUSES = new Set([
   "stopped",
 ]);
 
-function classifyTone(
+export function classifyTone(
   status: string,
   terminal: boolean | undefined,
   exitCode: number | undefined,
@@ -163,7 +163,7 @@ function classifyTone(
 
 // --- output size formatting --------------------------------------------------
 
-function formatOutputBytes(bytes: number): string {
+export function formatOutputBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) {
@@ -295,7 +295,7 @@ function validateHierarchy(
 
 // --- work projection ---------------------------------------------------------
 
-function projectJobEntry(job: EvenerJobInfo): WorkEntry {
+export function projectJobEntry(job: EvenerJobInfo): WorkEntry {
   const tone = classifyTone(job.status, undefined, job.exitCode, undefined);
   const kind: WorkKind = job.fromWatch === true ? "watch" : "job";
   const label = job.jobType;
@@ -308,7 +308,7 @@ function projectJobEntry(job: EvenerJobInfo): WorkEntry {
   };
 }
 
-function projectDelegateEntry(
+export function projectDelegateEntry(
   dlg: EvenerDelegateInfo,
   children: WorkEntry[],
 ): WorkEntry {

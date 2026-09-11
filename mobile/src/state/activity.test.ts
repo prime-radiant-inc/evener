@@ -28,10 +28,11 @@
 import { describe, expect, it } from "vitest";
 import type {
   AnyNotification,
+  Thread,
   ThreadCapabilities,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { MobileCapabilities } from "../conversation/model";
-import type { ActivityView } from "../services/activity";
+import { type ActivityView, createActivityService } from "../services/activity";
 import {
   type ActivityIdentity,
   createActivityStore,
@@ -1822,3 +1823,100 @@ function _outcomeCheck(o: NotificationOutcome): void {
   void o;
 }
 void _outcomeCheck;
+
+// The store patches a live notification with its own projection while the
+// service projects an authoritative read. Both must land on the same tone for
+// the same wire status, or a row's colour depends on which path last rendered
+// it. This table pins that across every status either side classifies, so a
+// future edit to one cannot silently re-fork them.
+describe("store and service agree on tone for every wire status", () => {
+  const STATUSES = [
+    "running",
+    "in_progress",
+    "inProgress",
+    "active",
+    "idle",
+    "waiting",
+    "paused",
+    "completed",
+    "done",
+    "finished",
+    "succeeded",
+    "success",
+    "failed",
+    "error",
+    "errored",
+    "cancelled",
+    "canceled",
+    "exhausted",
+    "stopped",
+    "something-unrecognized",
+  ];
+
+  function serviceTone(over: Record<string, unknown>): string | undefined {
+    const thread = {
+      id: "thread-1",
+      sessionId: "session-1",
+      preview: "",
+      ephemeral: false,
+      modelProvider: "anthropic",
+      createdAt: 0,
+      updatedAt: 0,
+      status: { type: "ready" },
+      cwd: "/tmp",
+      cliVersion: "1.0.0",
+      source: "local",
+      evener: {
+        ref: "ref-1",
+        capabilities: ALL_TRUE_CAPS,
+        queue: { revision: 0 },
+        diagnostics: {
+          delegates: [
+            {
+              delegateId: "dlg-1",
+              ownerSessionId: "sess",
+              rootSessionId: "sess",
+              childSessionId: "child",
+              transcriptRef: "local:abc",
+              type: "subagent",
+              lifecycle: "running",
+              phase: "running",
+              status: "running",
+              resumable: true,
+              projectionRevision: 1,
+              needsAttention: false,
+              ...over,
+            },
+          ],
+        },
+      },
+    } as unknown as Thread;
+    return createActivityService().projectActivity(thread).work[0]?.tone;
+  }
+
+  function storeTone(over: Record<string, unknown>): string | undefined {
+    const store = createActivityStore();
+    store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+    store
+      .getState()
+      .applyLiveNotification(
+        delegateNotification("dlg-1", over),
+        identity({ generation: 1 }),
+      );
+    return store.getState().view?.work[0]?.tone;
+  }
+
+  it.each(STATUSES)("classifies status %s the same both ways", (status) => {
+    expect(storeTone({ status })).toBe(serviceTone({ status }));
+  });
+
+  // The outcome check is the one place the two sets were spelled separately
+  // (the store's FAILED_OUTCOMES against the service's FAILED_STATUSES).
+  it.each(STATUSES)(
+    "classifies a terminal delegate with outcome %s the same both ways",
+    (outcome) => {
+      const over = { status: "completed", terminal: true, outcome };
+      expect(storeTone(over)).toBe(serviceTone(over));
+    },
+  );
+});
