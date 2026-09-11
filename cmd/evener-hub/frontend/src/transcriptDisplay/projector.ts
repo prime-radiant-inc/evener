@@ -12,6 +12,19 @@ export const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 export type ProjectedEntry =
   | { kind: "item"; id: string; turnId: string; sourceIndex: number; item: ItemModel; isMessage: boolean }
   | {
+      /**
+       * A content-free placeholder for a reasoning item that is the turn's
+       * live current thought while the `reasoning` content flag is off. It
+       * carries the source item only so the renderer can estimate a streaming
+       * token count; the thought's text is never rendered from this entry.
+       */
+      kind: "thinking";
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      item: ItemModel;
+    }
+  | {
       kind: "intent";
       id: `intent:${string}`;
       turnId: string;
@@ -31,6 +44,12 @@ export type ProjectedEntry =
       sourceItemId?: string;
       item: ItemModel;
       summary: string;
+      /**
+       * A critical reasoning item whose text must not render because the
+       * `reasoning` content flag is off. The renderer shows a neutral failure
+       * summary instead of the thought's live body, preview, or disclosure.
+       */
+      redacted: boolean;
     };
 
 type ProjectedCriticalEntry = Extract<ProjectedEntry, { kind: "critical" }>;
@@ -140,6 +159,17 @@ function isTerminalTurn(turn: TurnModel): boolean {
   return turn.status === "failed" || turn.status === "interrupted";
 }
 
+// The renderer streams only the reasoning item that is still the turn's current
+// activity - the tail of turn.items (see ThinkBlock's isCurrentThought). The
+// content-free placeholder must match that exactly: a superseded thought must
+// not wear a "Thinking…" label, and neither must a thought on a turn that has
+// settled. The `turn.status` guard matters because a completed turn can still
+// carry a stale `inProgress` reasoning item in a snapshot or a race, and the
+// loader must not pulse for an agent that is no longer thinking.
+function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
+  return turn.status === "inProgress" && isActiveItem(item, turn) && turn.items[turn.items.length - 1] === item;
+}
+
 function itemSummary(item: ItemModel): string {
   const description = item.description?.trim();
   if (description) return description;
@@ -181,7 +211,23 @@ function intentEntry(item: ItemModel, turnId: string, sourceIndex: number): Proj
   };
 }
 
-function criticalEntry(item: ItemModel, turnId: string, sourceIndex: number): ProjectedCriticalEntry {
+function criticalEntry(
+  item: ItemModel,
+  turnId: string,
+  sourceIndex: number,
+  redacted: boolean,
+): ProjectedCriticalEntry {
+  let summary: string;
+  if (item.type === "commandExecution") {
+    summary = toolSummary(item);
+  } else if (item.type === "reasoning") {
+    // Neutral, and never the thought's own text. A failed or interrupted
+    // thought says so; the renderer renders this verbatim (one source of
+    // truth for the redacted label).
+    summary = hasFailureStatus(item) ? "Thought failed" : "Thought not shown";
+  } else {
+    summary = itemSummary(item);
+  }
   return {
     kind: "critical",
     id: item.id,
@@ -189,11 +235,12 @@ function criticalEntry(item: ItemModel, turnId: string, sourceIndex: number): Pr
     sourceIndex,
     sourceItemId: item.id,
     item,
-    summary: item.type === "commandExecution" ? toolSummary(item) : itemSummary(item),
+    summary,
+    redacted,
   };
 }
 
-type Decision = "item" | "intent" | "critical" | "hidden";
+type Decision = "item" | "intent" | "critical" | "thinking" | "hidden";
 
 function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1): Decision {
   const eventKind = item.eventKind;
@@ -244,7 +291,15 @@ function decisionFor(
 
   if (item.type === "reasoning") {
     if (vector.reasoning) return "item";
-    return hasFailureStatus(item) || isActiveItem(item, turn) || isTerminalTurn(turn) ? "critical" : "hidden";
+    // With reasoning off, a live current thought becomes a content-free
+    // placeholder: the reader sees that the agent is thinking without the
+    // stream itself. Only an in-progress turn takes the placeholder - a
+    // terminal turn's agent is not thinking any more - and an in-progress
+    // thought that is NOT the turn's tail is hidden (the renderer would not
+    // stream it either). Failure and terminal-turn visibility stay so a broken
+    // turn still explains itself.
+    if (isLiveCurrentReasoning(item, turn)) return "thinking";
+    return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
   }
 
   if (item.type === "systemMessage") return systemDecision(item, config);
@@ -265,6 +320,14 @@ function eligibleDisclosure(item: ItemModel): boolean {
   return item.type === "systemMessage" && item.eventKind !== undefined && item.eventKind !== "";
 }
 
+// A reasoning item projected as critical while the `reasoning` content flag is
+// off must render redacted: the reader asked not to see thoughts, and a broken
+// turn is no licence to show them. The renderer shows a neutral failure summary
+// instead (see ProjectedEntry's critical.redacted).
+function redactsReasoning(item: ItemModel, vector: ContentVector): boolean {
+  return item.type === "reasoning" && !vector.reasoning;
+}
+
 function addAnchor(anchors: ProjectedAnchor[], entry: ProjectedEntry, index: number): void {
   anchors.push({
     id: entry.id,
@@ -277,13 +340,14 @@ function addAnchor(anchors: ProjectedAnchor[], entry: ProjectedEntry, index: num
 function terminalFallbackEntry(
   turn: TurnModel,
   sourceIndexByItem: ReadonlyMap<ItemModel, number>,
+  vector: ContentVector,
 ): ProjectedCriticalEntry | undefined {
   if (!isTerminalTurn(turn)) return undefined;
   const sourceItem = turn.items.at(-1);
   if (!sourceItem) return undefined;
   const sourceIndex = sourceIndexByItem.get(sourceItem);
   if (sourceIndex === undefined) return undefined;
-  return criticalEntry(sourceItem, turn.id, sourceIndex);
+  return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
 }
 
 export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
@@ -309,10 +373,12 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       let entry: ProjectedEntry;
       if (decision === "item") {
         entry = itemEntry(item, turn.id, itemSourceIndex);
+      } else if (decision === "thinking") {
+        entry = { kind: "thinking", id: item.id, turnId: turn.id, sourceIndex: itemSourceIndex, item };
       } else if (decision === "intent") {
         entry = intentEntry(item, turn.id, itemSourceIndex);
       } else {
-        entry = criticalEntry(item, turn.id, itemSourceIndex);
+        entry = criticalEntry(item, turn.id, itemSourceIndex, redactsReasoning(item, vector));
       }
       visibleItems.push(item);
       entries.push(entry);
@@ -329,7 +395,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       }
     }
     if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem);
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector);
       if (fallback) {
         visibleItems.push(fallback.item);
         entries.push(fallback);
