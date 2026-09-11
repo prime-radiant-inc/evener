@@ -1123,6 +1123,21 @@ describe("jumpToBottom landing reliability", () => {
     expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
   });
 
+  test("a shift-wheel is horizontal - the correction still re-pins", () => {
+    // Shift+wheel scrolls horizontally, and engines differ on how they say so:
+    // some zero deltaY and fill deltaX, others keep a non-zero deltaY with
+    // shiftKey set. The port is overflow-x:clip (virtuallist.module.css), so
+    // horizontal input moves it in neither case.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, shiftKey: true, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
   test("a wheel a descendant already claimed does not reach the port - the correction still re-pins", () => {
     const { el, set } = mountAtBottom();
     // A plain child, deliberately not a scroller: the nested walk must not be

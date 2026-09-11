@@ -837,9 +837,10 @@ export function useTranscriptScroll({
   //
   //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
   //     and marks only when the write moved it (its scrollPortBy).
-  //   wheel         - a sideways wheel scrolls nothing here and never marks, nor
-  //     does a zoom gesture (ctrl-wheel) or one a descendant has already claimed
-  //     via preventDefault. A vertical one marks only when
+  //   wheel         - a sideways wheel scrolls nothing here and never marks,
+  //     whether it says so with a zero deltaY or with shiftKey; nor does a zoom
+  //     gesture (ctrl-wheel) or one a descendant has already claimed via
+  //     preventDefault. A vertical one marks only when
   //     verticalInputCanMovePort says it can reach and move the port: not into a
   //     limit the port is already at, and not when a nested scroller will answer
   //     it instead.
@@ -911,10 +912,13 @@ export function useTranscriptScroll({
   }, []);
   const markWheel = useCallback(
     (event: WheelEvent) => {
-      // Zoom, not scroll: ctrl-wheel is the browser's zoom gesture, and a macOS
-      // trackpad pinch arrives as one. A wheel a descendant already claimed will
-      // not reach the port either. Neither moves anything here.
-      if (event.ctrlKey || event.defaultPrevented) return;
+      // None of these move this port. ctrl-wheel is the browser's zoom gesture,
+      // and a macOS trackpad pinch arrives as one. shift-wheel is horizontal,
+      // and the port is overflow-x:clip (virtuallist.module.css) so it pans in
+      // no engine - engines disagree on whether they zero deltaY or leave it set
+      // while scrolling sideways, and reading shiftKey needs no such guess. A
+      // wheel a descendant already claimed will not reach the port either.
+      if (event.ctrlKey || event.shiftKey || event.defaultPrevented) return;
       if (event.deltaY === 0) return;
       const port = event.currentTarget;
       if (!(port instanceof HTMLElement)) return;
