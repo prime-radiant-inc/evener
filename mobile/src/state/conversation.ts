@@ -494,16 +494,27 @@ export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
 export const TRUNCATION_MARKER = "… truncated";
 export const RETAINED_ITEM_CAP = 500;
 
-// Truncate a string to maxBytes in UTF-8 + marker, ending with "… truncated"
-// exactly once. Iterates Unicode scalar values (not UTF-16 code units) so
-// no surrogate pairs are split and no U+FFFD replacement chars are produced.
+// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
+// once whenever the limit is large enough to hold the marker. Iterates
+// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
+// split and no U+FFFD replacement chars are produced. The result never
+// exceeds maxBytes.
 const textEncoder = new TextEncoder();
 const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
 
 export function truncateText(text: string, maxBytes: number): string {
   const encoded = textEncoder.encode(text);
   if (encoded.length <= maxBytes) return text;
-  const targetBytes = maxBytes - markerBytes.length;
+  // The byte limit is the hard contract: every caller judges an item by
+  // exceedsByteLimit against the same limit, and the truncation freeze
+  // assumes an already-truncated item sits within it. No caller requires the
+  // marker — truncation is tracked by item identity, never by the suffix — so
+  // a limit too small to hold the marker yields the longest prefix that fits,
+  // with no marker, rather than a marker that busts the limit.
+  const fitsMarker = maxBytes >= markerBytes.length;
+  const marker = fitsMarker ? TRUNCATION_MARKER : "";
+  const markerLength = fitsMarker ? markerBytes.length : 0;
+  const targetBytes = Math.max(0, maxBytes - markerLength);
   // Iterate code points (for...of iterates Unicode scalar values) to find
   // the longest prefix whose UTF-8 encoding fits within targetBytes. This
   // avoids splitting surrogate pairs and never produces U+FFFD.
@@ -520,7 +531,7 @@ export function truncateText(text: string, maxBytes: number): string {
   let truncated = text.slice(0, cutIdx);
   let truncatedBytes = textEncoder.encode(truncated);
   while (
-    truncatedBytes.length + markerBytes.length > maxBytes &&
+    truncatedBytes.length + markerLength > maxBytes &&
     truncated.length > 0
   ) {
     // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
@@ -529,7 +540,7 @@ export function truncateText(text: string, maxBytes: number): string {
     truncated = codePoints.join("");
     truncatedBytes = textEncoder.encode(truncated);
   }
-  return truncated + TRUNCATION_MARKER;
+  return truncated + marker;
 }
 
 // Check if text exceeds the byte limit (for setting truncated flag in projections).

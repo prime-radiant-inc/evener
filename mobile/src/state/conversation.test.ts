@@ -32,6 +32,7 @@ import {
   createConversationStore,
   type LiveActivitySink,
   MAX_ITEM_BYTES,
+  TRUNCATION_MARKER,
   truncateText,
 } from "./conversation";
 
@@ -3321,6 +3322,21 @@ describe("ConversationStore", () => {
       // Result must be valid Unicode.
       const decoded = new TextDecoder().decode(encoder.encode(truncated));
       expect(decoded).toBe(truncated);
+    });
+
+    it("never exceeds a limit smaller than the truncation marker", () => {
+      const encoder = new TextEncoder();
+      // The marker is 13 UTF-8 bytes, so a limit below that cannot hold it.
+      // The byte limit is the contract every caller judges by; the marker is
+      // best effort, so the result is the longest prefix that fits.
+      expect(encoder.encode(TRUNCATION_MARKER).length).toBe(13);
+      const truncated = truncateText("abcdef", 3);
+      expect(encoder.encode(truncated).length).toBeLessThanOrEqual(3);
+      expect(truncated).toBe("abc");
+    });
+
+    it("returns the empty string for a zero byte limit", () => {
+      expect(truncateText("abcdef", 0)).toBe("");
     });
 
     it("F12: emoji at boundary does not produce U+FFFD", () => {
