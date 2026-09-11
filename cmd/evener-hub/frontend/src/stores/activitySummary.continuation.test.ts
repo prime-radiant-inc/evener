@@ -199,3 +199,20 @@ test("a queued root refresh waits for the continuation it would otherwise discar
     counts: { active: 3 },
   });
 });
+
+test("a jobs bump with no root in flight waits for the continuation it would otherwise discard", async () => {
+  const page = activityPanelStore.getState().beginFetch(ref, { nodeID });
+  const bumped = vi.fn(async () => tree(["first", "second", "third"]));
+  const requestID = activitySummaryStore.getState().refreshRoot(ref, 30, bumped);
+  expect(bumped).not.toHaveBeenCalled();
+  expect(requestID).toBeNull();
+  activityPanelStore.getState().publishFetch(ref, page, { kind: "ready", tree: tree(["second"]) });
+  expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(2);
+  expect(bumped).toHaveBeenCalledOnce();
+  await rootSettled();
+  expect(activitySummaryStore.getState().entries.get(ref)).toMatchObject({
+    lastFetchedBump: 30,
+    loading: false,
+    counts: { active: 3 },
+  });
+});

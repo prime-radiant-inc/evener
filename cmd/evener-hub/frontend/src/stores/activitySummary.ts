@@ -101,6 +101,13 @@ function failureFor(err: unknown): { headline: string; detail?: string; sentence
   return detail ? { headline, detail, sentence } : { headline, sentence };
 }
 
+// A continuation owns the panel's request ID until its page merges. Any root
+// fetch started meanwhile replaces that ID, and publishFetch then drops the
+// page the reader already asked for - so a refresh waits instead.
+function continuationPending(ref: string): boolean {
+  return activityPanelStore.getState().entries.get(ref)?.pending?.kind === "continuation";
+}
+
 export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set, get) => ({
   entries: new Map(),
 
@@ -146,11 +153,13 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
   },
 
   refreshRoot(ref, bump, fetch, onFailure, force = false) {
-    const requestID = get().beginRootFetch(ref, bump, force);
+    const deferred = continuationPending(ref);
+    const requestID = deferred ? null : get().beginRootFetch(ref, bump, force);
     if (requestID === null) {
-      // Refused because a fetch is in flight? Queue this call - with its own
-      // fetch/onFailure - for re-issue on completion. Newest bump wins, both
-      // against the IN-FLIGHT bump and anything already queued (bumps are
+      // Refused because a fetch is in flight, or deferred behind a
+      // continuation? Queue this call - with its own fetch/onFailure - for
+      // re-issue on completion. Newest bump wins, both against the bump the
+      // last root requested and anything already queued (bumps are
       // reducer-side Date.now() stamps, so larger is newer; a null bump
       // carries no ordering claim and yields to a number); force survives
       // whichever record wins. A failed continuation also permits a retry of
@@ -158,12 +167,12 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       // would regress lastFetchedBump and could replace a good result.
       set((state) => {
         const entry = state.entries.get(ref);
-        if (!entry?.loading) return state;
-        const newerThanInFlight =
+        if (!entry || (!entry.loading && !deferred)) return state;
+        const newerThanRequested =
           bump !== null &&
           (entry.requestedBump === null || entry.requestedBump === undefined || bump > entry.requestedBump);
         const retryInvalidated = entry.lastFetchedBump === undefined && bump === entry.requestedBump;
-        if (!force && !newerThanInFlight && !retryInvalidated) return state;
+        if (!force && !newerThanRequested && !retryInvalidated) return state;
         const incoming: PendingRootFetch = { bump, force, fetch, onFailure };
         const previous = entry.pendingBump;
         const incomingWins = !previous || previous.bump === null || (bump !== null && bump >= previous.bump);
@@ -177,12 +186,10 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     }
     const panelRequestID = activityPanelStore.getState().beginFetch(ref);
     // Re-issues whatever refresh was queued while this request was in flight,
-    // unless a continuation now owns the panel: a root fetch started here
-    // would take the panel's request ID and the continuation's already
-    // requested page would be discarded on arrival. The panel store drains
-    // the queue once that continuation settles and merges.
+    // unless a continuation now owns the panel. The panel store drains the
+    // queue once that continuation settles and merges.
     const issuePendingBump = () => {
-      if (activityPanelStore.getState().entries.get(ref)?.pending?.kind === "continuation") return;
+      if (continuationPending(ref)) return;
       get().issuePendingRootFetch(ref);
     };
     const ownsPanel = () => activityPanelStore.getState().entries.get(ref)?.requestID === panelRequestID;
