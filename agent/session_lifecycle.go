@@ -2033,7 +2033,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			s.turns--
 			s.mu.Unlock()
 			if queuedIdentity.ClientMutationID == "" {
-				if returnErr := s.returnClaimedDirectClientMutationTurn(acceptedTurnsFloor); returnErr != nil {
+				if returnErr := s.returnClaimedDirectClientMutationTurn(); returnErr != nil {
 					return errors.Join(err, fmt.Errorf("return claimed direct user turn: %w", returnErr))
 				}
 			} else {

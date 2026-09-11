@@ -899,3 +899,69 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 		t.Fatalf("session-end state = %q, want the %q a still-queued message leaves", end.State, SessionProcessing)
 	}
 }
+
+// TestReturnedDirectTurnClaimReleasesItsOwnUnit: a claim raises the accepted-turn
+// count by one, and returning it has to give back that one whoever else claimed
+// in between. Releasing against the returning caller's own floor instead makes
+// the outcome depend on the order two failed inputs unwind in: the first release
+// takes the count below the second's floor, the second then sees nothing to
+// return, and the session carries a turn nobody is using toward its max-turn
+// limit for the rest of its life.
+func TestReturnedDirectTurnClaimReleasesItsOwnUnit(t *testing.T) {
+	orders := []struct {
+		name    string
+		release []int
+	}{
+		{"first claim returns first", []int{0, 1}},
+		{"second claim returns first", []int{1, 0}},
+	}
+	for _, order := range orders {
+		t.Run(order.name, func(t *testing.T) {
+			sess := newQueuePersistTestSession(t, t.TempDir())
+			defer sess.Close()
+			start := sess.clientMutations.snapshot().AcceptedTurns
+
+			// Two direct inputs whose claims interleave: each read the turn
+			// counter before the other's turn was counted, so their floors
+			// differ by one while both claims stand.
+			floors := []uint64{start, start + 1}
+			for _, floor := range floors {
+				if err := sess.claimDirectClientMutationTurn(floor); err != nil {
+					t.Fatalf("claim at floor %d: %v", floor, err)
+				}
+			}
+			if got := sess.clientMutations.snapshot().AcceptedTurns; got != start+2 {
+				t.Fatalf("accepted turns while both claims stand = %d, want %d", got, start+2)
+			}
+
+			// Post-fix these two calls are indistinguishable, which is the
+			// whole of the fix: a release belongs to no particular claim. The
+			// table stays because pre-fix they were not, and one order lost.
+			for _, claim := range order.release {
+				if err := sess.returnClaimedDirectClientMutationTurn(); err != nil {
+					t.Fatalf("return the claim taken at floor %d: %v", floors[claim], err)
+				}
+			}
+			if got := sess.clientMutations.snapshot().AcceptedTurns; got != start {
+				t.Fatalf("accepted turns after both claims were returned = %d, want the %d they started from", got, start)
+			}
+		})
+	}
+}
+
+// TestFailedDirectInputReturnsItsTurnClaim covers the call site the release has:
+// a direct input claims a turn, its durable environment append fails, and the
+// claim goes back. One failed input, one claim, one return.
+func TestFailedDirectInputReturnsItsTurnClaim(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	start := sess.clientMutations.snapshot().AcceptedTurns
+	failure := errors.New("environment transcript durability failure")
+	attachEnvironmentSyncFailure(t, sess, failure, nil)
+
+	if _, err := sess.ProcessInput(t.Context(), "fails its environment append", nil); !errors.Is(err, failure) {
+		t.Fatalf("direct input error = %v, want the environment durability failure", err)
+	}
+	if got := sess.clientMutations.snapshot().AcceptedTurns; got != start {
+		t.Fatalf("accepted turns after the failed input = %d, want the %d it started from", got, start)
+	}
+}

@@ -374,9 +374,17 @@ func (s *Session) claimDirectClientMutationTurn(acceptedTurnsFloor uint64) error
 	})
 }
 
-func (s *Session) returnClaimedDirectClientMutationTurn(acceptedTurnsFloor uint64) error {
+// returnClaimedDirectClientMutationTurn gives back the one turn a direct input's
+// claim took. A claim is a unit and a release returns that unit, whoever else
+// claimed in between: measuring against the returning caller's own floor instead
+// makes the outcome depend on the order two failed inputs unwind in, and the
+// order that loses leaves a turn nobody is using counted against MaxTurns for
+// the rest of the session. The caller's failure path runs once per claim
+// (session_lifecycle.go's environment-append failure branch), and the zero guard
+// is the same one returnClaimedClientMutationStart keeps for the queued claims.
+func (s *Session) returnClaimedDirectClientMutationTurn() error {
 	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if snapshot.AcceptedTurns > acceptedTurnsFloor {
+		if snapshot.AcceptedTurns > 0 {
 			snapshot.AcceptedTurns--
 		}
 		return nil
