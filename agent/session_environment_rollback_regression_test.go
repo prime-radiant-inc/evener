@@ -739,7 +739,7 @@ func armEnvironmentPartialWriteAfter(fs *environmentSyncFailureFS, skip int) {
 // Without the emission the session looks perpetually mid-input to every client
 // on the event stream, because admission cleared the emit-once gate on its way
 // in; without the settle the emission claims an idle the session is not in.
-func assertRefusalEndedTheInput(t *testing.T, drained []events.SessionEvent) events.SessionEndData {
+func assertRefusalEndedTheInput(t *testing.T, sess *Session, drained []events.SessionEvent) events.SessionEndData {
 	t.Helper()
 	var ends []events.SessionEndData
 	for _, event := range drained {
@@ -754,6 +754,12 @@ func assertRefusalEndedTheInput(t *testing.T, drained []events.SessionEvent) eve
 	}
 	if len(ends) != 1 || ends[0].Reason != "turn_failed" {
 		t.Fatalf("session-end events after the refusal = %+v, want exactly one turn_failed", ends)
+	}
+	// The state a client reads off this event has to be the state it would read
+	// off the thread. A refusal ends the input from wherever the session
+	// actually is, which is not always idle.
+	if got := sess.WireState(); ends[0].State != got {
+		t.Fatalf("session-end state = %q, want the %q the session is in", ends[0].State, got)
 	}
 	return ends[0]
 }
@@ -797,12 +803,12 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	if after := len(sessionHistoryText(sess)); after != before {
 		t.Fatal("the refused input changed model history")
 	}
-	// The state the emission reports is not asserted here: no turn ran in this
-	// call, so the session is still in whatever the previous one left it
-	// (awaiting, for this fixture) while the emission carries the failure exit's
-	// fixed idle. That disagreement belongs to the shared emitter, not to this
-	// refusal — see the report's fix round 3.
-	assertRefusalEndedTheInput(t, drainPendingEvents(sess))
+	// No turn ran in this call, so the session is still in whatever the previous
+	// one left it — awaiting, for this fixture — and the emission has to say so
+	// rather than report the idle a settled turn would have reached.
+	if end := assertRefusalEndedTheInput(t, sess, drainPendingEvents(sess)); end.State != string(SessionAwaiting) {
+		t.Fatalf("session-end state = %q, want the %q an untouched pending question leaves", end.State, SessionAwaiting)
+	}
 }
 
 // TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn: admission is not the
@@ -844,12 +850,10 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("model requests = %d, want the follow-up never to have run", got)
 	}
-	// A turn ran and nothing is left waiting, so the session really is idle and
-	// the emission has to agree: a refusal that reported an idle the session was
-	// not in would be a worse answer than no emission at all.
-	end := assertRefusalEndedTheInput(t, drainPendingEvents(sess))
-	if got := sess.WireState(); got != string(SessionIdle) || end.State != got {
-		t.Fatalf("session wire state = %q and session-end state = %q, want both %q", got, end.State, SessionIdle)
+	// A turn ran and nothing is left waiting, so this is the shape where the
+	// session really is idle and the emission says idle.
+	if end := assertRefusalEndedTheInput(t, sess, drainPendingEvents(sess)); end.State != string(SessionIdle) {
+		t.Fatalf("session-end state = %q, want the %q a settled turn with nothing pending leaves", end.State, SessionIdle)
 	}
 }
 
@@ -888,7 +892,10 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 	if got := sess.QueueDepth(); got != 1 {
 		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
-	// The state is deliberately not idle here: the message this refusal kept is
-	// work still pending, which is what WireState reports.
-	assertRefusalEndedTheInput(t, drainPendingEvents(sess))
+	// The message this refusal kept is work still pending, so the session is not
+	// idle and the emission must not claim it is: a client told idle with a
+	// message still queued would show the thread as finished with it.
+	if end := assertRefusalEndedTheInput(t, sess, drainPendingEvents(sess)); end.State != string(SessionProcessing) {
+		t.Fatalf("session-end state = %q, want the %q a still-queued message leaves", end.State, SessionProcessing)
+	}
 }

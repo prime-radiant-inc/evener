@@ -1358,10 +1358,17 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	}
 }
 
-// endInputAtTurnFailure tells a live subscriber that this input is over and the
-// thread is idle again. It is the emit-once dance the cancellation branch owns,
-// reusing its sessionEndEmitted gate, so a completion that reaches this twice —
-// or reaches it after the cancellation branch already fired — emits once.
+// endInputAtTurnFailure tells a live subscriber that this input is over, and
+// where the session stands now that it is. It is the emit-once dance the
+// cancellation branch owns, reusing its sessionEndEmitted gate, so a completion
+// that reaches this twice — or reaches it after the cancellation branch already
+// fired — emits once.
+//
+// The state is read rather than asserted, the way the settled tail below reads
+// it. The failure exit settles to idle before calling this and so still reports
+// idle; a refusal can arrive with a question pending or a message still queued,
+// and a client told idle there would show a thread that is finished with
+// neither.
 func (s *Session) endInputAtTurnFailure() {
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1374,7 +1381,7 @@ func (s *Session) endInputAtTurnFailure() {
 	if emitEnd {
 		s.emit(events.EventSessionEnd, events.SessionEndData{
 			Reason: "turn_failed",
-			State:  string(SessionIdle),
+			State:  s.WireState(),
 			Turns:  turns,
 		})
 	}
