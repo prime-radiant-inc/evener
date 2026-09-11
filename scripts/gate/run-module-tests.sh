@@ -28,7 +28,10 @@
 # seconds per attempt (default 60) over EVENER_ROOT_PACKAGE_LIST_ATTEMPTS
 # attempts (default 3), a timed-out attempt being the only one retried. Raise
 # the per-attempt budget on a host slower than that; the failure diagnostic
-# names both knobs.
+# names both knobs. A timed-out attempt is stopped by process group, SIGTERM
+# then SIGKILL, and reaped before the next one starts; an attempt that will not
+# stop fails the run instead of being retried. Each attempt writes its own
+# package list and only a completed one is used.
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
@@ -125,8 +128,9 @@ AGENT_P=${AGENT_P-4}
 # — while a run that never completes fails exactly as before, with the
 # configured cache paths, the retained stderr log, and a repair command.
 #
-# Both must be positive integers; the worst case is ATTEMPTS x TIMEOUT seconds
-# plus a second of backoff between attempts, so 3 x 60s is a ~182s ceiling.
+# Both must be positive integers. The worst case is ATTEMPTS x (TIMEOUT + two
+# stop graces) plus a second of backoff between attempts, so the defaults below
+# give a ~212s ceiling.
 ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-60}
 if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
@@ -137,6 +141,12 @@ if [[ ! "$ROOT_PACKAGE_LIST_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_ATTEMPTS must be a positive integer (got %q)\n' "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
 	exit 2
 fi
+# Seconds to wait for a stopped attempt's process group to empty after each of
+# SIGTERM and SIGKILL. Only a member that ignores or cannot take the signal
+# reaches the end of either wait, so the ordinary stop costs milliseconds. Not
+# an environment knob: nothing a caller does should be able to shorten the
+# window that proves the attempt is gone.
+ROOT_PACKAGE_LIST_STOP_GRACE=5
 
 # The gate's test-selection surface lives in one shared file so the coverage
 # ratchet can measure exactly what this gate proves; see gate-surface-lib.sh.
@@ -265,13 +275,22 @@ root_package_list_retry_log="$logdir/root.packages.retries"
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
+# root_package_list_timeout_diagnostic LOG ATTEMPTS_MADE — the failure report.
+# ATTEMPTS_MADE is spelled out because the run can stop short of the budget: an
+# attempt that will not die ends the run on the spot, and claiming every attempt
+# timed out would misdescribe it.
 root_package_list_timeout_diagnostic() {
-	local package_list_log="$1" worktree gocache gomodcache
+	local package_list_log="$1" attempts_made="$2" worktree gocache gomodcache
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	printf 'run-module-tests.sh: go list ./... timed out after %ss on each of %s attempts.\n' \
-		"$ROOT_PACKAGE_LIST_TIMEOUT" "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
+	if [ "$attempts_made" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
+		printf 'run-module-tests.sh: go list ./... timed out after %ss on each of %s attempts.\n' \
+			"$ROOT_PACKAGE_LIST_TIMEOUT" "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
+	else
+		printf 'run-module-tests.sh: go list ./... timed out after %ss on attempt %s of %s.\n' \
+			"$ROOT_PACKAGE_LIST_TIMEOUT" "$attempts_made" "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
+	fi
 	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
@@ -285,23 +304,88 @@ root_package_list_timeout_diagnostic() {
 		"$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
+# stop_root_package_list_group PGID — stop one package-list attempt and prove
+# nothing of it is still running. Returns non-zero when the group still has a
+# member after the escalation, which is the caller's signal to stop retrying.
+#
+# By group, not by process tree: stop_process_tree reads `ps` once and signals
+# the descendants that snapshot happened to show, so a child forked after the
+# snapshot, or one that outlives the leader, survives into the next attempt —
+# still writing a package list, still holding Go's build and module cache
+# locks. A group signal reaches every member however late it appeared.
+#
+# The group comes from bash's monitor mode, not setsid(1): setsid ships with
+# util-linux and is absent on macOS, which this script has to run on, while
+# `set -m` is a bash builtin and bash is already the shebang. Under monitor
+# mode a background job is its own process group whose id is the job's pid,
+# which is why the caller can pass the pid it already holds.
+stop_root_package_list_group() {
+	local pgid="$1" signal waited ticks
+	ticks=$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))
+	for signal in TERM KILL; do
+		kill -"$signal" -- -"$pgid" 2>/dev/null || :
+		waited=0
+		while [ "$waited" -lt "$ticks" ]; do
+			kill -0 -- -"$pgid" 2>/dev/null || return 0
+			sleep 0.1
+			waited=$((waited + 1))
+		done
+	done
+	if kill -0 -- -"$pgid" 2>/dev/null; then
+		return 1
+	fi
+	return 0
+}
+
 run_root_package_list() {
-	local package_list="$1" package_list_stderr attempt list_pid started_at list_status
+	local package_list="$1" package_list_stderr attempt attempt_list
+	local list_pid list_pgid started_at list_status
 	package_list_stderr="${package_list}.stderr"
 	# Every attempt appends under its own heading, so the diagnostic still names
 	# one retained log and whoever reads it sees what each attempt said.
 	: >"$package_list_stderr"
 	attempt=1
 	while :; do
+		# Each attempt writes its own file and only a completed one is promoted
+		# to the path the rest of the script reads. A survivor of a stopped
+		# attempt keeps writing to the file it opened, which no later attempt
+		# names and nothing ever reads.
+		attempt_list="${package_list}.attempt${attempt}"
 		printf '=== go list ./... attempt %s of %s ===\n' "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" >>"$package_list_stderr"
-		( go list ./... >"$package_list" 2>>"$package_list_stderr" ) &
+		# Monitor mode makes this job its own process group, which is what lets
+		# stop_root_package_list_group stop the whole attempt. It goes straight
+		# back off: the group is fixed at fork, and nothing else in this script
+		# wants job control.
+		set -m
+		( go list ./... >"$attempt_list" 2>>"$package_list_stderr" ) &
 		list_pid="$!"
+		set +m
+		# Read the job's real process group before anything aims a signal at
+		# -PID. If monitor mode did not take, -PID names the runner's own group
+		# and the escalation below would be pointed at the gate itself.
+		list_pgid="$(ps -o pgid= -p "$list_pid" 2>/dev/null | tr -d '[:space:]')"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
-				stop_process_tree "$list_pid"
+				if [ "$list_pgid" != "$list_pid" ]; then
+					# Best effort on a host where the attempt is not its own
+					# group, then stop: retrying would race whatever is left.
+					stop_process_tree "$list_pid"
+					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
+					printf 'run-module-tests.sh: attempt %s was not its own process group (pgid %s, pid %s), so it cannot be stopped as one. Not retrying.\n' \
+						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" >&2
+					return 1
+				fi
+				if ! stop_root_package_list_group "$list_pid"; then
+					wait "$list_pid" 2>/dev/null || :
+					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
+					printf 'run-module-tests.sh: attempt %s would not stop: its process group outlived SIGTERM and SIGKILL with %ss of grace each, so a retry would share the host with it. Not retrying.\n' \
+						"$attempt" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
+					return 1
+				fi
+				wait "$list_pid" 2>/dev/null || :
 				if [ "$attempt" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
-					root_package_list_timeout_diagnostic "$package_list_stderr"
+					root_package_list_timeout_diagnostic "$package_list_stderr" "$attempt"
 					return 1
 				fi
 				printf 'go list ./... attempt %s of %s timed out after %ss; retrying.\n' \
@@ -317,6 +401,10 @@ run_root_package_list() {
 		# compound closes, $? is the `if`'s own status, which is 0 when an
 		# else-less condition fails.
 		if wait "$list_pid"; then
+			if ! mv "$attempt_list" "$package_list"; then
+				printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2
+				return 1
+			fi
 			return 0
 		else
 			list_status=$?

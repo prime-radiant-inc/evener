@@ -318,12 +318,22 @@ forever when the configured Go caches sit on a stalled volume. The bound is a
 tripwire on a stall, not a budget for the work: `EVENER_ROOT_PACKAGE_LIST_TIMEOUT`
 seconds per attempt (default 60) over `EVENER_ROOT_PACKAGE_LIST_ATTEMPTS`
 attempts (default 3, one second apart), so a run that never lists its packages
-fails in about three minutes rather than hanging. Only a timed-out attempt is
-retried; a `go list` that exits non-zero has decided something about the
-package list itself and is reported at once. The timeout diagnostic names the
-effective GOCACHE and GOMODCACHE, the retained stderr log covering every
+fails in about three and a half minutes rather than hanging. Only a timed-out
+attempt is retried; a `go list` that exits non-zero has decided something about
+the package list itself and is reported at once. The timeout diagnostic names
+the effective GOCACHE and GOMODCACHE, the retained stderr log covering every
 attempt, the cache-repair command, and the per-attempt knob — a host merely
 slower than the budget needs the last of those, not the cache repair.
+
+A retry only makes sense if the attempt it replaces is really gone. Each
+attempt runs in its own process group and a timed-out one is stopped by group
+— SIGTERM, then SIGKILL after five seconds — and reaped before the next
+starts; a group that outlives both fails the run rather than being retried,
+because a survivor would still hold Go's build and module cache locks. Each
+attempt also writes its own package list, and only a completed attempt's is
+promoted to the file the rest of the runner reads, so nothing a stopped
+attempt is still writing can reach the run. The process group comes from
+bash's job control rather than `setsid`, which is absent on macOS.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
