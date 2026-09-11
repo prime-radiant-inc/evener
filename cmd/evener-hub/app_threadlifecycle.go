@@ -946,13 +946,21 @@ func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
 }
 
 // hubForkLiveStatusFenced reports whether the daemon behind this thread is
-// announcing a recovery fence in the status it reports. The capability
-// projection hides fork for the same signal, so admission decides it with the
-// same predicate rather than a second description of it; the roster carries the
-// flags that daemon reported at the refresh admission just performed, so this
-// costs no extra round-trip. Its restart-required conjunct overlaps
-// refreshDaemonRestartRequiredError above, which refuses first and with its own
-// error whenever it can resolve the same daemon as this thread's owner.
+// announcing a recovery fence in the status it reports. Both the capability
+// projection and fork admission decide that signal here, with one predicate
+// rather than two descriptions of it.
+//
+// It reads the roster and never probes a daemon itself, so what it answers is
+// as fresh as the last scan. Admission refreshes immediately before calling it,
+// so there it is current; the projection reads whatever scan last landed, and
+// its staleness is bounded by the roster's own change notification — a daemon
+// that raises or drops a status flag moves the fingerprint (rosterFingerprint)
+// even when nothing else about it changed, so navigation re-projects rather
+// than holding the old answer indefinitely.
+//
+// Its restart-required conjunct overlaps refreshDaemonRestartRequiredError,
+// which in admission runs first and refuses with its own error whenever it can
+// resolve the same daemon as this thread's owner.
 func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 	if cfg.Roster == nil {
 		return false
