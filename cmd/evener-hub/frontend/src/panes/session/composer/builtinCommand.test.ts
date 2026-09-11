@@ -5,7 +5,8 @@ import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { buildCommands, type PaletteRunContext, sessionBuiltinCommands } from "../../../shell/palette/commands";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { matchBuiltinInvocation, runBuiltinCommand } from "./builtinCommand";
+import { runBuiltinCommand } from "./builtinCommand";
+import { matchBuiltinInvocation } from "./builtinInvocation";
 
 const CAPS: ThreadCapabilities = {
   send: true,

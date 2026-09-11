@@ -1,0 +1,27 @@
+{
+  "name": "@evener/appwire-client",
+  "version": "0.1.0",
+  "description": "Typed AppWire client shared by Evener web and native applications",
+  "type": "commonjs",
+  "files": [
+    "dist",
+    "README.md",
+    "examples"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "qualification": "node scripts/qualify-package.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "ws": "^8.18.0"
+  }
+}

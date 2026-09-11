@@ -906,6 +906,12 @@ export interface MarketplaceCatalogPlugin {
   author?: string;
 }
 
+export interface MarketplaceEditParams {
+  name: string;
+  newName?: string;
+  source?: MarketplaceSourceInput;
+}
+
 export interface MarketplaceEntry {
   name: string;
   source: MarketplaceSourceInput;
@@ -1515,6 +1521,7 @@ export interface SettingsAgentEntry {
 export interface SettingsHubOverview {
   version?: string;
   commit?: string;
+  buildChannel?: string;
   listenAddr?: string;
   runDir?: string;
   spawnTimeout?: string;
@@ -1557,6 +1564,17 @@ export interface Source {
   label: string;
   kind: string;
   online: boolean;
+}
+
+export interface SpawnSlashCatalogParams {
+  cwd: string;
+  harness?: string;
+  launchOverrides?: LaunchConfigLayer;
+}
+
+export interface SpawnSlashCatalogResponse {
+  commands: CommandDescriptor[];
+  skills?: EvenerSkillInfo[];
 }
 
 export interface TaskAggregate {
@@ -2099,6 +2117,32 @@ export interface TurnSteerResponse {
   receipt: MutationReceipt;
 }
 
+export interface UpdateApplyParams {
+  channel?: string;
+}
+
+export interface UpdateApplyResponse {
+  release: string;
+  channel: string;
+  installed: string[];
+  restarting: boolean;
+}
+
+export interface UpdateCheckParams {
+  channel?: string;
+}
+
+export interface UpdateCheckResponse {
+  channel: string;
+  buildChannel: string;
+  currentVersion: string;
+  currentCommit: string;
+  latestTag?: string;
+  latestCommit?: string;
+  updateAvailable: boolean;
+  applicable: boolean;
+}
+
 export interface UpgradeParams {
   requested?: string;
 }
@@ -2176,6 +2220,8 @@ export const METHOD_NAMES = [
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
+  "evener/update/check",
+  "evener/update/apply",
   "evener/auth/status",
   "evener/auth/test",
   "evener/auth/login/start",
@@ -2204,6 +2250,7 @@ export const METHOD_NAMES = [
   "evener/marketplace/add",
   "evener/marketplace/remove",
   "evener/marketplace/refresh",
+  "evener/marketplace/edit",
   "evener/marketplace/browse",
   "evener/plugin/list",
   "evener/plugin/install",
@@ -2213,6 +2260,7 @@ export const METHOD_NAMES = [
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
   "evener/command/list",
+  "evener/spawn/slashCatalog",
   "evener/settings/overview",
   "evener/settings/transcriptDisplay/get",
   "evener/settings/transcriptDisplay/patch",
@@ -2361,6 +2409,8 @@ export interface MethodTypes {
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
+  "evener/update/check": { params: UpdateCheckParams; result: UpdateCheckResponse };
+  "evener/update/apply": { params: UpdateApplyParams; result: UpdateApplyResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
   "evener/auth/test": { params: AuthTestParams; result: AuthTestResponse };
   "evener/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };
@@ -2389,6 +2439,7 @@ export interface MethodTypes {
   "evener/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
   "evener/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };
   "evener/marketplace/refresh": { params: MarketplaceNameParams; result: MarketplaceListResponse };
+  "evener/marketplace/edit": { params: MarketplaceEditParams; result: MarketplaceListResponse };
   "evener/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
   "evener/plugin/list": { params: EmptyParams; result: PluginListResponse };
   "evener/plugin/install": { params: PluginRefParams; result: PluginListResponse };
@@ -2398,6 +2449,7 @@ export interface MethodTypes {
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
+  "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
   "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
   "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };

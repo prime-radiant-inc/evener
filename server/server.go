@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/httpguard"
@@ -326,6 +327,14 @@ type Server struct {
 	// and nothing else.
 	appTurns        *appTurnSnapshot
 	appActiveTurnID string
+	// appPendingStableTurnID publishes runnable identity while the ordered
+	// event consumer drains the previous turn. It is not an admission lock.
+	appPendingStableTurnID string
+	// appDeferredTerminalNotifications retains only the status/closed frames
+	// from a terminal event that raced a durable carrier. The projector has
+	// already applied the event; these frames are published if the carrier is
+	// abandoned, and discarded when its stable carrier arrives.
+	appDeferredTerminalNotifications []pendingAppNotification
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -333,9 +342,12 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource         ThreadEnvelopeSource
-	appReservedTurnID         string
-	beforeAppProjectionCommit func()
+	appEnvelopeSource ThreadEnvelopeSource
+	appReservedTurnID string
+	// appProcessingReservedTurnID tracks a generic projector reservation that
+	// was superseded by a durable turn identity before its carrier arrived.
+	appProcessingReservedTurnID string
+	beforeAppProjectionCommit   func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so
@@ -434,6 +446,7 @@ func NewServer(cfg ServerConfig) *Server {
 		mux: http.NewServeMux(),
 		appServer: appserver.NewServer(appserver.ServerConfig{
 			ServerName: "evener-serve",
+			Version:    buildinfo.Version(),
 			SourceID:   "local",
 			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
 				if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -789,26 +802,52 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 // ActiveTurnID change atomically. Durable client-mutation turns instead use
 // SetProcessingTurn because their stable identity is already authoritative.
 func (s *Server) SetProcessing(processing bool) {
+	if !processing {
+		s.finishProcessing()
+		return
+	}
 	s.mu.Lock()
 	s.setProcessingLocked(processing)
 	s.mu.Unlock()
 }
 
 // SetProcessingTurn atomically publishes a durable turn's stable identity as
-// the active AppWire turn and reserves it for the next real turn projection.
+// the active AppWire turn until its ordered stable carrier is projected.
 func (s *Server) SetProcessingTurn(turnID string) {
-	s.mu.Lock()
-	s.processing = true
-	s.ensureAppProjectorLocked("")
-	s.appProjector.ReserveStableTurnID(turnID)
-	s.appActiveTurnID = turnID
-	s.appReservedTurnID = ""
-	s.mu.Unlock()
+	// Serialize admission with deferred terminal publication so their
+	// notification order and authoritative processing identity agree.
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		s.processing = true
+		s.ensureAppProjectorLocked("")
+		s.appProcessingReservedTurnID = s.appProjector.ReservedTurnID()
+		// The projector reservation is consumed by the ordered event stream. The
+		// callback can run ahead of that consumer, so mutating the projector here
+		// would let queued events from the previous turn use the new identity.
+		s.appActiveTurnID = turnID
+		s.appPendingStableTurnID = turnID
+		s.appReservedTurnID = ""
+		s.mu.Unlock()
+		return nil
+	})
 }
 
 func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
 	if !processing {
+		// The input runner has returned, including failed durable claims that
+		// emit no carrier. Buffered events retain their own ordered identity;
+		// keeping this reservation would advertise work that is no longer running.
+		if s.appPendingStableTurnID != "" {
+			if s.appActiveTurnID == s.appPendingStableTurnID {
+				s.appActiveTurnID = ""
+			}
+			s.appPendingStableTurnID = ""
+		}
+		if s.appProjector != nil && s.appProcessingReservedTurnID != "" {
+			s.appProjector.ReleaseReservedTurnID(s.appProcessingReservedTurnID)
+			s.appProcessingReservedTurnID = ""
+		}
 		if s.appProjector != nil && s.appReservedTurnID == "" {
 			reservedTurnID := s.appProjector.ReservedTurnID()
 			if reservedTurnID != "" && s.appActiveTurnID == reservedTurnID {

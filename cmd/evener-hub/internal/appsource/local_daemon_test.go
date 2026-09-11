@@ -1180,3 +1180,15 @@ func TestLocalDaemonListKeepsChildReferencesDistinctFromOwnerWorkspace(t *testin
 		})
 	}
 }
+
+func TestLocalDaemonSourceListThreadsHonorsCanceledContext(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, ThreadID: "thread-1", SessionID: "session-1"}}}
+	}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := source.ListThreads(ctx, appwire.ThreadListParams{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListThreads error=%v, want context cancellation", err)
+	}
+}

@@ -321,8 +321,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
 
   // A failed row is never a bare summary line even with no body/images: the
   // reader must be able to open it and read the error, so it is always an
-  // expandable disclosure.
-  if (!Body && !hasOutputImages && !failed) {
+  // expandable disclosure. A descriptor may also report per-item that its
+  // body renders nothing (hasBody) — a summary-only rendering offers no
+  // disclosure that would open to nothing.
+  if ((!Body || descriptor.hasBody?.(item) === false) && !hasOutputImages && !failed) {
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow

@@ -111,13 +111,57 @@ func (m *Manager) pluginCacheDir(marketplace, plugin, sha string) string {
 }
 
 // validNameComponent rejects a marketplace/plugin name that is unsafe to use as
-// a filesystem path segment (traversal, absolute, separators, empty). Names come
-// from untrusted marketplace.json and caller input.
+// a filesystem path segment (traversal, absolute, separators, empty), and two
+// shapes that are legal path components but already spoken for by the store —
+// each only where it is spoken for, which for both is a marketplace's name.
+// Names come from untrusted marketplace.json and caller input.
 func validNameComponent(kind, name string) error {
-	if name == "" || name == "." || name == ".." ||
+	if unsafePathComponent(name) {
+		return fmt.Errorf("invalid %s name %q: %w", kind, name, ErrInvalidName)
+	}
+	// A marketplace fetch stages into one of these and renames what it
+	// replaces aside into the other, so a marketplace named either would be
+	// swept or renamed onto by the next fetch that used it as scratch. Both
+	// sit in the marketplaces directory, beside the clones, which is why this
+	// is a marketplace's rule alone: a plugin's directories are the cache's
+	// cache/<marketplace>/<plugin>, and the staging an install fetches into is
+	// under that, so a plugin named for one of them collides with nothing.
+	if kind == "marketplace" && (name == stagingCloneName || name == asideCloneName) {
+		return fmt.Errorf("%s name %q names one of the store's scratch directories: %w", kind, name, ErrInvalidName)
+	}
+	// A registry key is <plugin>@<marketplace>, and splitKey parses at the
+	// last '@', so a marketplace whose name carries one keys installs that
+	// every later lookup reads as some shorter marketplace. A plugin's '@'
+	// sits before that last one, so wid@get in acme keys wid@get@acme and
+	// parses back intact — which is why this too is a marketplace's rule.
+	if kind == "marketplace" && strings.ContainsRune(name, '@') {
+		return fmt.Errorf("%s name %q cannot contain '@': it separates plugin from marketplace in an installed-plugin key: %w", kind, name, ErrInvalidName)
+	}
+	return nil
+}
+
+// unsafePathComponent reports whether name cannot stand as one segment of a
+// store path: traversal, absolute, separators, empty.
+func unsafePathComponent(name string) bool {
+	return name == "" || name == "." || name == ".." ||
 		strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') ||
-		!filepath.IsLocal(name) {
-		return fmt.Errorf("invalid %s name %q: must be a single non-traversing path component", kind, name)
+		!filepath.IsLocal(name)
+}
+
+// refuseRecordedName refuses to derive a store path from the name a
+// marketplace is recorded under when that name is not a path component.
+// known_marketplaces.json is a plain file an older evener or a hand edit can
+// put anything in, and every directory an operation derives from a recorded
+// name is a join: a recorded "../escape" is the clone a rename moves, the
+// plugin cache beside it, and the directory a removal deletes, all outside the
+// store.
+//
+// Only the path-component rules apply. The scratch names and '@' are legal
+// components that later rules reserved, and an entry recorded under one of
+// those is deliberately still renameable — the rename is its only way out.
+func refuseRecordedName(name string) error {
+	if unsafePathComponent(name) {
+		return fmt.Errorf("%s records marketplace %q, whose name is not a single non-traversing path component, so the store cannot derive its directories: %w", marketplacesFileName, name, ErrInvalidName)
 	}
 	return nil
 }

@@ -540,6 +540,16 @@ type jobNotification struct {
 	Note            string
 	IntervalSeconds int
 	Terminal        bool
+	// OriginWatchID is the watch that produced this notification, carried for
+	// display only (rendered as the watch_id frame attribute so a reader can
+	// identify which watch to inspect or clear). It is NEVER consulted by
+	// delivery gating: unlike WatchID above — which the session's orphan-tick
+	// drop reads, and which only the timer path may stamp because only a
+	// timer's key slot reconstructs from its id — stamping a timer-identity
+	// field on a condition fire or teardown would swallow that notice as an
+	// orphaned tick once its watch detaches. Job-targeted fires, teardown
+	// notices, and send-rail diagnostics stamp this; timer fires keep WatchID.
+	OriginWatchID string
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a

@@ -2070,7 +2070,10 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 		marker = "Continuing toward: " + snap.Objective
 	}
 	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
-	s.appendTurn(schema.TurnSteering, llm.User(input))
+	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
+	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
+	turn.StableTurnID = stableTurnID
+	s.recordTurn(turn, turn)
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
@@ -2146,7 +2149,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	var reminder string
 	if len(jobNotifs) > 0 {
 		reminder = s.formatJobNotificationReminder(jobNotifs)
-		if err := errors.Join(s.appendSteeringTurnDurably(reminder, events.SteeringKindNotification), sessionLifecycleFault(ctx, "append_notification")); err != nil {
+		if err := errors.Join(s.appendSteeringTurnDurablyForOwner(reminder, events.SteeringKindNotification, turnID), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			s.finishNotificationNoop()
 			return false

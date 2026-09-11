@@ -124,7 +124,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		// one's state (kata xx1p).
 		if m.client != nil {
 			if ref, ok := m.currentRef(); ok {
-				cmd = resyncHubSession(m.frames, m.client, ref)
+				// Additive re-read (no subscription replacement): staleness
+				// is judged by the displayed ref alone — a stale response
+				// lands on the ordinary same-ref guard and drops there
+				// (roborev PR #1044 round-18 medium).
+				cmd = m.tagLiveNavRefresh(resyncHubSession(m.frames, m.client, ref), ref.String(), false)
 			}
 		}
 	case appwire.NotifyEvenerThreadModelRetry:

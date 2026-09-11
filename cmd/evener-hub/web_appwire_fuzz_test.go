@@ -191,6 +191,21 @@ func pinSandboxCWD(raw []byte, cwd string) []byte {
 // this target.
 func FuzzAppWireDispatch(f *testing.F) {
 	stubSelfUpgrade(f)
+	// evener/update/check is in the fuzzed method catalog and performs
+	// real GitHub I/O when built with release/snapshot ldflags; stub it
+	// offline like the upgrade seam so the harness's zero-network oracle
+	// holds for every build configuration.
+	previousUpdateCheck := runHubUpdateCheck
+	runHubUpdateCheck = func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{}, nil
+	}
+	f.Cleanup(func() { runHubUpdateCheck = previousUpdateCheck })
+	// The self-update apply path execs the process in place; stub it to a
+	// no-op so the fuzz harness can never replace itself, even if built
+	// with release ldflags (isDevBuild would otherwise be the only guard).
+	previousScheduleHubRestart := scheduleHubRestart
+	scheduleHubRestart = func(context.Context, restartPin, string, []string) {}
+	f.Cleanup(func() { scheduleHubRestart = previousScheduleHubRestart })
 	canary := installSandboxAuthSeam(f)
 	deny := installDenyTransportTB(f)
 

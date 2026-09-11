@@ -21,7 +21,7 @@
  * row pinned at the top of the transcript would compete with it permanently.
  * The failure is carried by the words ("Couldn't load older turns: …"), the
  * role=alert announcement, and the Retry beside it; weight and full-contrast
- * ink are what lift it off the quiet idle label. Earning an allowlist entry
+ * ink lift it off the quiet row around it. Earning an allowlist entry
  * would mean promoting a one-line paging notice to a widget directory plus a
  * gallery section, which is more machinery than this needs. */
 .error {

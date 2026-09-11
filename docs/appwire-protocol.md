@@ -134,6 +134,8 @@ no router (reserved).
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
+| `evener/update/check` | hub | `UpdateCheckParams` | `UpdateCheckResponse` | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
+| `evener/update/apply` | hub | `UpdateApplyParams` | `UpdateApplyResponse` | Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds. |
 | `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
 | `evener/auth/test` | hub | `AuthTestParams` | `AuthTestResponse` | Tests the effective credentials for one configured provider instance without starting a session. |
 | `evener/auth/login/start` | hub | `AuthLoginStartParams` | `AuthLoginStartResponse` | Begins an OAuth login flow; returns a flow ID and URL. |
@@ -162,6 +164,7 @@ no router (reserved).
 | `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
 | `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
 | `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
+| `evener/marketplace/edit` | hub | `MarketplaceEditParams` | `MarketplaceListResponse` | Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated. |
 | `evener/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
 | `evener/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
 | `evener/plugin/install` | hub | `PluginRefParams` | `PluginListResponse` | Installs a plugin from a marketplace; returns the updated list. |
@@ -171,6 +174,7 @@ no router (reserved).
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
+| `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
@@ -214,8 +218,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
-| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
-| `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
+| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list. |
+| `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
@@ -1106,6 +1110,15 @@ _(no fields)_
 | `plugins` | `[]appwire.MarketplaceCatalogPlugin` |  |  |
 
 
+### `MarketplaceEditParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `newName` | `string` | yes |  |
+| `source` | `*appwire.MarketplaceSourceInput` | yes |  |
+
+
 ### `MarketplaceListResponse`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1460,6 +1473,23 @@ _(no fields)_
 | `storage` | `*appwire.SettingsStorageOverview` | yes |  |
 | `agents` | `[]appwire.SettingsAgentEntry` | yes |  |
 | `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
+
+
+### `SpawnSlashCatalogParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `harness` | `string` | yes |  |
+| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+
+
+### `SpawnSlashCatalogResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `commands` | `[]appwire.CommandDescriptor` |  |  |
+| `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
 ### `TaskListParams`
@@ -2019,6 +2049,44 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `receipt` | `appwire.MutationReceipt` |  |  |
+
+
+### `UpdateApplyParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` | yes |  |
+
+
+### `UpdateApplyResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `release` | `string` |  |  |
+| `channel` | `string` |  |  |
+| `installed` | `[]string` |  |  |
+| `restarting` | `bool` |  |  |
+
+
+### `UpdateCheckParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` | yes |  |
+
+
+### `UpdateCheckResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` |  |  |
+| `buildChannel` | `string` |  |  |
+| `currentVersion` | `string` |  |  |
+| `currentCommit` | `string` |  |  |
+| `latestTag` | `string` | yes |  |
+| `latestCommit` | `string` | yes |  |
+| `updateAvailable` | `bool` |  |  |
+| `applicable` | `bool` |  |  |
 
 
 ### `UpgradeParams`

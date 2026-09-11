@@ -168,6 +168,22 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     title: "Focus the previous session pane",
     chord: "Alt+ArrowLeft",
   },
+  // The live-session pair NAVIGATES (opens the adjacent live session from
+  // the rail's live section) rather than moving pane focus. Like the other
+  // Alt+Shift+Arrow chords it suppresses in editable targets: Alt+Shift+
+  // ArrowLeft/Right are native word-selection chords in text fields.
+  {
+    id: ACTIONS.sessionLiveNext,
+    actionId: ACTIONS.sessionLiveNext,
+    title: "Go to the next live session",
+    chord: "Alt+Shift+ArrowRight",
+  },
+  {
+    id: ACTIONS.sessionLivePrevious,
+    actionId: ACTIONS.sessionLivePrevious,
+    title: "Go to the previous live session",
+    chord: "Alt+Shift+ArrowLeft",
+  },
   {
     id: ACTIONS.transcriptLineUp,
     actionId: ACTIONS.transcriptLineUp,

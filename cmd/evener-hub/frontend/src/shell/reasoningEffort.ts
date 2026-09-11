@@ -21,3 +21,10 @@ export function effortLabel(level: string, levels: string[]): string {
 export function effortOptionLevels(levels: string[], current: string): string[] {
   return ["", ...levels, ...(current !== "" && !levels.includes(current) ? [current] : [])];
 }
+
+// The session picker uses this ladder when reasoning is supported but the
+// provider does not enumerate levels. The daemon clamps the requested value.
+export function sessionEffortLevels(levels: string[] | undefined, supportsReasoning: boolean | undefined): string[] {
+  if (levels?.length) return levels;
+  return supportsReasoning ? ["minimal", "low", "medium", "high"] : [];
+}

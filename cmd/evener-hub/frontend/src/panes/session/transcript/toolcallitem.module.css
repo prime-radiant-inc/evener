@@ -244,11 +244,27 @@
   font-family: var(--font-mono);
 }
 
+/* The status dot rides inline with the text on the first line.  Like
+ * .rowIcon, it uses align-self: flex-start + height: 1lh so it pins to
+ * line 1 no matter how the row wraps, and font-size/line-height match
+ * .intent so the dot's 1lh box matches the text's first line.  Without
+ * this, an inline-flex element with no text has its baseline at its
+ * bottom edge, so baseline alignment seats the dot too low. */
 .status {
   flex: none;
   display: inline-flex;
+  align-self: flex-start;
+  height: 1lh;
+  font-size: var(--font-size-ui);
   align-items: center;
   gap: var(--space-1);
+}
+
+/* On intent-bearing rows the first line is the rationale text, whose
+ * line-height is --line-height-title (tighter than the body's). See the
+ * matching override on .rowIcon. */
+.row[data-intent="true"] .status {
+  line-height: var(--line-height-title);
 }
 
 /* The tool-KIND glyph in the RAIL beside the rationale line (Jesse's review
@@ -257,11 +273,18 @@
  * --speaker-avatar-size wide so the glyph centres on the same column the
  * speaker avatars occupy; align-self flex-start + 1lh pins it to line 1
  * (the rationale) no matter how the rest of the row wraps. Below the
- * breakpoint there is no gutter, so it simply leads the line inline. */
+ * breakpoint there is no gutter, so it simply leads the line inline.
+ *
+ * font-size matches .intent: 1lh is the computed line-height of THIS
+ * element, so without matching the text's font-size the icon box is a
+ * different height than the first text line and the glyph sits off the
+ * text's centre. The line-height override below narrows the box to match
+ * the rationale's tightened line-height on intent-bearing rows. */
 .rowIcon {
   flex: none;
   align-self: flex-start;
   height: 1lh;
+  font-size: var(--font-size-ui);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -275,6 +298,15 @@
   margin-right: calc(var(--speaker-gap) - var(--space-2));
   opacity: 0.5;
   color: var(--ink-mid);
+}
+
+/* On intent-bearing rows the first line is the rationale text, whose
+ * line-height is --line-height-title (tighter than the body's). Without this
+ * override 1lh inherits the body's 1.6, so the icon box is taller than the
+ * text line and the glyph sits low. Match the title line-height so the glyph
+ * centres on the first line of text even when the intent wraps. */
+.row[data-intent="true"] .rowIcon {
+  line-height: var(--line-height-title);
 }
 
 /* Above the breakpoint the row sits inside runContent's --speaker-gutter of
@@ -309,13 +341,22 @@
 }
 
 /* When a .bodyTrigger chevron shares the summary line (two-level disclosure at
-   tools/activity/full), the demoted summary must leave room for it instead of
-   demanding 100% — otherwise the chevron's intrinsic width overflows the
-   container. flex-shrink:1 and flex-basis:auto let the summary shrink to fit
-   alongside the flex:none body trigger; min-width:0 + the .clamped
-   overflow:hidden clip the nowrap text to the shrunken width. */
+   tools/activity/full), the chevron rides INLINE at the end of the summary
+   text (ToolRow's bodyChevronInline) and the button is an empty OVERLAY, so
+   the demoted summary can keep its full basis: nothing else needs a share of
+   the line. The overlay is absolute (out of flow) and takes no width. */
 .summaryLine[data-body-trigger="true"] {
   position: relative;
+}
+
+/* The body chevron rides INLINE at the end of the summary text (ToolRow's
+   bodyChevronInline). Inside the collapsed line's .clamped flex row it is a
+   flex-none item that never shrinks - the head's ellipsis absorbs the
+   pressure, the same seat .summaryTrailing takes. Scoped by [data-open]
+   (every .chevron carries it) so specificity does not descend below the
+   .chevron base rule. */
+.clamped [data-open] {
+  flex: none;
 }
 
 .summaryLine[data-body-trigger="true"] .bodyTrigger {
@@ -337,11 +378,6 @@
 .summaryLine[data-body-trigger="true"] .summary select,
 .summaryLine[data-body-trigger="true"] .summary textarea {
   pointer-events: auto;
-}
-
-.summaryLine[data-body-trigger="true"] .demoted {
-  flex: 0 1 auto;
-  min-width: 0;
 }
 
 /* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a

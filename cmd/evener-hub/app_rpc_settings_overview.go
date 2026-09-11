@@ -50,6 +50,7 @@ func settingsHubOverview(cfg hubcore.WebConfig) *appwire.SettingsHubOverview {
 	return &appwire.SettingsHubOverview{
 		Version:        Version,
 		Commit:         buildinfo.GitSHA,
+		BuildChannel:   buildinfo.BuildChannel(),
 		ListenAddr:     cfg.HubAddr,
 		RunDir:         cfg.RunDir,
 		SpawnTimeout:   settingsSpawnTimeoutDisplay,

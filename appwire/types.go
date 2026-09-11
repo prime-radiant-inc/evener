@@ -79,6 +79,8 @@ const (
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
+	MethodEvenerUpdateCheck           = "evener/update/check"
+	MethodEvenerUpdateApply           = "evener/update/apply"
 	MethodEvenerAuthStatus            = "evener/auth/status"
 	MethodEvenerAuthTest              = "evener/auth/test"
 	MethodEvenerAuthLoginStart        = "evener/auth/login/start"
@@ -107,6 +109,7 @@ const (
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
 	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceEdit       = "evener/marketplace/edit"
 	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
 	MethodEvenerPluginList            = "evener/plugin/list"
 	MethodEvenerPluginInstall         = "evener/plugin/install"
@@ -116,6 +119,7 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
+	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
 	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, and probed MCP servers. See
@@ -2048,6 +2052,41 @@ type UpgradeResponse struct {
 	RestartMessage string   `json:"restartMessage"`
 }
 
+// UpdateCheckParams selects the channel to compare the running build against.
+// Empty means the running binary's own upgrade channel.
+type UpdateCheckParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateCheckResponse reports the running build and what the channel points
+// at. Applicable is false for dev builds, which are never self-updated; the
+// Latest* fields are empty then and no network request was made.
+type UpdateCheckResponse struct {
+	Channel         string `json:"channel"`
+	BuildChannel    string `json:"buildChannel"`
+	CurrentVersion  string `json:"currentVersion"`
+	CurrentCommit   string `json:"currentCommit"`
+	LatestTag       string `json:"latestTag,omitempty"`
+	LatestCommit    string `json:"latestCommit,omitempty"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+	Applicable      bool   `json:"applicable"`
+}
+
+// UpdateApplyParams selects the channel to install. Empty means the running
+// binary's own upgrade channel.
+type UpdateApplyParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateApplyResponse is returned just before the hub execs the installed
+// binary in place; Restarting is always true on success.
+type UpdateApplyResponse struct {
+	Release    string   `json:"release"`
+	Channel    string   `json:"channel"`
+	Installed  []string `json:"installed"`
+	Restarting bool     `json:"restarting"`
+}
+
 type AuthStatusParams struct {
 	Provider string `json:"provider"`
 }
@@ -2847,9 +2886,9 @@ type CommandDescriptor struct {
 	PluginName   string `json:"pluginName,omitempty"`
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
-	// Source is "plugin" or "user"; "project" is reserved for a future
-	// project-scoped catalog (project commands are cwd-dependent and never
-	// appear in the hub-wide catalog).
+	// Source is "plugin", "user", or "project". "project" is returned by the
+	// spawn-scoped catalog (project commands are cwd-dependent); it never
+	// appears in the hub-wide catalog.
 	Source string `json:"source,omitempty"`
 }
 
@@ -3004,6 +3043,26 @@ type PluginPreviewParams struct {
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
 }
 
+// SpawnSlashCatalogParams requests the slash catalog a spawn with these
+// inputs would load. Field names and shapes match ThreadStartParams exactly:
+// when this call and a thread/start agree on all three, the menu shows what
+// that start would load. Model, effort, access mode, and prompt text do not
+// affect the inventory and are deliberately absent.
+type SpawnSlashCatalogParams struct {
+	CWD             string             `json:"cwd"`
+	Harness         string             `json:"harness,omitempty"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogResponse is the pre-session slash inventory: the commands
+// and skills a session started with the params would offer. Row shapes reuse
+// CommandDescriptor and EvenerSkillInfo verbatim so the web composer merges
+// them with mergeSlashCommands unchanged.
+type SpawnSlashCatalogResponse struct {
+	Commands []CommandDescriptor `json:"commands"`
+	Skills   []EvenerSkillInfo   `json:"skills,omitempty"`
+}
+
 // PluginPreviewResponse is the launch plugin inventory and structured
 // diagnostics returned by evener/plugin/preview.
 type PluginPreviewResponse struct {
@@ -3062,8 +3121,8 @@ type MarketplaceEntry struct {
 }
 
 // MarketplaceListResponse is the result of evener/marketplace/list. Every
-// marketplace mutation (add/remove/refresh) also returns this, so a client
-// can re-render from the response without a separate list round-trip.
+// marketplace mutation (add/edit/remove/refresh) also returns this, so a
+// client can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
@@ -3073,6 +3132,17 @@ type MarketplaceListResponse struct {
 type MarketplaceAddParams struct {
 	Name   string                 `json:"name,omitempty"`
 	Source MarketplaceSourceInput `json:"source"`
+}
+
+// MarketplaceEditParams is the params for evener/marketplace/edit (spec
+// 2026-09-07 §3). NewName renames the registered marketplace (empty means
+// unchanged); Source replaces its source and re-fetches it (absent means
+// unchanged). Installed plugins are unaffected beyond being re-keyed under
+// the new name.
+type MarketplaceEditParams struct {
+	Name    string                  `json:"name"`
+	NewName string                  `json:"newName,omitempty"`
+	Source  *MarketplaceSourceInput `json:"source,omitempty"`
 }
 
 // MarketplaceNameParams identifies one registered marketplace by name — the
@@ -3178,6 +3248,8 @@ type SettingsHubOverview struct {
 	// Commit is the git commit the binary was built from; empty in dev builds.
 	// Source: web_settings.go settingsData.HubCommit (buildinfo.GitSHA).
 	Commit string `json:"commit,omitempty"`
+	// BuildChannel is buildinfo.BuildChannel(): release, snapshot, or dev.
+	BuildChannel string `json:"buildChannel,omitempty"`
 	// ListenAddr is the hub HTTP server's bind address.
 	// Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
 	ListenAddr string `json:"listenAddr,omitempty"`

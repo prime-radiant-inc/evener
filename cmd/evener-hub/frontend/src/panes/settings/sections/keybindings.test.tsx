@@ -103,6 +103,8 @@ test("lists every default action with its title and effective chord, none custom
     expect.stringContaining("Open settings"),
     expect.stringContaining("Focus the next session pane"),
     expect.stringContaining("Focus the previous session pane"),
+    expect.stringContaining("Go to the next live session"),
+    expect.stringContaining("Go to the previous live session"),
     expect.stringContaining("Scroll the transcript up one line"),
     expect.stringContaining("Scroll the transcript down one line"),
     expect.stringContaining("Scroll the transcript up one page"),

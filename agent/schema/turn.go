@@ -157,6 +157,12 @@ type ModelSwitchInfo struct {
 	NewModel    string `json:"new_model"`
 }
 
+// GoalContinuationInfo keeps the human-facing notice separate from the full
+// continuation input in Message, which remains available to resumed models.
+type GoalContinuationInfo struct {
+	Text string `json:"text"`
+}
+
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
@@ -175,17 +181,23 @@ type Turn struct {
 	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
 	// so a reloaded transcript labels a steer the same way the live path did.
 	SteeringKind string `json:"steering_kind,omitempty"`
+	// GoalContinuation marks goal-engine steering that opens a fresh logical
+	// turn and displays a compact notice rather than its model instructions.
+	GoalContinuation *GoalContinuationInfo `json:"goal_continuation,omitempty"`
 	// AttentionID identifies steering that requires durable terminal cleanup.
 	// It is empty for ordinary steering and all non-steering turns.
 	AttentionID string `json:"attention_id,omitempty"`
 	// AttentionResolution is set only on TurnAttentionResolution turns.
 	AttentionResolution     *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
 	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
-	// ClientMutationID and StableTurnID identify retry-safe client-authored
-	// user and steering turns across live events, transcript recovery, and
-	// mutation replay.
+	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
+	// preserves the logical turn identity across live events and transcript
+	// recovery for both client input and daemon goal continuations.
 	ClientMutationID string `json:"client_mutation_id,omitempty"`
 	StableTurnID     string `json:"stable_turn_id,omitempty"`
+	// OwningTurnID identifies the logical turn that owns an ordinary steering
+	// entry. It differs from StableTurnID, which identifies the client mutation.
+	OwningTurnID string `json:"owning_turn_id,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`

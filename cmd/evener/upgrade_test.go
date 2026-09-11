@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,11 @@ func TestUpgradeSubcommandInstallsSnapshot(t *testing.T) {
 	archive := testReleaseArchive(t, "evener_linux_amd64")
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			sum := sha256.Sum256(archive)
+			_, _ = fmt.Fprintf(w, "%x  evener_linux_amd64.tar.gz\n", sum)
+			return
+		}
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(archive)

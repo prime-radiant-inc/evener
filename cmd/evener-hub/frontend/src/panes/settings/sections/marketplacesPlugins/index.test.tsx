@@ -155,6 +155,48 @@ test("switching segments while the detail sheet is open closes it", async () => 
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "linter" })).toBeNull());
 });
 
+test("switching segments while the marketplace sheet is open closes it", async () => {
+  connectSeededClient();
+  render(<MarketplacesPluginsSection />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "acme-plugins" })).toBeNull());
+});
+
+test("a rename carries the Browse expansion to the new name", async () => {
+  const user = userEvent.setup();
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", (params) => ({
+    name: params.name,
+    description: "Acme plugins catalog",
+    plugins: [{ name: "formatter", description: "A formatter" }],
+  }));
+  fake.on("evener/marketplace/edit", () => ({ marketplaces: [{ ...ACME, name: "acme-plugins2" }] }));
+  render(<MarketplacesPluginsSection />);
+  await screen.findByText("linter");
+
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
+
+  // Rename it through its sheet, which re-browses the new name.
+  await user.click(screen.getByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.type(screen.getByLabelText("Name"), "2");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins2" })).toBeTruthy());
+
+  // The expansion set is keyed by name: still holding the old one, the
+  // renamed marketplace renders collapsed over the catalog that save just
+  // re-requested.
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  expect(await screen.findByRole("list", { name: "acme-plugins2 plugins" })).toBeTruthy();
+  expect(screen.getByText("formatter")).toBeTruthy();
+});
+
 test("Browse tree expansion survives a segment round trip (Installed → Browse → Installed → Browse)", async () => {
   const user = userEvent.setup();
   const fake = connectSeededClient();

@@ -1576,10 +1576,15 @@ type jobWatchListToolResult struct {
 }
 
 type jobWatchInspectToolResult struct {
-	WatchID    string `json:"watch_id"`
-	Source     string `json:"source,omitempty"`
-	Watching   bool   `json:"watching"`
-	Condition  string `json:"condition,omitempty"`
+	WatchID   string `json:"watch_id"`
+	Source    string `json:"source,omitempty"`
+	Watching  bool   `json:"watching"`
+	Condition string `json:"condition,omitempty"`
+	// Note rides beside the Condition string: note text is free prose that
+	// may itself contain delimiter-looking text ("; events: [...]"), which
+	// the flattened Condition grammar cannot carry unambiguously (RoboRev PR
+	// #954). Readers prefer this field and fall back to the note: clause.
+	Note       string `json:"note,omitempty"`
 	Deliveries int    `json:"deliveries,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`
 	EndReason  string `json:"end_reason,omitempty"`

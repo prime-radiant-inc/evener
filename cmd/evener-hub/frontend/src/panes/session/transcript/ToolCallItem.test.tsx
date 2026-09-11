@@ -18,6 +18,7 @@ import { ignoringTurn, itemRendererFor } from "./types";
 import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
+import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -1412,4 +1413,20 @@ test("delegate rows from transcripts recorded before the prompt rename still sho
     />,
   );
   expect(screen.getByTestId("tool-row-intent").textContent).toContain("Legacy brief");
+});
+
+test("a summary-only job_watch clear renders a non-expandable row (hasBody predicate)", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "job_watch",
+        argumentsJSON: JSON.stringify({ operation: "clear", watch_id: "watch_short" }),
+        raw: { watch_id: "watch_short", source: "", watching: false },
+        output: "[watch_id watch_short cleared]",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
 });
