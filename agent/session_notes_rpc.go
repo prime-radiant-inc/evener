@@ -163,7 +163,16 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	if err != nil {
 		return false, NormalizeClientMutationError(outerID, err)
 	}
-	lookup, err := s.clientMutations.reservePrepared(request, nil)
+	unknown := appwire.InvalidParams("no URL entry with id " + id)
+	s.notesUpdateMu.Lock()
+	urls := s.snapshotSessionURLsLocked()
+	lookup, err := s.clientMutations.reservePrepared(request, func(_ *clientMutationSnapshot, record *clientMutationRecord) error {
+		if !slices.ContainsFunc(urls, func(entry schema.SessionURL) bool { return entry.ID == id }) {
+			rejectClientMutation(record, unknown)
+		}
+		return nil
+	})
+	s.notesUpdateMu.Unlock()
 	if err != nil {
 		// Same raw-mismatch contract as SetHumanNote.
 		return false, err
@@ -196,11 +205,10 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	if !removed {
 		s.metaSaveMu.Unlock()
 		if lookup.Record.AttemptGeneration > 1 {
-			// Crash-recovery takeover: the pre-crash attempt passed validation
-			// (only unseen IDs reach the reservation) and removed the entry
-			// before dying, so the entry's absence IS its success. An
-			// AttemptGeneration of 1 is a fresh reservation, where absence
-			// means a genuinely unknown id.
+			// The prepare callback validated the target before the first
+			// in-flight reservation. Its absence on takeover therefore
+			// satisfies that accepted removal, including a metadata save
+			// that completed before the receipt could be persisted.
 			if err := s.persistNotesMeta(); err != nil {
 				lookup.Lease.Release()
 				return false, err
@@ -211,7 +219,6 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 			s.emit(events.EventUrlsUpdated, urlsUpdatedData(s.snapshotSessionURLsLocked()))
 			return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 		}
-		unknown := appwire.InvalidParams("no URL entry with id " + id)
 		if err := s.clientMutations.update(lookup.Lease, func(_ *clientMutationSnapshot, record *clientMutationRecord) error {
 			rejectClientMutation(record, unknown)
 			return nil
