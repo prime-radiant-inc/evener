@@ -3010,7 +3010,7 @@ test.each(["local:owner", "local:child"])(
 );
 
 test.each(["missing", "cycle"])(
-  "Open next descendant rejects %s context despite a known unrelated session owner",
+  "Open next descendant preserves the workspace when %s context cannot resolve an owner",
   async (context) => {
     window.history.pushState({}, "", "/s/local:child");
     installLocationForRoute("local:child");
@@ -3022,6 +3022,7 @@ test.each(["missing", "cycle"])(
     );
     await screen.findAllByText(/loading transcript/i);
     await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
+    const originalMain = workspaceStore.getState().mainPane();
     act(() => {
       workspaceStore
         .getState()
@@ -3032,9 +3033,13 @@ test.each(["missing", "cycle"])(
           .openPane("transcript", { ref: "local:bridge", parentRef: "local:detached" }, { slot: "secondary" });
       fireEvent.click(screen.getByRole("button", { name: "Open transcript" }));
     });
-    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
-    expect(paneFor("local:next")).toBeUndefined();
-    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+    // The detached/cyclic context has no loaded location, so the owner cannot
+    // be proven. The workspace is preserved: the retained main session stays,
+    // and the transcript opens beside it rather than promoting an unproven
+    // parent that would discard the restored panes.
+    await waitFor(() => expect(paneFor("local:next")).toBeDefined());
+    expect(workspaceStore.getState().mainPane()).toEqual(originalMain);
+    expect(paneFor("local:next")?.params).toEqual({ ref: "local:next", parentRef: "local:detached" });
   },
 );
 

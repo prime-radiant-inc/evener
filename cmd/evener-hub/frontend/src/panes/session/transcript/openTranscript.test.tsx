@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { navigationStore } from "../../../stores/navigation/store";
+import { keyID } from "../../../stores/navigation/types";
 import { OpenTranscriptButton, openTranscript } from "./openTranscript";
 
 beforeAll(async () => {
@@ -9,6 +11,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  navigationStore.setState({ resources: new Map() });
 });
 
 afterEach(() => {
@@ -27,6 +30,32 @@ function sessionPane(ref: string) {
     .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === ref);
 }
 
+// A location the navigation store has already fetched: the only source that
+// can prove a nested session's top-level owner.
+function seedLocation(ref: string, topLevelRef: string) {
+  const key = { kind: "location", ref } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: {
+      generation_id: "generation_test",
+      revision: 1,
+      ref,
+      top_level_ref: topLevelRef,
+      top_level: ref === topLevelRef,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  navigationStore.setState({ resources });
+}
+
 test("canonicalizes a child opened without a parent when its owning session is later known", () => {
   openTranscript("local:child");
   const first = transcriptPanes("local:child")[0];
@@ -43,21 +72,70 @@ test("canonicalizes a child opened without a parent when its owning session is l
   expect(workspaceStore.getState().focusedPaneId).toBe(child[0]?.id);
 });
 
-test("replaces a child pane with a different parent context and clears prior secondary panes", () => {
+test("canonicalizes a child pane across parent contexts without disturbing a retained main session", () => {
   openTranscript("local:child", "local:owner-a");
   openTranscript("local:other", "local:other-owner");
   expect(transcriptPanes("local:other")).toHaveLength(1);
 
   openTranscript("local:child", "local:owner-b");
 
+  // Neither parent's location is loaded, so no owner is ever proven: the
+  // retained main session and the unrelated secondary pane survive every
+  // open, and only the child's own pane is canonicalized to the new parent.
   expect(transcriptPanes("local:child")).toHaveLength(1);
   expect(transcriptPanes("local:child")[0]?.params).toEqual({
     ref: "local:child",
     parentRef: "local:owner-b",
   });
-  expect(transcriptPanes("local:other")).toHaveLength(0);
-  expect(sessionPane("local:owner-b")?.slot).toBe("main");
+  expect(transcriptPanes("local:other")).toHaveLength(1);
+  expect(sessionPane("local:owner-a")?.slot).toBe("main");
+  expect(sessionPane("local:owner-b")).toBeUndefined();
   expect(workspaceStore.getState().focusedPaneId).toBe(transcriptPanes("local:child")[0]?.id);
+});
+
+test("preserves a restored workspace when the transcript owner cannot be proven", () => {
+  const workspace = workspaceStore.getState();
+  const mainId = workspace.replacePrimary("session", { ref: "local:owner" });
+  const nestedId = workspace.openPane("session", { ref: "local:nested" });
+  const unrelatedId = workspace.openPane("transcript", { ref: "local:unrelated" });
+  workspace.focusPane(nestedId);
+
+  openTranscript("local:child", "local:nested");
+
+  const state = workspaceStore.getState();
+  // No location is loaded, so the nested parent cannot be proven to be the
+  // owner. Replacing the primary with the unproven guess would discard the
+  // restored main session and every secondary pane.
+  expect(state.mainPane()?.id).toBe(mainId);
+  expect(state.mainPane()?.slot).toBe("main");
+  expect(state.panes.some((pane) => pane.id === nestedId)).toBe(true);
+  expect(state.panes.some((pane) => pane.id === unrelatedId)).toBe(true);
+  expect(sessionPane("local:nested")?.id).toBe(nestedId);
+  const child = transcriptPanes("local:child");
+  expect(child).toHaveLength(1);
+  expect(child[0]?.params).toEqual({ ref: "local:child", parentRef: "local:nested" });
+  expect(child[0]?.slot).toBe("secondary");
+  expect(state.focusedPaneId).toBe(child[0]?.id);
+});
+
+test("promotes the proven top-level owner from a loaded navigation location", () => {
+  seedLocation("local:nested", "local:owner");
+  const workspace = workspaceStore.getState();
+  workspace.replacePrimary("session", { ref: "local:elsewhere" });
+  const nestedId = workspace.openPane("session", { ref: "local:nested" });
+  workspace.focusPane(nestedId);
+
+  openTranscript("local:child", "local:nested");
+
+  // Ownership is proven: the top-level owner moves into main, never the
+  // immediate nested parent. The promotion replaces the whole pane set, so
+  // the nested session pane yields to the opened child transcript.
+  expect(sessionPane("local:owner")?.slot).toBe("main");
+  expect(sessionPane("local:nested")).toBeUndefined();
+  const child = transcriptPanes("local:child");
+  expect(child).toHaveLength(1);
+  expect(child[0]?.params).toEqual({ ref: "local:child", parentRef: "local:nested" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(child[0]?.id);
 });
 
 test("focuses an already exact child pane without remounting it or duplicating it", () => {

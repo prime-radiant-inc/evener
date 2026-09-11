@@ -69,7 +69,7 @@ export function openTranscript(ref: string, parentRef?: string): void {
     // owner: a retained transcript chain or a routed nested session identifies
     // the real main session without promoting the immediate parent into it.
     if (mainRef === undefined || !context.includes(mainRef)) {
-      let ownerRef = parentRef;
+      let ownerRef: string | undefined;
       for (const contextRef of context) {
         const location = selectLocation(contextRef)(navigationStore.getState())?.data as
           | NavigationSessionLocation
@@ -79,7 +79,16 @@ export function openTranscript(ref: string, parentRef?: string): void {
           break;
         }
       }
-      openTopLevelSession(ownerRef);
+      // Without a resolved navigation location the immediate parent is only a
+      // guess, and a wrong guess is destructive: replacePrimary would discard
+      // a restored main session and every secondary pane to promote a nested
+      // session that may not be the owner. Promote only when ownership is
+      // proven (a loaded location) or when no main pane exists to destroy (the
+      // orphan-child recovery path); otherwise keep the retained primary and
+      // let the openBeside placement carry the child beside its origin.
+      if (ownerRef !== undefined || main === null) {
+        openTopLevelSession(ownerRef ?? parentRef);
+      }
     }
   }
   if (exactPaneId !== undefined) {
