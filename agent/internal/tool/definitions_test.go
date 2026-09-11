@@ -855,6 +855,11 @@ func TestDefReadFileVisionPromptIsSeparateFromIntent(t *testing.T) {
 	if _, has := props["intent"]; has {
 		t.Errorf("DefReadFile must not define its own intent property (vision prose moved to vision_prompt); got: %v", props["intent"])
 	}
+	// The tool-level description must name the argument the vision ask belongs
+	// in, or callers keep assuming it rides `intent` (roborev #1139).
+	if !strings.Contains(def.Description, "vision_prompt") {
+		t.Errorf("read_file description should direct image/PDF asks to vision_prompt, got: %q", def.Description)
+	}
 
 	// The registered schema is what the model sees: intent is injected by the
 	// universal rule, not supplied by the read_file definition.
