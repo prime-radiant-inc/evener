@@ -34,8 +34,11 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	// LifetimeContext owns this session tree when supplied by a one-shot run.
-	// Nil preserves daemon/background ownership and is not persisted.
+	// LifetimeContext owns this session tree: `evener run` supplies its run
+	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
+	// context, so cancelling either ends the tree's own context immediately
+	// rather than when Close finally runs. Nil is the library/test shape --
+	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
 
