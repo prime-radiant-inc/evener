@@ -707,11 +707,14 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 // file still holds, which is the failure that can be seen.
 func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	var requests atomic.Int32
-	step := func(llm.Request) llm.Response {
-		requests.Add(1)
-		return finalResponse("ok")
+	steps := make([]func(llm.Request) llm.Response, 4)
+	for i := range steps {
+		steps[i] = func(llm.Request) llm.Response {
+			requests.Add(1)
+			return finalResponse("ok")
+		}
 	}
-	sess := newTestSessionForEnvctx(t, withSteps(step, step, step, step))
+	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first")
 	if requests.Load() != 1 {
 		t.Fatalf("model requests after the first turn = %d, want 1", requests.Load())
