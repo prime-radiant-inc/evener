@@ -1355,6 +1355,30 @@ describe("jumpToBottom landing reliability", () => {
     expect(result.current.pillVisible).toBe(true);
   });
 
+  test("a secondary-button drag cannot inherit a primary drag the port never saw end", () => {
+    // The drag flag is set for the primary button and read on any move with a
+    // button held, so a secondary drag can pick up a primary drag that was never
+    // ended here. Getting there needs the port to miss the release: press
+    // primary inside it, lose focus with the cursor still and inside (no
+    // pointerup, no pointerleave, no button-free move), release elsewhere, come
+    // back and drag with the right button.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    act(() => {
+      const right: PointerEventInit = { pointerType: "mouse", button: 2, buttons: 2, isPrimary: true };
+      el.dispatchEvent(pointerEvent("pointerdown", right));
+      el.dispatchEvent(pointerEvent("pointermove", { ...right, button: -1 }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
   test("a right-button drag marks nothing", () => {
     const { el, set } = mountAtBottom();
     const right: PointerEventInit = { pointerType: "mouse", button: 2, buttons: 2, isPrimary: true };

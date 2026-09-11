@@ -652,8 +652,10 @@ function failedTurnCount(model: ThreadModel | undefined): number {
  */
 type ScrollDirection = 1 | -1;
 
-/** PointerEvent.buttons bit for the middle (auxiliary) button. */
+/** PointerEvent.buttons bits. A drag is only ever begun for these two. */
+const PRIMARY_BUTTON_BIT = 1;
 const MIDDLE_BUTTON_BIT = 4;
+const DRAG_BUTTON_BITS = PRIMARY_BUTTON_BIT | MIDDLE_BUTTON_BIT;
 
 /**
  * Can the PORT still move that way? Uses the same at-bottom band the rest of the
@@ -915,7 +917,12 @@ export function useTranscriptScroll({
       // The middle bit going away ends the autoscroll even when another button
       // is still down, and even when the release never reaches this port.
       if ((event.buttons & MIDDLE_BUTTON_BIT) === 0) middleButtonHeldRef.current = false;
-      if (event.buttons === 0) {
+      // A move carrying neither button a drag is begun for ends the drag rather
+      // than continuing it. Testing the mask, not just "some button is down",
+      // is what stops a secondary drag inheriting a primary one the port never
+      // saw end: the flag survives a blur, and every later right-button move
+      // would otherwise mark from a button the drag path never accepted.
+      if ((event.buttons & DRAG_BUTTON_BITS) === 0) {
         pointerDraggingRef.current = false;
         return;
       }
