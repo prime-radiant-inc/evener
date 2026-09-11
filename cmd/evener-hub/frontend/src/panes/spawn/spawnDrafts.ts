@@ -16,6 +16,7 @@ interface DraftFields {
   promptRevision: number;
   harness: string;
   model: string;
+  staleModelNotice: string | null;
   reasoningEffort: string;
   accessMode: string;
   advancedOverrides: LaunchConfigLayer;
@@ -35,6 +36,7 @@ function createDraft(cwd: string) {
       promptRevision: 0,
       harness: defaults.harness ?? "",
       model: defaults.model ?? "",
+      staleModelNotice: null,
       reasoningEffort: defaults.reasoningEffort ?? "",
       accessMode: defaults.accessMode ?? "",
       advancedOverrides: {},

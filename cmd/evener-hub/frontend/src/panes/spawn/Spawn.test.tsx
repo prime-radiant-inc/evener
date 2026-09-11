@@ -8,9 +8,11 @@ import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
+  InstanceListResponse,
   LaunchConfigResolved,
   LaunchOption,
   ModelDescriptor,
+  ModelListParams,
   ModelListResponse,
   PluginPreviewResponse,
   Thread,
@@ -134,6 +136,10 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
   return fake;
+}
+
+function modelListRequests(fake: FakeClient): ModelListParams[] {
+  return fake.calls.filter((call) => call.method === "model/list").map((call) => call.params as ModelListParams);
 }
 
 function renderSpawn(client: FakeClient) {
@@ -288,13 +294,158 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+test("entering an in-memory draft validates its model after another draft swept its saved default", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ model: "openai/gpt-5" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-b", JSON.stringify({ model: "openai/retired-b" }));
+  const catalog = deferred<ModelListResponse>();
+  renderSpawn(readyClient((f) => f.on("model/list", () => catalog.promise)));
+  await settled();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).toBe("openai/retired-b");
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/lifecycle-b")).toBeNull();
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).not.toContain("retired-b");
+  expect(screen.getByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+test("entering a new draft validates defaults saved after the global sweep", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  const catalog = deferred<ModelListResponse>();
+  renderSpawn(readyClient((f) => f.on("model/list", () => catalog.promise)));
+  await settled();
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-b", JSON.stringify({ model: "openai/retired-b" }));
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).not.toContain("retired-b");
+  expect(screen.getByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+});
+
+test.each(["unknown", "empty", "error"])("global cleanup fails open for an %s catalog", async (kind) => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  const saved = JSON.stringify({ model: "openai/retained" });
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", saved);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/retained");
+  const catalog = deferred<ModelListResponse>();
+  renderSpawn(readyClient((f) => f.on("model/list", () => catalog.promise)));
+  await settled();
+  await act(async () => {
+    if (kind === "error") catalog.reject(new Error("catalog unavailable"));
+    else catalog.resolve({ data: kind === "unknown" ? [{ provider: "private", model: "other" }] : [] });
+  });
+  expect(modelValue().textContent).toBe("openai/retained");
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/lifecycle-a")).toBe(saved);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/retained");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+test("a draft's discard notice survives another draft selecting a model and clears on its own selection", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ model: "openai/retired-a" }));
+  renderSpawn(readyClient());
+  expect(await screen.findByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  expect(screen.getByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+test("two draft discard notices coexist across provider refresh and pane remount", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ model: "openai/retired-a" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-b", JSON.stringify({ model: "openai/retired-b" }));
+  let refreshed = false;
+  const fake = readyClient((f) =>
+    f.on("model/list", () => ({
+      data: [
+        { provider: "openai", model: "gpt-5" },
+        ...(refreshed ? [] : [{ provider: "openai", model: "retired-b" }]),
+      ],
+    })),
+  );
+  connectionStore.getState().connect(fake);
+  const mounted = renderSpawn(fake);
+  expect(await screen.findByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).toBe("openai/retired-b");
+  refreshed = true;
+  await act(async () => credentialsStore.getState().fetch());
+  expect(await screen.findByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  expect(screen.getByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expect(screen.getByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(screen.getByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+});
+
+test.each(["evener", "external"])("%s scoped catalogs cannot sweep unrelated Evener defaults", async (harness) => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ harness }));
+  const valid = JSON.stringify({ model: "openai/gpt-5", access_mode: "plan" });
+  const unknown = JSON.stringify({ model: "private/secret", reasoning_effort: "high" });
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/unrelated", valid);
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/unknown", unknown);
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/stale",
+    JSON.stringify({ model: "openai/retired", access_mode: "plan" }),
+  );
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/malformed", JSON.stringify({ model: "unqualified" }));
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5");
+  const fake = readyClient((f) =>
+    f.on("model/list", (params) => ({
+      data:
+        params.harness === "evener" && params.cwd === undefined
+          ? [{ provider: "openai", model: "gpt-5" }]
+          : [{ provider: "openai", model: "scoped-only" }],
+    })),
+  );
+  renderSpawn(fake);
+  await settled();
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/unrelated")).toBe(valid);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/unknown")).toBe(unknown);
+  expect(JSON.parse(localStorage.getItem("evener-hub.spawn-defaults./tmp/stale") ?? "null")).toEqual({
+    access_mode: "plan",
+  });
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/malformed")).toBeNull();
+  expect(modelListRequests(fake).some((params) => params.harness === "evener" && params.cwd === undefined)).toBe(true);
+});
+
+test.each(["native-model", "openai/native-model"])(
+  "Evener cleanup preserves an external draft's live %s model",
+  async (model) => {
+    window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+    localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ harness: "external", model }));
+    renderSpawn(readyClient((f) => f.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5" }] }))));
+    await settled();
+    expect(modelValue().textContent).toBe(model);
+    expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  },
+);
+
 test.each([false, true])("project navigation isolates stale-model notices (late catalog: %s)", async (late) => {
   window.history.pushState({}, "", "/new?dir=/tmp/review-a");
   localStorage.setItem("evener-hub.spawn-defaults./tmp/review-a", JSON.stringify({ model: "openai/retired" }));
   const catalog = deferred<ModelListResponse>();
   const fake = readyClient((f) =>
-    f.on("model/list", ({ cwd }) =>
-      cwd === "/tmp/review-a" ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
+    f.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
     ),
   );
   renderSpawn(fake);
@@ -315,8 +466,8 @@ test.each([false, true])("stale-model sweep retires its originating draft (navig
   localStorage.setItem("evener-hub.spawn-defaults./tmp/review-b", JSON.stringify({ model: "openai/gpt-5" }));
   const catalog = deferred<ModelListResponse>();
   const fake = readyClient((f) =>
-    f.on("model/list", ({ cwd }) =>
-      cwd === "/tmp/review-a" ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
+    f.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
     ),
   );
   renderSpawn(fake);
@@ -337,13 +488,13 @@ test("stale-model sweep preserves a newer user selection in its originating draf
   const user = userEvent.setup();
   window.history.pushState({}, "", "/new?dir=/tmp/review-a");
   localStorage.setItem("evener-hub.spawn-defaults./tmp/review-a", JSON.stringify({ model: "openai/retired" }));
-  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-b", JSON.stringify({ model: "openai/retired" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-b", JSON.stringify({ model: "openai/gpt-5" }));
   const catalog = deferred<ModelListResponse>();
   let refreshing = false;
   let refreshRequested = false;
   const fake = readyClient((f) =>
-    f.on("model/list", ({ cwd }) => {
-      if (refreshing && cwd === "/tmp/review-a") {
+    f.on("model/list", ({ harness, cwd }) => {
+      if (refreshing && harness === "evener" && cwd === undefined) {
         refreshRequested = true;
         return catalog.promise;
       }
@@ -357,17 +508,18 @@ test("stale-model sweep preserves a newer user selection in its originating draf
   );
   connectionStore.getState().connect(fake);
   renderSpawn(fake);
+  await settled();
+  refreshing = true;
+  await act(async () => credentialsStore.getState().fetch());
+  await waitFor(() => expect(refreshRequested).toBe(true));
   await user.click(modelTrigger());
   await user.clear(await screen.findByRole("combobox", { name: "Model" }));
   await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
   expect(modelValue().textContent).toBe("openai/gpt-5");
-  refreshing = true;
-  await act(async () => credentialsStore.getState().fetch());
-  await waitFor(() => expect(refreshRequested).toBe(true));
   await visitSpawnURL("/new?dir=/tmp/review-b");
-  expect(modelValue().textContent).toBe("openai/retired");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
   await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
-  expect(modelValue().textContent).toBe("openai/retired");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
   expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
   await visitSpawnURL("/new?dir=/tmp/review-a");
   expect(modelValue().textContent).toBe("openai/gpt-5");
@@ -382,8 +534,8 @@ test("stale-model sweep snapshots the current draft on provider refresh after na
   let refreshing = false;
   let refreshRequested = false;
   const fake = readyClient((f) =>
-    f.on("model/list", ({ cwd }) => {
-      if (refreshing && cwd === "/tmp/review-b") {
+    f.on("model/list", ({ harness, cwd }) => {
+      if (refreshing && harness === "evener" && cwd === undefined) {
         refreshRequested = true;
         return catalog.promise;
       }
@@ -2443,6 +2595,51 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
   expect(modelTrigger().textContent).not.toContain("claude-opus-4");
 });
 
+test("auth notification retires global cleanup before the instance refresh completes", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/auth-generation");
+  const saved = JSON.stringify({ model: "openai/newly-visible" });
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/auth-generation", saved);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/newly-visible");
+  const oldCatalog = deferred<ModelListResponse>();
+  const instanceRefresh = deferred<InstanceListResponse>();
+  const refreshStarted = deferred<void>();
+  let notified = false;
+  const client = readyClient((fake) => {
+    fake.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined && !notified
+        ? oldCatalog.promise
+        : { data: [{ provider: "openai", model: "newly-visible" }] },
+    );
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await act(async () => credentialsStore.getState().fetch());
+  const refreshedInstances = { instances: credentialsStore.getState().instances, availableProviders: [] };
+  client.on("evener/instance/list", () => {
+    refreshStarted.resolve();
+    return instanceRefresh.promise;
+  });
+  expect(modelValue().textContent).toBe("openai/newly-visible");
+  notified = true;
+  await act(async () => client.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await act(async () => refreshStarted.promise);
+  try {
+    await act(async () => oldCatalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+    // Assert before releasing instance/list: its completion cannot repair
+    // anything an obsolete global catalog has already removed.
+    expect({
+      model: modelValue().textContent,
+      saved: localStorage.getItem("evener-hub.spawn-defaults./tmp/auth-generation"),
+      global: localStorage.getItem("evener-hub.spawn-defaults.global.model"),
+    }).toEqual({ model: "openai/newly-visible", saved, global: "openai/newly-visible" });
+    expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  } finally {
+    await act(async () => instanceRefresh.resolve(refreshedInstances));
+  }
+  expect(modelValue().textContent).toBe("openai/newly-visible");
+});
+
 test("a model response from before a credential refresh cannot discard the saved selection", async () => {
   const saved = JSON.stringify({ model: "openai/gpt-5" });
   localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/p");
@@ -2669,12 +2866,12 @@ test("the Effort select and picker share one scoped model/list response", async 
   const user = userEvent.setup();
   let resolve: ((response: ModelListResponse) => void) | undefined;
   const fake = readyClient((f) => {
-    f.on(
-      "model/list",
-      () =>
-        new Promise<ModelListResponse>((done) => {
-          resolve = done;
-        }),
+    f.on("model/list", ({ harness }) =>
+      harness === "evener"
+        ? { data: [] }
+        : new Promise<ModelListResponse>((done) => {
+            resolve = done;
+          }),
     );
   });
   renderSpawn(fake);
@@ -2685,7 +2882,7 @@ test("the Effort select and picker share one scoped model/list response", async 
   const resolveModelList = resolve;
   await user.click(modelTrigger());
   expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
+  expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(1);
 
   await act(async () => {
     resolveModelList({
@@ -2701,11 +2898,14 @@ test("the Effort select and picker share one scoped model/list response", async 
     });
   });
 
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(1);
   await user.click(await screen.findByText("openai/gpt-5"));
   await waitFor(() =>
     expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
   );
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
+  expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(1);
 });
 
 // A credential change can make models discoverable (a stored Vertex credential
@@ -2717,14 +2917,20 @@ test("evener/auth/updated drops the pane's model/list cache so the catalog and p
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1));
+  await waitFor(() => expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(1));
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(1);
 
   modelListOverride = [
     { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
     { provider: "google-vertex", model: "gemini-3.8-flash", displayName: "google-vertex/gemini-3.8-flash" },
   ];
   act(() => fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } }));
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2));
+  await waitFor(() => expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(2));
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(2);
 
   await user.click(modelTrigger());
   const combo = await screen.findByRole("combobox", { name: "Model" });
@@ -2732,7 +2938,10 @@ test("evener/auth/updated drops the pane's model/list cache so the catalog and p
   await user.type(combo, "gemini");
   await screen.findByText("google-vertex/gemini-3.8-flash");
   // The picker shares the reloaded promise rather than issuing a third call.
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2);
+  expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(2);
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(2);
 });
 
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------

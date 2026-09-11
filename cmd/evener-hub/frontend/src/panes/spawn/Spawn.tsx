@@ -90,7 +90,13 @@ import {
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
-import { getGlobalLastWorkingDir, saveDefaults, setGlobalLastWorkingDir, sweepStaleModels } from "./spawnDefaults";
+import {
+  getGlobalLastWorkingDir,
+  modelValidityAgainstList,
+  saveDefaults,
+  setGlobalLastWorkingDir,
+  sweepStaleModels,
+} from "./spawnDefaults";
 import { applySpawnURL, type SpawnDraft, selectSpawnDirectory, spawnDraftsStore, useDraftField } from "./spawnDrafts";
 import {
   PRE_SESSION_BUILTIN_IDS,
@@ -373,8 +379,11 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
   const pluginSelectionRef = useRef(pluginSelection);
   pluginSelectionRef.current = pluginSelection;
-  const [staleModel, setStaleNotice] = useState<{ draft: SpawnDraft; model: string } | null>(null);
-  const staleNotice = staleModel?.draft === draft ? staleModel.model : null;
+  const [staleNotice, setStaleNotice] = useDraftField(draft, "staleModelNotice");
+  const [globalModelRequest, setGlobalModelRequest] = useState<{
+    active: boolean;
+    promise: Promise<ModelListResponse>;
+  } | null>(null);
   const [createDialogPath, setCreateDialogPath] = useDraftField(draft, "createDialogPath");
   const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
@@ -612,12 +621,12 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
-  // so the scoped cache below is keyed on two signals of it: this generation,
+  // so the scoped cache and global cleanup use two signals of it: this generation,
   // which evener/auth/updated advances the moment it arrives, and the
   // instance list's identity, which follows the credentials store's debounced
   // refetch and also covers an instance being added, edited or removed. On
-  // either, the loader identities change, and the catalog effect and the
-  // pickers reload (the mount-only stale-model sweep does not re-run).
+  // either, the loader identities change, the catalog effect and pickers reload,
+  // and global cleanup retires its old authority before requesting a new catalog.
   const [credentialsGeneration, setCredentialsGeneration] = useState(0);
   useEffect(
     () =>
@@ -759,29 +768,47 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
     };
   }, []);
 
-  // Sweep persisted defaults using the current provider configuration. A
-  // credential refresh cancels older catalogs before they can discard a model.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sweep on provider changes, not on each working-directory keystroke; the request captures the current scope
+  // Persisted defaults span every project, so only an explicitly global Evener
+  // catalog has authority to sweep them. Picker catalogs may belong to another
+  // harness or directory. Refresh/unmount retires the request for all consumers.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: auth generation and provider instances trigger a fresh global catalog
   useEffect(() => {
-    let active = true;
-    const initialModel = draft.fields.getState().model;
-    loadModelList().then(
+    const request = {
+      active: true,
+      promise: client.request("model/list", { harness: "evener" }),
+    };
+    setGlobalModelRequest(request);
+    request.promise.then(
       (r) => {
-        if (!active) return;
-        const { discarded } = sweepStaleModels(r.data);
-        // Both the snapshot and the live guard belong to this request's draft,
-        // even if navigation changes the controls before its catalog settles.
-        if (initialModel && draft.fields.getState().model === initialModel && discarded.includes(initialModel)) {
-          setModel("");
-          setStaleNotice({ draft, model: initialModel });
-        }
+        if (request.active) sweepStaleModels(r.data);
       },
       () => {},
     );
     return () => {
-      active = false;
+      request.active = false;
     };
-  }, [client, providerSetup.instances]);
+  }, [client, providerSetup.instances, credentialsGeneration]);
+
+  // Validate each entered draft independently of storage: an earlier sweep may
+  // already have deleted its saved model while the live draft still retains it.
+  // Navigation does not cancel origin-owned validation; provider refresh does.
+  useEffect(() => {
+    if (!globalModelRequest || !usesEvenerModels) return;
+    const initial = draft.fields.getState();
+    if (!initial.model) return;
+    globalModelRequest.promise.then(
+      (r) => {
+        const current = draft.fields.getState();
+        if (!globalModelRequest.active || current.model !== initial.model || current.harness !== initial.harness)
+          return;
+        const verdict = modelValidityAgainstList(initial.model, r.data);
+        if (verdict === "stale" || verdict === "malformed") {
+          draft.fields.setState({ model: "", staleModelNotice: initial.model });
+        }
+      },
+      () => {},
+    );
+  }, [draft, globalModelRequest, usesEvenerModels]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the
