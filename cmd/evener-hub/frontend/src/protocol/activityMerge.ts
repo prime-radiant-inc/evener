@@ -7,6 +7,7 @@ import {
   activityNodeID,
   isFailedDelegateOutcome,
   isFailedJobOutcome,
+  isTurnContainer,
 } from "./activityData";
 
 function cloneEntry(entry: ActivityEntry): ActivityEntry {
@@ -77,7 +78,7 @@ function revisionFencedDelegate(
   patch: ActivityDelegate,
   patchIsAuthority: boolean,
 ): ActivityDelegate {
-  const turnContainer = current.type !== "delegate" || patch.type !== "delegate";
+  const turnContainer = isTurnContainer(current) || isTurnContainer(patch);
   const authoritative = turnContainer
     ? patchIsAuthority
     : (patch.projectionRevision ?? 0) > (current.projectionRevision ?? 0);
@@ -199,7 +200,7 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
       continue;
     }
     const delegate = entry.delegate;
-    if (delegate.type === "delegate") add(delegate.terminal === true, isFailedDelegateOutcome(delegate.outcome));
+    if (!isTurnContainer(delegate)) add(delegate.terminal === true, isFailedDelegateOutcome(delegate.outcome));
     else for (const turn of delegate.turns ?? []) add(turn.terminal, isFailedJobOutcome(turn.outcome));
     if (!completeBranch(delegate.branch)) counts.complete = false;
     if (delegate.child) {

@@ -16,6 +16,7 @@ import {
   isActivityFailure,
   isFailedDelegateOutcome,
   isFailedJobOutcome,
+  isTurnContainer,
 } from "../../../protocol/activityData";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 
@@ -79,7 +80,7 @@ export function jobIsFailed(job: ActivityJob): boolean {
 export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
   const childActive = delegate.child ? sessionIsActive(delegate.child) : false;
   const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
-  if (delegate.type === "delegate") {
+  if (!isTurnContainer(delegate)) {
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
     const ownFailure =
       delegate.terminal === true ? isFailedDelegateOutcome(delegate.outcome) : isActivityFailure(undefined, status);
