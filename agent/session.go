@@ -1642,8 +1642,15 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// commit's append whole against a fold publication exactly as the clean
 		// path's pair is held.
 		switch s.reconcileEnvironmentEntryAfterFailedWriteLocked(turn, err) {
-		case environmentEntryAbsent:
-			// Nothing landed, so a retry has nothing to duplicate.
+		case environmentEntryAbsent, environmentEntryUnknown:
+			// Neither outcome puts the turn in front of the model, so the
+			// tracker must not claim the model saw it: rewind to the last state
+			// it did see and let the next turn render the whole observation
+			// again. When an unknown entry turns out to have landed after all,
+			// that costs a redundant entry in the transcript — which a reader
+			// can see and reconcile, unlike a tracker advanced past unseen
+			// context, which renders every later block as a diff against a
+			// baseline the model never received.
 			s.mu.Lock()
 			s.envTracker = envctx.NewTracker(before)
 			s.mu.Unlock()
@@ -1657,9 +1664,6 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 			s.logPairPersistedLocked(turn)
 			s.mu.Unlock()
 			committed = true
-		case environmentEntryUnknown:
-			// Neither established, so neither response is safe: keep the
-			// advanced tracker and claim nothing.
 		}
 	}
 	if committed {
@@ -1686,11 +1690,12 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 type environmentEntryOutcome int
 
 const (
-	// environmentEntryUnknown: reconciliation could not establish either, so
-	// neither re-rendering nor committing is safe. It takes the zero value
-	// because both of the others act on the session, and the one that acts
-	// against an entry that is really there duplicates the environment — an
-	// outcome nobody set must be the one that does nothing.
+	// environmentEntryUnknown: reconciliation could establish neither, so the
+	// entry cannot be treated as something the model was shown. It takes the
+	// zero value because the outcome nobody set must be the one that claims
+	// nothing about the transcript; environmentEntryDurable commits a turn on
+	// the strength of a confirmation, and a confirmation is exactly what an
+	// unset outcome does not carry.
 	environmentEntryUnknown environmentEntryOutcome = iota
 	// environmentEntryAbsent: the transcript does not hold the entry, so the
 	// next turn must render the observation again.
@@ -1709,11 +1714,9 @@ const (
 //
 // Absence is only ever reported when it is established. A barrier that cannot
 // be raised or a transcript that cannot be read leaves the outcome unknown,
-// and unknown keeps the advanced tracker: one silent environment costs the
-// model a diff it rebuilds at the next change, while a second entry for the
-// same observation is duplicate context no reader of the transcript can tell
-// apart. The caller holds attentionMu, so no other writer can append between
-// the failure and this read.
+// which is its own answer: only a confirmed entry may be treated as one the
+// model was shown. The caller holds attentionMu, so no other writer can append
+// between the failure and this read.
 func (s *Session) reconcileEnvironmentEntryAfterFailedWriteLocked(turn schema.Turn, err error) environmentEntryOutcome {
 	if !errors.Is(err, transcript.ErrRollbackFailed) {
 		return environmentEntryAbsent

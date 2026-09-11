@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -164,12 +165,14 @@ func attachEnvironmentFailureFS(t *testing.T, sess *Session) *environmentSyncFai
 // only the entry the failed rollback left behind.
 func assertEnvironmentNotReemitted(t *testing.T, sess *Session, retained []string) {
 	t.Helper()
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
 	if err := sess.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
 	if got := durableEnvironmentTurnIDs(t, sess); !reflect.DeepEqual(got, retained) {
 		t.Fatalf("durable environment entries after the next turn = %v, want only the entry already in the transcript %v", got, retained)
 	}
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
 }
 
 // drainPendingEvents takes every event the session has already published,
@@ -231,6 +234,26 @@ func pairLogEnvironmentTurnIDs(sess *Session) []string {
 		}
 	}
 	return ids
+}
+
+// assertEnvironmentTrackerMatchesModelHistory requires the environment tracker
+// to describe exactly what the model has been shown: replaying the ENVIRONMENT
+// blocks in history has to land on the tracker's own state. A tracker advanced
+// past history renders every later observation as a diff against a baseline the
+// model never received, which reads as a complete environment and is not one.
+func assertEnvironmentTrackerMatchesModelHistory(t *testing.T, sess *Session) {
+	t.Helper()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	replayed := envctx.NewTracker(envctx.State{})
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnEnvironment {
+			replayed.ReplayBlock(turn.Message.Text())
+		}
+	}
+	if got, want := sess.envTracker.State(), replayed.State(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("environment tracker state = %+v, want the %+v the model's history accounts for", got, want)
+	}
 }
 
 // assertDurableSequenceStrictlyIncreases requires every entry a reader of the
@@ -470,14 +493,17 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 	if got := countEnvironmentTurns(sess); got != 1 {
 		t.Fatalf("model-visible environment turns after the retry = %d, want the re-emitted block", got)
 	}
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
 }
 
-// TestEnvironmentAmbiguousWriteKeepsEntryWhenTranscriptUnreadable: an
-// indeterminate append the session cannot read back is still indeterminate.
-// Absence has to be confirmed, never inferred from a failed reconciliation, or
-// a transcript that cannot be read becomes a licence to write the environment
-// a second time.
-func TestEnvironmentAmbiguousWriteKeepsEntryWhenTranscriptUnreadable(t *testing.T) {
+// TestEnvironmentUnreadableTranscriptReemitsForTheModel: an append the session
+// cannot read back leaves the entry's fate unknown, and an unknown entry is one
+// the model was never shown. The tracker has to come back to the last state the
+// model did see so the next turn renders the whole of the observation, even
+// though the entry may be in the transcript already — a redundant environment
+// entry is readable, an environment diff against a baseline the model never
+// received is not.
+func TestEnvironmentUnreadableTranscriptReemitsForTheModel(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -499,19 +525,14 @@ func TestEnvironmentAmbiguousWriteKeepsEntryWhenTranscriptUnreadable(t *testing.
 	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
 		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
 	}
-	ambiguous := durableEnvironmentTurnIDs(t, sess)
-	if len(ambiguous) != 1 || ambiguous[0] == "" {
-		t.Fatalf("durable environment entries after the failed rollback = %v, want the one entry rollback could not remove", ambiguous)
-	}
-
-	assertEnvironmentNotReemitted(t, sess, ambiguous)
+	assertEnvironmentReemittedForModel(t, sess)
 }
 
-// TestEnvironmentAmbiguousWriteKeepsEntryWhenDurabilityUnestablished: the
-// reconciliation reads the transcript back only once it has raised a durability
-// barrier over it. A barrier that cannot be raised leaves the entry's fate
-// unknowable, which is not the same as knowing it is gone.
-func TestEnvironmentAmbiguousWriteKeepsEntryWhenDurabilityUnestablished(t *testing.T) {
+// TestEnvironmentUnestablishedDurabilityReemitsForTheModel: reconciliation
+// reads the transcript back only once it has raised a durability barrier over
+// it, and a barrier that cannot be raised leaves the same unknown. The model is
+// owed the observation either way.
+func TestEnvironmentUnestablishedDurabilityReemitsForTheModel(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -522,12 +543,25 @@ func TestEnvironmentAmbiguousWriteKeepsEntryWhenDurabilityUnestablished(t *testi
 	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
 		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
 	}
-	ambiguous := durableEnvironmentTurnIDs(t, sess)
-	if len(ambiguous) != 1 || ambiguous[0] == "" {
-		t.Fatalf("durable environment entries after the failed rollback = %v, want the one entry rollback could not remove", ambiguous)
-	}
+	assertEnvironmentReemittedForModel(t, sess)
+}
 
-	assertEnvironmentNotReemitted(t, sess, ambiguous)
+// assertEnvironmentReemittedForModel requires an unresolved append to leave the
+// tracker where the model's history is, and the next turn to put the
+// observation into that history.
+func assertEnvironmentReemittedForModel(t *testing.T, sess *Session) {
+	t.Helper()
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+	if got := countEnvironmentTurns(sess); got != 0 {
+		t.Fatalf("model history environment turns after the unresolved append = %d, want none claimed", got)
+	}
+	if err := sess.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(sess); got != 1 {
+		t.Fatalf("model history environment turns after the next turn = %d, want the observation the unresolved append owes the model", got)
+	}
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
 }
 
 // TestEnvironmentAmbiguousWriteCommitsConfirmedEntry: reconciling an
@@ -580,15 +614,14 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 	assertDurableSequenceStrictlyIncreases(t, sess)
 }
 
-// TestEnvironmentEntryOutcomeZeroValueIsConservative: reconciliation's outcome
-// decides whether the tracker rewinds, and a rewind against an entry that is
-// really there duplicates the environment. A future path that returns the
-// type's zero value — a bare declaration, a struct field, a failed decode —
-// must therefore land on the outcome that does nothing, not on the one that
-// re-renders.
+// TestEnvironmentEntryOutcomeZeroValueIsConservative: one outcome commits a
+// turn into model history and the pair log on the strength of a confirmation
+// that the entry is in the transcript. A future path that returns the type's
+// zero value — a bare declaration, a struct field, a failed decode — carries no
+// such confirmation, so the zero value must be the outcome that claims nothing.
 func TestEnvironmentEntryOutcomeZeroValueIsConservative(t *testing.T) {
 	var outcome environmentEntryOutcome
 	if outcome != environmentEntryUnknown {
-		t.Fatalf("zero-valued outcome = %d, want environmentEntryUnknown (%d) so an unset outcome cannot rewind the tracker", outcome, environmentEntryUnknown)
+		t.Fatalf("zero-valued outcome = %d, want environmentEntryUnknown (%d) so an unset outcome cannot commit a turn nobody confirmed", outcome, environmentEntryUnknown)
 	}
 }
