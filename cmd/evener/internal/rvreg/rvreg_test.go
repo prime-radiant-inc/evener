@@ -1,6 +1,8 @@
 package rvreg
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/rendezvous"
@@ -51,6 +53,51 @@ func TestRegistrationUpdatesSessionIdentity(t *testing.T) {
 	}
 }
 
+func TestRegistrationRemoveRetriesAfterFailure(t *testing.T) {
+	runDir := t.TempDir()
+	reg := &Registration{}
+	const pid = 5151
+	if err := reg.Register(runDir, rendezvous.Entry{PID: pid, ThreadID: "01OLD", SessionID: "01OLD"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	artifact := filepath.Join(runDir, "5151.json")
+	if err := os.Remove(artifact); err != nil {
+		t.Fatalf("remove rendezvous artifact: %v", err)
+	}
+	if err := os.Mkdir(artifact, 0o700); err != nil {
+		t.Fatalf("replace artifact with directory: %v", err)
+	}
+	child := filepath.Join(artifact, "blocker")
+	if err := os.WriteFile(child, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	if err := reg.Remove(); err == nil {
+		t.Fatal("expected first Remove to fail")
+	}
+	if err := reg.UpdateSessionID("01LATE"); err == nil {
+		t.Fatal("expected late update to remain rejected after failed Remove")
+	}
+	if err := reg.Register(runDir, rendezvous.Entry{PID: pid}); err == nil {
+		t.Fatal("expected Register to remain rejected after failed Remove")
+	}
+	if err := os.Remove(child); err != nil {
+		t.Fatalf("remove blocker: %v", err)
+	}
+	if err := reg.Remove(); err != nil {
+		t.Fatalf("retry Remove: %v", err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("retry did not remove the rendezvous artifact: %v", err)
+	}
+	entries, err := rendezvous.List(runDir)
+	if err != nil {
+		t.Fatalf("List after retry: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries after retry=%+v", entries)
+	}
+}
+
 // TestRegistrationRemoveClearsEntry covers Remove() — the only cleanup path.
 // RV-01: after Register + Remove the rendezvous directory must be empty.
 func TestRegistrationRemoveClearsEntry(t *testing.T) {
@@ -77,6 +124,19 @@ func TestRegistrationRemoveClearsEntry(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected empty list after Remove, got %+v", entries)
+	}
+	if err := reg.UpdateSessionID("01LATE"); err == nil {
+		t.Fatal("expected UpdateSessionID after Remove to fail")
+	}
+	if err := reg.Register(runDir, rendezvous.Entry{PID: 9999}); err == nil {
+		t.Fatal("expected Register after Remove to fail")
+	}
+	entries, err = rendezvous.List(runDir)
+	if err != nil {
+		t.Fatalf("List after rejected resurrection: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected rejected resurrection to leave directory empty, got %+v", entries)
 	}
 }
 
