@@ -854,6 +854,46 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       expect(store.getState().conversation?.status).not.toBe("running");
     });
+
+    it("does not merge a completed turn's usage into the cumulative conversation usage", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        usage: { totalTokens: 500, inputTokens: 300 },
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      // Two turns complete, each carrying its own (much smaller) per-turn
+      // usage. The cumulative conversation usage set by the projection must
+      // survive both — it is not the sum or replacement of per-turn totals.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "default",
+            status: "completed",
+            usage: { totalTokens: 40, inputTokens: 10 },
+          },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t2",
+            itemsView: "default",
+            status: "completed",
+            usage: { totalTokens: 55, inputTokens: 15 },
+          },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.usage.totalTokens).toBe(500);
+      expect(store.getState().conversation?.usage.inputTokens).toBe(300);
+    });
   });
 
   describe("close", () => {

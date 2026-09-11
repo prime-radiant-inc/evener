@@ -2641,6 +2641,9 @@ export function createConversationStore() {
             // Completion is newer than an in-flight read even when this
             // client missed the corresponding start notification.
             turnOwnerRev++;
+            // params.turn.usage is this one turn's totals, not the session's
+            // cumulative usage — publish completion state only and leave
+            // usage as whatever the last authoritative projection set.
             set({
               conversation: {
                 ...conv,
@@ -2650,9 +2653,6 @@ export function createConversationStore() {
                   (!conv.activeTurnId || completedActive)
                     ? "ready"
                     : conv.status,
-                usage: params.turn.usage
-                  ? { ...conv.usage, ...params.turn.usage }
-                  : conv.usage,
               },
             });
             break;
