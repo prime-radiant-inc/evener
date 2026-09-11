@@ -789,6 +789,16 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return source.ForkThread(ctx, params)
 		})
 	}
+	// A request that cannot be carried out however it is routed is answered
+	// first, ahead of every fence and lookup below. None of them belongs on the
+	// path of a malformed call, and the recovery fence in particular reaches
+	// ownershipEntry's scan of every project directory while a recovery is
+	// unconfirmed — so a bad parameter combination would otherwise be reported
+	// as an unavailable session, after that scan.
+	turn, err := validateThreadForkParams(params)
+	if err != nil {
+		return appwire.ThreadForkResponse{}, err
+	}
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, ref.ThreadID)
 	unlockDeletionTarget := lockDeletionTarget(cfg, params.Ref, ref.ThreadID)
 	defer unlockDeletionTarget()
@@ -796,15 +806,6 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		return appwire.ThreadForkResponse{}, err
 	}
 	if err := sessionActionRecoveryError(ctx, cfg, params.Ref, ref.ThreadID, epoch); err != nil {
-		return appwire.ThreadForkResponse{}, err
-	}
-	// A request that cannot be carried out however it is routed is answered
-	// before the roster refresh and the ownership scan below: neither belongs on
-	// the path of a malformed call, and an unreadable or unknown target must not
-	// turn "these parameters do not go together" into "that session is
-	// unavailable".
-	turn, err := validateThreadForkParams(params)
-	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
 	// One roster refresh serves every ownership fence below, and it has to land

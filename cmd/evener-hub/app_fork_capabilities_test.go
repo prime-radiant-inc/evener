@@ -1033,12 +1033,13 @@ func TestHubForkByStableRefBranchesTheCurrentSession(t *testing.T) {
 }
 
 // A malformed fork request is refused on its own terms, before the handler
-// refreshes daemon ownership or goes looking for the target's transcript. The
-// fixture makes that observable two ways at once: the target is unknown, and
-// <stateDir>/projects is a regular file, so ownershipEntry's scan of every
-// project directory cannot run without failing. Either way an InvalidParams
-// answer proves the request never got that far.
-func TestHubForkValidatesParamsBeforeOwnershipDiscovery(t *testing.T) {
+// fences the target or goes looking for its transcript. The fixture makes that
+// observable three ways at once: the session is under a recovery fence that
+// would otherwise answer first, <stateDir>/projects is a regular file so
+// ownershipEntry's scan of every project directory cannot run without failing,
+// and the roster refresh is counted. An InvalidParams answer with no refresh
+// proves the request never got past validation.
+func TestHubForkValidatesParamsBeforeFencingOrDiscovery(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		params appwire.ThreadForkParams
@@ -1053,6 +1054,7 @@ func TestHubForkValidatesParamsBeforeOwnershipDiscovery(t *testing.T) {
 		{name: "edited input with deferred input", params: appwire.ThreadForkParams{SourceTurnID: "turn_1", EditedInput: "forked input", DeferInput: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			const sessionID = "02fencedForkTarget0000"
 			stateDir := t.TempDir()
 			// Not a directory: ownershipEntry's os.ReadDir fails here rather
 			// than reporting absence, so reaching the scan cannot look like
@@ -1060,12 +1062,34 @@ func TestHubForkValidatesParamsBeforeOwnershipDiscovery(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(stateDir, "projects"), []byte("not a directory"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			locks := hubcore.NewResumeLocks()
+			finish := locks.BeginForceStop([]string{sessionID})
+			if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+				t.Fatal(err)
+			}
+			finish(true)
+			runDir := t.TempDir()
+			cfg := hubcore.WebConfig{
+				StateDir: stateDir, RunDir: runDir, ResumeLocks: locks,
+				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}),
+			}
+			refreshes := 0
+			previousRefresh := hubRosterRefresh
+			hubRosterRefresh = func(ctx context.Context, r *hubcore.Roster) error {
+				refreshes++
+				return previousRefresh(ctx, r)
+			}
+			t.Cleanup(func() { hubRosterRefresh = previousRefresh })
+
 			params := tc.params
-			params.Ref = "local:02unknownForkTarget000"
-			_, err := hubThreadFork(t.Context(), hubcore.WebConfig{StateDir: stateDir}, nil, params)
+			params.Ref = "local:" + sessionID
+			_, err := hubThreadFork(t.Context(), cfg, nil, params)
 			wire, ok := errors.AsType[appwire.WireError](err)
 			if !ok || wire.Code != appwire.CodeInvalidParams {
-				t.Fatalf("fork error=%v, want structured invalid params before ownership discovery", err)
+				t.Fatalf("fork error=%v, want structured invalid params ahead of every fence", err)
+			}
+			if refreshes != 0 {
+				t.Fatalf("malformed fork refreshed daemon ownership %d times, want none", refreshes)
 			}
 		})
 	}
