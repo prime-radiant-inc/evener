@@ -330,6 +330,71 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 	}
 }
 
+// A durable append whose sync fails and whose rollback cannot truncate the
+// entry back out leaves that entry in the file. The writer's own bookkeeping
+// has to agree with what a later reader of the file sees: the seq the entry
+// took is spent, so the next append must not reuse it, and the failure the
+// entry settles is one that reader counts. Indices: entry Sync 6 (fault),
+// rollback Truncate 7 (fault).
+func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T) {
+	plan := bytes.Repeat([]byte{0x01}, 128)
+	plan[6] = 0x00 // entry Sync
+	plan[7] = 0x00 // rollback Truncate
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	w.TrackFailures(nil, 0)
+
+	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
+	if err := w.AppendDurable(retained); !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("append error = %v, want a rollback failure leaving the entry in the file", err)
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
+		t.Fatalf("append after retained entry: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := faultTestEntries(t, base)
+	if len(entries) != 2 {
+		t.Fatalf("entries a reader sees = %d, want the retained entry and the one after it", len(entries))
+	}
+	if entries[1].Seq <= entries[0].Seq {
+		t.Fatalf("seq %d follows retained seq %d, want a strictly greater sequence", entries[1].Seq, entries[0].Seq)
+	}
+
+	reader := NewFailureCounter(0)
+	for _, entry := range entries {
+		reader.Observe(entry.Turn)
+	}
+	count, ok := w.FailedToolCalls()
+	if !ok || count != reader.Count() {
+		t.Fatalf("writer failure count = %d (counted=%v), want the %d a reader of the transcript counts", count, ok, reader.Count())
+	}
+}
+
+// faultTestEntries decodes every entry line the transcript holds.
+func faultTestEntries(t *testing.T, fs afero.Fs) []Entry {
+	t.Helper()
+	data, err := afero.ReadFile(fs, faultTranscriptPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
+	entries := make([]Entry, 0, len(lines))
+	for _, raw := range lines[1:] {
+		entry, err := DecodeEntry(raw)
+		if err != nil {
+			t.Fatalf("decode entry %s: %v", raw, err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
 // Nil and closed receivers must swallow every write as a no-op, never panicking
 // or erroring.
 func TestWriter_NilAndClosedNoOps(t *testing.T) {

@@ -461,7 +461,10 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
 		if err := w.file.Sync(); err != nil {
 			if forceSync {
-				if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
+				if removed, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
+					if !removed {
+						w.countAppendedEntryLocked(turn)
+					}
 					return fmt.Errorf("sync transcript entry: %w; %w: %w", err, ErrRollbackFailed, rollbackErr)
 				}
 				w.dirty = previousDirty
@@ -473,12 +476,18 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		w.dirty = false
 	}
 
-	w.seq++
-	// Counted only once the entry is on its way to the file and no rollback can
-	// take it back: the figure is a statement about the transcript, so it moves
-	// for exactly the entries a later reader of that transcript would see.
-	w.failures.Observe(turn)
+	w.countAppendedEntryLocked(turn)
 	return nil
+}
+
+// countAppendedEntryLocked spends the entry's sequence number and counts the
+// failures the entry settles. Both figures are statements about the transcript,
+// so they move for exactly the entries a later reader of that file would see —
+// which is why a rollback that could not take a written entry back out spends
+// them too, and a rollback that removed the entry does not.
+func (w *Writer) countAppendedEntryLocked(turn schema.Turn) {
+	w.seq++
+	w.failures.Observe(turn)
 }
 
 func (w *Writer) writeLineLocked(line []byte) error {
@@ -495,29 +504,39 @@ func (w *Writer) writeLineLocked(line []byte) error {
 	return nil
 }
 
+// appendFailureLocked reports a write that failed partway. What it leaves at
+// startOffset is at most a partial line, which a reader skips rather than
+// reading as an entry, so the entry's sequence number stays unspent whether or
+// not the rollback could remove those bytes.
 func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64) error {
-	if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
+	if _, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
 		return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
 	}
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-func (w *Writer) rollbackAppendLocked(startOffset int64) error {
+// rollbackAppendLocked takes the entry written at startOffset back out of the
+// file. It reports whether the entry is gone, which only the truncate decides:
+// a truncate that succeeded has removed the entry even when the seek or sync
+// after it fail, and a truncate that failed leaves the entry where a later
+// reader will find it.
+func (w *Writer) rollbackAppendLocked(startOffset int64) (removed bool, err error) {
 	truncateErr := w.file.Truncate(startOffset)
 	_, seekErr := w.file.Seek(0, io.SeekEnd)
+	removed = truncateErr == nil
 	if truncateErr != nil && seekErr != nil {
-		return fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
+		return removed, fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
 	}
 	if truncateErr != nil {
-		return fmt.Errorf("truncate to %d: %w", startOffset, truncateErr)
+		return removed, fmt.Errorf("truncate to %d: %w", startOffset, truncateErr)
 	}
 	if seekErr != nil {
-		return fmt.Errorf("seek eof: %w", seekErr)
+		return removed, fmt.Errorf("seek eof: %w", seekErr)
 	}
 	if syncErr := w.file.Sync(); syncErr != nil {
-		return fmt.Errorf("sync rollback truncate: %w", syncErr)
+		return removed, fmt.Errorf("sync rollback truncate: %w", syncErr)
 	}
-	return nil
+	return removed, nil
 }
 
 // Close syncs and closes the underlying file. Idempotent: safe to call multiple times.

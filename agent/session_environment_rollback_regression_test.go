@@ -233,6 +233,23 @@ func pairLogEnvironmentTurnIDs(sess *Session) []string {
 	return ids
 }
 
+// assertDurableSequenceStrictlyIncreases requires every entry a reader of the
+// session's transcript sees to carry its own sequence number. A retained entry
+// from a rollback that could not remove it still spends its seq, so the turns
+// the session goes on to write must not land on top of it.
+func assertDurableSequenceStrictlyIncreases(t *testing.T, sess *Session) {
+	t.Helper()
+	data, err := readTranscriptFull(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(data.Entries); i++ {
+		if data.Entries[i].Seq <= data.Entries[i-1].Seq {
+			t.Fatalf("transcript entry %d carries seq %d after seq %d, want a strictly greater sequence", i, data.Entries[i].Seq, data.Entries[i-1].Seq)
+		}
+	}
+}
+
 // durableEnvironmentTurnIDs lists the stable IDs of every ENVIRONMENT entry a
 // reader of the session's transcript would see, in file order.
 func durableEnvironmentTurnIDs(t *testing.T, sess *Session) []string {
@@ -556,4 +573,9 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 	if got := historyEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
 		t.Fatalf("model history environment turns after the next turn = %v, want only the committed entry %v", got, confirmed)
 	}
+
+	// The committed entry spent its sequence number, so the turns that follow
+	// it have to take later ones.
+	sendOneUserInput(t, sess, "hello")
+	assertDurableSequenceStrictlyIncreases(t, sess)
 }
