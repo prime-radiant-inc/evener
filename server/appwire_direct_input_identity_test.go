@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -153,27 +152,127 @@ func TestDirectInputCompactionKeepsLiveAndColdTurnGrouping(t *testing.T) {
 	}
 	liveItems := directInputReplayItems(read.Thread.Turns)
 	coldItems := directInputReplayItems(cold)
-	compactionOwner := ""
+	// The turn the fold ran under is the last user turn; the compaction
+	// sequence belongs to it. Pinning the owner to that turn is what stops
+	// both projections agreeing on the same WRONG grouping.
+	wantOwner := ""
+	for _, item := range liveItems {
+		if item.Type == "userMessage" {
+			wantOwner = item.TurnID
+		}
+	}
+	if wantOwner == "" {
+		t.Fatalf("replay has no user message to own the compaction: %#v", liveItems)
+	}
 	compactionItems := 0
 	for _, item := range liveItems {
 		if item.EventKind != appwire.ThreadItemEventKindContextCompaction && item.EventKind != appwire.ThreadItemEventKindCompaction {
 			continue
 		}
 		compactionItems++
-		if compactionOwner == "" {
-			compactionOwner = item.TurnID
-		}
-		if item.TurnID != compactionOwner {
-			t.Fatalf("live compaction sequence split across turns %s and %s", compactionOwner, item.TurnID)
+		if item.TurnID != wantOwner {
+			t.Fatalf("live compaction item %s owner=%s, want the direct turn %s", item.EventKind, item.TurnID, wantOwner)
 		}
 	}
 	if compactionItems != 4 {
 		t.Fatalf("live compaction items = %d, want two metadata and two artifacts: %#v", compactionItems, liveItems)
 	}
-	if !reflect.DeepEqual(liveItems, coldItems) {
-		assertReplayItemParity(t, "direct input compaction replay", liveItems, coldItems)
-	}
+	assertReplayItemParity(t, "direct input compaction replay", liveItems, coldItems)
 }
+
+// A goal continuation is named by mintRunningTurnID, which refuses outright
+// for a session no daemon serves (turnNameUnserved). The continuation then
+// runs with no id of its own and reproduces the same divergence a direct user
+// turn did: the live projector and the transcript projection each mint a
+// turn_%d from a different counter.
+func TestUnservedGoalContinuationKeepsLiveAndColdTurnIdentity(t *testing.T) {
+	adapter := &environmentReplayAdapter{mutationProjectionAdapter{blockAt: 100}}
+	sess := newMutationReplaySessionWithAdapter(t, adapter)
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, sess.ID(), sess.TranscriptPath())
+	drain := func() {
+		t.Helper()
+		for {
+			select {
+			case event := <-sess.Events():
+				srv.RecordAppEvent(event)
+			default:
+				return
+			}
+		}
+	}
+	if _, err := sess.ProcessInput(context.Background(), "opening input", nil); err != nil {
+		t.Fatalf("direct input: %v", err)
+	}
+	drain()
+	// The daemon dispatches a goal continuation exactly this way
+	// (cmd/evener/serve.go's ProcessInputKind branch, fed by
+	// server.SubmitContinuation).
+	for continuation := range 2 {
+		if _, err := sess.ProcessInputKind(context.Background(), fmt.Sprintf("continue toward the goal %d", continuation), nil, agent.EntryContinuation); err != nil {
+			t.Fatalf("continuation %d: %v", continuation, err)
+		}
+		drain()
+	}
+	cold, _, err := appTurnsFromTranscriptFile(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := directInputReplayItems(srv.appTurns.Snapshot())
+	goals := 0
+	for _, item := range live {
+		if item.Description == goalContinuationItemDescription {
+			goals++
+		}
+	}
+	if goals != 2 {
+		t.Fatalf("live goal continuation items = %d, want 2: %#v", goals, live)
+	}
+	assertReplayItemParity(t, "unserved goal continuation replay", live, directInputReplayItems(cold))
+}
+
+// A notification wake is named by the same mintRunningTurnID, and for an
+// unserved session the daemon-only stand-down above it does not apply: the
+// wake must still deliver, so it used to open its turn with an empty id and
+// diverge exactly as the continuation did.
+func TestUnservedNotificationWakeKeepsLiveAndColdTurnIdentity(t *testing.T) {
+	adapter := &environmentReplayAdapter{mutationProjectionAdapter{blockAt: 100}}
+	sess := newMutationReplaySessionWithAdapter(t, adapter)
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, sess.ID(), sess.TranscriptPath())
+	drain := func() {
+		t.Helper()
+		for {
+			select {
+			case event := <-sess.Events():
+				srv.RecordAppEvent(event)
+			default:
+				return
+			}
+		}
+	}
+	if _, err := sess.ProcessInput(context.Background(), "opening input", nil); err != nil {
+		t.Fatalf("direct input: %v", err)
+	}
+	drain()
+	// Pending steering is what makes the wake deliverable without a job
+	// fixture; the daemon dispatches it the same way server.SubmitNotification
+	// does.
+	sess.SteerKind("look at this", events.SteeringKindAgentMessage)
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, agent.EntryNotification); err != nil {
+		t.Fatalf("notification wake: %v", err)
+	}
+	drain()
+	cold, _, err := appTurnsFromTranscriptFile(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReplayItemParity(t, "unserved notification wake replay", directInputReplayItems(srv.appTurns.Snapshot()), directInputReplayItems(cold))
+}
+
+// goalContinuationItemDescription is the label the projection gives a goal
+// continuation's system item.
+const goalContinuationItemDescription = "Goal"
 
 // directInputReplayItems keeps the items whose turn identity these cases are
 // about: the user's own message, the environment block that precedes it, the
@@ -183,6 +282,7 @@ func directInputReplayItems(turns []appwire.Turn) []replayItemIdentity {
 	for _, item := range replayItemIdentities(turns) {
 		switch {
 		case item.Type == "userMessage", item.Type == "steering",
+			item.Description == goalContinuationItemDescription,
 			item.EventKind == appwire.ThreadItemEventKindEnvironment,
 			item.EventKind == appwire.ThreadItemEventKindContextCompaction,
 			item.EventKind == appwire.ThreadItemEventKindCompaction,

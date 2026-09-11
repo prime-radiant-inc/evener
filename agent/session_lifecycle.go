@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -1543,6 +1541,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", false, nil
 		}
+		if runningTurnID == "" {
+			// Unserved, the one case the stand-down above deliberately skips:
+			// nothing can name this wake and nothing else will deliver it, so
+			// it names itself rather than opening its turn anonymous.
+			runningTurnID = s.nameTurnItself()
+		}
 		// Named: drop any backoff this session accumulated standing down.
 		s.resetRunningTurnNameRetry()
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
@@ -1557,9 +1561,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// A continuation is named here because acceptContinuationInput cannot
 	// refuse. A notification wake took its name above, before it consumed any
 	// wake state, so that a wake it cannot name stands down while standing
-	// down is still free.
+	// down is still free — a continuation has no such option, so a refused
+	// mint (turnNameUnserved for every session no daemon serves, or a held
+	// slot or unhealthy store) falls back to naming itself rather than running
+	// anonymous.
 	if kind == EntryContinuation {
-		runningTurnID, _ = s.mintRunningTurnID()
+		if runningTurnID, _ = s.mintRunningTurnID(); runningTurnID == "" {
+			runningTurnID = s.nameTurnItself()
+		}
 	}
 
 	if kind == EntryContinuation {
@@ -2005,16 +2014,10 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			// event below, and activeTurnOwner reports it for everything
 			// published while the turn runs. Without it the live projector
 			// and the transcript projection each invent a turn_%d of their
-			// own and disagree about every item's transcript key. Minted in
-			// memory, like the environment entry's own id — an unserved
-			// session has no client to address the turn, so it must not pay
-			// a durable client-mutation write for the name.
+			// own and disagree about every item's transcript key.
 			turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
-			turn.StableTurnID = "turn_direct_" + ulid.Make().String()
+			turn.StableTurnID = s.nameTurnItself()
 			stableTurnID = turn.StableTurnID
-			s.mu.Lock()
-			s.directTurnID = turn.StableTurnID
-			s.mu.Unlock()
 			s.recordTurn(turn, turn)
 		}
 	} else {

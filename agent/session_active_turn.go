@@ -2,7 +2,10 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"primeradiant.com/evener/agent/events"
 )
@@ -109,6 +112,41 @@ func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 	// The store took a write, so the next failure is news again.
 	s.clearStoreUnhealthyWarning()
 	return turnID, refusal
+}
+
+// directTurnIDPrefix marks a name a turn minted for ITSELF. Such a name never
+// enters the durable active-turn slot, so every durable operation keyed on
+// that slot must treat it as absent.
+const directTurnIDPrefix = "turn_direct_"
+
+// selfMintedTurnID reports a name nameTurnItself produced.
+func selfMintedTurnID(turnID string) bool {
+	return strings.HasPrefix(turnID, directTurnIDPrefix)
+}
+
+// nameTurnItself gives a turn mintRunningTurnID declined to name an identity
+// of its own, and records it as the session's direct turn so activeTurnOwner
+// reports it for everything published while the turn runs.
+//
+// Without it the turn reaches the transcript and the live event stream
+// anonymous, and the two projections each invent a turn_%d from a different
+// counter — the transcript projection numbers by entry index, the live
+// projector by turns opened — so every item's transcript key changes across a
+// reload. The refusal is not rare: turnNameUnserved makes it unconditional for
+// a session no daemon serves, which is every one-shot run, every in-process
+// delegate, and every embedder driving Session directly.
+//
+// Minted in memory, like the environment entry's own id: the point of the
+// unserved refusal is that such a session pays no durable client-mutation
+// write per turn, and a name it needs only for its own projections must not
+// reintroduce one. The turn_direct_ prefix keeps it out of both the entry-index
+// namespace (turn_%d) and the client-mutation one (appwire.ClientMutationTurnID).
+func (s *Session) nameTurnItself() string {
+	turnID := directTurnIDPrefix + ulid.Make().String()
+	s.mu.Lock()
+	s.directTurnID = turnID
+	s.mu.Unlock()
+	return turnID
 }
 
 // warnStoreUnhealthyOnce reports a client-mutation-store failure at most once
@@ -252,7 +290,11 @@ const (
 // load and nowhere else. So the write is re-attempted rather than dropped
 // (kata fbmy).
 func (s *Session) releaseRunningTurnID(turnID string) turnNameReleaseResult {
-	if turnID == "" || s.clientMutations == nil {
+	// A self-minted name was never in the slot, and mutate() writes the
+	// snapshot whether or not its closure changed anything — so releasing one
+	// through the store would put back the per-turn durable write the unserved
+	// refusal exists to avoid.
+	if turnID == "" || selfMintedTurnID(turnID) || s.clientMutations == nil {
 		return turnNameReleaseNoop
 	}
 	clearing := false

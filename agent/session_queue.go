@@ -985,14 +985,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
-	if s.clientMutations != nil {
-		// ActiveTurnID is the actual logical owner at delivery time. For an
-		// inline steer it is the already-running turn; for a carrier it is the
-		// carrier's reserved mutation turn. Both identities must be durable so
-		// replay can distinguish the two boundaries. System steering uses the
-		// same active turn when it is drained by a named daemon turn.
-		t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
-	}
+	// The active owner is the actual logical owner at delivery time. For an
+	// inline steer it is the already-running turn; for a carrier it is the
+	// carrier's reserved mutation turn; for a turn nothing outside the session
+	// named it is the name that turn minted for itself. Both identities must
+	// be durable so replay can distinguish the two boundaries. System steering
+	// uses the same active turn when it is drained by a named daemon turn.
+	t.OwningTurnID = s.activeTurnOwner()
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
 			t,
@@ -1047,10 +1046,10 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 }
 
 // activeTurnOwner names the logical turn anything published right now belongs
-// to. A client-named turn owns the durable slot; a turn a bare ProcessInput
-// caller started owns only the id it minted for itself, which is still the
-// turn on screen and the turn a reader reloading the transcript must find
-// these records under.
+// to. A client-named turn owns the durable slot; a turn nothing outside the
+// session named owns only the id it minted for itself (nameTurnItself), which
+// is still the turn on screen and the turn a reader reloading the transcript
+// must find these records under.
 func (s *Session) activeTurnOwner() string {
 	if s.clientMutations != nil {
 		if active := s.clientMutations.snapshot().ActiveTurnID; active != "" {
