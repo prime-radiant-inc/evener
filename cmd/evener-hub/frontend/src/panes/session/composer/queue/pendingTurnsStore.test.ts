@@ -12,7 +12,6 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 import { useColdStartSkeleton } from "../../coldStart";
 import {
   discardRecoveryPendingTurn,
-  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
@@ -22,6 +21,7 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {

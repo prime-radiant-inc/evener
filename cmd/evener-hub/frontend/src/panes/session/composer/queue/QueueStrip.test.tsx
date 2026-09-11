@@ -13,12 +13,12 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import {
-  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
+import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 const originalClipboard = navigator.clipboard;
 
@@ -924,8 +924,9 @@ describe("drain-as-steer affordance", () => {
       defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: false }), onDrainSuccess }),
     );
 
+    const steerNow = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(steerNow);
     });
 
     await waitFor(() => {
@@ -949,8 +950,9 @@ describe("drain-as-steer affordance", () => {
     });
     renderStrip(defaultProps());
 
+    const steerNow = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(steerNow);
     });
     expect(getToasts()).toHaveLength(0);
     expect(screen.queryByText(/reload/i)).toBeNull();
@@ -982,8 +984,9 @@ describe("drain-as-steer affordance", () => {
     }));
     renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
 
+    const steerNow = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(steerNow);
     });
 
     await screen.findByText(/image attachment is still processing/i);

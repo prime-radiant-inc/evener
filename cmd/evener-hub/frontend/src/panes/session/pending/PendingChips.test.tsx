@@ -5,11 +5,8 @@ import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB
 import type { InputAttachment } from "../../../stores/threads";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import type { PendingMethod } from "../composer/queue/pendingReconcile";
-import {
-  flushPendingTurnsProjectionForTests,
-  refreshPendingTurnsProjection,
-  resetPendingTurnsStoreForTests,
-} from "../composer/queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { PendingChips } from "./PendingChips";
 
 beforeEach(() => {
