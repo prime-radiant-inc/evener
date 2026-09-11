@@ -681,7 +681,7 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 		t.Fatalf("durable environment entries = %v, want none: neither append produced a record", got)
 	}
 	if got := countEnvironmentTurns(sess); got != 0 {
-		t.Fatalf("refused environment appends entered model history %d times", got)
+		t.Fatalf("failed and refused environment appends entered model history %d times", got)
 	}
 	assertEnvironmentTrackerMatchesModelHistory(t, sess)
 
@@ -692,6 +692,6 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 		}
 	}
 	if warnings != 2 {
-		t.Fatalf("transcript-failure warnings = %d, want one for each refused turn", warnings)
+		t.Fatalf("transcript-failure warnings = %d, want one for the write that poisoned the writer and one for the turn it then refused", warnings)
 	}
 }
