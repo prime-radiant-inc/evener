@@ -254,8 +254,10 @@ test("missing credentials surface setup in the composer without opening a dialog
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-sentinel");
   await setWorkingDir(user, "/tmp/my-project");
   expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+  // userEvent owns its async act environment. Await it before opening the
+  // separate act scope for lazy-import completion; nesting races their flags.
+  await user.click(connect);
   await act(async () => {
-    await user.click(connect);
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
@@ -302,8 +304,8 @@ test("connection handoff shows the actual instance models and preserves draft un
   await setWorkingDir(user, "/tmp/handoff-project");
   await user.click(modelTrigger());
   const connect = await screen.findByRole("button", { name: "Connect another provider" });
+  await user.click(connect);
   await act(async () => {
-    await user.click(connect);
     await vi.dynamicImportSettled();
   });
   await user.click(screen.getByText("Already configured access on this host?"));
@@ -386,8 +388,8 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   await screen.findByRole("button", { name: "Connect provider" });
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "guided-draft");
   await setWorkingDir(user, "/tmp/guided");
+  await user.click(screen.getByRole("button", { name: "Connect provider" }));
   await act(async () => {
-    await user.click(screen.getByRole("button", { name: "Connect provider" }));
     await vi.dynamicImportSettled();
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
@@ -480,8 +482,8 @@ test("successful keyless testing refreshes availability without an auth notifica
   const connectProvider = await screen.findByRole("button", { name: "Connect provider" });
   // Finish the lazy dialog's mount and catalog refresh before retaining a button
   // reference: the refresh replaces the initially cached instance rows.
+  await user.click(connectProvider);
   await act(async () => {
-    await user.click(connectProvider);
     await vi.dynamicImportSettled();
   });
   await user.click(screen.getByText("Already configured access on this host?"));
