@@ -74,6 +74,7 @@ function taskNotification(
   total: number,
   done: number,
   id: ActivityIdentity = identity(),
+  extra: { cancelled?: number; remaining?: number } = {},
 ): AnyNotification {
   return {
     method: "evener/task/updated",
@@ -82,6 +83,7 @@ function taskNotification(
       ref: id.ref,
       total,
       done,
+      ...extra,
     },
   } as AnyNotification;
 }
@@ -593,6 +595,48 @@ describe("ActivityStore", () => {
       expect(doneGroup?.count).toBe(3);
       const openGroup = v?.tasks.find((g) => g.status === "open");
       expect(openGroup?.count).toBe(7);
+    });
+
+    it("task/updated reports zero open for a cancelled-only update, not total - done", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        taskNotification(3, 0, identity({ generation: 1 }), { cancelled: 3 }),
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      const openGroup = v?.tasks.find((g) => g.status === "open");
+      expect(openGroup?.count).toBe(0);
+    });
+
+    it("task/updated trusts an authoritative zero remaining over total - done - cancelled", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        taskNotification(5, 2, identity({ generation: 1 }), {
+          cancelled: 3,
+          remaining: 0,
+        }),
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      const openGroup = v?.tasks.find((g) => g.status === "open");
+      expect(openGroup?.count).toBe(0);
+    });
+
+    it("task/updated falls back to total - done - cancelled when remaining is omitted", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        taskNotification(6, 1, identity({ generation: 1 }), { cancelled: 2 }),
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      const openGroup = v?.tasks.find((g) => g.status === "open");
+      expect(openGroup?.count).toBe(3);
     });
 
     // --- usage: turn/completed is per-turn, never overwrites aggregate (I1) --

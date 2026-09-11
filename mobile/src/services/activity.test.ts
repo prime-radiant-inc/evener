@@ -161,6 +161,40 @@ describe("ActivityService — projectActivity", () => {
       expect(byStatus.get("done")).toBe(5);
       expect(byStatus.get("open")).toBe(0);
     });
+
+    it("reports zero open for a cancelled-only update, not total - done", () => {
+      const t = thread({
+        evener: evenerThread({
+          tasks: { total: 3, done: 0, cancelled: 3 },
+        }),
+      });
+      const view = service.projectActivity(t);
+      const byStatus = new Map(view.tasks.map((g) => [g.status, g.count]));
+      expect(byStatus.get("done")).toBe(0);
+      expect(byStatus.get("open")).toBe(0);
+    });
+
+    it("trusts an authoritative zero remaining over total - done - cancelled", () => {
+      const t = thread({
+        evener: evenerThread({
+          tasks: { total: 5, done: 2, cancelled: 3, remaining: 0 },
+        }),
+      });
+      const view = service.projectActivity(t);
+      const byStatus = new Map(view.tasks.map((g) => [g.status, g.count]));
+      expect(byStatus.get("open")).toBe(0);
+    });
+
+    it("falls back to total - done - cancelled when remaining is omitted", () => {
+      const t = thread({
+        evener: evenerThread({
+          tasks: { total: 6, done: 1, cancelled: 2 },
+        }),
+      });
+      const view = service.projectActivity(t);
+      const byStatus = new Map(view.tasks.map((g) => [g.status, g.count]));
+      expect(byStatus.get("open")).toBe(3);
+    });
   });
 
   describe("work — nested delegates/jobs/watches", () => {

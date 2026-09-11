@@ -14,6 +14,7 @@ import type {
   EvenerDiagnostics,
   EvenerJobInfo,
   EvenerUsage,
+  TaskAggregate,
   Thread,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { MobileCapabilities, MobileUsage } from "../conversation/model";
@@ -409,16 +410,28 @@ function projectWork(diagnostics: EvenerDiagnostics | undefined): WorkEntry[] {
 
 // --- task projection ---------------------------------------------------------
 
-function projectTasks(
-  tasks: { total: number; done: number } | undefined,
-): TaskGroup[] {
+function projectTasks(tasks: TaskAggregate | undefined): TaskGroup[] {
   if (tasks === undefined) return [];
-  const open = Math.max(0, tasks.total - tasks.done);
+  const open = deriveOpenTaskCount(tasks);
   return [
     { status: "active", count: 0 },
     { status: "open", count: open },
     { status: "done", count: tasks.done },
   ];
+}
+
+// The wire's `remaining` is the authoritative open count (it accounts for
+// cancelled tasks, which `total - done` does not). Older payloads — or Go's
+// `omitempty` on a genuinely-zero int — omit it, so fall back to
+// total - done - cancelled, which is how the daemon computes it anyway.
+export function deriveOpenTaskCount(counts: {
+  readonly total: number;
+  readonly done: number;
+  readonly cancelled?: number;
+  readonly remaining?: number;
+}): number {
+  if (counts.remaining !== undefined) return Math.max(0, counts.remaining);
+  return Math.max(0, counts.total - counts.done - (counts.cancelled ?? 0));
 }
 
 // --- usage projection --------------------------------------------------------

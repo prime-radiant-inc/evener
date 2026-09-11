@@ -41,12 +41,13 @@ import type {
   EvenerJobInfo,
   ThreadCapabilities,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import type {
-  ActivityView,
-  RedactedDiagnostic,
-  WorkEntry,
-  WorkKind,
-  WorkTone,
+import {
+  deriveOpenTaskCount,
+  type ActivityView,
+  type RedactedDiagnostic,
+  type WorkEntry,
+  type WorkKind,
+  type WorkTone,
 } from "../services/activity";
 
 export type ActivityStatus = "idle" | "open" | "error";
@@ -429,7 +430,7 @@ function patchLive(
 
     case "evener/task/updated": {
       const params = n.params as ParamsOf<"evener/task/updated">;
-      const open = Math.max(0, params.total - params.done);
+      const open = deriveOpenTaskCount(params);
       set({
         view: {
           ...view,
