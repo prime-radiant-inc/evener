@@ -353,6 +353,22 @@ func (s *Store) LoadEvents() ([]Event, error) {
 	return s.readAllLocked()
 }
 
+// CheckRetirementReady validates that the primary journal is readable and every
+// durable event decodes. It invalidates the tail cursor first so the check reads
+// the original file bytes rather than a cached prefix, then rereads through the
+// same path LoadEvents uses (never a cached fold), under the store's existing
+// serialization boundary. It neither closes the store nor appends an event.
+func (s *Store) CheckRetirementReady() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
+	s.resetCursorLocked()
+	_, err := s.readAllLocked()
+	return err
+}
+
 // readAll is the locked-public test/helper variant of readAllLocked.
 func (s *Store) readAll() ([]Event, error) {
 	s.mu.Lock()

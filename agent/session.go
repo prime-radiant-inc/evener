@@ -67,8 +67,14 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id                       string
-	cfg                      SessionConfig
+	id  string
+	cfg SessionConfig
+	// retainedScratch, when non-nil, is the root-owned pool of scratch handles
+	// reacquired by prepareRetainedScratch before root/child initialization
+	// launches work. It holds historical or not-yet-reconstructed handles until
+	// adoption or release. It is an atomic pointer (a single swapped reference,
+	// never held across work), so it is not a sampling-relevant mutex.
+	retainedScratch          atomic.Pointer[retainedScratchPool]
 	delegateController       *delegateTreeController
 	delegateRootSessionID    string
 	owningDelegateID         string

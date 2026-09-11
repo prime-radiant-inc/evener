@@ -1,0 +1,216 @@
+package agent
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
+)
+
+// retirementPrepareFixture builds a root session with an attached controller and
+// returns both, plus the claim a manual TryClaim produced.
+func retirementPrepareFixture(t *testing.T) (*Session, *RetirementController, *RetirementClaim) {
+	t.Helper()
+	root := newQueuePersistTestSession(t, t.TempDir())
+	t.Cleanup(func() { root.Close() })
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("TryClaim: %v", err)
+	}
+	if claim == nil {
+		t.Fatalf("fixture was not claimable: %+v", state)
+	}
+	return root, c, claim
+}
+
+// TestRetirementPreparationCorruptTranscriptStaysResident is the plan's Step 1
+// primary-file failure case: the real transcript file is replaced with garbage,
+// preparation must refuse it, the session stays resident, and admission reopens.
+func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	path := root.TranscriptPath()
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not-json\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(path, original, 0600); err != nil {
+			t.Error(err)
+		}
+	})
+	claim, state, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Either the evidence read or preparation must refuse the corrupt original.
+	if claim != nil {
+		if _, err := c.Prepare(context.Background(), claim); err == nil {
+			t.Fatal("preparation accepted corrupt original transcript")
+		}
+		if err := c.Abort(claim, "prepare_failed"); err != nil {
+			t.Fatal(err)
+		}
+	} else if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
+		return b.Category == "persistence"
+	}) {
+		t.Fatalf("corruption lacked persistence diagnostic: %+v", state)
+	}
+	if got := c.Snapshot().Phase; got != "resident" {
+		t.Fatalf("phase = %s", got)
+	}
+	release, err := c.BeginMutation(root.ID(), "input")
+	if err != nil {
+		t.Fatalf("preparation failure closed admission: %v", err)
+	}
+	release()
+}
+
+// TestRetirementPreparationMetadataWriteFailureStaysResident forces the
+// metadata write through SessionConfig.testOnly.metaFS to fail; preparation
+// must surface the persistence error instead of succeeding.
+func TestRetirementPreparationMetadataWriteFailureStaysResident(t *testing.T) {
+	root, c, claim := retirementPrepareFixture(t)
+	root.cfg.testOnly.metaFS = afero.NewReadOnlyFs(afero.NewMemMapFs())
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a failed metadata write")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Snapshot().Phase; got != "resident" {
+		t.Fatalf("phase = %s", got)
+	}
+}
+
+// TestRetirementPreparationCorruptMutationStaysResident replaces the committed
+// client-mutation snapshot with malformed JSON; readiness reads the primary
+// file, so preparation must refuse it.
+func TestRetirementPreparationCorruptMutationStaysResident(t *testing.T) {
+	root, c, claim := retirementPrepareFixture(t)
+	path := clientMutationFilePath(root.stateDir, root.id)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if original == nil {
+			_ = os.Remove(path)
+			return
+		}
+		if err := os.WriteFile(path, original, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a corrupt client mutation snapshot")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRetirementPreparationMissingStateDirStaysResident proves a session with
+// no durable state cannot be validated as reconstructible.
+func TestRetirementPreparationMissingStateDirStaysResident(t *testing.T) {
+	dir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer root.Close()
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, _, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("TryClaim: claim=%v err=%v", claim, err)
+	}
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a session without a state directory")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRetirementPreparationStaleClaimRefused proves Prepare requires the exact
+// live preparation and never manufactures one from an aborted claim.
+func TestRetirementPreparationStaleClaimRefused(t *testing.T) {
+	_, c, claim := retirementPrepareFixture(t)
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted an aborted claim")
+	}
+	if _, err := c.Prepare(context.Background(), nil); err == nil {
+		t.Fatal("preparation accepted a nil claim")
+	}
+}
+
+// TestRetirementPreparationMissingScratchArtifactStaysResident proves a pinned
+// required scratch directory that has vanished blocks preparation instead of
+// being silently minted or ignored.
+func TestRetirementPreparationMissingScratchArtifactStaysResident(t *testing.T) {
+	root, c, claim := retirementPrepareFixture(t)
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	scratch, err := sandbox.NewSessionScratch(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Retain() })
+	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(scratch.Dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted a missing required scratch artifact")
+	}
+	if err := c.Abort(claim, "prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -199,6 +199,15 @@ type LocalExecutionEnvironment struct {
 	// deterministically instead of racing for it. Guarded by scratchMu like the
 	// two fields above; nil in production, and not copied by either clone path.
 	scratchMovedOut func()
+
+	// retentionOwner/retentionBinding record this environment's persisted
+	// logical identity for the root's scratch-retention manifest. They are
+	// installed by SetScratchRetentionBinding before publication and guarded by
+	// scratchMu like the scratch fields above. retentionSet distinguishes "no
+	// binding" from a zero-valued binding.
+	retentionOwner   sandbox.ScratchOwner
+	retentionBinding sandbox.ScratchBinding
+	retentionSet     bool
 }
 
 // ObserveScratchMoveWindowForTesting installs fn as this environment's

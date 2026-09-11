@@ -367,3 +367,20 @@ func clientMutationSyncUnsupported(err error) bool {
 		errors.Is(err, syscall.ENOTSUP) ||
 		errors.Is(err, syscall.EINVAL)
 }
+
+// checkRetirementReady rereads this store's committed snapshot from its primary
+// file with the production strict parser under the store serializer, so a
+// concurrent mutation cannot interleave and a corrupt primary is surfaced
+// rather than silently replaced by the in-memory generation. It never writes,
+// repairs or closes the store.
+func (s *clientMutationStore) checkRetirementReady() error {
+	if s == nil || s.stateDir == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := loadClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID); err != nil {
+		return err
+	}
+	return nil
+}
