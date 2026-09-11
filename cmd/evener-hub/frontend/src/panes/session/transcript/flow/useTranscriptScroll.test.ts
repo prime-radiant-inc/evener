@@ -1157,6 +1157,49 @@ describe("jumpToBottom landing reliability", () => {
     expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
   });
 
+  test("the window losing focus ends the standing veto", () => {
+    // The release lands wherever focus went, so the port never sees pointerup.
+    // Nothing else bounds this state, and every correction vetoed meanwhile
+    // disarms the re-pin until the reader returns to the bottom.
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => window.dispatchEvent(new Event("blur")));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("the document becoming hidden ends the standing veto", () => {
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const { el, set } = mountAtBottom();
+
+      holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+      if (original) Object.defineProperty(Document.prototype, "visibilityState", original);
+    }
+  });
+
+  test("a visibilitychange back to visible does NOT end the standing veto", () => {
+    // The clear is for the hidden edge only: a tab coming back to the front
+    // while the reader still holds the button is still an autoscroll.
+    const { el, set, result } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("a move that no longer carries the middle button ends the standing veto", () => {
     // The release can arrive as a plain move whose buttons have dropped the
     // middle bit, with no pointerup on the port at all.

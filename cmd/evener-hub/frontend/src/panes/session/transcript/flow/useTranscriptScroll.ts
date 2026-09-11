@@ -883,11 +883,18 @@ export function useTranscriptScroll({
     // A held MIDDLE button is the opposite: native autoscroll scrolls the port
     // continuously while the pointer sits still, producing a stream of scroll
     // events with no pointermove to mark any of them. So it is tracked as a
-    // state rather than an event, and the scroll listener reads it. The trade is
-    // the platform where a middle-button hold does nothing at all: there it is a
-    // standing veto over a transcript that is not moving, which needs the reader
-    // to press and hold the middle button over the transcript while content
-    // grows.
+    // state rather than an event, and the scroll listener reads it. Being a
+    // state, it is bounded by its clears rather than by any clock: the button
+    // coming up, a move without it, the pointer leaving the port, the pane
+    // switching session, and focus or visibility going away.
+    //
+    // Two trades come with it. On a platform where a middle-button hold does
+    // nothing at all it is a standing veto over a transcript that is not moving,
+    // which needs the reader to press and hold the middle button over the
+    // transcript while content grows. And because pointerleave is one of the
+    // clears, an autoscroll that carries on with the cursor outside the port
+    // goes unmarked from then on - under-marking, the safe side, and the same
+    // trade pointerleave already makes for a drag.
     if (event.pointerType === "touch") return;
     if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
     if (event.button === 1) middleButtonHeldRef.current = true;
@@ -925,6 +932,20 @@ export function useTranscriptScroll({
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
     middleButtonHeldRef.current = false;
+  }, []);
+  // The autoscroll state is the only gesture state with no clock and nothing to
+  // consume it, so everything that ends it has to be named. A middle press over
+  // the transcript can be released anywhere - once focus leaves, the port sees
+  // no pointerup at all - and until something says otherwise this would keep
+  // vetoing, with every vetoed correction disarming the re-pin. Losing focus and
+  // going hidden are both "the release, wherever it happens, is not ours to
+  // see". pointerDraggingRef needs no equivalent: it only acts on a later
+  // pointermove, which carries its own buttons.
+  const endAutoscrollOnFocusLoss = useCallback(() => {
+    middleButtonHeldRef.current = false;
+  }, []);
+  const endAutoscrollWhenHidden = useCallback(() => {
+    if (document.visibilityState === "hidden") middleButtonHeldRef.current = false;
   }, []);
   const markWheel = useCallback(
     (event: WheelEvent) => {
@@ -1436,6 +1457,8 @@ export function useTranscriptScroll({
     el.addEventListener("pointerup", endPointerDrag, { passive: true });
     el.addEventListener("pointercancel", endPointerDrag, { passive: true });
     el.addEventListener("pointerleave", endPointerDrag, { passive: true });
+    window.addEventListener("blur", endAutoscrollOnFocusLoss, { passive: true });
+    document.addEventListener("visibilitychange", endAutoscrollWhenHidden, { passive: true });
     return () => {
       el.removeEventListener("scroll", handleScroll);
       el.removeEventListener("wheel", markWheel);
@@ -1448,6 +1471,8 @@ export function useTranscriptScroll({
       el.removeEventListener("pointerup", endPointerDrag);
       el.removeEventListener("pointercancel", endPointerDrag);
       el.removeEventListener("pointerleave", endPointerDrag);
+      window.removeEventListener("blur", endAutoscrollOnFocusLoss);
+      document.removeEventListener("visibilitychange", endAutoscrollWhenHidden);
     };
     // firstTurnId is intentionally NOT a dependency: it's only read inside
     // the initializedRef-guarded one-time block above, which - since
@@ -1484,6 +1509,8 @@ export function useTranscriptScroll({
     startPointerDrag,
     continuePointerDrag,
     endPointerDrag,
+    endAutoscrollOnFocusLoss,
+    endAutoscrollWhenHidden,
   ]);
 
   // A mode change commits a different row set into the same VirtualList. This
