@@ -127,6 +127,14 @@ function makeMeasure(initial: ScrollMetrics) {
   };
 }
 
+// jsdom implements no TouchEvent constructor, so a touch is a plain Event
+// carrying the one field the hook reads.
+function touchEvent(type: string, clientY: number): Event {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperty(event, "touches", { value: [{ clientY }] });
+  return event;
+}
+
 const AT_BOTTOM: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
 
@@ -630,7 +638,13 @@ describe("jumpToBottom landing reliability", () => {
   });
 
   test.each([
-    ["a touch drag", (el: HTMLElement) => el.dispatchEvent(new Event("touchmove"))],
+    [
+      "a touch drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 460));
+      },
+    ],
     [
       "a pointer drag",
       (el: HTMLElement) => {
@@ -823,6 +837,53 @@ describe("jumpToBottom landing reliability", () => {
     } finally {
       raf.mockRestore();
     }
+  });
+
+  // Every marker that can fire without the port actually moving is a false-veto
+  // path, and a false veto disarms the correction until the reader returns to
+  // the bottom. These pin the ones that can be made exact from the event alone.
+  test.each([
+    ["a horizontal wheel", (el: HTMLElement) => el.dispatchEvent(new WheelEvent("wheel", { deltaX: -120, deltaY: 0 }))],
+    [
+      "a sideways touch drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 400));
+      },
+    ],
+    [
+      // The drag began on the transcript and left it; a later move with a
+      // button still held is someone else's drag passing over, not this
+      // transcript being scrolled.
+      "a drag that left the transcript",
+      (el: HTMLElement) => {
+        el.dispatchEvent(new Event("pointerdown"));
+        el.dispatchEvent(new Event("pointerleave"));
+        el.dispatchEvent(new MouseEvent("pointermove", { buttons: 1 }));
+      },
+    ],
+  ])("%s does not scroll the transcript - the correction still re-pins", (_label, notAScroll) => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      notAScroll(el);
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
   });
 
   test("a reader scrolling back while content is still measuring in keeps their position and gets the pill", () => {

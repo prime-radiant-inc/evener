@@ -693,6 +693,7 @@ export function useTranscriptScroll({
   const gesturePendingRef = useRef(false);
   const gestureClearFrameRef = useRef<number | null>(null);
   const pointerDraggingRef = useRef(false);
+  const lastTouchYRef = useRef<number | null>(null);
   // The geometry the previous measurement saw. Read only to classify the NEXT
   // scroll event (see handleScroll). Deliberately NOT reset alongside the other
   // per-ref state below: the mount block reseeds it from a fresh measurement in
@@ -724,12 +725,33 @@ export function useTranscriptScroll({
       gesturePendingRef.current = false;
     });
   }, []);
+  // How exact each marker is, since over-marking is the harmful direction:
+  //
+  //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
+  //     and marks only when the write moved it (its scrollPortBy).
+  //   wheel         - a deltaY of zero is a sideways wheel and scrolls nothing
+  //     here, so it never marks. A vertical wheel AT a scroll limit still marks
+  //     without moving anything: a passive handler runs before the scroll, so
+  //     whether it will move is not knowable yet, and reading it back afterwards
+  //     would be the geometry inference this whole design replaced. It costs a
+  //     veto only if a correction lands in that same frame.
+  //   touch         - marks only on real vertical movement, so a sideways swipe
+  //     (a code block's own scroller) is not a transcript scroll. Same residual
+  //     as wheel at a limit.
+  //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
+  //     that moves without scrolling marks a gesture, which no handler can tell
+  //     from a scrollbar drag that does scroll. What is ruled out is a drag that
+  //     is over (no button held) and one that has left the port.
   const startPointerDrag = useCallback(() => {
     pointerDraggingRef.current = true;
   }, []);
   // A mouse pointer gets no implicit capture, so a drag released outside the
-  // port never delivers pointerup to it. The held button is the authority:
-  // no button means the drag is over, wherever it ended.
+  // port never delivers pointerup to it, and a drag that started elsewhere can
+  // wander in with its button still down. Two answers, neither alone complete:
+  // the held button ends a drag wherever it was released, and leaving the port
+  // ends it too, so a foreign drag entering later is not adopted. The trade is
+  // that a drag which leaves the port and returns - an edge auto-scroll - stops
+  // marking; under-marking is the safe direction here.
   const continuePointerDrag = useCallback(
     (event: PointerEvent) => {
       if (event.buttons === 0) {
@@ -743,6 +765,27 @@ export function useTranscriptScroll({
   const endPointerDrag = useCallback(() => {
     pointerDraggingRef.current = false;
   }, []);
+  const markWheel = useCallback(
+    (event: WheelEvent) => {
+      if (event.deltaY !== 0) markGesture();
+    },
+    [markGesture],
+  );
+  const startTouch = useCallback((event: TouchEvent) => {
+    lastTouchYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+  const continueTouch = useCallback(
+    (event: TouchEvent) => {
+      const y = event.touches[0]?.clientY ?? null;
+      const last = lastTouchYRef.current;
+      lastTouchYRef.current = y;
+      // A first move with no recorded start (the touch began outside the port)
+      // is not marked; the next one with real movement is.
+      if (y === null || last === null || y === last) return;
+      markGesture();
+    },
+    [markGesture],
+  );
   useEffect(
     () => () => {
       if (gestureClearFrameRef.current !== null) cancelAnimationFrame(gestureClearFrameRef.current);
@@ -1189,20 +1232,24 @@ export function useTranscriptScroll({
     }
 
     el.addEventListener("scroll", handleScroll);
-    el.addEventListener("wheel", markGesture, { passive: true });
-    el.addEventListener("touchmove", markGesture, { passive: true });
+    el.addEventListener("wheel", markWheel, { passive: true });
+    el.addEventListener("touchstart", startTouch, { passive: true });
+    el.addEventListener("touchmove", continueTouch, { passive: true });
     el.addEventListener("pointerdown", startPointerDrag, { passive: true });
     el.addEventListener("pointermove", continuePointerDrag, { passive: true });
     el.addEventListener("pointerup", endPointerDrag, { passive: true });
     el.addEventListener("pointercancel", endPointerDrag, { passive: true });
+    el.addEventListener("pointerleave", endPointerDrag, { passive: true });
     return () => {
       el.removeEventListener("scroll", handleScroll);
-      el.removeEventListener("wheel", markGesture);
-      el.removeEventListener("touchmove", markGesture);
+      el.removeEventListener("wheel", markWheel);
+      el.removeEventListener("touchstart", startTouch);
+      el.removeEventListener("touchmove", continueTouch);
       el.removeEventListener("pointerdown", startPointerDrag);
       el.removeEventListener("pointermove", continuePointerDrag);
       el.removeEventListener("pointerup", endPointerDrag);
       el.removeEventListener("pointercancel", endPointerDrag);
+      el.removeEventListener("pointerleave", endPointerDrag);
     };
     // firstTurnId is intentionally NOT a dependency: it's only read inside
     // the initializedRef-guarded one-time block above, which - since
