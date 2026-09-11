@@ -10,6 +10,7 @@
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../panes/session/transcript/types";
 import { ClientProvider } from "../shell/clientContext";
@@ -241,12 +242,15 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
     const ref = "ref_flood_session";
     fake.on("thread/read", () => ({ thread: floodThread(ref) }) as ThreadReadResponse);
 
-    render(
-      <ClientProvider client={fake}>
-        <Session params={{ ref }} paneId="p1" focused={true} />
-      </ClientProvider>,
-    );
+    await act(async () => {
+      render(
+        <ClientProvider client={fake}>
+          <Session params={{ ref }} paneId="p1" focused={true} />
+        </ClientProvider>,
+      );
+    });
 
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(document.querySelector('[data-testid="settled-probe"]')).toBeTruthy());
     const renderCountAfterMount = renderCount;
     expect(renderCountAfterMount).toBeGreaterThan(0);
@@ -259,12 +263,15 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
     // one call stack into a single render pass (which would silently hide
     // exactly the per-delta re-render cost this probe exists to measure).
     for (const delta of chunks) {
-      act(() => {
+      await act(async () => {
         fake.emitNotification({
           method: "item/agentMessage/delta",
           params: { ref, turnId: "turn_flood_settled", itemId: "item_flood_live", delta },
         } as AnyNotification);
       });
+      // Notification subscribers also start durable projection reads. Await
+      // those real completions before delivering the next wire frame.
+      await flushPendingTurnsProjectionForTests();
     }
 
     // Asserted synchronously, NOT polled: the live agent message renders its

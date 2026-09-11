@@ -3361,22 +3361,60 @@ describe("notification routing differential (randomized: index vs scan reference
 
     let clock = 10_000;
     const history: AnyNotification[] = [];
+    let duplicateStarts = 0;
     for (let i = 0; i < 200; i += 1) {
       const n = pick(generators)();
       history.push(n);
       clock += 7;
+      // The small, deliberately shared turn-id space generates repeated
+      // starts. Derive the expected diagnostics from the independent scan
+      // state BEFORE either fold, never from what the indexed store logs.
+      const expectedDiagnostics =
+        n.method === "turn/started"
+          ? [...reference.threads.values(), ...reference.watchedThreads.values()]
+              .filter(
+                (model) =>
+                  notificationTargetsThread(n, model) && model.turns.some((turn) => turn.id === n.params.turn.id),
+              )
+              .map(() => [
+                `applyNotification: turn/started turnId ${n.params.turn.id} already exists in model.turns — replacing it in place instead of appending a duplicate row (turn-id-uniqueness invariant violated)`,
+              ])
+          : [];
+      duplicateStarts += expectedDiagnostics.length;
+      const checkDiagnostics = (fold: () => void): void => {
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          fold();
+          expect(errorSpy.mock.calls, `diagnostics for notification ${i}: ${n.method}`).toEqual(expectedDiagnostics);
+        } finally {
+          errorSpy.mockRestore();
+        }
+      };
       const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(clock);
       try {
-        fake.emitNotification(n);
+        checkDiagnostics(() => fake.emitNotification(n));
       } finally {
         dateNowSpy.mockRestore();
       }
-      scanFold(reference, n, clock, new Set());
+      checkDiagnostics(() => scanFold(reference, n, clock, new Set()));
+      for (const map of [
+        threadsStore.getState().threads,
+        threadsStore.getState().watchedThreads,
+        reference.threads,
+        reference.watchedThreads,
+      ]) {
+        for (const model of map.values()) {
+          expect(new Set(model.turns.map((turn) => turn.id)).size, `unique turn ids after notification ${i}`).toBe(
+            model.turns.length,
+          );
+        }
+      }
       // The index must stay in lockstep with the maps after every fold, not
       // just at the end: a skipped re-index must fail at the frame that
       // skipped it, not only if a later random frame observes the staleness.
       assertIndexesConsistent();
     }
+    expect(duplicateStarts).toBeGreaterThan(0);
 
     const actual = snapshotFor({
       threads: threadsStore.getState().threads,
