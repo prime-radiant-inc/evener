@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -899,10 +900,13 @@ func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
 		return threadID
 	}
 	owner, ok := liveDaemonForThread(cfg.Roster, threadID)
-	if !ok || owner.SessionID == "" {
+	if !ok {
 		return threadID
 	}
-	return owner.SessionID
+	// Same fallback order as liveDaemonForSession: a probe that answered without
+	// naming its session leaves LiveEntry.SessionID empty, and the rendezvous
+	// entry it carries still names the daemon's current one.
+	return cmp.Or(owner.SessionID, owner.Entry.SessionID, owner.ThreadID, threadID)
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
