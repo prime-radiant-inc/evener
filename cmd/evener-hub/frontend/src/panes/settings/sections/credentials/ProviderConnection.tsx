@@ -198,19 +198,22 @@ function SelectedConnection({
     setPhaseState(next);
   }, []);
   const invalidate = useCallback(
-    (message = "Connection or configuration changed. Review access and check again.") => {
+    // message === null invalidates without reporting anything: leaving the
+    // guided view for management or full settings is not a configuration
+    // change, and an alert already on screen is still this draft's own truth.
+    (message: string | null = "Connection or configuration changed. Review access and check again.") => {
       operation.current += 1;
       setPhase("idle");
       setResult(null);
       setReview(null);
       setOAuth(null);
-      setError(message);
+      if (message !== null) setError(message);
     },
     [setPhase],
   );
   useEffect(() => {
     if (!visible) {
-      invalidate();
+      invalidate(null);
       setConfigure(false);
     }
   }, [visible, invalidate]);

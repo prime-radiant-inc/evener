@@ -455,3 +455,47 @@ test("a rejected connect-dialog chunk stays inside the dialog's boundary and ret
   // Chrome's retained module failure.
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
 });
+
+test("a successful retry on one mounted surface reaches the other", async () => {
+  const user = userEvent.setup();
+  vi.mocked(loadConnectDialog)
+    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
+    .mockResolvedValueOnce({
+      ConnectProviderDialog: StubConnectDialog,
+    } as never);
+  render(
+    <>
+      <ModelSwitchTrigger
+        label="a"
+        value="a"
+        loadCatalog={vi.fn(async () => catalog())}
+        onPick={vi.fn()}
+        data-testid="trigger-a"
+        valueTestId="value-a"
+      />
+      <ModelSwitchTrigger
+        label="b"
+        value="b"
+        loadCatalog={vi.fn(async () => catalog())}
+        onPick={vi.fn()}
+        data-testid="trigger-b"
+        valueTestId="value-b"
+      />
+    </>,
+  );
+
+  // The first surface hits the failure and recovers through its retry.
+  await user.click(screen.getByTestId("trigger-a"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  expect(await screen.findByText("Couldn't load the connect dialog")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Close stub" }));
+
+  // The second surface was mounted the whole time: it must adopt the payload
+  // the retry published, not re-render the rejected one it captured at mount.
+  await user.click(screen.getByTestId("trigger-b"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+});

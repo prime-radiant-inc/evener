@@ -107,6 +107,7 @@ export function ModelSwitchTrigger({
     Dialog: ConnectProviderDialog,
     retry: retryConnector,
     reloadAvailable: connectorReloadAvailable,
+    version: connectorChunkVersion,
   } = useConnectProviderDialogChunk();
   const handledConnection = useRef(connectionRequest);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -292,6 +293,7 @@ export function ModelSwitchTrigger({
 
   const connector = connecting && (
     <ConnectProviderDialogBoundary
+      key={connectorChunkVersion}
       onRetry={retryConnector}
       reloadAvailable={connectorReloadAvailable}
       onClose={() => setConnecting(false)}

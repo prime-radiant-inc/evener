@@ -227,6 +227,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     Dialog: ProviderDialog,
     retry: retryProviderDialog,
     reloadAvailable: dialogReloadAvailable,
+    version: dialogChunkVersion,
   } = useConnectProviderDialogChunk();
 
   const [prompt, setPrompt] = useState("");
@@ -1567,6 +1568,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         )}
         {connectingProvider && (
           <ConnectProviderDialogBoundary
+            key={dialogChunkVersion}
             onRetry={retryProviderDialog}
             reloadAvailable={dialogReloadAvailable}
             onClose={closeProviderSetup}

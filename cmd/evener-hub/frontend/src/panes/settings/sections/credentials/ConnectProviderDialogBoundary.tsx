@@ -10,7 +10,16 @@
 // the session chrome's model-switch trigger, whose "Connect another provider"
 // entry opens the same dialog (previously with only a Suspense fallback, so a
 // rejected chunk took the session UI down with no retry).
-import { Component, type JSX, type LazyExoticComponent, lazy, type ReactNode, useCallback, useState } from "react";
+import {
+  Component,
+  type JSX,
+  type LazyExoticComponent,
+  lazy,
+  type ReactNode,
+  useCallback,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Button, Dialog } from "../../../../widgets";
 import { isStaleConnectDialogChunkError, loadConnectDialog } from "../../../spawn/connectDialogChunk";
 
@@ -24,30 +33,48 @@ function lazyConnectProviderDialog(cacheBust = false): ConnectProviderDialogChun
   return lazy(() => loadConnectDialog(cacheBust).then((m) => ({ default: m.ConnectProviderDialog })));
 }
 
-// Module scope, not per mount: a lazy() component caches its resolved module
-// on its own payload, so one shared component means the chunk is fetched once
-// per page load and every later open renders the dialog straight away instead
-// of suspending again.
-let connectProviderDialog = lazyConnectProviderDialog();
+// Module scope, not per mount: every surface that can open the dialog shares
+// one payload, and a successful retry on one of them must reach the others. A
+// surface that captured its own mount-time payload would keep re-rendering the
+// rejected chunk it already recovered from.
+let sharedDialog: { Dialog: ConnectProviderDialogChunk; version: number } = {
+  Dialog: lazyConnectProviderDialog(),
+  version: 0,
+};
+const dialogListeners = new Set<() => void>();
+
+function publishDialog(Dialog: ConnectProviderDialogChunk): void {
+  sharedDialog = { Dialog, version: sharedDialog.version + 1 };
+  for (const listener of dialogListeners) listener();
+}
+
+function subscribeDialog(listener: () => void): () => void {
+  dialogListeners.add(listener);
+  return () => {
+    dialogListeners.delete(listener);
+  };
+}
 
 // A payload caches its outcome for the life of the module, success or
 // failure, so one test's failed chunk would otherwise be every later test's
 // failed chunk. Mirrors the resetXForTests precedent every other module
 // singleton here follows; no production code should ever call it.
 export function resetConnectDialogChunkForTests(): void {
-  connectProviderDialog = lazyConnectProviderDialog();
+  publishDialog(lazyConnectProviderDialog());
 }
 
-// useConnectProviderDialogChunk owns the per-caller half of that shared
-// payload: the currently mounted lazy component plus the cache-busted retry
-// state. Two callers each get their own retry button and reload strike count
-// while sharing the fetched module.
+// useConnectProviderDialogChunk owns the per-caller retry state while the
+// payload itself is shared. The returned version changes whenever a retry
+// publishes a new payload, so callers key the boundary on it: a surface still
+// showing the old failure remounts into the recovered chunk instead of holding
+// a stale failure panel.
 export function useConnectProviderDialogChunk(): {
   Dialog: ConnectProviderDialogChunk;
+  version: number;
   retry: () => void;
   reloadAvailable: boolean;
 } {
-  const [dialog, setDialog] = useState<ConnectProviderDialogChunk>(connectProviderDialog);
+  const { Dialog, version } = useSyncExternalStore(subscribeDialog, () => sharedDialog);
   // A retry re-fetches the same hashed filename over a cache-busted URL:
   // enough for a transient failure, useless once a deploy has removed the
   // file. Counting retries lets the boundary offer a page reload on the
@@ -55,14 +82,12 @@ export function useConnectProviderDialogChunk(): {
   const [retryCount, setRetryCount] = useState(0);
   const retry = useCallback(() => {
     setRetryCount((count) => count + 1);
-    const next = lazyConnectProviderDialog(true);
-    // Publish the new payload before it resolves so a remount during the
-    // retry shares the in-flight request instead of restoring the rejected
-    // payload that caused the boundary.
-    connectProviderDialog = next;
-    setDialog(() => next);
+    // Publish before it resolves so every mounted surface - and any remount
+    // during the retry - shares the in-flight request instead of restoring
+    // the rejected payload that caused the boundary.
+    publishDialog(lazyConnectProviderDialog(true));
   }, []);
-  return { Dialog: dialog, retry, reloadAvailable: retryCount > 0 };
+  return { Dialog, version, retry, reloadAvailable: retryCount > 0 };
 }
 
 interface ConnectProviderDialogBoundaryProps {

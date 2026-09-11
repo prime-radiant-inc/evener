@@ -250,6 +250,9 @@ test.each(["save", "refresh", "check", "result"])(
     await h.back();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    // Leaving and returning changed nothing: invalidation is not a reportable
+    // change, so no alert may claim the connection or configuration did.
+    expect(screen.queryByText(/Connection or configuration changed/)).toBeNull();
     expect(screen.getByRole("button", { name: phase === "save" ? "Save and check" : "Retry check" })).toHaveProperty(
       "disabled",
       false,
