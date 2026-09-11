@@ -33,6 +33,7 @@ installer_url='https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/ins
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+. "$script_dir/../lib/scratch-lib.sh"
 
 attempts=${EVENER_GOLANGCI_INSTALL_ATTEMPTS:-3}
 if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
@@ -48,22 +49,43 @@ fi
 
 bindir="$(go env GOPATH)/bin"
 
+# Each attempt's stderr is captured so a retry notice can name the last thing
+# that went wrong, then replayed so the installer's own diagnostics still reach
+# the operator. The EXIT trap is armed before the scratch is minted, so a crash
+# in between leaks nothing.
+# Declared before the mint so the name is assigned in one place; scratch_dir
+# fills it with printf -v and exits on any failure.
+attempt_scratch=""
+trap scratch_rm EXIT
+scratch_dir attempt_scratch evener-golangci-install
+attempt_log="$attempt_scratch/attempt.stderr"
+
 # pipefail is what makes the fetch of install.sh part of the attempt: without
 # it a failed curl hands `sh` an empty script, which exits 0 and reports a
 # successful install of nothing.
 attempt=1
 while :; do
-	if curl -sSfL "$installer_url" | sh -s -- -b "$bindir" "v$version"; then
+	: >"$attempt_log"
+	if { curl -sSfL "$installer_url" | sh -s -- -b "$bindir" "v$version"; } 2>"$attempt_log"; then
+		cat "$attempt_log" >&2
 		break
 	fi
+	cat "$attempt_log" >&2
 	if [ "$attempt" -ge "$attempts" ]; then
 		printf 'install-golangci-lint.sh: golangci-lint v%s did not install in %s attempt(s); the installer diagnostics are above.\n' \
 			"$version" "$attempts" >&2
 		exit 1
 	fi
 	delay=$((attempt * 5))
-	printf 'install-golangci-lint.sh: install attempt %s of %s failed; retrying in %ss.\n' \
-		"$attempt" "$attempts" "$delay" >&2
+	# The attempt's last non-empty line is the closest thing to a cause this
+	# script can name without parsing the installer's wording, which it
+	# deliberately does not do. It also tells the operator when waiting is
+	# pointless: a cause that is not the network — a pin with no release, a
+	# bindir that cannot be written — fails identically on every attempt, so the
+	# same line three times over means the backoff is buying nothing.
+	last_error="$(awk 'NF { line = $0 } END { if (line != "") print line }' "$attempt_log")"
+	printf 'install-golangci-lint.sh: install attempt %s of %s failed (%s); retrying in %ss.\n' \
+		"$attempt" "$attempts" "${last_error:-no diagnostic output}" "$delay" >&2
 	sleep "$delay"
 	attempt=$((attempt + 1))
 done
@@ -77,10 +99,16 @@ if ! installed="$("$bindir/golangci-lint" version 2>&1)"; then
 		"$bindir" "$installed" >&2
 	exit 1
 fi
-# Match the version as a whole word wherever it sits. Squeezing the reported
-# text to single-space-separated words and wrapping the result in spaces means
-# the token is surrounded by spaces even when it ends a line or ends the
-# output, which a bare *" version X "* pattern would reject.
+# Match the version as a whole word wherever it sits. The tool prints one line,
+#
+#   golangci-lint has version 2.13.1 built with go1.27.0 from 6d2288e0 on ...
+#
+# so the token after "version" is the bare release, with no leading `v`. That is
+# the same spelling .tool-versions pins, and deliberately not the `v$version`
+# tag the installer is invoked with, so do not add a `v` here. Squeezing the
+# reported text to single-space-separated words and wrapping the result in
+# spaces means the token is surrounded by spaces even when it ends a line or
+# ends the output, which a bare *" version X "* pattern would reject.
 reported=" $(printf '%s' "$installed" | tr -s '[:space:]' ' ') "
 case "$reported" in
 *" version $version "*) ;;
