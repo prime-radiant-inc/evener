@@ -875,9 +875,17 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	// while two per-session mutexes are held. The roster is still asked because
 	// a snapshot that HAS caught up has to agree too: a move the roster already
 	// knows about is refused by this same recheck rather than waiting for the
-	// rendezvous read to notice it independently.
+	// rendezvous read to notice it independently. In a configuration that gives
+	// the hub only one of the two sources, both readings reach that one source
+	// and the comparison is a re-read rather than a second opinion.
 	current, rendezvousErr := forkTargetSessionIDUnderLock(cfg, ref.ThreadID)
 	if rendezvousErr != nil {
+		// The client's refusal is retryable and says nothing an operator can
+		// act on. A hub whose process handles cannot be opened at all — a
+		// permission or sandbox problem, not a per-fork one — would otherwise
+		// refuse every fork with no server-side trace, so the one refusal that
+		// reaches the client is traced here and only here.
+		log.Printf("fork refused: cannot verify session ownership for %s: %v", params.Ref, rendezvousErr)
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("cannot verify session ownership: " + rendezvousErr.Error())
 	}
 	if current != sessionID || forkTargetSessionID(cfg, ref.ThreadID) != sessionID {
@@ -1091,13 +1099,12 @@ func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (strin
 			}
 			live, verifyErr := forkClaimIsLiveOwner(controller, entry)
 			if verifyErr != nil {
-				// The refusal reaches the client as a retryable unavailable,
-				// which says nothing about WHICH entry could not be verified.
-				// A hub whose process handles cannot be opened at all — a
-				// permission or sandbox problem, not a per-fork one — would
-				// otherwise refuse every fork with no server-side trace of why.
-				log.Printf("fork refused: cannot verify the daemon claiming %s (pid %d): %v", localAppRef(threadID), entry.PID, verifyErr)
-				return "", verifyErr
+				// Which entry could not be verified rides on the error rather
+				// than being logged here: this resolver also answers the
+				// pre-lock path, which swallows the error, so logging at the
+				// failure would trace forks that were never refused. The
+				// refusing call site logs it once.
+				return "", fmt.Errorf("daemon claiming %s (pid %d): %w", localAppRef(threadID), entry.PID, verifyErr)
 			}
 			if live {
 				claims = append(claims, entry)
@@ -1159,11 +1166,10 @@ func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
 		// resolver's source, for the same reason it falls back to the roster.
 		// A verification failure is not this resolver's to report — the
 		// under-lock pass reaches it again and refuses with the reason — so an
-		// unanswerable claim falls through to the tail below.
+		// unanswerable claim falls through to the shared tail below.
 		if sessionID, err := forkTargetSessionIDUnderLock(cfg, threadID); err == nil {
 			return sessionID
 		}
-		return forkRedirectSessionID(cfg, threadID)
 	}
 	if cfg.Roster != nil {
 		if owner, ok := liveDaemonForThread(cfg.Roster, threadID); ok {
