@@ -233,13 +233,18 @@ export function NotificationCard({
   const chip = toneChip(notification.tone);
   const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
+  // The title-only branch (no secondary) splits the title the same way, so
+  // its chevron rides the title's final word atomically. Computed eagerly: the
+  // branch that reads it is the one where no secondary exists.
+  const titleParts = splitTrailingWord(notification.title);
   // The head suppresses the native details marker (the old text glyphs were
   // font-dependent and overhung their boxes - see widgets/chevron), so this is
   // the reader's only expand affordance: the same trailing <Chevron> idiom
-  // ThinkBlock's summary uses, riding at the end of the words it opens. Where
-  // a tail unit exists it rides INSIDE it, after the Open control - the
-  // ToolRow grammar's "text, Open, chevron" order, never a flex sibling that
-  // could strand alone on a wrapped line.
+  // ThinkBlock's summary uses. EVERY branch renders it inside an atomic
+  // secondaryTail unit with the words it opens - after the Open control where
+  // one exists (the ToolRow grammar's "text, Open, chevron" order) - so a line
+  // that runs out moves the whole unit and the glyph can never strand alone
+  // on a wrapped line.
   const chevron = (
     <span
       className={CLASS.chevron}
@@ -267,10 +272,21 @@ export function NotificationCard({
         {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
         <span className={CLASS.headingText}>
           {secondaryParts || !transcriptRef ? (
-            <>
+            secondaryParts ? (
               <span className={CLASS.title}>{notification.title}</span>
-              {!secondaryParts && chevron}
-            </>
+            ) : (
+              // Title-only mirrors the secondary treatment: the FINAL word and
+              // the chevron are one atomic unit, so the glyph hugs the title's
+              // last line at any width (a whole-title unit parks it at the
+              // unit's right edge) and never strands.
+              <>
+                <span className={CLASS.title}>{titleParts[0]}</span>
+                <span className={CLASS.secondaryTail}>
+                  <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{titleParts[1]}</span>
+                  {chevron}
+                </span>
+              </>
+            )
           ) : (
             <span className={CLASS.secondaryTail}>
               <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{notification.title}</span>
@@ -299,8 +315,11 @@ export function NotificationCard({
                 </>
               ) : (
                 <>
-                  {notification.secondary}
-                  {chevron}
+                  {secondaryParts[0]}
+                  <span className={CLASS.secondaryTail}>
+                    <span className={CLASS.secondaryTailText}>{secondaryParts[1]}</span>
+                    {chevron}
+                  </span>
                 </>
               )}
             </span>

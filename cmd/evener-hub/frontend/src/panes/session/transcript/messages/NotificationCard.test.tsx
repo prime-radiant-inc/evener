@@ -162,7 +162,9 @@ test("an error notification earns a danger chip", () => {
 
 test("the secondary line surfaces the demoted metadata", () => {
   render(<NotificationCard notification={notif({ secondary: "shell · exit 2 · boom" })} />);
-  expect(screen.getByText("shell · exit 2 · boom")).toBeTruthy();
+  // The trailing word renders inside the tail unit (atomic with the chevron),
+  // so assert on the row's whole text rather than a single text node.
+  expect(screen.getByTestId("notification-card").textContent).toContain("shell · exit 2 · boom");
 });
 
 test("confirmed cancellation recedes while expanded diagnostics retain physical exit", () => {
@@ -293,19 +295,41 @@ test("with a transcript ref the chevron rides inside the atomic tail unit after 
   expect(tailChildren.indexOf(openTrailing!)).toBeLessThan(tailChildren.indexOf(chevron));
 });
 
-test("with a title-only card the chevron follows the title it opens", () => {
+// The chevron never strands: it rides inside the atomic tail unit with the
+// words it opens, so when the line runs out the WHOLE unit wraps - never the
+// glyph alone (the same guarantee the Open control has; roborev #1143).
+test("with a title-only card the chevron rides the title's atomic tail unit", () => {
   renderTools(<NotificationCard notification={notif({ secondary: undefined, transcriptRef: undefined })} />);
   const chevron = screen.getByTestId("notification-chevron");
-  expect(chevron.parentElement?.textContent).toContain("Job completed");
-  expect(chevron.previousElementSibling?.textContent).toBe("Job completed");
+  const tail = chevron.parentElement;
+  // The title splits like the secondary does: leading words as their own span,
+  // the FINAL word and the chevron as one atomic unit, so a line that runs out
+  // moves the word and the glyph together - never the glyph alone.
+  expect(tail?.previousElementSibling?.textContent).toBe("Job ");
+  expect(tail?.textContent).toContain("completed");
+  expect(tail?.parentElement?.textContent).toContain("Job completed");
+  expect(chevron.previousElementSibling?.textContent).toBe("completed");
+  const tailChildren = [...(tail?.children ?? [])];
+  expect(tailChildren.indexOf(chevron)).toBe(tailChildren.length - 1);
 });
 
-test("with a secondary and no transcript ref the chevron follows the secondary text", () => {
-  renderTools(<NotificationCard notification={notif({ secondary: "shell · exit 2 · boom" })} />);
+test("with a secondary and no transcript ref the chevron rides the secondary's atomic tail unit", () => {
+  renderTools(
+    <NotificationCard
+      notification={notif({ secondary: "Inspect the workspace and report back", transcriptRef: undefined })}
+    />,
+  );
   const chevron = screen.getByTestId("notification-chevron");
-  const parent = chevron.parentElement;
-  expect(parent?.textContent).toContain("shell · exit 2 · boom");
-  expect(parent?.contains(screen.getByText("Job completed"))).toBe(false);
+  const tail = chevron.parentElement;
+  // The unit carries the secondary's FINAL word with the chevron: the two can
+  // move to the next line together, never the chevron alone.
+  expect(tail?.textContent).toContain("back");
+  expect(tail?.parentElement?.textContent).toContain("Inspect the workspace and report");
+  const tailChildren = [...(tail?.children ?? [])];
+  expect(tailChildren.indexOf(chevron)).toBe(tailChildren.length - 1);
+  // Same discriminator as the title-only case: the secondary's one element
+  // child is the trailing-word unit, not a loose chevron after the text.
+  expect(tail?.parentElement?.children.length).toBe(1);
 });
 
 test("opening a child restores the notification owner as main when an unrelated session is focused", async () => {

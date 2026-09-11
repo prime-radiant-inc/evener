@@ -1,6 +1,6 @@
 {
   "name": "notification-open-last-line",
-  "description": "A NotificationCard with a long free-form secondary keeps Open adjacent to the secondary text's final line at a narrow desktop content width and at phone width, never strands on a line by itself, and centers both trailing slots (Open, chevron) on that line - the flex-end cross alignment pins their 1lh wrappers to the line's end, and the glyph inside must not ride half-leading below the words.",
+  "description": "All three NotificationCard summary shapes (secondary with an Open control, secondary alone, title-only) keep their trailing chevron - and the Open control where one exists - adjacent to the final text line at a narrow desktop content width and at phone width, never strand any of them on a line by themselves (each rides an atomic .secondaryTail unit with the words it opens), and center every trailing slot on that line: the flex-end cross alignment pins their 1lh wrappers to the line's end, and the glyph inside must not ride half-leading below the words.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -9,11 +9,11 @@
     "widgets/iconbutton/iconbutton.module.css",
     "widgets/openbutton/openbutton.module.css"
   ],
-  "viewport": { "width": 1200, "height": 600, "deviceScaleFactor": 1, "mobile": false },
+  "viewport": { "width": 1200, "height": 1200, "deviceScaleFactor": 1, "mobile": false },
   "mutation": {
     "declaration": "notificationcard.module.css: remove the height:1lh (and align-items:center) from .openTrailing/.secondaryTail .chevron",
     "verified": "2026-09-11",
     "expect": "fail",
-    "note": "Each slot's wrapper was reverted separately on 2026-09-11 and re-run: removing .openTrailing's height/align-items parks the Open glyph 3.7px low (both viewports), removing .secondaryTail .chevron's height parks the chevron 2.7px low (both viewports). The bare 1em Open slot (and 14px chevron box) seat flush against the line box's bottom edge under flex-end and poke below the line. The earlier mutation (change .secondaryTail display:inline-flex to display:inline, verified 2026-09-03) still fails the stranding assertion."
+    "note": "Each wrapper rule was reverted separately and re-run on 2026-09-11: removing .openTrailing's height/align-items parks the Open glyph 3.7px low (both viewports, secondary-with-open), removing .secondaryTail .chevron's height parks the chevron 2.7px low (all three shapes, both viewports), and reverting .secondaryTail to display:inline strands the trailing slots below the final text line - now proven on the no-ref shapes too (a bare inline chevron stranded at 8 of 56 swept widths pre-fix, roborev #1143). The bare 1em Open slot (and 14px chevron box) seat flush against the line box's bottom edge under flex-end and poke below the line."
   }
 }
