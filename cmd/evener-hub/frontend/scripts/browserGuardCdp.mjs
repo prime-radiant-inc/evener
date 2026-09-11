@@ -94,6 +94,57 @@ function raceWithAbort(promise, signal) {
   });
 }
 
+/**
+ * One probe attempt's own tripwire bound.
+ *
+ * Once Chrome has announced its DevTools endpoint the port is BOUND, so a probe
+ * can no longer fail fast: the connection is accepted and, while the browser
+ * thread behind it is still busy, simply ignored. fetch never gives up on a
+ * connected socket of its own accord, so a single attempt that lands in that
+ * window used to hold the caller's whole startup deadline open while the
+ * poll-every-100ms loop below waited on it - one attempt, then the deadline
+ * (run 34257184696: "deadline exceeded after 30000ms" printed underneath the
+ * DevTools announcement it had already received).
+ *
+ * This is a tripwire, not the mechanism: the wait still ends when the endpoint
+ * answers, and the caller's deadline still decides how long the phase may take.
+ * Measured announcement-to-answer on a warm local Chrome: 138ms to 1.6s.
+ */
+const PROBE_ATTEMPT_TIMEOUT_MS = 2000;
+
+/**
+ * Bound ONE attempt without losing the caller's deadline.
+ *
+ * An AbortController rather than withTimeout's race: the race's loser keeps
+ * running, and the loser here is a live socket. Composing with the caller's
+ * signal is what still lets the startup deadline cancel the request in flight
+ * instead of leaving it holding the guard's event loop open.
+ */
+function boundAttempt(signal, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`probe attempt exceeded ${ms}ms`)), ms);
+  return {
+    signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+    clear: () => clearTimeout(timer),
+  };
+}
+
+/**
+ * Name the phase a startup deadline died in, and what its attempts were doing.
+ *
+ * Waiting for Chrome's stderr announcement and waiting for the announced
+ * endpoint to answer share one deadline, and both used to report the same bare
+ * "browser startup deadline exceeded" - so a failed CI run could not say which
+ * of the two had stalled. The deadline's own message stays the prefix, because
+ * that is what run.mjs frames as an environment problem.
+ */
+function describePollAbort(reason, label, url, attempts, lastAttempt) {
+  return new Error(
+    `${reason.message} while waiting for ${label} after ${attempts} attempt${attempts === 1 ? "" : "s"} ` +
+      `polling ${url}: last attempt ${lastAttempt}`,
+  );
+}
+
 export function createStartupDeadline(ms = 30000) {
   const controller = new AbortController();
   const timer = setTimeout(
@@ -117,19 +168,46 @@ export function createStartupDeadline(ms = 30000) {
  * the endpoint instead of the reason. It is deliberately per-subsystem: a
  * Chrome that could not launch must not abort - or be blamed for - the wait on
  * a Vite that is coming up fine.
+ *
+ * Every attempt carries its own bound (PROBE_ATTEMPT_TIMEOUT_MS) so that one
+ * request the endpoint accepts and never answers cannot stand in for the whole
+ * poll; the caller's signal remains the only thing that ends the wait.
  */
-export async function waitForHttp(url, label, launchFailed = () => null, { signal, failure = null, fetchImpl = fetch } = {}) {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (signal?.aborted) throw abortReason(signal);
-    const launchError = launchFailed();
-    if (launchError) throw launchError;
-    try {
-      if ((await raceWithFailure(raceWithAbort(fetchImpl(url, signal ? { signal } : undefined), signal), failure)).ok) return;
-    } catch (error) {
-      if (startupFailures.has(error) || signal?.aborted) throw startupFailures.has(error) ? error : abortReason(signal);
-      // The child process is still starting.
+export async function waitForHttp(
+  url,
+  label,
+  launchFailed = () => null,
+  { signal, failure = null, fetchImpl = fetch, attemptTimeoutMs = PROBE_ATTEMPT_TIMEOUT_MS } = {},
+) {
+  let attempts = 0;
+  let lastAttempt = "none";
+  try {
+    for (let attempt = 0; attempt < 300; attempt++) {
+      if (signal?.aborted) throw abortReason(signal);
+      const launchError = launchFailed();
+      if (launchError) throw launchError;
+      const bound = boundAttempt(signal, attemptTimeoutMs);
+      attempts++;
+      lastAttempt = "still in flight";
+      try {
+        const response = await raceWithFailure(raceWithAbort(fetchImpl(url, { signal: bound.signal }), signal), failure);
+        if (response.ok) return;
+        lastAttempt = `answered HTTP ${response.status}`;
+      } catch (error) {
+        if (startupFailures.has(error) || signal?.aborted) throw startupFailures.has(error) ? error : abortReason(signal);
+        // The child process is still starting, or this attempt outlasted its
+        // own bound and the next one gets a fresh connection.
+        lastAttempt = error.message;
+      } finally {
+        bound.clear();
+      }
+      await raceWithFailure(delay(100, signal), failure);
     }
-    await raceWithFailure(delay(100, signal), failure);
+  } catch (error) {
+    if (attempts > 0 && signal && error === abortReason(signal)) {
+      throw describePollAbort(error, label, url, attempts, lastAttempt);
+    }
+    throw error;
   }
   throw new Error(`${label} never came up at ${url}`);
 }

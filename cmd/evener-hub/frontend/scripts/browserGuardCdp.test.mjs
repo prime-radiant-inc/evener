@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -52,6 +53,98 @@ test("one startup deadline aborts the pending HTTP readiness phase", async (cont
   context.mock.timers.tick(30_000);
   await assert.rejects(pending, /browser startup deadline exceeded after 30000ms/);
   deadline.clear();
+});
+
+/**
+ * A loopback endpoint that ACCEPTS connections and answers nothing until
+ * `silentMs` have passed since it started listening, then answers every
+ * request. That is the shape of a Chrome which has bound - and therefore
+ * announced - its DevTools port while the browser thread behind it is still
+ * too busy to serve /json/version.
+ */
+function silentEndpoint(silentMs) {
+  let listeningAt = 0;
+  let requests = 0;
+  // An abandoned attempt leaves its socket behind on this side too. They are
+  // destroyed by hand at the end of the test: a net.Server stays a live handle
+  // on the event loop until every connection it accepted is gone, and a test
+  // file that never drains is a hang, not a failure.
+  const sockets = new Set();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+    socket.on("data", () => {
+      requests++;
+      if (Date.now() - listeningAt < silentMs) return;
+      socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+    });
+  });
+  return {
+    requestCount: () => requests,
+    listen: () =>
+      new Promise((resolve) => {
+        server.listen(0, "127.0.0.1", () => {
+          listeningAt = Date.now();
+          resolve(`http://127.0.0.1:${server.address().port}/json/version`);
+        });
+      }),
+    close: () => {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
+}
+
+// The flake this pins (run 34257184696): Chrome announced its DevTools endpoint
+// and the guard still died on "browser startup deadline exceeded after
+// 30000ms". A probe attempt had no bound of its own, so the ONE request that
+// landed while the browser was still unresponsive held the whole startup
+// budget open - fetch does not give up on a connected socket - and the
+// poll-every-100ms loop below it never ran a second time. The loop only ever
+// advanced when an attempt failed FAST, which after the announcement it cannot:
+// the port is bound, so the connection is accepted and then simply ignored.
+test("a probe attempt that never answers is abandoned so the poll keeps going", async (context) => {
+  const endpoint = silentEndpoint(400);
+  context.after(() => endpoint.close());
+  const url = await endpoint.listen();
+  const deadline = createStartupDeadline(3_000);
+  context.after(() => deadline.clear());
+  const before = liveTimers();
+  const started = Date.now();
+
+  await waitForHttp(url, "chrome devtools endpoint", () => null, {
+    signal: deadline.signal,
+    attemptTimeoutMs: 150,
+  });
+
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 3_000, `the wait took ${elapsed}ms: it spent the whole startup deadline inside one attempt`);
+  assert.ok(endpoint.requestCount() > 1, `only ${endpoint.requestCount()} request was ever sent: the poll never retried`);
+  assert.equal(liveTimers(), before, "an attempt's own timer outlived the attempt it was bounding");
+});
+
+// A startup deadline that names neither the phase it died in nor what its
+// attempts were doing is why the CI log above could not be read: waiting for
+// the stderr announcement and waiting for the endpoint to answer share one
+// budget and, until now, one indistinguishable message.
+test("the startup deadline says which endpoint it was polling and how often", async (context) => {
+  const endpoint = silentEndpoint(Number.MAX_SAFE_INTEGER);
+  context.after(() => endpoint.close());
+  const url = await endpoint.listen();
+  const deadline = createStartupDeadline(600);
+  context.after(() => deadline.clear());
+
+  await assert.rejects(
+    waitForHttp(url, "chrome devtools endpoint", () => null, { signal: deadline.signal, attemptTimeoutMs: 100 }),
+    (error) => {
+      assert.match(error.message, /browser startup deadline exceeded after 600ms/);
+      assert.match(error.message, /chrome devtools endpoint/);
+      assert.match(error.message, new RegExp(`polling ${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      assert.match(error.message, /after \d+ attempts?/);
+      return true;
+    },
+  );
 });
 
 const cdpModuleUrl = new URL("./browserGuardCdp.mjs", import.meta.url).href;
