@@ -6,12 +6,15 @@ import (
 	"errors"
 	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/fault"
 	"primeradiant.com/evener/llm"
 )
 
@@ -340,4 +343,102 @@ func TestAppend_NoBytesWrittenLeavesWriterUsable(t *testing.T) {
 	if entry.Seq != 0 {
 		t.Fatalf("retry entry seq = %d, want the 0 the failed append never spent", entry.Seq)
 	}
+}
+
+// faultedOsWriter builds a writer over a real filesystem under a fault plan, so
+// a write past the file's end behaves the way a filesystem really behaves
+// rather than the way a memory map chooses to.
+func faultedOsWriter(t *testing.T, plan []byte) (*Writer, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session", "transcript.jsonl")
+	w, err := newWriterFS(fault.FS(afero.NewOsFs(), fault.FromBytes(plan)), path, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	return w, path
+}
+
+// rollbackLostPositionPlan faults the entry sync (6) and the seek that closes
+// the rollback (8), letting the truncate between them succeed: the entry is
+// removed from the file while the writer's own position stays where the entry
+// ended, past the file's new end.
+func rollbackLostPositionPlan(extraFaults ...int) []byte {
+	plan := bytes.Repeat([]byte{0x01}, 128)
+	plan[6] = 0x00
+	plan[8] = 0x00
+	for _, op := range extraFaults {
+		plan[op] = 0x00
+	}
+	return plan
+}
+
+// assertSingleLandedEntry requires the file to parse as the header plus exactly
+// one entry carrying text, with no zero-filled gap anywhere in it.
+func assertSingleLandedEntry(t *testing.T, path, text string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		t.Fatalf("transcript holds a zero-filled gap at byte %d: a write landed past the file's end\n%q", i, data)
+	}
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d, want the header and one entry\n%q", len(lines), data)
+	}
+	entry, err := DecodeEntry(lines[1])
+	if err != nil {
+		t.Fatalf("decode entry: %v\n%q", err, lines[1])
+	}
+	if entry.Turn.Message.Text() != text {
+		t.Fatalf("entry text = %q, want %q", entry.Turn.Message.Text(), text)
+	}
+	if entry.Seq != 0 {
+		t.Fatalf("entry seq = %d, want the 0 the rolled-back entry never spent", entry.Seq)
+	}
+}
+
+// A rollback whose truncate removed the entry but whose seek could not restore
+// the file position leaves the writer pointing past the file's end. The durable
+// door seeks for itself before every append, but the buffered door does not, so
+// without repositioning its record lands past the end behind a gap the
+// filesystem zero-fills — a line no reader can decode, in a file every reader
+// then rejects whole. The writer is right to stay usable here (the file is
+// consistent and the re-emit path needs it), so it has to re-establish the end
+// instead.
+func TestAppend_RepositionsAfterRollbackLostTheFileEnd(t *testing.T) {
+	w, path := faultedOsWriter(t, rollbackLostPositionPlan())
+
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("rolled back"))); !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("durable append error = %v, want the rollback failure that lost the position", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands at the end"))); err != nil {
+		t.Fatalf("buffered append after the rollback: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertSingleLandedEntry(t, path, "lands at the end")
+}
+
+// Re-establishing the end can itself fail. That append must write nothing and
+// say so, and the writer must still know its end is unestablished so the next
+// attempt tries again rather than writing into the gap.
+func TestAppend_RetriesAfterAFailedReposition(t *testing.T) {
+	w, path := faultedOsWriter(t, rollbackLostPositionPlan(9))
+
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("rolled back"))); !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("durable append error = %v, want the rollback failure that lost the position", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); err == nil {
+		t.Fatal("buffered append reported success over a failed reposition")
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands at the end"))); err != nil {
+		t.Fatalf("buffered append after the reposition recovered: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertSingleLandedEntry(t, path, "lands at the end")
 }

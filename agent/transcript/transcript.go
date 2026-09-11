@@ -259,6 +259,13 @@ type Writer struct {
 	// See ErrWriterPoisoned.
 	poisoned bool
 
+	// positionUnknown records a rollback that removed the entry but could not
+	// seek back to the file's new end, leaving this writer's position past it.
+	// The file is consistent and the writer stays usable, but the next append
+	// has to re-establish the end before writing or its record lands past it,
+	// behind a gap the filesystem zero-fills.
+	positionUnknown bool
+
 	// failures counts the session's failed tool calls as they are written, for
 	// the live figure a running session reports. Nil until TrackFailures
 	// installs it, and a nil counter reports ABSENT rather than zero: a writer
@@ -447,6 +454,15 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w.poisoned {
 		return ErrWriterPoisoned
 	}
+	if w.positionUnknown {
+		// Write nothing until the end is known again. A seek that fails here
+		// leaves the flag set, so the next attempt re-establishes it rather
+		// than writing into the gap.
+		if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+			return fmt.Errorf("seek transcript append position: %w", err)
+		}
+		w.positionUnknown = false
+	}
 
 	entry := Entry{
 		Kind: "entry",
@@ -578,11 +594,17 @@ func (w *Writer) appendFailureLocked(operation string, err error, startOffset in
 // file. It reports whether the entry is gone, which only the truncate decides:
 // a truncate that succeeded has removed the entry even when the seek or sync
 // after it fail, and a truncate that failed leaves the entry where a later
-// reader will find it.
+// reader will find it. It also records on the writer whether the file's end is
+// still known, since the seek that restores it is the step that can fail on its
+// own.
 func (w *Writer) rollbackAppendLocked(startOffset int64) (removed bool, err error) {
 	truncateErr := w.file.Truncate(startOffset)
 	_, seekErr := w.file.Seek(0, io.SeekEnd)
 	removed = truncateErr == nil
+	// Only a truncate that moved the end and a seek that could not follow it
+	// leave the position wrong. A truncate that failed left the entry in the
+	// file, so the position this append reached is still the file's end.
+	w.positionUnknown = removed && seekErr != nil
 	if truncateErr != nil && seekErr != nil {
 		return removed, fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
 	}
