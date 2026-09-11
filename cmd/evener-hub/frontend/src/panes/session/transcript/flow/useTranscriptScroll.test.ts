@@ -1125,6 +1125,104 @@ describe("jumpToBottom landing reliability", () => {
     expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
   });
 
+  // --- a session switch is nobody's gesture -------------------------------
+  //
+  // A marker exists to veto the event its own gesture caused. The first scroll
+  // event a newly-opened session gets is its mount's scroll-to-end - the most
+  // consequential one it will ever get, and the one this PR exists to land at
+  // the true bottom. No gesture aimed at the previous transcript can be
+  // responsible for it, so a switch must not leave a marker standing.
+  //
+  // requestAnimationFrame is stubbed out in these: the clearing frame not having
+  // run is exactly the reachable window (a wheel and a sidebar click in one
+  // frame, or a wheel just as the tab is hidden, where rAF does not run at all).
+  function mountSwitchable() {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(PORT_AT_BOTTOM);
+    const view = renderHook(
+      ({ r }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { r: "ref_a" } },
+    );
+    definePort(el, PORT_AT_BOTTOM);
+    return { el, set, rerender: view.rerender };
+  }
+
+  test.each([
+    ["a wheel", (el: HTMLElement) => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }))],
+    [
+      "a finger",
+      (el: HTMLElement) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 460));
+      },
+    ],
+    [
+      "a mouse drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+      },
+    ],
+  ])("%s left pending by a session switch does not veto the new session's correction", (_label, gesture) => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, rerender } = mountSwitchable();
+
+      act(() => gesture(el));
+      act(() => rerender({ r: "ref_b" }));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  test("a session switch ends a drag in progress, so a later move marks nothing", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, rerender } = mountSwitchable();
+
+      act(() => el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN)));
+      act(() => rerender({ r: "ref_b" }));
+      act(() => {
+        // The button is still down, but this drag belongs to the session that
+        // is no longer on screen.
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+        landCorrection(el, set);
+      });
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  test("a session switch forgets the touch position, so a move with no start marks nothing", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, rerender } = mountSwitchable();
+
+      act(() => el.dispatchEvent(touchEvent("touchstart", 400)));
+      act(() => rerender({ r: "ref_b" }));
+      act(() => {
+        el.dispatchEvent(touchEvent("touchmove", 460));
+        landCorrection(el, set);
+      });
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
   test("a reader scrolling back while content is still measuring in keeps their position and gets the pill", () => {
     // The same growth, but the offset moved BACKWARDS - only the reader moves a
     // transcript away from the bottom, so this must not be re-pinned. This is

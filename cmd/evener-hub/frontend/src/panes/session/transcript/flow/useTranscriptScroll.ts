@@ -781,11 +781,12 @@ export function useTranscriptScroll({
   // listener). Hook-level rather than effect-local so markGesture can be handed
   // out with a stable identity.
   //
-  // Unlike the per-ref state below, these are NOT reset when the pane switches
-  // session: a gesture is a fact about the reader's hands, not about the thread
-  // on screen, and the switch cannot outrun it - the flag is consumed by the
-  // next scroll event or the next animation frame, so at most one event of the
-  // new session could ever see a gesture aimed at the old one.
+  // A marker vetoes the event its own gesture caused, and nothing else. A
+  // session switch cannot be that event: the first scroll a newly-opened session
+  // gets is its own mount scroll-to-end, which no gesture aimed at the previous
+  // transcript is responsible for, and which is the landing this correction
+  // exists to get right. So the per-ref reset below clears all three, alongside
+  // every other piece of per-session state.
   const gesturePendingRef = useRef(false);
   const gestureClearFrameRef = useRef<number | null>(null);
   const pointerDraggingRef = useRef(false);
@@ -1211,6 +1212,15 @@ export function useTranscriptScroll({
       errorAnchorIndexRef.current = null;
       errorAnchorTurnIdRef.current = undefined;
       setPillCount(0);
+      // The next event any of these would meet is the mount scroll below, which
+      // belongs to the new session and to no gesture.
+      gesturePendingRef.current = false;
+      if (gestureClearFrameRef.current !== null) {
+        cancelAnimationFrame(gestureClearFrameRef.current);
+        gestureClearFrameRef.current = null;
+      }
+      pointerDraggingRef.current = false;
+      lastTouchYRef.current = null;
     }
     prevHasContentRef.current = hasContent;
 
