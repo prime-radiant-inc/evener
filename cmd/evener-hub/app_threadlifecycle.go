@@ -836,6 +836,15 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	for _, id := range lockOrder {
 		unlockTargets = append(unlockTargets, lockDeletionTarget(cfg, refFor(id), id))
 	}
+	// The target had to be resolved before the locks, so that both identities
+	// could be taken in one sorted pass. A thread/clear landing while this
+	// request waited for them moves the session the ref names, and the fences
+	// below would then reserve one session while the branch read another. Refuse
+	// instead, the same recheck resumeThread performs after acquiring these
+	// mutexes; the client re-reads and asks again.
+	if forkTargetSessionID(cfg, ref.ThreadID) != sessionID {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("session ownership changed; refresh before forking")
+	}
 	// Deletion across every identity first, then recovery across every
 	// identity: the two refusals differ in kind — a deleted target is terminal
 	// and carries MutationOutcomeTargetDeleted, a recovery fence is retryable

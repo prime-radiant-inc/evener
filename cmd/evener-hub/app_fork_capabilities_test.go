@@ -1334,3 +1334,116 @@ func TestHubForkReportsDeletionBeforeRecoveryWhicheverIdentitySortsFirst(t *test
 		})
 	}
 }
+
+// A thread/clear that lands while a fork waits on the per-session locks moves
+// the session the requested ref names. The target is resolved before those
+// locks are taken — it has to be, so both identities can be locked in one
+// sorted pass — so the fork re-resolves once it holds them and refuses rather
+// than branch a transcript the ref stopped naming, the same recheck
+// resumeThread performs after acquiring the same mutexes.
+//
+// The roster answers the stable ref through its workspace-ref scan (Find misses:
+// the entry is keyed by the daemon's current session id), so scripting
+// hubRosterList — the package's existing roster seam, the one
+// cov_exact_lifecycle_tree_fuzz_test.go already overrides — is what makes the
+// change land between the two resolutions. The call count is asserted so a
+// future change to how admission consults the roster fails this test loudly
+// instead of quietly flipping the answer at the wrong moment.
+func TestHubForkRefusesWhenItsTargetMovesUnderTheLocks(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		moved   bool
+		wantErr bool
+	}{
+		{name: "target holds still", moved: false},
+		{name: "target moves under the locks", moved: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			retiredID := buildRPCParentSession(t, stateDir)
+			firstID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, firstID, t.TempDir())
+			buildRPCSessionWithWorkingDir(t, stateDir, secondID, t.TempDir())
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID: os.Getpid(), SourceID: "local", ThreadID: firstID, SessionID: firstID, InstanceID: firstID,
+				WorkspaceRef: "local:" + retiredID, StateDir: stateDir,
+				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+			})
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: firstID, status: appwire.ThreadStatusIdle})
+			roster.Refresh()
+			if _, found := roster.Find(retiredID); found {
+				t.Fatal("the roster answers the stable ref directly; this fixture does not exercise the workspace-ref scan")
+			}
+
+			entryFor := func(sessionID string) []hubcore.LiveEntry {
+				return []hubcore.LiveEntry{{
+					Entry: rendezvous.Entry{
+						PID: os.Getpid(), SourceID: "local", ThreadID: sessionID, SessionID: sessionID,
+						WorkspaceRef: "local:" + retiredID, StateDir: stateDir,
+						Protocol: appwire.ProtocolVersion,
+					},
+					SessionID: sessionID,
+					Status:    appwire.ThreadStatusIdle,
+				}}
+			}
+			// The clear lands after the fork resolved its target and before it
+			// holds the locks: calls one and two are the admission refresh's
+			// owner lookup and that resolution, every later call is the fork
+			// re-resolving under the locks.
+			const resolutionCall = 2
+			calls := 0
+			previousList := hubRosterList
+			hubRosterList = func(r *hubcore.Roster) []hubcore.LiveEntry {
+				calls++
+				if tc.moved && calls > resolutionCall {
+					return entryFor(secondID)
+				}
+				return entryFor(firstID)
+			}
+			t.Cleanup(func() { hubRosterList = previousList })
+
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			before, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			after, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if calls <= resolutionCall {
+				t.Fatalf("admission consulted the roster %d times, so nothing ran after the resolution this test moves", calls)
+			}
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("fork whose target held still: %v", err)
+				}
+				if len(after) != len(before)+1 {
+					t.Fatalf("admitted fork branched %d children, want 1", len(after)-len(before))
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("fork branched a session the requested ref stopped naming")
+			}
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeUnavailable || isTargetDeletedError(err) {
+				t.Fatalf("fork error=%v, want a retryable structured unavailable", err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+			}
+		})
+	}
+}
