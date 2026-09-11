@@ -95,6 +95,56 @@ test("file hyperlink has the standard open-beside affordance", () => {
 });
 
 test.each([
+  ["remote:034MXwo6BpPH0QQCgdICSf", false],
+  ["remote:034MXwo6BpPH0QQCgdICSf", true],
+  ["agentsview:034MXwo6BpPH0QQCgdICSf", false],
+  ["agentsview:034MXwo6BpPH0QQCgdICSf", true],
+  ["localhost:034MXwo6BpPH0QQCgdICSf", false],
+  ["LOCAL:034MXwo6BpPH0QQCgdICSf", false],
+  ["local:remote:034MXwo6BpPH0QQCgdICSf", false],
+] as const)("non-local session %s keeps ordinary file links (live=%s)", (ref, live) => {
+  render(message("[file](docs/design.md) [image](images/diagram.png)", live, { ...thread, ref }));
+  const link = screen.getByRole("link", { name: "file" });
+  expect(link.getAttribute("href")).toBe("docs/design.md");
+  expect(screen.getByRole("link", { name: "image" }).getAttribute("href")).toBe("images/diagram.png");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  expect(screen.queryByRole("button")).toBeNull();
+  let prevented = true;
+  document.addEventListener(
+    "click",
+    (event) => {
+      prevented = event.defaultPrevented;
+      event.preventDefault(); // Observe ordinary navigation without asking jsdom to navigate.
+    },
+    { once: true },
+  );
+  fireEvent.click(link);
+  expect(prevented).toBe(false);
+  expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+test.each(["034MXwo6BpPH0QQCgdICSf", "local:034MXwo6BpPH0QQCgdICSf"])(
+  "local session ref %s retains file actions",
+  (ref) => {
+    render(message(source, false, { ...thread, ref }));
+    fireEvent.click(screen.getByRole("button"));
+    expect(workspaceStore.getState().panes).toMatchObject([{ type: "doc", params: { session: ref, path } }]);
+  },
+);
+
+test("switching to a non-local snapshot removes existing file actions", () => {
+  const { rerender } = render(message(source));
+  expect(screen.getAllByRole("button")).toHaveLength(1);
+  rerender(message(source, false, { ...thread, ref: "remote:034MXwo6BpPH0QQCgdICSf" }));
+  expect(screen.getByRole("link").getAttribute("href")).toBe(path);
+  expect(screen.queryByRole("button")).toBeNull();
+  rerender(message(source));
+  fireEvent.click(screen.getByRole("button"));
+  expect(workspaceStore.getState().panes).toMatchObject([{ type: "doc", params: { session: thread.ref, path } }]);
+});
+
+test.each([
   ["docs/design%20notes.md", "docs/design notes.md", "file"],
   ["docs/notes%23one%3Ftwo%26three.md#section", "docs/notes#one?two&three.md", "file"],
   ["docs/100%25.md", "docs/100%.md", "file"],

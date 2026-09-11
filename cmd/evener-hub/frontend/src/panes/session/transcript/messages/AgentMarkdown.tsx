@@ -6,6 +6,7 @@ import { useTranscriptRenderContext } from "../../../../transcriptDisplay/render
 import { Markdown } from "../../../../widgets/markdown";
 import { OpenButton } from "../../../../widgets/openbutton";
 import { fileDocParams } from "../fileOpenBeside";
+import { isValidTranscriptRef } from "./steeringClassify";
 
 function fileLinkPath(href: string): string | undefined {
   // URL references are not filesystem paths. Decode only the pathname, once,
@@ -24,7 +25,10 @@ function fileLinkPath(href: string): string | undefined {
  * shared Markdown renderer's URL policy or admitting authored HTML. */
 export function AgentMarkdown({ source, live = false }: { source: string; live?: boolean }) {
   const { thread } = useTranscriptRenderContext();
-  const sessionRef = thread?.ref;
+  const ref = thread?.ref;
+  // Document endpoints serve local sessions only, addressed by bare ID or local:ID.
+  const sessionRef =
+    ref && (!ref.includes(":") || (ref.startsWith("local:") && isValidTranscriptRef(ref))) ? ref : undefined;
   const cwd = thread?.cwd;
   const root = useRef<HTMLDivElement>(null);
   const [affordances, setAffordances] = useState<ReactPortal[]>([]);
