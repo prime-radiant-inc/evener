@@ -234,6 +234,13 @@ func cloneMetadataValue(value any) any {
 	switch value := value.(type) {
 	case map[string]any:
 		return cloneMetadata(value)
+	case map[any]any:
+		// YAML mappings with non-string keys retain their decoded key types.
+		cloned := make(map[any]any, len(value))
+		for key, item := range value {
+			cloned[key] = cloneMetadataValue(item)
+		}
+		return cloned
 	case []any:
 		cloned := make([]any, len(value))
 		for i, item := range value {

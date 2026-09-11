@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -788,5 +789,48 @@ func TestSkillCatalogPluginStartupMetadataOnly(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("plugin reservation diagnostic missing")
+	}
+}
+
+func TestSkillCatalogStatusCopiesNonStringKeyMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	dir := filepath.Join(root, "skills", "numeric")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: numeric\ndescription: fixture\nmetadata:\n  1:\n    - ORIGINAL\n    - true: [ORIGINAL]\n---\nBODY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	descriptor, err := sess.skills.ResolveExact("numeric")
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("parsed descriptor=%+v err=%v", descriptor, err)
+	}
+	want := map[any]any{1: []any{"ORIGINAL", map[any]any{true: []any{"ORIGINAL"}}}}
+	if got := descriptor.Meta.Metadata["metadata"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("discovered metadata=%#v want=%#v", got, want)
+	}
+	var inspection skill.Descriptor
+	for _, d := range sess.DetailedStatus().SkillCatalog {
+		if d.CatalogName == "numeric" {
+			inspection = d
+		}
+	}
+	if got := inspection.Meta.Metadata["metadata"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("status metadata=%#v want=%#v", got, want)
+	}
+	nested := inspection.Meta.Metadata["metadata"].(map[any]any)
+	nested[2] = "MUTATED"
+	nested[1].([]any)[0] = "MUTATED"
+	nested[1].([]any)[1].(map[any]any)[true].([]any)[0] = "MUTATED"
+	if got := sess.skills.Entries["numeric"].Meta.Metadata["metadata"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("status mutation changed live metadata=%#v want=%#v", got, want)
 	}
 }

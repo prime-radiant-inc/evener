@@ -186,3 +186,33 @@ func TestSkillCatalogResolutionAndViews(t *testing.T) {
 		t.Fatalf("qualified suffix matched: %v", err)
 	}
 }
+
+func TestSkillCatalogInspectionCopiesNonStringKeyMetadata(t *testing.T) {
+	dir := t.TempDir()
+	portableWriteSkill(t, dir, "numeric", "---\nname: numeric\ndescription: fixture\nmetadata:\n  1:\n    - ORIGINAL\n    - true: [ORIGINAL]\n---\nBODY\n")
+	catalog := Discover(nil, DiscoverOptions{HomeDir: t.TempDir(), ExtraDirs: []string{dir}})
+	descriptor, err := catalog.ResolveExact("numeric")
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("parsed descriptor=%+v err=%v", descriptor, err)
+	}
+	want := map[any]any{1: []any{"ORIGINAL", map[any]any{true: []any{"ORIGINAL"}}}}
+	if got := descriptor.Meta.Metadata["metadata"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("discovered metadata=%#v want=%#v", got, want)
+	}
+	var inspection Descriptor
+	for _, d := range catalog.InspectionEntries() {
+		if d.CatalogName == "numeric" {
+			inspection = d
+		}
+	}
+	if got := inspection.Meta.Metadata["metadata"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("inspection metadata=%#v want=%#v", got, want)
+	}
+	nested := inspection.Meta.Metadata["metadata"].(map[any]any)
+	nested[2] = "MUTATED"
+	nested[1].([]any)[0] = "MUTATED"
+	nested[1].([]any)[1].(map[any]any)[true].([]any)[0] = "MUTATED"
+	if got := catalog.Entries["numeric"].Meta.Metadata["metadata"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("inspection mutation changed live metadata=%#v want=%#v", got, want)
+	}
+}
