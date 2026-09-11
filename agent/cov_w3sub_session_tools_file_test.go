@@ -85,4 +85,7 @@ func TestW3Sub_RegisterFileTools_DocumentResult(t *testing.T) {
 	if len(res.ImageData) == 0 || res.ImageMediaType != "application/pdf" {
 		t.Fatalf("expected a document side-channel result, got: %+v", res)
 	}
+	if res.ImagePrompt != "inspect" {
+		t.Fatalf("vision prompt not carried through: %q", res.ImagePrompt)
+	}
 }
