@@ -671,16 +671,16 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
   });
 
-  test("keeps a continuation merge when a late root refresh resolves after closing", async () => {
+  test("Load more waits for an in-flight root refresh instead of superseding it", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    const staleRoot = deferred<{ data: unknown }>();
+    const heldRoot = deferred<{ data: unknown }>();
     let rootCalls = 0;
     fake.on("evener/jobs/list", ({ continuation }) => {
       if (continuation) return { data: continuedPartialTree() };
       rootCalls += 1;
       if (rootCalls === 1) return { data: activityTree(1) };
-      return staleRoot.promise;
+      return heldRoot.promise;
     });
 
     const panel = (bump: number) => (
@@ -694,38 +694,66 @@ describe("ActivityPanel", () => {
     rerender(panel(2));
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
 
-    await user.click(screen.getByRole("button", { name: /load more/i }));
-    await screen.findByRole("treeitem", { name: /continued shell/i });
-    expect(screen.getByRole("button", { name: "Activity · 4" })).toBeTruthy();
+    const loadMore = screen.getByRole("button", { name: /load more/i });
+    await user.click(loadMore);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
+    expect(loadMore.hasAttribute("disabled")).toBe(true);
 
-    await user.click(screen.getByRole("button", { name: "Close" }));
-    act(() => staleRoot.resolve({ data: activityTree(2) }));
+    act(() => heldRoot.resolve({ data: activityTree(2) }));
     await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
 
-    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3);
+    // The root's own snapshot lands, so the bump it claims is one the tree
+    // actually received - no page was grafted onto the older tree instead.
+    expect(screen.queryByRole("treeitem", { name: /continued shell/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    expect(activitySummaryStore.getState().entries.get("ref_root")).toMatchObject({
+      lastFetchedBump: 2,
+      hasPublishedResult: true,
+    });
+    // The refreshed tree carries its own token, so the reader can page again.
+    expect(screen.getByRole("button", { name: /load more/i }).hasAttribute("disabled")).toBe(false);
+  });
+
+  // Round 1 deferred a root refresh that arrives during a continuation, and the
+  // continuation guard below refuses the opposite order, so a root refresh is
+  // never superseded through the UI any more: it publishes its own snapshot.
+  test("a root refresh that resolves after closing still settles into the panel", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const lateRoot = deferred<{ data: unknown }>();
+    let rootCalls = 0;
+    fake.on("evener/jobs/list", ({ continuation }) => {
+      if (continuation) return { data: continuedPartialTree() };
+      rootCalls += 1;
+      if (rootCalls === 1) return { data: activityTree(1) };
+      return lateRoot.promise;
+    });
+
+    const panel = (bump: number) => (
+      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
+    );
+    const { rerender } = render(panel(1));
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    rerender(panel(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    act(() => lateRoot.resolve({ data: activityTree(2) }));
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
+
+    // The closed panel still receives the answer it asked for, and no page was
+    // ever requested against the tree that refresh replaced.
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
     expect(rootCalls).toBe(2);
     const panelEntry = activityPanelStore.getState().entries.get("ref_root");
-    if (panelEntry?.load.kind !== "ready") throw new Error("continuation merge was not retained");
-    expect(panelEntry.load.tree.root.counts.active).toBe(4);
-    expect(panelEntry.load.tree.root.entries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "delegate",
-          delegate: expect.objectContaining({
-            child: expect.objectContaining({
-              entries: expect.arrayContaining([
-                expect.objectContaining({
-                  kind: "shell",
-                  job: expect.objectContaining({ description: "continued shell" }),
-                }),
-              ]),
-            }),
-          }),
-        }),
-      ]),
-    );
-    expect(activitySummaryStore.getState().entries.get("ref_root")?.counts?.active).toBe(4);
-    expect(activitySummaryStore.getState().entries.get("ref_root")?.lastFetchedBump).toBe(2);
+    if (panelEntry?.load.kind !== "ready") throw new Error("the late root refresh did not publish");
+    expect(panelEntry.load.tree.revision).toBe(2);
+    expect(activitySummaryStore.getState().entries.get("ref_root")).toMatchObject({
+      lastFetchedBump: 2,
+      counts: { active: 3 },
+    });
   });
 
   test("continuation grafts only the targeted branch", async () => {

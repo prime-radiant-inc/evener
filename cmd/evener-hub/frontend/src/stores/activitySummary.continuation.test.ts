@@ -216,3 +216,12 @@ test("a jobs bump with no root in flight waits for the continuation it would oth
     counts: { active: 3 },
   });
 });
+
+test("a continuation cannot start while a root refresh owns the panel", async () => {
+  const settleRoot = heldRoot();
+  expect(activityPanelStore.getState().beginContinuationFetch(ref, nodeID)).toBeNull();
+  await settleRoot();
+  expect(activitySummaryStore.getState().entries.get(ref)).toMatchObject({ lastFetchedBump: 20, loading: false });
+  expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(1);
+  expect(activityPanelStore.getState().beginContinuationFetch(ref, nodeID)).not.toBeNull();
+});

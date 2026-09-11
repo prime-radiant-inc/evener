@@ -121,7 +121,10 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         );
         return;
       }
-      const requestID = activityPanelStore.getState().beginFetch(sessionRef, { nodeID: continuation.nodeID });
+      const requestID = activityPanelStore.getState().beginContinuationFetch(sessionRef, continuation.nodeID);
+      // Refused while a root refresh is in flight: that refresh is about to
+      // replace this tree and the token this click carried.
+      if (requestID === null) return;
       void threadsStore
         .getState()
         .listJobs(sessionRef, continuation.token)
@@ -244,6 +247,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
               continuationFailures={entry.continuationFailures}
               onContinue={handleContinue}
               loadingContinuationID={entry.continuationLoadingID}
+              rootRefreshing={entry.pending?.kind === "root"}
             />
           </div>
         ) : null}

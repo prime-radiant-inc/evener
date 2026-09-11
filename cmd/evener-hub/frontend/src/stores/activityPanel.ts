@@ -43,6 +43,7 @@ export type ActivityFetchResult =
 export interface ActivityPanelStoreState {
   entries: Map<string, ActivityPanelEntry>;
   beginFetch(ref: string, continuation?: { nodeID: string }): number;
+  beginContinuationFetch(ref: string, nodeID: string): number | null;
   publishFetch(ref: string, requestID: number, result: ActivityFetchResult): void;
   setExpanded(ref: string, expandedIDs: string[]): void;
   setSelected(ref: string, selectedID?: string): void;
@@ -118,7 +119,7 @@ function updateEntry(
   });
 }
 
-export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => ({
+export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get) => ({
   entries: new Map(),
 
   beginFetch(ref, continuation) {
@@ -149,6 +150,19 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       return { entries };
     });
     return requestID;
+  },
+
+  // The caller-facing way to start a page, and the mirror of activitySummary's
+  // continuationPending guard: the two request kinds stay serialized per ref. A
+  // root refresh is replacing this whole tree, every branch's continuation token
+  // included, so a page started now would take the panel's request ID - the
+  // root's own answer would be dropped on arrival and this page's counts would
+  // mark the root's bump fresh against a tree that never received its snapshot.
+  // Null means the caller must not issue the request; the refreshed tree offers
+  // its own token to page from.
+  beginContinuationFetch(ref, nodeID) {
+    if (get().entries.get(ref)?.pending?.kind === "root") return null;
+    return get().beginFetch(ref, { nodeID });
   },
 
   publishFetch(ref, requestID, result) {
