@@ -3,7 +3,13 @@ import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { AuthStatusResponse, InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
+import type {
+  AuthDeviceStartResponse,
+  AuthStatusResponse,
+  AuthTestResponse,
+  InstanceEntry,
+  InstanceListResponse,
+} from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -51,6 +57,302 @@ test("opens compact discovery by default and keeps management and the full edito
   await user.click(within(editor).getByRole("button", { name: "Cancel" }));
   await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
   expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+});
+
+test("full-editor repair returns to the created connection and retained credential draft without duplicate creation", async () => {
+  const row = instance({
+    name: "team-custom",
+    providerId: "openai",
+    implicit: false,
+    baseUrl: "https://custom.example/v1",
+    authModes: ["apiKey"],
+  });
+  const provider = {
+    id: "openai",
+    name: "OpenAI",
+    protocol: row.protocol,
+    auth: row.auth,
+    implicit: false,
+    authModes: ["apiKey"],
+  };
+  let created = false;
+  let saved = false;
+  const listing = (): InstanceListResponse => ({
+    instances: created ? [{ ...row, activeSource: saved ? "store" : "none", hasStoredFile: saved }] : [],
+    availableProviders: [provider],
+  });
+  const fake = connectFakeClient(listing());
+  fake.on("evener/instance/list", listing);
+  fake.on("evener/instance/create", () => {
+    created = true;
+    return listing();
+  });
+  fake.on("evener/auth/apiKey/set", () => {
+    throw new Error("fixture save failure");
+  });
+  fake.on("evener/auth/test", () => ({ provider: "team-custom", status: "success", message: "" }));
+  const connected = vi.fn();
+  renderComponent(<ConnectProviderDialog onClose={() => {}} onConnected={connected} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "OpenAI" }));
+  await user.click(screen.getByRole("button", { name: "Configure provider" }));
+  await user.type(screen.getByLabelText("Name"), "team-custom");
+  await user.type(screen.getByLabelText("Base URL (optional)"), "https://custom.example/v1");
+  await user.click(screen.getByRole("button", { name: "Create" }));
+  await user.type(await screen.findByLabelText("API key"), "repair-draft");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(await screen.findByRole("alert")).toBe(document.activeElement);
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "repair-draft");
+  await user.click(screen.getByText("Advanced settings"));
+  await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Full provider settings" }));
+  await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
+  expect(screen.queryByLabelText("API key")).toHaveProperty("value", "repair-draft");
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  fake.on("evener/auth/apiKey/set", () => {
+    saved = true;
+    return {
+      provider: "team-custom",
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+      hasStoredFile: true,
+    };
+  });
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(connected).toHaveBeenCalledWith("team-custom");
+  expect(fake.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").map((call) => call.params)).toEqual([
+    { provider: "team-custom", value: "repair-draft" },
+    { provider: "team-custom", value: "repair-draft" },
+  ]);
+});
+
+// Real wrapper, stores and editors; only AppWire responses are scripted.
+function guidedRepair() {
+  let row = instance({
+    name: "openai",
+    providerId: "openai",
+    baseUrl: "https://original.example/v1",
+    authModes: ["apiKey"],
+  });
+  const listing = (): InstanceListResponse => ({
+    instances: [structuredClone(row)],
+    availableProviders: [
+      {
+        id: "openai",
+        name: "OpenAI",
+        protocol: "openai-chat",
+        auth: "bearer",
+        implicit: true,
+        authModes: ["apiKey"],
+        setup: structuredClone(row),
+      },
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        protocol: "anthropic",
+        auth: "api-key",
+        implicit: true,
+        authModes: ["apiKey"],
+        setup: instance({
+          name: "anthropic",
+          providerId: "anthropic",
+          baseUrl: "https://anthropic.example",
+          authModes: ["apiKey"],
+        }),
+      },
+    ],
+  });
+  const fake = connectFakeClient(listing());
+  fake.on("evener/instance/list", listing);
+  const status: AuthStatusResponse = {
+    provider: "openai",
+    supported: true,
+    signedIn: true,
+    activeSource: "store",
+    hasStoredOAuth: false,
+    hasStoredFile: true,
+  };
+  fake.on("evener/auth/apiKey/set", () => {
+    row = { ...row, activeSource: "store", hasStoredFile: true };
+    return status;
+  });
+  fake.on("evener/auth/test", () => ({ provider: "openai", status: "success", message: "" }));
+  const connected = vi.fn();
+  const close = vi.fn();
+  const view = renderComponent(<ConnectProviderDialog onClose={close} onConnected={connected} />);
+  const user = userEvent.setup();
+  return {
+    fake,
+    user,
+    connected,
+    close,
+    view,
+    listing,
+    status,
+    change: (patch: Partial<InstanceEntry>) => {
+      row = { ...row, ...patch };
+    },
+    async select() {
+      await user.click(await screen.findByRole("button", { name: "OpenAI" }));
+      await user.type(screen.getByLabelText("API key"), "excursion-draft");
+    },
+    async leave() {
+      await user.click(screen.getByText("Advanced settings"));
+      await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
+      expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      expect(screen.queryByLabelText("API key")).toBeNull();
+      expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    },
+    async back() {
+      await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
+      expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    },
+  };
+}
+
+test.each(["save", "refresh", "check", "result"])(
+  "repair excursion invalidates %s without hidden dialogs or background checks",
+  async (phase) => {
+    const h = guidedRepair();
+    const save = deferred<AuthStatusResponse>();
+    const refresh = deferred<InstanceListResponse>();
+    const check = deferred<AuthTestResponse>();
+    await h.select();
+    if (phase === "save") h.fake.on("evener/auth/apiKey/set", () => save.promise);
+    if (phase === "refresh") h.fake.on("evener/instance/list", () => refresh.promise);
+    if (phase === "check") h.fake.on("evener/auth/test", () => check.promise);
+    await h.user.click(screen.getByRole("button", { name: "Save and check" }));
+    if (phase === "result") expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+    else
+      expect(
+        await screen.findByRole("button", {
+          name: phase === "save" ? "Saving…" : phase === "refresh" ? "Refreshing access…" : "Checking model list…",
+        }),
+      ).toBeTruthy();
+    await h.leave();
+    const calls = h.fake.calls.length;
+    await act(async () => {
+      save.resolve(h.status);
+      refresh.resolve(h.listing());
+      check.resolve({ provider: "openai", status: "success", message: "" });
+      await Promise.all([save.promise, refresh.promise, check.promise]);
+    });
+    expect(h.fake.calls).toHaveLength(calls);
+    expect(h.connected).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    await h.back();
+    expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    expect(screen.getByRole("button", { name: phase === "save" ? "Save and check" : "Retry check" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    expect(h.fake.calls).toHaveLength(calls);
+  },
+);
+
+test("repair excursion cancels a pending guided OAuth start without opening a hidden flow", async () => {
+  const h = guidedRepair();
+  h.change({ authModes: ["apiKey", "oauth"] });
+  await act(async () => credentialsStore.getState().fetch());
+  const pending = deferred<AuthDeviceStartResponse>();
+  h.fake.on("evener/auth/device/start", () => pending.promise);
+  await h.select();
+  await h.user.click(screen.getByRole("button", { name: "Sign in" }));
+  await h.leave();
+  const calls = h.fake.calls.length;
+  await act(async () => {
+    pending.resolve({
+      provider: "openai",
+      fallback: true,
+      flowId: "",
+      userCode: "",
+      verificationUrl: "",
+      intervalSeconds: 0,
+    });
+    await pending.promise;
+  });
+  expect(h.fake.calls).toHaveLength(calls);
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  await h.back();
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
+  expect(screen.getByRole("button", { name: "Sign in" })).toHaveProperty("disabled", false);
+  expect(h.connected).not.toHaveBeenCalled();
+});
+
+test.each(["destination", "source"])(
+  "repair return requires fresh %s review before checking saved access",
+  async (changed) => {
+    const h = guidedRepair();
+    await h.select();
+    await h.user.click(screen.getByRole("button", { name: "Save and check" }));
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+    await h.leave();
+    await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
+    h.change(changed === "destination" ? { baseUrl: "https://repaired.example/v1" } : { activeSource: "env" });
+    await act(async () => credentialsStore.getState().fetch());
+    await h.back();
+    expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    await h.user.click(screen.getByRole("button", { name: "Retry check" }));
+    const review = await screen.findByRole("button", { name: "Use reviewed access and check" });
+    expect(h.fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+    expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+    await h.user.click(review);
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+    expect(h.fake.calls.filter((call) => call.method === "evener/auth/test").map((call) => call.params)).toEqual([
+      { provider: "openai" },
+      { provider: "openai" },
+    ]);
+  },
+);
+
+test("provider identity changes while repairing irreversibly discard the old credential draft", async () => {
+  const h = guidedRepair();
+  await h.select();
+  await h.leave();
+  h.change({ providerId: "anthropic" });
+  await act(async () => credentialsStore.getState().fetch());
+  await h.back();
+  expect(screen.getByRole("dialog", { name: "Connect Anthropic" })).toBeTruthy();
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(screen.getByLabelText("API key")).toBe(document.activeElement);
+  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  await h.leave();
+  h.change({ providerId: "openai" });
+  await act(async () => credentialsStore.getState().fetch());
+  await h.back();
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+});
+
+test.each(["change", "cancel", "dismiss-away"])("%s after repair does not retain a guided secret", async (action) => {
+  const h = guidedRepair();
+  await h.select();
+  await h.leave();
+  if (action !== "dismiss-away") await h.back();
+  if (action === "change") {
+    await h.user.click(screen.getByRole("button", { name: "Change provider" }));
+    await h.user.click(screen.getByRole("button", { name: "Anthropic" }));
+    expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+    await h.user.click(screen.getByRole("button", { name: "Change provider" }));
+  } else {
+    await h.user.click(screen.getByRole("button", { name: action === "cancel" ? "Cancel" : "Close" }));
+    expect(h.close).toHaveBeenCalledTimes(1);
+    h.view.unmount();
+    renderComponent(<ConnectProviderDialog onClose={h.close} onConnected={h.connected} />);
+  }
+  await h.user.click(await screen.findByRole("button", { name: "OpenAI" }));
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  expect(h.fake.calls.filter((call) => call.method.startsWith("evener/auth/"))).toHaveLength(0);
 });
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {

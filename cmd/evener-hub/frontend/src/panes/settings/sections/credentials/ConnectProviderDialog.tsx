@@ -44,17 +44,22 @@ export interface ConnectProviderDialogProps {
 
 export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
   const [view, setView] = useState<"connect" | "manage" | "settings">("connect");
-  if (view === "connect") return <ProviderConnection {...props} onManage={() => setView("manage")} />;
-  if (view === "settings")
-    return (
-      <Dialog open onClose={props.onClose} title="Full provider settings">
-        <Button variant="quiet" onClick={() => setView("connect")}>
-          Back to connection choices
-        </Button>
-        <CredentialsSection sectionId="credentials" fullEditor />
-      </Dialog>
-    );
-  return <ManageConnections {...props} onBack={() => setView("connect")} onSettings={() => setView("settings")} />;
+  return (
+    <>
+      <ProviderConnection {...props} visible={view === "connect"} onManage={() => setView("manage")} />
+      {view === "settings" && (
+        <Dialog open onClose={props.onClose} title="Full provider settings">
+          <Button variant="quiet" onClick={() => setView("connect")}>
+            Back to connection choices
+          </Button>
+          <CredentialsSection sectionId="credentials" fullEditor />
+        </Dialog>
+      )}
+      {view === "manage" && (
+        <ManageConnections {...props} onBack={() => setView("connect")} onSettings={() => setView("settings")} />
+      )}
+    </>
+  );
 }
 
 function ManageConnections({

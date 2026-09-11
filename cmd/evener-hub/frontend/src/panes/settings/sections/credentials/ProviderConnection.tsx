@@ -12,6 +12,7 @@ import styles from "./ProviderConnection.module.css";
 import { useEditorLifetime } from "./useEditorLifetime";
 
 export interface ProviderConnectionProps {
+  visible?: boolean;
   onClose(): void;
   onConnected(name?: string): void;
   onManage(): void;
@@ -77,10 +78,11 @@ export function ProviderConnection(props: ProviderConnectionProps) {
   const errorRef = useRef<HTMLDivElement>(null);
   useConnectedEffect(store.fetch, [store.fetch]);
   useEffect(() => {
-    if (store.error) errorRef.current?.focus();
-  }, [store.error]);
+    if (props.visible !== false && store.error) errorRef.current?.focus();
+  }, [store.error, props.visible]);
   if (selected)
     return <SelectedConnection key={selected.id} provider={selected} {...props} onChange={() => setSelected(null)} />;
+  if (props.visible === false) return null;
   return (
     <Dialog open onClose={props.onClose} title="Connect a provider">
       <div className={styles.body}>
@@ -144,6 +146,7 @@ export function ProviderConnection(props: ProviderConnectionProps) {
 type Phase = "idle" | "saving" | "refreshing" | "checking" | "review" | "result";
 function SelectedConnection({
   provider,
+  visible = true,
   onClose,
   onConnected,
   onManage,
@@ -180,6 +183,8 @@ function SelectedConnection({
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   const active = useEditorLifetime();
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
   const storedMode = json || modes.includes("apiKey");
@@ -203,6 +208,12 @@ function SelectedConnection({
     },
     [setPhase],
   );
+  useEffect(() => {
+    if (!visible) {
+      invalidate();
+      setConfigure(false);
+    }
+  }, [visible, invalidate]);
   useEffect(() => {
     const unsubscribeConnection = connectionStore.subscribe((current, previous) => {
       if (current.client !== previous.client || current.state !== previous.state) {
@@ -231,15 +242,20 @@ function SelectedConnection({
     };
   }, [invalidate, oauth, name, baseline]);
   useEffect(() => {
-    if (error) errorRef.current?.focus();
-  }, [error]);
+    if (visible && error) errorRef.current?.focus();
+  }, [error, visible]);
 
   function leave(callback: () => void) {
     operation.current += 1;
     callback();
   }
   function current(token: number) {
-    return active.current && operation.current === token && connectionStore.getState().state === "ready";
+    return (
+      active.current &&
+      visibleRef.current &&
+      operation.current === token &&
+      connectionStore.getState().state === "ready"
+    );
   }
   function changeValue(next: string) {
     operation.current += 1;
@@ -391,6 +407,9 @@ function SelectedConnection({
     } else setBaseline(created);
   }
 
+  // Retain only volatile connection state during repair, never a hidden
+  // Dialog, focus trap, credential input or OAuth polling component.
+  if (!visible) return null;
   if (configure)
     return (
       <AddInstanceDialog
