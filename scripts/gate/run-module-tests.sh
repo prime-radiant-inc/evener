@@ -135,9 +135,15 @@ AGENT_P=${AGENT_P-4}
 # — while a run that never completes fails exactly as before, with the
 # configured cache paths, the retained stderr log, and a repair command.
 #
-# Both must be positive integers. The worst case is ATTEMPTS x (TIMEOUT + two
-# stop graces) plus a second of backoff between attempts, so the defaults below
-# give a ~212s ceiling.
+# Both must be positive integers, and the cost has two cases rather than one
+# ceiling. An attempt that times out and whose group then dies cleanly costs
+# TIMEOUT plus the second of backoff before the next one, so exhausting the
+# attempts at the defaults below is 3 x 60s + 2 x 1s = 182s. A group that will
+# not die costs up to two stop graces on top (ROOT_PACKAGE_LIST_STOP_GRACE for
+# SIGTERM, then the same for SIGKILL) and ends the run on that attempt instead
+# of retrying: 60s + 10s = 70s if it happens on the first attempt, 192s if it
+# happens on the last. Nothing reaches the sum of both, because the two cases
+# are alternatives.
 ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-60}
 if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
