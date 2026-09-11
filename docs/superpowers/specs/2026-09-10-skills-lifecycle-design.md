@@ -1,6 +1,7 @@
 # Skills lifecycle design
 
 - Date: 2026-09-10
+- Revised: 2026-09-11 after roborev design review 7814.
 - Status: design sections approved by Jesse; written specification awaiting review.
 - Base: `627e6c000491795773f7e6f542808298363abc5f`
 
@@ -25,6 +26,8 @@ Jesse approved these choices in the design discussion:
 - Share loading and rendering across routes, preserve the original request, and
   deliver complete instructions or report a loading failure.
 - Role preloads keep their permanent-prompt and frozen-delegate lifetime.
+- Existing sessions track future ordinary activations only. Do not reconstruct
+  historical activations from old tool calls or transcript prose.
 - Support invocation controls and portable directories without granting execution
   permissions or adding executable skill templates.
 - Implement with TDD, run the required gates, obtain independent review, and open
@@ -57,7 +60,7 @@ base directory, body, and a digest of the loaded file bytes. Rendering preserves
 that identity and directory guidance around the complete frontmatter-stripped
 body. Treat metadata and file contents as data when rendering delimiters.
 
-All invocation routes use this loader and renderer:
+These supported activation routes use this loader and renderer:
 
 - `use_skill` returns skill instructions as tool content.
 - Leading slash and explicit selection supply selected instructions as
@@ -69,6 +72,14 @@ Shared rendering does not require identical API message roles. Keep the original
 user text separately identifiable in live input, saved history, and client
 projection. Arguments remain user context; do not substitute templates or execute
 shell directives inside skill bodies. Supporting files remain lazy, live reads.
+
+Generic file reads remain file reads, including the catalog-directed `read_file`
+fallback in profiles without `use_skill`. Inspecting `SKILL.md` is not sufficient
+evidence that the caller intended activation. This work does not register those
+reads as skill activations or guarantee their restoration. Such profiles get
+tracked activation through user selection, leading slash, and role preloads;
+their model-selected file reads retain ordinary history/compaction behavior.
+Document this boundary explicitly rather than inferring intent from file paths.
 
 ### Successful activation and current availability
 
@@ -93,6 +104,12 @@ identity, source, and rendered-content identity against the final outgoing
 context, after compaction and history projection. Keep invocation-specific user
 arguments separate so deduplication cannot discard a new request's arguments.
 
+On deduplication, `use_skill` returns a structured already-present outcome with
+canonical identity, source, and content identity, plus a brief model-facing notice.
+It does not repeat the body. Explicit invocation retains its selection record
+and original user text/arguments while omitting only the duplicate body. Record
+the invocation outcome without emitting a second new-body-delivery event.
+
 Remove the default suffix-only `use_skill` truncation behavior. Admit complete
 skill content using the existing request token estimator, model context window,
 and output-reservation budget. Configured output limits must likewise produce an
@@ -102,6 +119,13 @@ mask a new activation before its first complete delivery. If the final request
 still cannot fit, report a context-budget loading failure; do not silently shorten
 the body, claim success, or enter a compact/reload loop. Explain that large skills
 should move conditional detail into reference files.
+
+Budget priority is existing mandatory prompt content (including frozen preloads),
+the current request and its new activations, then compaction reloads in selected
+order. Reserve space for the required handoff/reminder and failure metadata in
+the same estimate. Reloads that do not fit fail individually; they cannot evict
+a new activation or trigger another compaction in this dispatch. If mandatory
+metadata and the current request cannot fit, fail dispatch visibly.
 
 Keep existing tool/activation UI grouping. Attach causal tool-call identity where
 available; standalone activations remain visible without duplicate tool rows.
@@ -122,6 +146,14 @@ collisions. Extend AppWire's input items with a skill selection represented by
 session catalog. Reject unknown identities and skill items containing a client
 path or body; clients cannot turn selection into an arbitrary file-read request.
 
+Advertise support through `ThreadCapabilities.skillInput`. The new client must
+not send skill items when this capability is false or absent, including against
+an older server. Keep existing selected drafts recoverable and show that the
+target does not support selection; do not silently convert chips to slash text.
+The new server rejects unsupported skill items before forwarding input to a
+source. This is a fail-closed capability check, not an older-server emulation
+or downgrade path. Update the wire schema and generated SDK together.
+
 Selections apply to the submitted request, including queued requests and genuine
 user steering. Resolve and load at consumption, so a queue does not carry a stale
 body. Preserve selections with the original input through retries, mutation
@@ -132,6 +164,9 @@ record no new successful activations from that request. Keep the original input
 and selections visible with the failure for correction and explicit retry. The
 same rule applies to queued and steering input: record the failure against that
 input rather than dropping it or automatically retrying it as ordinary prose.
+For failed steering, the in-flight turn continues without any of that steering
+message, including its prose. Surface that failure prominently so the user can
+resend the urgent text without the failed selection or interrupt the turn.
 
 ### Composer
 
@@ -184,12 +219,15 @@ presence.
 This table governs compaction that actually runs. Schema-invalid tool calls fail
 normal argument validation and schedule no compaction.
 
-An invalid selection must not destroy a valid handoff note. A skill-only
-`compact_context` request, including an explicit empty array, requests compaction;
-empty note plus no instructions and no selection retains today's clear-note
-behavior. Reject a second pending compaction request without overwriting the
-first note or selection. An accepted selection belongs to one compaction cycle
-and is consumed only by an actual, successfully published compaction.
+`note_to_self` remains required. A skill-only request supplies
+`note_to_self: ""` and `reload_skills`; the empty note clears any previous pinned
+note, exactly as today. A present selection, including an explicit empty array,
+requests compaction. Empty note plus no instructions and absent/null selection
+retains today's clear-note-without-compaction behavior. An invalid selection in
+an accepted request does not discard that request's valid note; it uses the
+fallback reminder. Reject a second pending compaction request without overwriting
+the first note or selection. An accepted selection belongs to one compaction
+cycle and is consumed only by an actual, successfully published compaction.
 
 Publishing unchanged history during a normal model request is not a compaction:
 it neither consumes selection nor emits a reload/reminder. If a forced request
@@ -216,21 +254,35 @@ work. Continue with successfully reloaded skills and explicit failure notices,
 without pretending the entire selection succeeded.
 
 For absent/invalid selection, emit a post-compaction system notification carrying
-all previously loaded canonical names and descriptions and the instruction to
-reload them as relevant. Include unavailable/policy status when known. No bodies
-are automatically loaded by this fallback. Omit the reminder when no skills have
-ever been loaded. An explicit empty selection produces no fallback reminder.
+all previously loaded canonical names and descriptions. Label each entry as
+already present, reloadable, requiring explicit user activation, or unavailable,
+using the policy below. Tell the model to reload relevant reloadable skills;
+mark frozen preloads as permanently present and do not ask it to reload them.
+If `use_skill` is unavailable, identify file reads as the untracked fallback
+described above. No bodies are automatically loaded by this reminder. Omit it
+when the inventory is empty. An explicit empty selection produces no reminder.
 
 Keep the inventory complete; do not silently truncate the all-loaded list to a
 recent subset. Its cost is metadata, not permanently pinned bodies, and remains
 subject to the normal request budget. Budget failure must be visible.
 
-Inventory and pending selection survive restart. Preserve them across the final
-checkpoint/summary boundary used by `ResumeHistory`. Restored current-context
-availability is derived from complete retained content, never from inventory
-membership alone. Restart itself does not replay a consumed compaction selection.
-If a published reload is still pending at restart, finish it before model work;
-if its delivery was recorded, use that evidence to avoid duplicate restoration.
+Inventory and pending compaction state survive restart. Persist the pending
+operation in the existing session snapshot: its generation, forced/automatic
+origin, compaction instructions, associated note generation, selection presence
+and values, and whether compaction has published but reload delivery is pending.
+The operation owns its selection; never persist a selection without its owner or
+attach it to an unrelated future automatic compaction. The existing pinned-note
+slot still owns the note text and keeps its generation-checked claim semantics.
+
+Restart is interruption, not terminal cancellation. Restore an unpublished
+operation and run it at the first safe seam before normal model dispatch. A
+published operation finishes only its pending reload/delivery; it does not
+compact again. A previously recorded delivery is not repeated. Apply the same
+terminal no-compaction cancellation rule to a restored attempt as to a live one.
+Preserve these states across the final checkpoint/summary boundary used by
+`ResumeHistory`, using publication records to reconcile a stale snapshot.
+Derive current-context availability from complete retained content, never from
+inventory membership alone.
 
 Use the existing generation-checked fold publication transaction. A losing fold
 must not consume selection, mark instructions delivered, append reload results,
@@ -254,6 +306,21 @@ is a no-op. An ordinary activation of changed instructions does not rewrite or
 override the frozen role prompt; the two remain separately identified and follow
 the existing message-role precedence.
 
+### Existing sessions and delegates
+
+An older saved session without the new ordinary-activation inventory starts with
+an empty ordinary inventory. Preserve its existing history and role-preload
+restoration. Track subsequent successful activations using the new contract; do
+not backfill from old events, tool calls, or body text. Previously loaded ordinary
+skills are outside the reload/reminder guarantee until activated again through a
+tracked route.
+
+A new delegate owns a separate inventory, initially seeded only by its role
+preloads. It does not inherit the parent's ordinary inventory, pending compaction,
+or user authorization. `fork_context` retains its existing history-copy behavior;
+copied text alone does not become a child activation record. Child activations
+then use the normal contract. Resuming the same delegate restores its own state.
+
 ## Invocation controls and permissions
 
 Parse `disable-model-invocation` and `user-invocable` as strict optional booleans,
@@ -262,17 +329,32 @@ unavailable and produce a diagnostic rather than permissive defaults. If its
 canonical name is known, a higher-precedence entry with invalid controls must
 not expose a lower-precedence permissive entry under that name.
 
-- `disable-model-invocation: true`: hide from the model catalog and reject fresh
-  model-initiated `use_skill` activation.
-- `user-invocable: false`: hide from user completion and reject leading-slash and
-  structured user selection.
-- Both restrictions may coexist; configured role preloads remain configuration-
-  driven activation. Ordinary model and user routes are unavailable in that case.
-- A previously explicit user activation authorizes later reload of that same
-  source in the session, including after restart. Model-generated text or a
-  delegate's starting prompt must not manufacture that user authorization.
-- Reload through a model-only route must still satisfy current invocation policy.
-  Current metadata becoming user-only cannot silently grant user authorization.
+`disable-model-invocation` filters the general model catalog;
+`user-invocable` filters user completion. Catalog filtering uses current metadata.
+Authorization for a prior user activation is session-local, scoped to canonical
+name plus source, and survives resume of that session. It does not confer tool
+permissions or authorize a replacement source. Model-generated text and delegate
+prompts cannot create this authorization.
+
+The runtime policy below applies after valid current metadata is loaded. A fresh
+model activation means one without prior user authorization for that source.
+Reloading an authorized source is continuation of its prior activation even when
+the model chooses it through `reload_skills` or calls `use_skill` again.
+
+| Route | Invocation rule |
+|---|---|
+| Genuine user leading slash or structured selection | Require `user-invocable: true`; either value of `disable-model-invocation` is allowed; success records user authorization |
+| Model `use_skill` without prior user authorization | Require `disable-model-invocation: false`; either value of `user-invocable` is allowed |
+| Model `use_skill` for a prior user-authorized source | Allow either flag combination; this is an authorized reload, not fresh model activation |
+| Runtime post-compaction reload | Allow prior user authorization; otherwise require `disable-model-invocation: false`; `user-invocable` does not gate this continuation route |
+| Model interpretation of a plain inline slash mention | Same rule as model `use_skill`; the text alone never grants user authorization |
+| Configured role preload | Configuration-driven activation; retain its approved frozen lifetime independently of these user/model route flags |
+
+Thus a user-only skill with no prior user authorization cannot be invoked by
+plain inline slash prose; use leading slash or explicit selection. A skill whose
+metadata becomes user-only cannot acquire authorization from that change. The
+reminder identifies such an entry as requiring explicit user activation; if
+`user-invocable` is also false, identify it as unavailable through ordinary routes.
 
 These controls govern invocation routes, not filesystem ACLs or tool execution.
 Reading skill text cannot expand sandbox access or grant execution permissions.
@@ -286,6 +368,8 @@ behavioral controls such as `context: fork`; do not implement their behavior.
 Show diagnostics in session startup/inspection and client-visible skill details,
 with source and machine-readable category. Missing optional skill directories
 are normal; malformed existing files and unreadable configured sources are not.
+Document the stricter parsing: quoted booleans and loose values such as `"yes"`
+are invalid, with a diagnostic showing the field and expected boolean type.
 
 ## Portable discovery and trust
 
@@ -308,6 +392,28 @@ reads metadata, activation loads inert text, and subsequent actions remain subje
 to normal tool permissions and sandboxing. A skill is untrusted input regardless
 of its wrapper. Do not add automatic `.claude/skills/` discovery, new project-trust
 UI, executable templates, shell substitution, or implicit permission grants.
+
+## Implementation stages
+
+The implementation plan must split this work into ordered, independently gated
+stages, with scoped commits and reviewable diffs inside the requested single PR:
+
+1. **Skill package:** loader, renderer, metadata controls, diagnostics, and
+   portable discovery. Gate with package tests and discovery/catalog parity.
+2. **Session activation:** inventory, provenance, complete-body admission,
+   deduplication, and existing invocation routes. Gate at the provider-request
+   boundary and through persistence/preload restoration.
+3. **Compaction:** selection protocol, persisted operation ownership, reload,
+   reminder, and restart/publication behavior. Gate with compaction tests plus
+   the session activation regression cases.
+4. **Explicit client selection:** AppWire input and capability, generated API/SDK
+   surfaces, then composer integration. Regenerate SDK/types in the same stage
+   as the wire change, before building browser tests against them. Gate with
+   protocol/SDK tests, frontend tests, and real browser coverage.
+
+Update documentation alongside each stage. Finish with cross-route live
+evaluations, whole-repository gates, and independent implementation review. This
+sequence is a delivery constraint; detailed TDD tasks follow written-spec approval.
 
 ## Verification and delivery
 
@@ -334,6 +440,13 @@ Required deterministic acceptance coverage:
 | Discovery | All precedence levels, namespaced plugins, collision diagnostics, malformed files, and live/cold catalog parity |
 | Browser | Selecting/removing skills, accessible indicators, draft switching, queue editing, failed-send recovery, and steering retain exact identities and text |
 | Role lifetime | Existing frozen descriptor restoration and permanent prompt content remain intact; a same-name ordinary activation retains distinct provenance and the specified selection target |
+| Raw file reads | Full and partial `SKILL.md` reads do not create activation or authorization records; profiles without `use_skill` retain tracked explicit/preload routes |
+| Budget priority | New activation plus compaction reload pressure preserves the new activation, rejects excess reloads individually, and causes no additional compact/reload cycle |
+| Pending operation | Restart before publication resumes the owning operation; restart after publication completes only pending delivery; no selection attaches to an unrelated fold |
+| Note semantics | `note_to_self` remains required; empty note with a present selection clears the pinned note and requests compaction |
+| Historical sessions | A saved session without inventory resumes without backfill, then records new verified activations |
+| Delegates | New delegates and forked history import no parent inventory, pending operation, or authorization; delegate resume restores its own records |
+| Protocol support | False/absent `skillInput` prevents selected input submission; unsupported sources reject skill items and preserve input for correction |
 
 Add separately opted-in live evaluations for implicit model selection and inline
 prompt compliance: operative requests, quotations, fenced code, paths/URLs,
