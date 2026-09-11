@@ -65,12 +65,52 @@ type idlePublicationServer struct {
 	idlePublished  chan struct{}
 	publishedState string
 	publishOnce    sync.Once
+
+	// One turn writes the status thread/read returns from two goroutines. The
+	// serve loop writes it synchronously at the tail of every input pass; the
+	// event bridge writes it again as it projects that turn's carriers --
+	// active when the user-input carrier lands
+	// (server/appwire_runtime.go:439), idle again when the session-end carrier
+	// does (server/bridge.go:223-228). The bridge drains a buffered feed on its
+	// own goroutine, so the loop's idle write is not the end of the publication
+	// a reader observes.
+	turnProjected     chan struct{}
+	turnProjectedOnce sync.Once
+
+	// Parking the turn's carrier until the loop has published idle makes the
+	// lagging-bridge ordering happen every run instead of only under load.
+	releaseCarrier     chan struct{}
+	releaseCarrierOnce sync.Once
 }
 
 func newIdlePublicationServer(cfg server.ServerConfig) *idlePublicationServer {
 	return &idlePublicationServer{
-		Server:        server.NewServer(cfg),
-		idlePublished: make(chan struct{}),
+		Server:         server.NewServer(cfg),
+		idlePublished:  make(chan struct{}),
+		turnProjected:  make(chan struct{}),
+		releaseCarrier: make(chan struct{}),
+	}
+}
+
+// holdTurnCarrier parks the bridge on the turn's opening carrier until the serve
+// loop has published its post-turn state, which is the ordering CI reached on
+// its own: the carrier's projection republishes active after the loop wrote
+// idle.
+func (s *idlePublicationServer) holdTurnCarrier(ev events.SessionEvent) {
+	if ev.Kind != events.EventUserInput {
+		return
+	}
+	select {
+	case <-s.idlePublished:
+	case <-s.releaseCarrier:
+	}
+}
+
+// noteTurnProjected opens the gate on the session-end carrier: it is the last
+// write the bridge makes to the status this turn publishes.
+func (s *idlePublicationServer) noteTurnProjected(ev events.SessionEvent) {
+	if ev.Kind == events.EventSessionEnd {
+		s.turnProjectedOnce.Do(func() { close(s.turnProjected) })
 	}
 }
 
@@ -530,10 +570,11 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	// The dep must return once attached and drain on its own goroutine; see
 	// serveDeps.bridge.
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
-		go func() {
-			defer onDrained()
-			server.BridgeWithObserver(observedServer.Server, session.Events(), observer)
-		}()
+		session.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			observedServer.holdTurnCarrier(ev)
+			server.BridgeEvent(observedServer.Server, ev, observer)
+			observedServer.noteTurnProjected(ev)
+		}, onDrained)
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
 		return observedServer.AppServer().SubscriberCount(id)
@@ -552,6 +593,9 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	}()
 
 	entry := waitForServeTestRendezvous(t, runDir)
+	t.Cleanup(func() {
+		observedServer.releaseCarrierOnce.Do(func() { close(observedServer.releaseCarrier) })
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
@@ -585,6 +629,17 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	if got := observedServer.postTurnState(); got != string(agent.SessionIdle) {
 		t.Fatalf("published post-turn state = %q, want %q", got, agent.SessionIdle)
 	}
+	// Everything below reads the server's published status, which the loop's
+	// write above does not settle: the bridge projects the same turn's carriers
+	// on its own goroutine, republishing active for the user-input carrier and
+	// idle again only for the session-end one. Wait for that last write rather
+	// than for the loop's.
+	select {
+	case <-observedServer.turnProjected:
+	case <-ctx.Done():
+		t.Fatalf("post-turn terminal projection: %v", ctx.Err())
+	}
+
 	if got := observedServer.GetStatus().State; got != string(agent.SessionIdle) {
 		t.Fatalf("stored server state = %q, want %q", got, agent.SessionIdle)
 	}
