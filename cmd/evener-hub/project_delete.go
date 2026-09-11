@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -379,10 +380,37 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 // single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
 func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID string) (deleted bool, skip *projectDeleteSkip, decisionErrors []string) {
-	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
-		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, nil
+	// Under this verified deletion ownership, release the exact target root's
+	// scratch-retention manifest before its state is purged. A manifest owned by
+	// a surviving root is never touched, so a child-only deletion cannot release
+	// its parent's retained scratch. A release failure is recorded, not silently
+	// dropped, so deletion still proceeds conservatively.
+	if err := releaseProjectDeletionScratchRetention(stateDir, threadID); err != nil {
+		decisionErrors = append(decisionErrors, "scratch retention release error: "+err.Error())
 	}
-	return true, nil, s.scrubSessionDecisions(threadID)
+	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
+		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, decisionErrors
+	}
+	return true, nil, append(decisionErrors, s.scrubSessionDecisions(threadID)...)
+}
+
+// releaseProjectDeletionScratchRetention writes the terminal tombstone for the
+// scratch-retention manifest owned by exactly sessionID. It is a no-op when no
+// manifest exists for that id, so a session that is not a retention root (a
+// delegate child, or one that never minted scratch) cannot release a surviving
+// root's manifest.
+func releaseProjectDeletionScratchRetention(stateDir, sessionID string) error {
+	if stateDir == "" || sessionID == "" {
+		return nil
+	}
+	manifestPath := filepath.Join(stateDir, "scratch-retention", sessionID+".json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return agentsandbox.ReleaseScratchRetention(agentsandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID})
 }
 
 func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []string) {

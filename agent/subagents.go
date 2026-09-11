@@ -212,10 +212,18 @@ const (
 // decision, so a teardown reaching a child no parent bookkeeping names still
 // settles it correctly.
 func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
+	_ = teardownChildSessionWithPolicy(ctx, sess, scratch, releaseTerminal)
+}
+
+// teardownChildSessionWithPolicy is teardownChildSession under an explicit
+// release policy. Retirement uses it so a resident child runtime is released
+// non-terminally: its durable identity, descriptor, outcome and lanes stay
+// intact while its process-local resources and retained scratch are settled.
+func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch childScratchDisposition, policy runtimeReleasePolicy) error {
 	if sess == nil {
-		return
+		return nil
 	}
-	sess.close(ctx, false)
+	releaseErr := sess.releaseRuntime(ctx, false, policy)
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that
@@ -225,6 +233,7 @@ func teardownChildSession(ctx context.Context, sess *Session, scratch childScrat
 	// excludes it by construction).
 	sess.settleAbandonedEnvironmentScratch(scratch)
 	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown(), scratch)
+	return releaseErr
 }
 
 // sameEnvironment reports whether a and b are the same execution environment.

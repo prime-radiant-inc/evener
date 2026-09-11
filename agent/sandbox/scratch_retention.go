@@ -569,8 +569,12 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 }
 
 // ReleaseScratchRetention writes the terminal tombstone that authorizes
-// ordinary age-based collection for this owner's directories. It never removes
-// a directory and is never called by retirement itself.
+// ordinary age-based collection for this owner's directories, then removes the
+// matching per-directory identity pin under each allocation whose lease it can
+// acquire. A live lease leaves its tombstone/pin for the collector to finish.
+// The manifest/tombstone is kept until every matching pin is removed, so an
+// interruption can never expose a false missing-manifest state. It never
+// removes a directory and is never called by retirement itself.
 func ReleaseScratchRetention(owner ScratchOwner) error {
 	if err := owner.validate(); err != nil {
 		return err
@@ -586,7 +590,32 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 	}
 	manifest.Released = true
 	manifest.Revision++
-	return writeScratchRetention(owner, manifest)
+	if err := writeScratchRetention(owner, manifest); err != nil {
+		return err
+	}
+	// The tombstone is durable before any pin is removed, so an interruption
+	// between the two can only leave an extra pin, never a pinless directory
+	// whose manifest still expects it.
+	var failures []error
+	for _, ref := range manifest.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
+		if err != nil || contended {
+			// A live lease owns the directory; leave its pin for the collector,
+			// which acquires the lease before deciding.
+			continue
+		}
+		removeErr := os.Remove(filepath.Join(dir, scratchPinName))
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			failures = append(failures, fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, removeErr))
+		}
+		_ = lease.Release()
+	}
+	return errors.Join(failures...)
 }
 
 // BorrowRetainedSessionScratch returns a lease-less handle to an already
