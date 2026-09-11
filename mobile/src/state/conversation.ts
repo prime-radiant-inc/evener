@@ -35,11 +35,11 @@ import type {
   MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
-  MobileUsage,
   ActivityMember,
 } from "../conversation/model";
 import {
   clusterActivities,
+  isInProgressStatus,
   projectApproval,
   projectItemAttachments,
   projectQueue,
@@ -615,7 +615,7 @@ function requireCap(
 
 function commandActivityState(item: ThreadItem): ActivityState {
   if (toolCallFailed(item)) return "failed";
-  if (item.status === "inProgress") return "running";
+  if (isInProgressStatus(item.status)) return "running";
   return "completed";
 }
 
@@ -647,7 +647,7 @@ function projectSingleItem(
       kind: "assistant",
       id: item.id,
       markdown: `${item.text ?? ""}${item.delta ?? ""}`,
-      streaming: item.status === "inProgress",
+      streaming: isInProgressStatus(item.status),
     };
   }
   // F6: ask_user is a commandExecution with toolName "ask_user". The canonical
@@ -682,7 +682,7 @@ function projectSingleItem(
       id: item.id,
       label: "Reasoning",
       family: "reasoning",
-      state: item.status === "inProgress" ? "running" : "completed",
+      state: isInProgressStatus(item.status) ? "running" : "completed",
       detail: { output: item.text },
     };
   }
@@ -2635,7 +2635,7 @@ export function createConversationStore() {
 
           case "turn/completed": {
             const params = n.params as {
-              turn: { id: string; usage?: MobileUsage; status: string };
+              turn: { id: string; status: string };
             };
             const completedActive = conv.activeTurnId === params.turn.id;
             // Completion is newer than an in-flight read even when this

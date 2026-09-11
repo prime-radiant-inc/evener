@@ -116,9 +116,10 @@ export function toolCallFailed(item: ThreadItem): boolean {
 }
 
 // The wire sends "inProgress" for a still-executing turn or item, never
-// "running" — turn and item active-status checks share this predicate so
+// "running" — turn and item active-status checks share this predicate
+// (exported so state/conversation.ts's item checks can reuse it too) so
 // they cannot drift apart.
-function isInProgressStatus(status: string | undefined): boolean {
+export function isInProgressStatus(status: string | undefined): boolean {
   return status === "inProgress";
 }
 
@@ -680,7 +681,7 @@ export function projectThread(thread: Thread): MobileConversation {
     id: thread.id,
     activeTurnId:
       thread.evener.activeTurnId ||
-      thread.turns?.find((turn) => turn.status === "inProgress")?.id,
+      thread.turns?.find((turn) => isInProgressStatus(turn.status))?.id,
     instanceId: thread.evener.instanceId ?? thread.id,
     sessionId: thread.sessionId,
     name: thread.name,
