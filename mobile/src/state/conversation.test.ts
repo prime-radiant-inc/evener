@@ -10726,6 +10726,188 @@ describe("ConversationStore", () => {
       );
     });
 
+    // Truncation ownership must key off ONE canonical identity (transcriptKey
+    // ?? id — timelineIdentity) everywhere. Projection/rehydrate already freeze
+    // by that identity; these three cover the live delta guards and the
+    // lifecycle/rehydrate cleanup paths, which used the raw wire id instead.
+    it("identity: frozen-by-transcriptKey item blocks a later delta keyed by a differing wire id", async () => {
+      // Truncated on a non-delta field (arguments) at projection, under the
+      // item's transcriptKey. A later delta notification only carries the
+      // wire id — the frozen guard must still resolve to the same identity
+      // and refuse it.
+      const { store } = await openProjectedWithItems([
+        userMessageItem("base", "base"),
+        {
+          type: "commandExecution",
+          id: "wire-1",
+          transcriptKey: "transcript-1",
+          toolName: "shell",
+          status: "completed",
+          argumentsJson: "x".repeat(MAX_ITEM_BYTES + 100),
+          output: "short",
+          callId: "call-1",
+        },
+      ]);
+      const before = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "wire-1");
+      expect(before?.kind).toBe("activity");
+      expect(
+        before?.kind === "activity" &&
+          before.detail.arguments?.endsWith("… truncated"),
+      ).toBe(true);
+      expect(
+        store.getState().getTruncatedItemIds().has("transcript-1"),
+      ).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "wire-1",
+          callId: "call-1",
+          delta: " MORE",
+        },
+      } as AnyNotification);
+
+      const after = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "wire-1");
+      expect(after?.kind).toBe("activity");
+      expect(after?.kind === "activity" && after.detail.output).toBe("short");
+    });
+
+    it("identity: a lifecycle event releases the freeze recorded under transcriptKey, not the wire id", async () => {
+      // item/started freezes the canonical identity (transcriptKey) on an
+      // oversized field. item/completed with short content is the reset/
+      // lifecycle event that is supposed to release that ownership — a fresh
+      // item reusing the identity must not stay frozen.
+      const { store } = await openProjectedWithItems([
+        userMessageItem("base", "base"),
+      ]);
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            transcriptKey: "shared-key",
+            toolName: "shell",
+            status: "inProgress",
+            callId: "call-A",
+            output: "x".repeat(MAX_ITEM_BYTES + 100),
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().getTruncatedItemIds().has("shared-key"),
+      ).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            transcriptKey: "shared-key",
+            toolName: "shell",
+            status: "completed",
+            callId: "call-A",
+            output: "short-result",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+
+      // A fresh item reusing the identity is not frozen.
+      expect(
+        store.getState().getTruncatedItemIds().has("shared-key"),
+      ).toBe(false);
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(item?.kind).toBe("activity");
+      expect(item?.kind === "activity" && item.detail.output).toBe(
+        "short-result",
+      );
+    });
+
+    it("identity: rehydrate unfreezes an authoritative short version tracked under transcriptKey", async () => {
+      // Same audit as above, applied to the rehydrate merge's priorFrozen
+      // computation, which compared truncatedItemIds (transcriptKey-keyed)
+      // against a wire-id-keyed reread set.
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("base", "base"),
+        {
+          type: "commandExecution",
+          id: "wire-1",
+          transcriptKey: "transcript-1",
+          toolName: "shell",
+          status: "completed",
+          argumentsJson: "x".repeat(MAX_ITEM_BYTES + 100),
+          output: "short",
+          callId: "call-1",
+        },
+      ]);
+      expect(
+        store.getState().getTruncatedItemIds().has("transcript-1"),
+      ).toBe(true);
+
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("base", "base"),
+                {
+                  type: "commandExecution",
+                  id: "wire-1",
+                  transcriptKey: "transcript-1",
+                  toolName: "shell",
+                  status: "completed",
+                  argumentsJson: "short",
+                  output: "short",
+                  callId: "call-1",
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+
+      expect(
+        store.getState().getTruncatedItemIds().has("transcript-1"),
+      ).toBe(false);
+
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "wire-1",
+          callId: "call-1",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const after = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "wire-1");
+      expect(after?.kind).toBe("activity");
+      expect(after?.kind === "activity" && after.detail.output).toBe(
+        "short appended",
+      );
+    });
+
     it("rehydrate preserves newer superseded live truncated version based on final content", async () => {
       // Open with a SHORT X. Start a hanging rehydrate whose reread has X SHORT.
       // While reread is in-flight, a live delta makes X oversized (frozen). The

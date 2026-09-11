@@ -1853,7 +1853,7 @@ export function createConversationStore() {
           // IDs are authoritative: short content unfreezes, oversized freezes.
           const rehydratePriorFrozen = new Set<string>();
           for (const id of truncatedItemIds) {
-            if (!rereadIds.has(id)) rehydratePriorFrozen.add(id);
+            if (!rereadKeys.has(id)) rehydratePriorFrozen.add(id);
           }
           const supersededFrozen = new Set<string>();
           for (const id of supersededIds) {
@@ -2691,7 +2691,7 @@ export function createConversationStore() {
               // Lifecycle events replace the whole source item, including any
               // companion attachment row. An empty image list removes it.
               if (!preservesReasoningOutput) {
-                truncatedItemIds.delete(params.item.id);
+                truncatedItemIds.delete(timelineIdentity(projectedWithReasoning));
               }
               const replacement: MobileTimelineItem[] = [
                 truncateAndRecordSingle(projectedWithReasoning),
@@ -2805,7 +2805,7 @@ export function createConversationStore() {
               // truncated, later deltas cannot append. Tracked by item ID,
               // not by text suffix, so genuine content ending with the
               // marker doesn't freeze.
-              if (truncatedItemIds.has(params.itemId)) {
+              if (truncatedItemIds.has(timelineIdentity(existing))) {
                 break;
               }
               const combined =
@@ -2813,7 +2813,7 @@ export function createConversationStore() {
                 params.delta;
               const truncated = truncateText(combined, MAX_ITEM_BYTES);
               if (truncated !== combined) {
-                truncatedItemIds.add(params.itemId);
+                truncatedItemIds.add(timelineIdentity(existing));
               }
               // Fix round 1: Mark as live-owned — accepted delta update.
               markLiveOwned(timelineIdentity(existing));
@@ -2845,7 +2845,7 @@ export function createConversationStore() {
               // Task 2A-Truncation: explicitly unfreeze the ID before the empty
               // reset so a later delta applies. The reset clears the markdown
               // to "" (short content), so the item must no longer be frozen.
-              truncatedItemIds.delete(params.itemId);
+              truncatedItemIds.delete(timelineIdentity(existing));
               // Fix round 1: Mark as live-owned — accepted reset update.
               markLiveOwned(timelineIdentity(existing));
               set({
@@ -2886,13 +2886,13 @@ export function createConversationStore() {
               break;
             }
             // F12: Per-item truncation ownership — frozen guard.
-            if (truncatedItemIds.has(params.itemId)) {
+            if (truncatedItemIds.has(timelineIdentity(existing))) {
               break;
             }
             const combined = (existing.detail.output ?? "") + params.delta;
             const truncated = truncateText(combined, MAX_ITEM_BYTES);
             if (truncated !== combined) {
-              truncatedItemIds.add(params.itemId);
+              truncatedItemIds.add(timelineIdentity(existing));
             }
             // Mark live revision only on accepted exact update.
             markLiveOwned(timelineIdentity(existing));
@@ -2956,13 +2956,13 @@ export function createConversationStore() {
               }
             }
             // F12: Per-item truncation ownership — frozen guard.
-            if (truncatedItemIds.has(params.itemId)) {
+            if (truncatedItemIds.has(timelineIdentity(existing))) {
               break;
             }
             const combined = (existing.detail.output ?? "") + params.delta;
             const truncated = truncateText(combined, MAX_ITEM_BYTES);
             if (truncated !== combined) {
-              truncatedItemIds.add(params.itemId);
+              truncatedItemIds.add(timelineIdentity(existing));
             }
             // Mark live revision only on accepted exact update.
             markLiveOwned(timelineIdentity(existing));
