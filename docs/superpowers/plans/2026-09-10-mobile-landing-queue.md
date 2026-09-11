@@ -3952,3 +3952,44 @@ Verify each finding against the code before touching it; refute with file:line u
 2. Gates: gofmt on touched files, `go vet ./...`, pinned golangci-lint 2.13.1 with 0 issues, `go test -count=1 ./cmd/evener-hub/...`, `-race` on the fork fence suite plus the new tests with the `-run` selector recorded verbatim.
 3. Do not push. Do not merge main.
 4. Append a "Task 67" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-32-report.md`; reply with status, commit SHAs, one-line test summary, concerns, and for Medium 1 and Medium 2 the verification outcome (real or refuted) with file:line.
+
+## Task 68: PR #1100 round 9 (head 73186a7) — CI test failure + RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1100 (branch codex/mobile-round-timing-replay), module `agent/`.
+
+### CI
+
+The `tests` job at 73186a7 FAILED: `--- FAIL: TestDelegatePreseededInputCarriesOneTurnIdentity (0.04s)` (log: /private/tmp/claude-501/-Users-jesse-git-prime-radiant-inc-evener--claude-worktrees-mobile-app-integration-6d4885/4bf3d0c3-48ad-4045-8100-dc324dbc5174/scratchpad/ci-1100-73186a7-tests.log). This is the same defect as RoboRev Medium 2 below and is the first item to fix.
+
+### RoboRev verdict (verbatim, 3 reviewers)
+
+## roborev: Combined Review (`73186a7`)
+
+## Verdict: One high-severity data-loss risk and two medium issues; otherwise clean.
+
+### High
+
+- **`agent/session_compaction.go:235-245`** — Replay-tail persistence errors are only emitted as warnings, after which `commit.commitTranscriptsLocked()` still writes the compaction marker. A transient failure can leave a durable marker without all of its replay copies; `ResumeHistory` then discards the originals before that marker, losing turns on restart. **Fix:** Treat any replay-tail write failure as a failed publication — do not commit the marker, and roll back or retry the publication before exposing an anchored fold.
+
+### Medium
+
+- **`agent/delegate_runtime.go:2224`** — The read-back validation accepts the newest `USER_INPUT` entry solely when its text matches `input`; it never verifies that its `StableTurnID` equals the newly minted ID. If the append silently does nothing and an older input has identical text, the old entry is mistaken for the new one, so the run adopts an ID with no corresponding durable transcript entry. **Fix:** Require the read-back entry's `StableTurnID` to match `turn.StableTurnID`; otherwise return an error and do not start the run.
+
+- **`agent/delegate_preseed_turn_identity_test.go:34-69`** — The test observes the child session's `USER_INPUT` event via a goroutine ranging `child.Events()` and appending to a shared slice, then reads that slice immediately after `<-entered`. There is no happens-before relationship between the reader goroutine and the assertion, so whether the event has been consumed by the time the test checks is pure scheduling. This fails deterministically when run in isolation (`go test ./agent/ -run TestDelegatePreseededInputCarriesOneTurnIdentity`) and only passes in the full-package run due to different scheduling, violating the project's determinism requirement. **Fix:** Synchronize on the reader before asserting — have the goroutine signal a channel (or use a directly read channel) once it has appended the expected event, and wait on that channel (with a bounded timeout) after `<-entered` instead of reading the shared slice immediately. Do not switch to `ConsumeEventsLossless`, as that flips `authoritativeConsumer`/`servedByDaemon()` to true and would change the exact unserved-preseed behavior under test.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 11s | Total: 32m30s*
+
+
+### Coordinator rulings
+
+- **Medium 2 / CI failure (`delegate_preseed_turn_identity_test.go` ~34-69 reads a shared slice with no happens-before): real, fix first.** The reader goroutine signals a channel once it has appended the expected `USER_INPUT` event; the test waits on that channel after `<-entered` using the repo's deadline conventions (the deadline audit `TestNoBareWallClockDeadlineInAgentTests` must stay green — no bare `time.After`; use whatever the neighbouring agent tests use for a bounded wait). Do NOT switch to `ConsumeEventsLossless` (it flips `authoritativeConsumer`/`servedByDaemon()` and changes the behaviour under test). RED: `go test -count=20 -run '^TestDelegatePreseededInputCarriesOneTurnIdentity$' ./agent/` in isolation fails before the fix; record it; GREEN after, plus the full package.
+- **High (a failed replay-copy write still commits the marker, `session_compaction.go` ~235-245): real, and in scope now — it is the hole the coordinator filed as #1158 after round 8; RoboRev rates it High on this PR, so it lands here.** Ruling on the shape: when ANY tail copy's durable write fails, the fold must not write its compaction marker. Skip the marker; keep the in-memory fold as published (the context estimate and summary stay); emit the warning as now, extended to say the fold was not anchored on disk. The landed copies then carry a fold id no marker claims and every reader already drops them (Task 63's three-reader analysis), the originals stand, and the next resume replays the pre-fold transcript — a lost compaction, not lost turns. Do NOT roll back the in-memory fold and do NOT retry the publication. Determine what else `commitTranscriptsLocked` writes besides the marker (steering, context-compaction records): anything that is not a marker keeps its current behaviour unless a reader would misinterpret it without the marker — state which and why in the report. RED-first: inject one failing durable copy write (the fixtures in `session_fold_publication_test.go` / the replay tests already fail writes through a crashFS or writer hook — reuse that), then assert no marker landed, `ResumeHistory` keeps every original exactly once, and the warning names the un-anchored fold. Keep the all-writes-succeed path byte-identical.
+- **Medium 1 (`delegate_runtime.go` ~2224 read-back accepts the newest `USER_INPUT` by text only): real by inspection, fix.** Require `persisted.StableTurnID == turn.StableTurnID`; on mismatch return an error and do not start the run. RED-first: pre-write a `USER_INPUT` entry with identical text and a different stable id and make the new append a silent no-op (an existing writer/test seam if one exists; a nil-in-production seam in the style Task 61 used is acceptable if none does), then assert the send errors and no run starts. Keep the text check too (both must hold).
+
+### Requirements
+
+1. Order: Medium 2 first (it unblocks CI), then the High, then Medium 1. One commit each, RED-first with recorded output; no existing test weakened or re-pointed.
+2. Gates: gofmt, `go vet ./...`, `go test -count=1 ./...` in agent with zero non-ok lines, `-race -count=3` on the delegate preseed test and the fold/replay sets, deadline audit, pinned golangci-lint 2.13.1 with 0 issues; root `internal/apptranscript` and `internal/appprojector` packages green.
+3. Do not push. Do not merge main.
+4. Append a "Task 68" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-33-report.md`; reply with status, commit SHAs, the isolation-run RED line for Medium 2, one-line test summary, concerns.
