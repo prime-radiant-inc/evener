@@ -99,6 +99,15 @@ export function AdvancedOptions({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [resolved, setResolved] = useState<string | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
+  const [owner, setOwner] = useState({ readValues });
+  // The draft reader identifies the project. Reset only transient feedback,
+  // before rendering children; keep the disclosure and picker controls mounted.
+  if (owner.readValues !== readValues) {
+    setOwner({ readValues });
+    setErrors({});
+    setResolved(null);
+    setResolveError(null);
+  }
   const panelId = useId();
 
   function currentValues(): AdvancedValues {
@@ -143,8 +152,10 @@ export function AdvancedOptions({
     setResolveError(null);
     try {
       const result = await resolveConfig(collectAdvancedOverrides(options, values));
+      if (activeReader.current !== readValues) return;
       setResolved(JSON.stringify(result.effective, null, 2));
     } catch (err) {
+      if (activeReader.current !== readValues) return;
       setResolveError(err instanceof Error ? err.message : String(err));
     }
   }

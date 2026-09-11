@@ -373,7 +373,8 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
   const pluginSelectionRef = useRef(pluginSelection);
   pluginSelectionRef.current = pluginSelection;
-  const [staleNotice, setStaleNotice] = useState<string | null>(null);
+  const [staleModel, setStaleNotice] = useState<{ draft: SpawnDraft; model: string } | null>(null);
+  const staleNotice = staleModel?.draft === draft ? staleModel.model : null;
   const [createDialogPath, setCreateDialogPath] = useDraftField(draft, "createDialogPath");
   const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
@@ -382,12 +383,20 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   // flips busy true; StartingLoader below owns the 1s tick and mounts only
   // while busy, so no interval runs with nothing on screen reading it.
   const [busyStartedAt, setBusyStartedAt] = useDraftField(draft, "busyStartedAt");
+  // Own the effective layer by draft so neither its gate nor inherited labels
+  // can describe the previous project while the current resolve is pending.
+  const [defaultPreview, setDefaultPreview] = useState<{ draft: SpawnDraft; effective: LaunchConfigLayer } | null>(
+    null,
+  );
+  // Every unset launch-config control names its entry in this effective layer:
+  // "high (default)", "On (default)", etc. Unknown defaults remain plain.
+  const resolvedDefaults = defaultPreview?.draft === draft ? defaultPreview.effective : null;
   // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
   // unconfirmable state never blocks Start (same fail-open shape as
   // preflightDir).
-  const [noDefaultModel, setNoDefaultModel] = useState(false);
+  const noDefaultModel = resolvedDefaults !== null && (resolvedDefaults.model ?? "").trim() === "";
   // The launchable-model catalog, loaded at pane level so the Effort select can
   // read the selected model's own reasoningEffortLevels without waiting for a
   // picker to open. null = not loaded or the load failed - the select stays on
@@ -410,13 +419,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   } | null>(null);
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
-  const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
-  // The whole effective layer of the same launch/resolve (null until it
-  // lands, or after it fails): every launch-config control whose unset state
-  // reads "(default)" prepends its entry here - "high (default)",
-  // "On (default)", "anthropic/claude-sonnet-4 (default)" - so the word
-  // "(default)" never stands in for an answer the hub actually knows.
-  const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | null>(null);
+  const resolvedDefaultModel = (resolvedDefaults?.model ?? "").trim();
   const pluginRevision = useExtensionsStore((state) => state.pluginRevision);
   const pluginSelectionSupported = harnessSupportsPluginSelection(harness, harnesses);
   const combinedOverrides = pluginSelectionSupported
@@ -546,7 +549,6 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
-  const initialModelRef = useRef(model);
   const modelRef = useRef(model);
   modelRef.current = model;
 
@@ -762,14 +764,16 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   // biome-ignore lint/correctness/useExhaustiveDependencies: sweep on provider changes, not on each working-directory keystroke; the request captures the current scope
   useEffect(() => {
     let active = true;
-    const initialModel = initialModelRef.current;
+    const initialModel = draft.fields.getState().model;
     loadModelList().then(
       (r) => {
         if (!active) return;
         const { discarded } = sweepStaleModels(r.data);
-        if (initialModel && modelRef.current === initialModel && discarded.includes(initialModel)) {
+        // Both the snapshot and the live guard belong to this request's draft,
+        // even if navigation changes the controls before its catalog settles.
+        if (initialModel && draft.fields.getState().model === initialModel && discarded.includes(initialModel)) {
           setModel("");
-          setStaleNotice(initialModel);
+          setStaleNotice({ draft, model: initialModel });
         }
       },
       () => {},
@@ -881,9 +885,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
   // this effect doesn't itself re-run on every model change.
   useEffect(() => {
     if (cwd.trim() === "") {
-      setNoDefaultModel(false);
-      setResolvedDefaultModel("");
-      setResolvedDefaults(null);
+      setDefaultPreview(null);
       return undefined;
     }
     let active = true;
@@ -891,10 +893,8 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
       Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
         ([result, models]) => {
           if (!active) return;
-          setResolvedDefaults(result.effective);
+          setDefaultPreview({ draft, effective: result.effective });
           const defaultModel = (result.effective.model ?? "").trim();
-          setNoDefaultModel(defaultModel === "");
-          setResolvedDefaultModel(defaultModel);
           if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
           const slash = defaultModel.indexOf("/");
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
@@ -906,9 +906,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
         },
         () => {
           if (active) {
-            setNoDefaultModel(false);
-            setResolvedDefaultModel("");
-            setResolvedDefaults(null);
+            setDefaultPreview(null);
           }
         },
       );
@@ -917,7 +915,7 @@ function SpawnForm({ draft, prefillRevision }: { draft: SpawnDraft; prefillRevis
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, advancedOverrides, resolveConfig, loadModels, setModel]);
+  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's

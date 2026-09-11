@@ -81,7 +81,8 @@ export function applySpawnURL(onNavigation = false): void {
   const prefill = applyPrefill ? readUrlPrefill(window.location.search) : {};
   // A bare /new restores the last in-app selection even if no launch has ever
   // saved the global working-directory default.
-  const cwd = prefill.dir ?? state.current?.cwd ?? resolveInitialDefaults({}).workingDir ?? "";
+  const urlDir = prefill.dir?.trim();
+  const cwd = urlDir || (state.current?.cwd ?? resolveInitialDefaults({}).workingDir ?? "");
   const draft = selectSpawnDirectory(cwd);
   if (applyPrefill) {
     if (prefill.prompt) setDraftField(draft, "prompt", prefill.prompt);
