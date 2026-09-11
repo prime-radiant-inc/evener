@@ -61,9 +61,18 @@ project skill of the same name. Plugin skills are namespaced
 (`plugin:skill`) and never shadow a bare-named skill — invoke them by qualified
 name, or by bare name when no bare-named skill has it.
 
-Skill bodies are loaded as text and injected for the model to follow. Evener
-performs no expansion on them: no shell execution, no file inclusion, no
-argument substitution.
+When a skill is activated, Evener reads its recorded `SKILL.md` source,
+revalidates its current metadata, and delivers the complete instruction body in
+a structured, data-safe context. The context includes `base_directory`, the
+skill directory against which relative references to scripts, references, or
+other collateral are resolved. Referenced resources are loaded lazily with the
+ordinary permission-checked tools only when the task needs them; they are not
+eagerly included with the skill body.
+
+Skill bodies are inert instructions, not executable templates. Evener performs
+no expansion on them: no shell execution, no file inclusion, no argument
+substitution. Template-like syntax and context-delimiter text in the body are
+delivered verbatim as instruction data.
 
 ## Evener-wide slash commands
 

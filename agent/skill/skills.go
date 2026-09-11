@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,7 +8,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 var slashAddressableNamePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)?$`)
@@ -90,15 +88,11 @@ func ScanSkillsDir(dir string, out map[string]SkillMeta) {
 
 // LoadSkillBody reads a SKILL.md and returns the markdown body (after frontmatter).
 func LoadSkillBody(meta SkillMeta) (string, error) {
-	data, err := os.ReadFile(meta.SkillFile)
+	loaded, _, err := load(Descriptor{CatalogName: meta.Name, Meta: meta}, meta.Name != "")
 	if err != nil {
-		return "", fmt.Errorf("reading skill file: %w", err)
+		return "", err
 	}
-	doc, err := frontmatter.Parse(string(data))
-	if err != nil {
-		return "", fmt.Errorf("parsing skill frontmatter: %w", err)
-	}
-	return doc.Body, nil
+	return loaded.Body, nil
 }
 
 // CatalogEntries returns path-free skill metadata in canonical map-key order.
@@ -142,9 +136,23 @@ func ResolveSkill(skills map[string]SkillMeta, name string) (catalogName string,
 // Tries exact match first, then tries unnamespaced match (e.g., "tdd" matches "myplugin:tdd").
 // Returns ("", nil) if not found.
 func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, error) {
-	_, meta, ok := ResolveSkill(skills, name)
+	catalogName, meta, ok := ResolveSkill(skills, name)
 	if ok {
-		return LoadSkillBody(meta)
+		// Metadata parsed during discovery records the declared name. Older callers
+		// may provide only a namespaced catalog name, so recover its suffix when
+		// no parsed metadata is available.
+		if declaredName, parsed := meta.Metadata["name"].(string); parsed {
+			meta.Name = declaredName
+		} else if meta.Name == catalogName {
+			if _, suffix, namespaced := strings.Cut(catalogName, ":"); namespaced {
+				meta.Name = suffix
+			}
+		}
+		loaded, _, err := Load(Descriptor{CatalogName: catalogName, Meta: meta})
+		if err != nil {
+			return "", err
+		}
+		return loaded.Body, nil
 	}
 	return "", nil
 }
