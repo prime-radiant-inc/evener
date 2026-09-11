@@ -1515,3 +1515,40 @@ func TestRosterOwnershipErrorRequiresNewerCompleteScan(t *testing.T) {
 		t.Fatal("complete scan did not publish recovered ownership")
 	}
 }
+
+// ReadSpawnedThread publishes a freshly spawned daemon from the caller's own
+// read rather than from a scan, so it is the one path into the roster that does
+// not go through the prober. Everything the roster carries about a daemon's
+// status has to survive it, the recovery flags included: the hub projects and
+// enforces the fork capability from those flags, so a confirmation that dropped
+// them would advertise fork for a daemon reporting resumeRequired until the
+// next full scan.
+func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
+	r := NewRoster(t.TempDir(), nil)
+	entry := rendezvous.Entry{
+		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
+		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
+	}
+	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "01SPAWNED", SessionID: "01SPAWNED",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle, ActiveFlags: []string{"resumeRequired"}},
+		}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	live, ok := r.Find("01SPAWNED")
+	if !ok {
+		t.Fatal("the confirmed daemon was not published into the roster")
+	}
+	if live.Status != appwire.ThreadStatusIdle {
+		t.Fatalf("published status = %q, want idle", live.Status)
+	}
+	if !slices.Contains(live.ActiveFlags, "resumeRequired") {
+		t.Fatalf("published entry = %+v, want the status flags the daemon reported", live)
+	}
+	live.ActiveFlags[0] = "mutated"
+	if again, _ := r.Find("01SPAWNED"); !slices.Contains(again.ActiveFlags, "resumeRequired") {
+		t.Fatalf("Find must return a defensive copy of the status flags: %+v", again)
+	}
+}

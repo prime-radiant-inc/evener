@@ -912,7 +912,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	}
 	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
-		PendingAsk: root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
+		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
+		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		RunningJobs: runningJobs, CompletedJobs: completedJobs}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
