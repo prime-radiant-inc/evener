@@ -2104,23 +2104,46 @@ func TestInstances_EditSameNameIsNotARename(t *testing.T) {
 // Decode the public JSON contract so missing additive fields fail at runtime,
 // and catalogue tests also prove the metadata actually crosses appwire.
 type providerSetupDescriptor struct {
-	ID        string                 `json:"id"`
-	AuthModes []string               `json:"authModes"`
-	Setup     *appwire.InstanceEntry `json:"setup"`
+	ID        string
+	AuthModes []string
+	Setup     *appwire.InstanceEntry
 }
 
 func providerSetup(t *testing.T, list appwire.InstanceListResponse, id string) providerSetupDescriptor {
 	t.Helper()
-	var wire struct {
-		AvailableProviders []providerSetupDescriptor `json:"availableProviders"`
-	}
+	var wire map[string]json.RawMessage
 	if err := json.Unmarshal(mustMarshal(t, list), &wire); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range wire.AvailableProviders {
-		if p.ID == id {
-			return p
+	catalogue, ok := wire["availableProviders"]
+	if !ok {
+		t.Fatal("missing public availableProviders key")
+	}
+	var providers []map[string]json.RawMessage
+	if err := json.Unmarshal(catalogue, &providers); err != nil {
+		t.Fatal(err)
+	}
+	for _, fields := range providers {
+		var p providerSetupDescriptor
+		if err := json.Unmarshal(fields["id"], &p.ID); err != nil {
+			t.Fatal(err)
 		}
+		if p.ID != id {
+			continue
+		}
+		modes, ok := fields["authModes"]
+		if !ok {
+			t.Fatal("missing public authModes key")
+		}
+		if err := json.Unmarshal(modes, &p.AuthModes); err != nil {
+			t.Fatal(err)
+		}
+		if setup, ok := fields["setup"]; ok {
+			if err := json.Unmarshal(setup, &p.Setup); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return p
 	}
 	t.Fatalf("catalogue has no provider %q", id)
 	return providerSetupDescriptor{}
