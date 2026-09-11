@@ -53,12 +53,36 @@ type SkillDeliveryObligation struct {
 	Route            string               `json:"route"`
 }
 
+// SkillReloadSelection is the parsed outcome of a reload-selection request.
+// State distinguishes absent (empty/null), valid (including an explicit empty
+// list), and invalid (malformed or naming an unknown skill); only a valid
+// selection authorizes a reload, and invalid preserves the accompanying note.
+type SkillReloadSelection struct {
+	State     string   `json:"state"` // absent, valid, invalid
+	Names     []string `json:"names"`
+	ErrorCode string   `json:"error_code,omitempty"`
+}
+
+// SkillInventorySummary is the typed loaded-skill metadata handed to note
+// elicitation so the model can choose reloads by canonical name.
+type SkillInventorySummary struct {
+	Name         string
+	Description  string
+	Availability string
+	HasOrdinary  bool
+	HasPreload   bool
+}
+
 type SkillLifecycleSnapshot struct {
 	Revision         uint64                         `json:"revision"`
 	Inventory        map[string]SkillInventoryEntry `json:"inventory"`
 	Obligations      []SkillDeliveryObligation      `json:"obligations"`
 	PinnedNoteGen    uint64                         `json:"pinned_note_gen"`
 	NextOperationGen uint64                         `json:"next_operation_gen"`
+	// PendingSelection is the parsed reload selection awaiting consumption by
+	// the next successfully published compaction; absent means no selection
+	// was made (or a previous one was consumed).
+	PendingSelection *SkillReloadSelection `json:"pending_selection,omitempty"`
 }
 
 type SkillInputRecord struct {
@@ -109,6 +133,11 @@ func (s SkillLifecycleSnapshot) Clone() SkillLifecycleSnapshot {
 		out.Inventory[name] = entry
 	}
 	out.Obligations = slices.Clone(s.Obligations)
+	if s.PendingSelection != nil {
+		selection := *s.PendingSelection
+		selection.Names = slices.Clone(selection.Names)
+		out.PendingSelection = &selection
+	}
 	return out
 }
 

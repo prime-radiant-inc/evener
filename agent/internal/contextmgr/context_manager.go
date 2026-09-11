@@ -1398,13 +1398,34 @@ func (cm *Manager) HasClient() bool { return cm.client != nil }
 // noteElicitChars caps the history rendered into the elicitation prompt.
 const noteElicitChars = 80_000
 
+// loadedSkillsElicitSection lists the session's successfully loaded skills and
+// the selection-block protocol for note elicitation, so the model can say which
+// skills to reload after compaction. Empty when nothing is loaded — with no
+// inventory there is nothing a selection could authorize.
+func loadedSkillsElicitSection(loaded []schema.SkillInventorySummary) string {
+	if len(loaded) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n--- SKILLS LOADED IN THIS SESSION ---\n")
+	for _, s := range loaded {
+		fmt.Fprintf(&b, "- %s — %s\n", s.Name, s.Description)
+	}
+	b.WriteString("\nCompaction may drop these skills' instruction bodies. After the bullet list, " +
+		"emit exactly one <skill-reload-selection> block containing a JSON object with a " +
+		"\"reload_skills\" array of the exact names to reload after compaction (use [] to reload none).")
+	return b.String()
+}
+
 // ElicitNote asks the model to enumerate the must-survive-verbatim details from
 // the given history, for pinning as a note before a compaction (Variant B of the
 // forced-note-at-compaction mechanism). The caller passes the prefix the
 // compaction is about to fold (the recent preserved turns survive verbatim and
 // need no rescuing). Returns the model's bullet list. Falls back across the
 // configured summarization models on transient errors, like the summarizer.
-func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (string, error) {
+// loaded carries the session's successfully loaded skills so the model can also
+// choose which to reload after compaction.
+func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn, loaded []schema.SkillInventorySummary) (string, error) {
 	if cm.client == nil {
 		return "", errors.New("note elicitation requires an LLM client")
 	}
@@ -1412,7 +1433,7 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (strin
 	if len(summarizationModels(prof)) == 0 {
 		return "", errors.New("no model available for note elicitation")
 	}
-	prompt := noteElicitationPrompt + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
+	prompt := noteElicitationPrompt + loadedSkillsElicitSection(loaded) + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
 	resp, err := cm.completeSummarization(ctx, prof, prompt)
 	if err != nil {
 		return "", err

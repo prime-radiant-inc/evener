@@ -174,6 +174,45 @@ sessions reconcile receipts so a retained complete body is proven, not
 redelivered or double-reported. A failed reinvocation never erases an earlier
 successful record.
 
+### Reload selection at compaction
+
+Compaction can drop a loaded skill's instruction body, so both compaction
+paths accept a selection of skills to reload from disk afterward. The
+selection names exact canonical names from this session's successful-inventory
+records — never tool-call names or history text — and the runtime presents
+that inventory (names and descriptions) when asking.
+
+- **Explicit:** `compact_context` accepts an optional `reload_skills` array of
+  strings. `note_to_self` remains required, and array elements validate as
+  strings; a schema-invalid call is rejected by normal argument validation and
+  schedules nothing.
+- **Automatic:** note elicitation asks for the same selection in exactly one
+  `<skill-reload-selection>` block containing a JSON object with a
+  `reload_skills` field, alongside its free-text note. Only a valid block is
+  removed from the handed-forward note; a missing, multiple, or malformed
+  block authorizes no reload and the note is preserved verbatim. Incidental
+  skill mentions in the note or summary never count as a selection.
+
+Presence distinguishes three outcomes:
+
+| Selection | Meaning |
+|---|---|
+| Valid list | Reload those skills in listed order; duplicates collapse to first occurrence. An explicit empty array reloads none. |
+| Absent (omitted or `null`) | No selection was made; the all-loaded-skills reminder applies. |
+| Invalid (malformed, or naming a skill outside the inventory) | Reported with `invalid_selection`/`unknown_skill`; no reload is authorized and the reminder applies. |
+
+A present selection — including an explicit empty array — requests the
+compaction even with an empty `note_to_self` (which still clears any previous
+pinned note). Empty note, no instructions, and an absent/null selection keeps
+the plain clear-note behavior. An invalid selection in an accepted request
+never discards that request's valid note. A selection belongs to one
+compaction cycle and is consumed only by a compaction that actually publishes.
+
+The context-pressure nudge lists the loaded skills either way: with
+`compact_context` available it asks for the selection through `reload_skills`;
+without the tool it lists the skills for awareness and keeps its existing
+note advice, never requesting a structured response the model cannot submit.
+
 ## Evener-wide slash commands
 
 A evener-wide slash command is a markdown file — frontmatter optional — in one

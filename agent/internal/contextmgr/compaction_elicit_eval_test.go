@@ -38,7 +38,7 @@ func TestElicitNoteCapture(t *testing.T) {
 	initial.WriteString("\n" + newWorkBulk(0))
 
 	// Exercise the real production method (cm.ElicitNote) over the same history.
-	note, err := cm.ElicitNote(ctx, turnsFromText(t, initial.String()))
+	note, err := cm.ElicitNote(ctx, turnsFromText(t, initial.String()), nil)
 	if err != nil {
 		t.Fatalf("ElicitNote: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestElicitNoteCapturesToolResult(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	note, err := cm.ElicitNote(ctx, history)
+	note, err := cm.ElicitNote(ctx, history, nil)
 	if err != nil {
 		t.Fatalf("ElicitNote: %v", err)
 	}

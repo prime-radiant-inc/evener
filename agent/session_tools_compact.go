@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -38,6 +39,13 @@ func defCompact() llm.ToolDefinition {
 					"description": "Optional steering for the summary: what to preserve in detail vs. drop. " +
 						"Dropped detail is unrecoverable without persistence — steer toward keeping.",
 				},
+				"reload_skills": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "string"},
+					"description": "Optional selection of skills to reload from disk after the compaction: exact " +
+						"canonical names from this session's loaded-skill inventory, in the order to reload " +
+						"them. An explicit empty array reloads none. Omit (or pass null) to make no selection.",
+				},
 			},
 			"required": []string{"note_to_self"},
 		},
@@ -53,20 +61,40 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 			note, _ := args["note_to_self"].(string)
 			instructions, _ := args["compaction_instructions"].(string)
 
-			// Clearing a note (empty note, no instructions) does not force a compaction.
-			if note == "" && instructions == "" {
+			// Presence matters: re-encode the raw value so an absent key, an
+			// explicit null, and an explicit empty array stay distinct.
+			var selRaw json.RawMessage
+			if v, ok := args["reload_skills"]; ok {
+				raw, err := json.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("compact: reload_skills: %w", err)
+				}
+				selRaw = raw
+			}
+			selection := parseSkillReloadSelection(selRaw, deps.skillInventory())
+
+			// Clearing a note (empty note, no instructions, no selection) does
+			// not force a compaction. A present selection — even an explicit
+			// empty array — requests one.
+			if note == "" && instructions == "" && selection.State == "absent" {
 				deps.setPinnedNote("")
 				return tool.StateResult{Output: "Note cleared. No compaction requested."}, nil
 			}
 			if err := deps.requestForceCompact(instructions); err != nil {
 				// Reject without mutating state — a rejected double-call must not
-				// silently clobber the note set by the accepted first call.
+				// silently clobber the note or selection set by the accepted
+				// first call.
 				return nil, fmt.Errorf("compact: %w", err)
 			}
 			deps.setPinnedNote(note)
+			deps.setPendingSkillReloadSelection(selection)
 			// Compaction runs at the round tail, AFTER this returns — the message is a
 			// prediction from current pressure, never past-tense.
-			return tool.StateResult{Output: predictionMessage(note == "", deps.pressure())}, nil
+			out := predictionMessage(note == "", deps.pressure())
+			if selection.State == "invalid" {
+				out += " The reload_skills selection was invalid (" + selection.ErrorCode + ") and authorizes no reload."
+			}
+			return tool.StateResult{Output: out}, nil
 		},
 	})
 }

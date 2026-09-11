@@ -84,6 +84,13 @@ type toolDeps struct {
 	requestForceCompact func(instructions string) error
 	pressure            func() float64
 
+	// skillInventory exposes the session's successful-activation inventory so
+	// the compact tool can validate a reload selection, and
+	// setPendingSkillReloadSelection records the parsed selection for the
+	// pending compaction cycle.
+	skillInventory                 func() map[string]schema.SkillInventoryEntry
+	setPendingSkillReloadSelection func(schema.SkillReloadSelection)
+
 	// setCommunicateTerminal is the terminal communicate result writer (issue
 	// #570). Live sessions get the Session-owned atomic capture
 	// (Session.acceptCommunicateTerminal): a call's message/reply/output and its
@@ -285,12 +292,14 @@ func newToolDeps(s *Session) *toolDeps {
 			fetch:  s.webFetch,
 			search: s.webSearch,
 		},
-		setPinnedNote:          s.setPinnedNote,
-		requestForceCompact:    s.requestForceCompact,
-		pressure:               s.ContextPressure,
-		setCommunicateTerminal: s.acceptCommunicateTerminal,
-		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
-		turnEndsProcess:        s.cfg.TurnEndsProcess,
+		setPinnedNote:                  s.setPinnedNote,
+		requestForceCompact:            s.requestForceCompact,
+		pressure:                       s.ContextPressure,
+		skillInventory:                 s.skillInventorySnapshot,
+		setPendingSkillReloadSelection: s.setPendingSkillReloadSelection,
+		setCommunicateTerminal:         s.acceptCommunicateTerminal,
+		runningJobIDs:                  func() []string { return sessionRunningWorkIDs(s) },
+		turnEndsProcess:                s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok
