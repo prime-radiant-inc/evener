@@ -1653,3 +1653,60 @@ func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
 		})
 	}
 }
+
+// After an explicit resume through a stable alias, the recovery locks keep
+// mapping that alias to the session the resume settled on — ResolvedSessionID
+// is recorded and never cleared. Once that daemon shuts down gracefully its
+// rendezvous entry goes away, so a resolver that only asks the roster answers
+// the alias itself while the one that reads the recovery state answers the
+// session: two readings that disagree with nothing having changed, and every
+// cold fork of that alias refused until the hub restarts. Both resolvers follow
+// the same redirect, so the fork branches the session the resume named.
+func TestHubForkFollowsTheRecoveryRedirectForAStoppedAlias(t *testing.T) {
+	stateDir := t.TempDir()
+	aliasID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentID := buildRPCParentSession(t, stateDir)
+
+	// The shape an explicit resume through the alias leaves behind: one
+	// recovery group over both ids, resolved onto the current session, then
+	// completed. No daemon remains — no roster entry and no rendezvous marker.
+	locks := hubcore.NewResumeLocks()
+	group := []string{aliasID, currentID}
+	finish := locks.BeginForceStop(group)
+	if err := locks.PersistForceStop(group, currentID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	epoch := locks.RecoveryState(aliasID).Epoch
+	if err := locks.ExplicitResumeCompleted(aliasID, epoch); err != nil {
+		t.Fatal(err)
+	}
+	locks.RecordResolvedSession(aliasID, currentID, epoch)
+	if got := locks.ResolvedSessionID(aliasID); got != currentID {
+		t.Fatalf("resolved session for the alias = %q, want %q", got, currentID)
+	}
+	if state := locks.RecoveryState(aliasID); state.ResumeRequired || state.Stopping != 0 {
+		t.Fatalf("recovery state after the explicit resume = %+v, want cleared", state)
+	}
+
+	cfg := hubcore.WebConfig{
+		StateDir: stateDir, RunDir: t.TempDir(),
+		Roster: hubcore.NewRosterWithEntries(), ResumeLocks: locks,
+	}
+	resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+		Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+	})
+	if err != nil {
+		t.Fatalf("fork through a resumed alias whose daemon has stopped: %v", err)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ParentSessionID != currentID {
+		t.Fatalf("fork branched %q, want the session the resume settled on %q", meta.ParentSessionID, currentID)
+	}
+}

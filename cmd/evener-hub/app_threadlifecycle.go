@@ -1045,12 +1045,26 @@ func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (strin
 			return resumeClaimTarget(cfg, claims, "", "")
 		}
 	}
-	if cfg.ResumeLocks != nil {
-		if id := cmp.Or(cfg.ResumeLocks.RecoveryState(threadID).ResumeSessionID, cfg.ResumeLocks.ResolvedSessionID(threadID)); id != "" {
-			return id, nil
-		}
+	return forkRedirectSessionID(cfg, threadID), nil
+}
+
+// forkRedirectSessionID is what a thread no live daemon owns resolves to: the
+// session a recovery redirected it onto, else the thread itself. A completed
+// explicit resume records that redirect and never clears it
+// (ResumeLocks.RecordResolvedSession), so an alias whose daemon has since
+// stopped still names the session the resume settled on. Both resolvers end
+// here, which is what keeps them from disagreeing while nothing is changing:
+// one that stopped at the alias would read "ownership changed" off a redirect
+// that has been stable since before the request started.
+func forkRedirectSessionID(cfg hubcore.WebConfig, threadID string) string {
+	if cfg.ResumeLocks == nil {
+		return threadID
 	}
-	return threadID, nil
+	return cmp.Or(
+		cfg.ResumeLocks.RecoveryState(threadID).ResumeSessionID,
+		cfg.ResumeLocks.ResolvedSessionID(threadID),
+		threadID,
+	)
 }
 
 // forkFenceTargets is every identity one fork has to reserve, in request order:
@@ -1075,17 +1089,19 @@ func forkFenceTargets(requestedID, sessionID string) []string {
 // stays the identity for recovery and deletion fencing, which reserve the
 // alias the client asked about.
 func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
-	if cfg.Roster == nil {
-		return threadID
+	if cfg.Roster != nil {
+		if owner, ok := liveDaemonForThread(cfg.Roster, threadID); ok {
+			// Same fallback order as liveDaemonForSession: a probe that answered
+			// without naming its session leaves LiveEntry.SessionID empty, and
+			// the rendezvous entry it carries still names the daemon's current
+			// one.
+			return cmp.Or(owner.SessionID, owner.Entry.SessionID, owner.ThreadID, threadID)
+		}
 	}
-	owner, ok := liveDaemonForThread(cfg.Roster, threadID)
-	if !ok {
-		return threadID
-	}
-	// Same fallback order as liveDaemonForSession: a probe that answered without
-	// naming its session leaves LiveEntry.SessionID empty, and the rendezvous
-	// entry it carries still names the daemon's current one.
-	return cmp.Or(owner.SessionID, owner.Entry.SessionID, owner.ThreadID, threadID)
+	// No live daemon owns the thread, so the recovery redirect answers — the
+	// same tail forkTargetSessionIDUnderLock reaches, so the pre-lock reading
+	// and the recheck cannot disagree while nothing is moving.
+	return forkRedirectSessionID(cfg, threadID)
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
