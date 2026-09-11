@@ -44,14 +44,14 @@ function completeBranch(branch: ActivitySessionNode["branch"]): boolean {
   return !branch.error && !branch.truncated && !branch.continuation;
 }
 
-// An off-target page carries this container only as it stood when that page was
-// cut, so a turn both lists describe keeps the projection already on screen,
-// while a turn only the page carries is one the client has never seen and
-// follows in the page's own order. Neither side loses a turn.
-function unionTurns(current: ActivityJob[] | undefined, patch: ActivityJob[] | undefined): ActivityJob[] | undefined {
-  if (!current?.length) return patch?.map((turn) => ({ ...turn }));
-  const seen = new Set(current.map((turn) => turn.jobId));
-  return [...current, ...(patch ?? []).filter((turn) => !seen.has(turn.jobId))].map((turn) => ({ ...turn }));
+// Turns by identity: `speaks` is the list whose word is taken, so its object
+// wins for every job it carries, and jobs only `rest` knows follow in `rest`'s
+// own order. Neither side loses a turn. Which list speaks is the caller's to
+// decide - the two callers here answer it differently.
+function unionTurns(speaks: ActivityJob[] | undefined, rest: ActivityJob[] | undefined): ActivityJob[] | undefined {
+  if (!speaks?.length) return rest?.map((turn) => ({ ...turn }));
+  const seen = new Set(speaks.map((turn) => turn.jobId));
+  return [...speaks, ...(rest ?? []).filter((turn) => !seen.has(turn.jobId))].map((turn) => ({ ...turn }));
 }
 
 function maxActivity(current: string | undefined, incoming: string | undefined): string | undefined {
@@ -132,7 +132,11 @@ function fenceSession(
     const delegate = revisionFencedDelegate(prior.delegate, entry.delegate, true);
     delegate.branch = { ...entry.delegate.branch };
     if (!completeBranch(entry.delegate.branch)) {
-      const turns = unionTurns(prior.delegate.turns, entry.delegate.turns);
+      // A bounded page is a prefix of the turn list as much as of the entry
+      // list: it speaks for every turn it reached, so those arrive in the state
+      // it gave them, and the turns on screen survive only past where it
+      // stopped, appended after it.
+      const turns = unionTurns(entry.delegate.turns, prior.delegate.turns);
       // A turn kept past the incoming list is work this session still holds,
       // so it has to be counted, exactly as a kept entry or child is.
       if ((turns?.length ?? 0) > (entry.delegate.turns?.length ?? 0)) retainedBelow = true;

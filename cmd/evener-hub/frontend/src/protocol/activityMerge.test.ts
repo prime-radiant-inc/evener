@@ -60,6 +60,11 @@ const ids = (node: ActivitySessionNode) => node.entries.map(activityNodeID);
 // The daemon emits no such type today, so this names the fixture's intent
 // rather than a wire value; activityRows.test.ts uses the same one.
 const TURN_CONTAINER = "agent";
+const turnJob = (jobId: string, running: boolean) => ({
+  ...shell(jobId).job,
+  status: running ? "running" : "completed",
+  terminal: !running,
+});
 
 test("root continuation retains its prefix and deduplicates overlapping entries", () => {
   const current = tree([shell("a"), shell("b")], "next");
@@ -212,6 +217,45 @@ test("a bounded refresh keeps the turns a continuation loaded into a container",
   expect(entry.delegate.turns?.map((turn) => turn.jobId)).toEqual(["turn-1", "turn-2"]);
   // A retained turn is work the session still holds, so it has to be counted.
   expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+});
+
+// A bounded page is a prefix of the turn list too: it speaks for every turn it
+// reaches, and says nothing about the ones past where it stopped.
+test("a bounded refresh replaces the turns it lists and keeps only those past its cutoff", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.turns = [turnJob("turn-1", true), turnJob("turn-2", false)];
+  const incoming = delegate(session("child", [shell("a")]));
+  incoming.delegate.type = TURN_CONTAINER;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.turns = [turnJob("turn-1", false)];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns?.map((t) => [t.jobId, t.status, t.terminal])).toEqual([
+    ["turn-1", "completed", true],
+    ["turn-2", "completed", true],
+  ]);
+  // The counts describe the turns on screen: the retained one counted, the
+  // listed one counted in the state the refresh gave it.
+  expect(fenced.counts).toEqual({ active: 0, failed: 0, completed: 3, complete: false });
+});
+
+test("a bounded refresh that lists every turn leaves the server's counts alone", () => {
+  const currentEntry = delegate(session("child", [shell("a")]));
+  currentEntry.delegate.type = TURN_CONTAINER;
+  currentEntry.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  currentEntry.delegate.turns = [turnJob("turn-1", true), turnJob("turn-2", false)];
+  const incoming = delegate(session("child", [shell("a")]));
+  incoming.delegate.type = TURN_CONTAINER;
+  incoming.delegate.branch = { truncated: true, continuation: "delegate-next" };
+  incoming.delegate.turns = [turnJob("turn-1", false), turnJob("turn-2", false)];
+  const fenced = fenceRootSession(tree([currentEntry]).root, tree([incoming]).root);
+  const entry = fenced.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing turn container");
+  expect(entry.delegate.turns).toEqual(incoming.delegate.turns);
+  expect(fenced.counts).toEqual(tree([incoming]).root.counts);
 });
 
 test("a bounded refresh still updates the container state it does list", () => {
