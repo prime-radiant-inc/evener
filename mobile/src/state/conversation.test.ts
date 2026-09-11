@@ -1795,6 +1795,126 @@ describe("ConversationStore", () => {
       }
     });
 
+    it("marks an activity item as failed on item/completed with a nonzero exit code and no error", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "tool-1",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: {},
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+            exitCode: 1,
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "tool-1");
+      expect(item?.kind).toBe("activity");
+      if (item?.kind === "activity") {
+        expect(item.state).toBe("failed");
+      }
+    });
+
+    it("marks an activity item as completed on item/completed with a zero exit code and no error", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "tool-1",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: {},
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+            exitCode: 0,
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "tool-1");
+      expect(item?.kind).toBe("activity");
+      if (item?.kind === "activity") {
+        expect(item.state).toBe("completed");
+      }
+    });
+
+    it("marks an activity item as failed on item/completed with an error and no exit code", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "tool-1",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: {},
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+            error: "boom",
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "tool-1");
+      expect(item?.kind).toBe("activity");
+      if (item?.kind === "activity") {
+        expect(item.state).toBe("failed");
+      }
+    });
+
     it("C6: upserts completed item even when start was missed", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();

@@ -43,6 +43,7 @@ import {
   projectApproval,
   projectItemAttachments,
   projectQueue,
+  toolCallFailed,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -613,7 +614,7 @@ function requireCap(
 }
 
 function commandActivityState(item: ThreadItem): ActivityState {
-  if (item.error !== undefined && item.error !== "") return "failed";
+  if (toolCallFailed(item)) return "failed";
   if (item.status === "inProgress") return "running";
   return "completed";
 }

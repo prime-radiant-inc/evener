@@ -461,6 +461,57 @@ describe("projectThread", () => {
       }
     });
 
+    it("projects a settled tool call with a nonzero exit code and no error as failed state", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "completed",
+            exitCode: 1,
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      if (a?.kind === "activity") expect(a.state).toBe("failed");
+    });
+
+    it("projects a settled tool call with a zero exit code and no error as completed state", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "completed",
+            exitCode: 0,
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      if (a?.kind === "activity") expect(a.state).toBe("completed");
+    });
+
+    it("projects a settled tool call with an error and no exit code as failed state", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "completed",
+            error: "boom",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      if (a?.kind === "activity") expect(a.state).toBe("failed");
+    });
+
     it("uses description as label when toolName absent", () => {
       const t = thread([
         turn("t1", [
