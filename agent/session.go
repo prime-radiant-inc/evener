@@ -574,7 +574,7 @@ type Session struct {
 	strategy   contextmgr.Strategy
 
 	// skills discovered at session startup
-	skills map[string]skill.SkillMeta
+	skills skill.Catalog
 
 	// MCP server connections
 	mcpMgr   *mcp.Manager

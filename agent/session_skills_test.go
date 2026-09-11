@@ -227,9 +227,9 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 
 func TestStandaloneSkillActivationUsesCanonicalPluginName(t *testing.T) {
 	s := newTestSession(t)
-	s.skills = map[string]skill.SkillMeta{
-		"plugin:simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")},
-	}
+	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
+		"plugin:simplify": {CatalogName: "plugin:simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")}},
+	}}
 	_ = drainSlashEvents(s)
 
 	got, ok := s.expandSlashCommand(context.Background(), "/plugin:simplify")
@@ -534,6 +534,8 @@ func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 }
 
 func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	project := t.TempDir()
 	markGitRoot(t, project)
@@ -553,7 +555,7 @@ func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if _, ok := sess.skills["automatic-user"]; !ok {
+	if _, ok := sess.skills.Entries["automatic-user"]; !ok {
 		t.Fatal("automatic user skill was not discovered")
 	}
 	got, ok := sess.expandSlashCommand(context.Background(), "/automatic-user")
@@ -563,6 +565,8 @@ func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
 }
 
 func TestConfiguredSkillDirShadowsAutomaticUserSkill(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	project := t.TempDir()
 	markGitRoot(t, project)
@@ -590,12 +594,14 @@ func TestConfiguredSkillDirShadowsAutomaticUserSkill(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if got := sess.skills["same-name"].Description; got != "configured" {
+	if got := sess.skills.Entries["same-name"].Meta.Description; got != "configured" {
 		t.Fatalf("skill description = %q, want configured", got)
 	}
 }
 
 func TestProjectSkillShadowsAutomaticUserSkill(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	project := t.TempDir()
 	markGitRoot(t, project)
@@ -615,7 +621,172 @@ func TestProjectSkillShadowsAutomaticUserSkill(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if got := sess.skills["same-name"].Description; got != "project" {
+	if got := sess.skills.Entries["same-name"].Meta.Description; got != "project" {
 		t.Fatalf("skill description = %q, want project", got)
+	}
+}
+
+func TestSkillCatalogPortableFilteredStartup(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, f := range []struct{ name, controls string }{{"portable-both", ""}, {"portable-user", "disable-model-invocation: true\n"}, {"portable-model", "user-invocable: false\n"}, {"portable-invalid", "user-invocable: \"true\"\n"}} {
+		dir := filepath.Join(home, ".agents", "skills", f.name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: "+f.name+"\ndescription: fixture\n"+f.controls+"---\nPORTABLE_SESSION_1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	for _, fallback := range []bool{false, true} {
+		if fallback {
+			rebuildPromptToolCacheForTest(sess, "read_file")
+		}
+		got := map[string]bool{}
+		for _, d := range sess.buildPromptData(sess.currentEnv()).Skills {
+			got[d.CatalogName] = true
+		}
+		if !got["portable-both"] || !got["portable-model"] || got["portable-user"] || got["portable-invalid"] {
+			t.Fatalf("model fallback=%v entries=%v", fallback, got)
+		}
+	}
+	got := map[string]bool{}
+	for _, d := range sess.DetailedStatus().Skills {
+		got[d.Name] = true
+		if d.SkillFile != "" || d.Dir != "" {
+			t.Fatalf("completion leaked path: %+v", d)
+		}
+	}
+	if !got["portable-both"] || !got["portable-user"] || got["portable-model"] || got["portable-invalid"] {
+		t.Fatalf("user entries=%v", got)
+	}
+}
+
+func TestSkillCatalogInspectionCopiesFullMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root, plug := t.TempDir(), t.TempDir()
+	dir := filepath.Join(plug, ".claude-plugin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(`{"name":"inspect"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []struct{ name, controls string }{{"hidden", "disable-model-invocation: true\nuser-invocable: false\n"}, {"invalid", "user-invocable: \"true\"\n"}} {
+		dir := filepath.Join(plug, "skills", f.name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: "+f.name+"\ndescription: fixture\nallowed-tools: [read_file]\nmetadata:\n  nested: [ORIGINAL_1]\n"+f.controls+"---\nINSPECT_1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{plug}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	status := sess.DetailedStatus()
+	seen := map[string]skill.Descriptor{}
+	previous := ""
+	for _, d := range status.SkillCatalog {
+		if d.CatalogName <= previous {
+			t.Fatalf("unsorted catalog: %+v", status.SkillCatalog)
+		}
+		previous = d.CatalogName
+		if d.Meta.Dir != "" || d.Meta.SkillFile != "" {
+			t.Fatalf("inspection leaked paths: %+v", d)
+		}
+		seen[d.CatalogName] = d
+	}
+	hidden, ok := seen["inspect:hidden"]
+	if !ok || hidden.Meta.Name != "hidden" || !hidden.Controls.DisableModelInvocation || hidden.Controls.UserInvocable || hidden.Unavailable {
+		t.Fatalf("hidden=%+v", hidden)
+	}
+	invalid, ok := seen["inspect:invalid"]
+	if !ok || !invalid.Unavailable {
+		t.Fatalf("invalid=%+v", invalid)
+	}
+	for _, d := range status.Skills {
+		if d.Name == "inspect:hidden" || d.Name == "inspect:invalid" {
+			t.Fatalf("completion leaked %+v", d)
+		}
+	}
+	found := false
+	for i, d := range status.SkillDiagnostics {
+		if d.Category == "invalid_control" && d.Name == "inspect:invalid" && d.Source == filepath.Join(plug, "skills", "invalid", "SKILL.md") {
+			found = true
+		}
+		status.SkillDiagnostics[i].Source = "MUTATED_1"
+	}
+	if !found {
+		t.Fatalf("diagnostic=%+v", status.SkillDiagnostics)
+	}
+	hidden.Meta.AllowedTools[0] = "MUTATED_1"
+	hidden.Meta.Metadata["metadata"].(map[string]any)["nested"].([]any)[0] = "MUTATED_1"
+	live := sess.skills.Entries["inspect:hidden"]
+	if live.Meta.AllowedTools[0] != "read_file" || live.Meta.Metadata["metadata"].(map[string]any)["nested"].([]any)[0] != "ORIGINAL_1" {
+		t.Fatalf("inspection aliased live metadata: %+v", live)
+	}
+	for _, d := range sess.skills.Diagnostics {
+		if d.Source == "MUTATED_1" {
+			t.Fatal("inspection aliased live diagnostics")
+		}
+	}
+}
+
+func TestSkillCatalogPluginStartupMetadataOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	first, second := t.TempDir(), t.TempDir()
+	for _, dir := range []string{first, second} {
+		for _, sub := range []string{".claude-plugin", "skills/probe"} {
+			if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(`{"name":"selected"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "skills", "probe", "SKILL.md"), []byte("---\nname: probe\ndescription: fixture\n---\nPLUGIN_STARTUP_1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(first, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first, "hooks", "hooks.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{PluginDirs: []string{first, second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	d, err := sess.skills.ResolveExact("selected:probe")
+	if err != nil || d.Meta.SkillFile != filepath.Join(first, "skills", "probe", "SKILL.md") {
+		t.Fatalf("startup source=%+v err=%v", d, err)
+	}
+	if len(sess.plugins) != 0 {
+		t.Fatalf("malformed and reserved duplicate plugins loaded: %+v", sess.plugins)
+	}
+	found := false
+	for _, diag := range sess.DetailedStatus().SkillDiagnostics {
+		if diag.Category == "collision" && diag.Name == "selected" && diag.Source == first && diag.OtherSource == second {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("plugin reservation diagnostic missing")
 	}
 }

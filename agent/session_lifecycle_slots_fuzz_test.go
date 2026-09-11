@@ -598,8 +598,8 @@ func lcycRunInit(t *testing.T, dirs []string, kind plugin.SessionStartKind) stri
 	// Resume kind additionally exercises the defer branch.
 	err := sess.initPlugins(kind, false)
 
-	skillNames := make([]string, 0, len(sess.skills))
-	for name := range sess.skills {
+	skillNames := make([]string, 0, len(sess.skills.Entries))
+	for name := range sess.skills.Entries {
 		skillNames = append(skillNames, name)
 	}
 	sort.Strings(skillNames)

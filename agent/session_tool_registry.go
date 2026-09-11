@@ -286,8 +286,8 @@ func newToolDeps(s *Session) *toolDeps {
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
-			meta, ok := s.skills[name]
-			return meta, ok
+			descriptor, ok := s.skills.Entries[name]
+			return descriptor.Meta, ok
 		},
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
 		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),

@@ -22,7 +22,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 )
@@ -972,7 +971,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 		subCfg.spawn.activatedSkillBodies = append([]string(nil), activatedSkillBodies...)
 	} else if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
-			body, err := skill.ResolveSkillContent(s.skills, skillName)
+			body, err := s.skills.ResolveSkillContent(skillName)
 			if fault := s.subagentPrepareFault("skill_resolve"); fault != nil {
 				err = fault
 			}

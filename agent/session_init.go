@@ -1361,20 +1361,20 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.systemPromptOverride = string(b)
 	}
 
-	// Embedded skills form the base layer. Filesystem-discovered skills
-	// (project + extraDirs) shadow embedded ones.
-	s.skills = make(map[string]skill.SkillMeta)
+	// Select skills from manifests independently of full plugin component loading.
+	home, _ := os.UserHomeDir()
+	sources, diagnostics := plugin.SkillSources(s.cfg.PluginDirs)
+	s.skills = skill.Discover(s.currentEnv(), skill.DiscoverOptions{
+		HomeDir:       home,
+		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		ExtraDirs:     s.cfg.SkillsDirs,
+		Plugins:       sources,
+	})
+	s.skills.Diagnostics = append(diagnostics, s.skills.Diagnostics...)
+	for _, diagnostic := range s.skills.Diagnostics {
+		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{Message: fmt.Sprintf("skill %s [%s] %s: %s", diagnostic.Name, diagnostic.Category, diagnostic.Source, diagnostic.Message)})
+	}
 	s.pluginCommands = make(map[string]plugin.Command)
-	if embedded, err := skill.EmbeddedSkills(); err == nil {
-		maps.Copy(s.skills, embedded)
-	}
-	// The automatic user directory is above embedded skills but below project
-	// skills and explicitly configured directories. Discover it separately so
-	// DiscoverSkills' project walk can shadow it.
-	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
-		skill.ScanSkillsDir(userSkillsDir, s.skills)
-	}
-	maps.Copy(s.skills, skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...))
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
 	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
@@ -1617,8 +1617,9 @@ func (s *Session) sandboxWrapper() *sandbox.Wrapper {
 	return nil
 }
 
-// initPlugins loads configured plugin directories, merging their skills,
-// agents, and hooks into the session. Fires SessionStart hooks after setup when requested.
+// initPlugins loads configured plugin components, merging agents and hooks into
+// the session. Skills are selected independently before full component loading.
+// Fires SessionStart hooks after setup when requested.
 func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) error {
 	if len(s.cfg.PluginDirs) == 0 {
 		return nil
@@ -1634,7 +1635,6 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
-		maps.Copy(s.skills, p.Skills)
 		for rawKey, agent := range p.Agents {
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}

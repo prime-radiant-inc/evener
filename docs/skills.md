@@ -28,7 +28,7 @@ own.
 
 | Source | Discovered from | `$ARGUMENTS` | `!`cmd`` | `@file` |
 |---|---|---|---|---|
-| Skill | skills bundled with evener; user-global `skills/`; project `skills/` dirs (git root→cwd); `skills_dirs`; plugins | no | never | never |
+| Skill | bundled skills; home `.agents/skills/`; Evener user skills; project `.agents/skills/` and `skills/` (git root→cwd); `skills_dirs`; plugins | no | never | never |
 | Evener-wide command | `.evener/commands/` (git root→cwd), `$XDG_CONFIG_HOME/evener/commands/` (`~/.config` fallback) | yes, inert text | never — stays literal | never — stays literal |
 | Plugin command | plugins you installed or configured | yes, inert text | executes (10s timeout, output bounded) | inlines files at cwd-relative paths (symlinks followed) |
 
@@ -51,15 +51,49 @@ not acted on.
 preserves it and diagnoses that it is not enforced: it neither grants nor
 restricts tool access.
 
-Evener discovers skills from the set bundled with evener itself (the base layer),
-from `skills/` directories walking the git root down to your cwd, from the
-automatic user-global `skills` directory, from any `skills_dirs` launch-config
-entries, and from plugins. Among the bare-named sources, later ones shadow
-earlier ones by name: a project or `skills_dirs` skill overrides a bundled or
-automatic user skill of the same name, and a `skills_dirs` skill overrides a
-project skill of the same name. Plugin skills are namespaced
-(`plugin:skill`) and never shadow a bare-named skill — invoke them by qualified
-name, or by bare name when no bare-named skill has it.
+Live sessions and cold client catalog reads share this discovery order, from
+lowest to highest precedence:
+
+1. Skills bundled with Evener.
+2. `~/.agents/skills/`.
+3. `$XDG_CONFIG_HOME/evener/skills/` (`~/.config/evener/skills/` fallback).
+4. Repository root through cwd, at each level `.agents/skills/` then `skills/`.
+5. Explicit `skills_dirs` entries, in their configured order.
+6. Configured plugin skills, qualified as `plugin:skill`.
+
+Deeper project directories win over shallower ones; `skills/` wins over
+`.agents/skills/` at the same level. Without a repository, only cwd is scanned.
+Configured roots remain discoverable when a cold session has no recorded cwd.
+Plugins use first-valid-manifest reservation: later manifests with the same
+plugin name are skipped even if the selected plugin has malformed unrelated
+components. Skill discovery does not load those commands, agents, hooks, or MCP
+components. Plugin qualification preserves the declared name separately from
+the canonical catalog name. Exact names win; a bare suffix resolves only when
+it uniquely identifies a plugin skill. Ambiguous suffixes have sorted candidates.
+
+Every collision reports the winner in diagnostic `source` and the displaced
+source in `other_source`. A known higher-priority name with invalid metadata
+reserves its key as unavailable; it never exposes a permissive lower-priority
+skill instead. Missing automatic directories are normal; unreadable sources,
+malformed existing skills, and absent configured roots produce diagnostics.
+Startup warnings and full session inspection expose diagnostics; source paths
+are excluded from completion and metadata inspection entries.
+
+The model advertisement omits unavailable skills and those with
+`disable-model-invocation: true`, including the `read_file` fallback when
+`use_skill` is absent. User completion independently omits unavailable skills
+and those with `user-invocable: false`. Full metadata inspection retains hidden
+and unavailable entries, their controls, and both declared and canonical names.
+These are advertisement views, not the runtime catalog: lookup retains every
+known winner for runtime validation and authorization. Neither hiding nor
+advertising a skill grants permissions or establishes activation history.
+
+Portable directories have the same trust policy as other skills: metadata is
+discovered, activation reads inert instructions, and subsequent actions still
+require normal tool permissions and sandbox access. Skills remain untrusted
+input. Evener does not automatically discover `.claude/skills/`, execute skill
+templates, substitute shell directives, or grant tools. Raw file reads do not
+become tracked skill activations.
 
 When a skill is activated, Evener reads its recorded `SKILL.md` source,
 revalidates its current metadata, and delivers the complete instruction body in

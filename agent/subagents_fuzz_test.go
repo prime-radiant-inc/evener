@@ -82,7 +82,7 @@ func safzRegisterSkill(t *testing.T, sess *Session) {
 	if err := os.WriteFile(path, []byte(safzSkillBody), 0o600); err != nil {
 		t.Fatalf("safzRegisterSkill: write skill: %v", err)
 	}
-	sess.skills = map[string]skill.SkillMeta{"safz-skill": {Name: "safz-skill", SkillFile: path}}
+	sess.skills = skill.Catalog{Entries: map[string]skill.Descriptor{"safz-skill": {CatalogName: "safz-skill", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "safz-skill", SkillFile: path}}}}
 }
 
 // safzNewParent builds a parent Session wired for offline subagent orchestration:

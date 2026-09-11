@@ -24,7 +24,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -1631,7 +1630,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
-			body, err := skill.ResolveSkillContent(s.skills, name)
+			body, err := s.skills.ResolveSkillContent(name)
 			if err == nil && strings.TrimSpace(body) != "" {
 				frozenSkillNames = append(frozenSkillNames, name)
 				frozenSkillBodies = append(frozenSkillBodies, body)

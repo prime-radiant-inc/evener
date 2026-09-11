@@ -135,6 +135,7 @@ func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
 }
 
 func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
+	isolateThreadSkillHome(t)
 	t.Run("project overrides embedded", func(t *testing.T) {
 		workingDir := t.TempDir()
 		writeSkillFixture(t, filepath.Join(workingDir, "skills"), "doctoring-evener", "project wins")
@@ -166,6 +167,7 @@ func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
 }
 
 func TestPastThreadSkillCatalogIncludesAutomaticUserSkills(t *testing.T) {
+	isolateThreadSkillHome(t)
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	workingDir := t.TempDir()
@@ -184,6 +186,7 @@ func TestPastThreadSkillCatalogIncludesAutomaticUserSkills(t *testing.T) {
 }
 
 func TestPastThreadSkillCatalogUsesFirstDuplicatePlugin(t *testing.T) {
+	isolateThreadSkillHome(t)
 	root := t.TempDir()
 	first := writeThreadSkillPlugin(t, root, "duplicate-plugin", "same-skill", "first value")
 	second := writeThreadSkillPlugin(t, root, "duplicate-plugin", "same-skill", "second value")
@@ -194,6 +197,7 @@ func TestPastThreadSkillCatalogUsesFirstDuplicatePlugin(t *testing.T) {
 }
 
 func TestPastThreadSkillCatalogUsesFirstManifestDuplicatePlugin(t *testing.T) {
+	isolateThreadSkillHome(t)
 	root := t.TempDir()
 	first := writeThreadSkillPlugin(t, root, "successful-duplicate", "same-skill", "broken first")
 	writeSkillFile(t, filepath.Join(first, "commands", "broken.md"), "---\ndescription: [\n---\nbody")
@@ -220,6 +224,7 @@ func TestPastThreadSkillCatalogUsesFirstManifestDuplicatePlugin(t *testing.T) {
 }
 
 func TestPastThreadSkillLoaderIgnoresMalformedPluginComponents(t *testing.T) {
+	isolateThreadSkillHome(t)
 	for _, tc := range []struct {
 		name  string
 		setup func(t *testing.T, dir string)
@@ -350,6 +355,7 @@ func hasSkill(skills []appwire.EvenerSkillInfo, name string) bool {
 
 func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry) {
 	t.Helper()
+	isolateThreadSkillHome(t)
 	root := t.TempDir()
 	workingDir := filepath.Join(root, "project")
 	extraDir := filepath.Join(root, "extra-skills")
@@ -1580,4 +1586,25 @@ func TestStampThreadImageURLsFallsBackToThreadID(t *testing.T) {
 	if url := thread.Turns[0].Items[0].OutputImages[0].URL; url != "/s/02wMz5Txv733WHFsVy66SR/images/"+sha {
 		t.Fatalf("URL=%q, want the sha route built from the thread id", url)
 	}
+}
+
+func TestPastThreadSkillPortableFilteredWithoutCWD(t *testing.T) {
+	home, extra := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	writeSkillFixture(t, filepath.Join(home, ".agents", "skills"), "portable-cold", "PORTABLE_COLD_1")
+	writeSkillFixture(t, extra, "configured-cold", "CONFIGURED_COLD_1")
+	writeSkillFile(t, filepath.Join(extra, "hidden", "SKILL.md"), "---\nname: hidden\ndescription: fixture\nuser-invocable: false\n---\nHIDDEN_1\n")
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{SkillsDirs: []string{extra}}}})
+	if !hasSkill(got, "portable-cold") || !hasSkill(got, "configured-cold") || hasSkill(got, "hidden") {
+		t.Fatalf("cold catalog=%+v", got)
+	}
+}
+
+func isolateThreadSkillHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 }
