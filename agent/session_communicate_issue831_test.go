@@ -206,7 +206,7 @@ func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue
 	output["properties"].(map[string]any)["message"] = map[string]any{"type": "string", "enum": []string{"allowed"}}
 
 	reg := tool.NewRegistry()
-	if err := reg.Register(regTool(llm.ToolDefinition{Name: "communicate", Parameters: params})); err != nil {
+	if err := reg.Register(regTool(llm.ToolDefinition{Name: "communicate", Description: def.Description, Parameters: params})); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	rt := reg.Get("communicate")
@@ -750,7 +750,8 @@ func TestSession_WhitespaceOutputMessageDoesNotEmitRepairIssue831(t *testing.T) 
 
 func issue831NumericRepairDefinition() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: "issue831_numeric_repair",
+		Name:        "issue831_numeric_repair",
+		Description: "Accept a string and number to exercise argument repair.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
