@@ -599,3 +599,29 @@ test("hasPending stays true until every in-flight item has settled", async () =>
   await flush();
   expect(result.current.hasPending).toBe(false);
 });
+
+// RoboRev PR1131 finding 1: removeItem records EVERY removed marker in
+// removedWhilePendingRef, including already-settled ones, and clearSubmitted
+// resets nextMarkerRef to zero (restarting numbering at 1) without clearing
+// that set. The next attachment then reuses marker 1 and its successful encode
+// is discarded as if the user had removed it, leaving the item pending forever.
+test("an attachment that reuses a retired marker after clearSubmitted still settles", async () => {
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => result.current.ingestFiles([makeFile("old.png")], () => {}));
+  await flush();
+  expect(result.current.items[0]).toMatchObject({ marker: 1, pending: false });
+
+  act(() => result.current.removeItem(1));
+  expect(result.current.items).toHaveLength(0);
+
+  // Numbering restarts at 1 once the result is empty (clearSubmitted), so the
+  // fresh attachment takes marker 1 again - the retired marker must not poison it.
+  act(() => result.current.clearSubmitted(new Set()));
+  act(() => result.current.ingestFiles([makeFile("fresh.png")], () => {}));
+  expect(result.current.items[0]?.marker).toBe(1);
+
+  await flush();
+  expect(result.current.items[0]).toMatchObject({ marker: 1, name: "fresh.png", pending: false });
+});
