@@ -681,3 +681,81 @@ func TestThreadStatusChangedParamsDeclareNoTopLevelRecoveryFlag(t *testing.T) {
 		}
 	}
 }
+
+// A relayed status notification reports the fork authority the hub holds when
+// it publishes, not the one it held when the client subscribed. The fence and
+// the clear are both observed through one subscription: nothing between them
+// re-reads or resubscribes, so a relay that answered from its subscription-time
+// snapshot would keep publishing the fenced answer after recovery cleared.
+func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
+	const sessionID = "hub-fork-relay-recovery"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "fork-relay-token"})
+	daemon.SetAppIdentity("local", sessionID)
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "fork-relay-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	locks := hubcore.NewResumeLocks()
+	finishForceStop := locks.BeginForceStop([]string{sessionID})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""), ResumeLocks: locks,
+	})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true, ItemLimit: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.Capabilities.ForkFromTurn {
+		t.Fatal("subscribed read advertised fork while an in-flight force stop fenced the session")
+	}
+	relayedForkStamp := func(text string) bool {
+		t.Helper()
+		daemon.RecordAppEvent(events.SessionEvent{
+			Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: text},
+		})
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case notification := <-client.Notifications():
+				if notification.Method != appwire.NotifyThreadStatusChanged {
+					continue
+				}
+				var status appwire.ThreadStatusChangedParams
+				if err := json.Unmarshal(notification.Params, &status); err != nil {
+					t.Fatal(err)
+				}
+				if status.Status.Type != appwire.ThreadStatusActive {
+					continue
+				}
+				if status.Capabilities == nil {
+					t.Fatalf("relayed status carried no capability set: %s", notification.Params)
+				}
+				return status.Capabilities.ForkFromTurn
+			case <-deadline:
+				t.Fatal("hub did not relay the status notification")
+			}
+		}
+	}
+	if relayedForkStamp("fenced relay fixture") {
+		t.Fatal("relayed status advertised fork while an in-flight force stop fenced the session")
+	}
+	// The force stop failed: the session keeps running and is forkable again.
+	finishForceStop(false)
+	if state := locks.RecoveryState(sessionID); state.ResumeRequired || state.Stopping != 0 {
+		t.Fatalf("recovery state after an abandoned force stop = %+v, want cleared", state)
+	}
+	if !relayedForkStamp("cleared relay fixture") {
+		t.Fatal("relayed status still refused fork on the same subscription after recovery cleared")
+	}
+}
