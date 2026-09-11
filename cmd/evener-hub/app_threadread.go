@@ -480,6 +480,10 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool
 // authority grant for persisted local forks, and a session needing recovery
 // cannot accept a fork until that fence clears.
 //
+// Two gaps are deliberate, and in both the fork RPC is the stricter side, so
+// what they cost is an offered action that is then refused — never a fork that
+// should not have happened.
+//
 // It stops short of the ownership resolution hubThreadFork performs, so a
 // session whose metadata is missing, unreadable, or claimed by two project
 // directories is advertised as forkable here and refused by the fork RPC with a
@@ -487,6 +491,17 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool
 // project directory on the read path, which runs this projection once per
 // thread on every thread/list and once per relayed status notification; the
 // fork RPC stays the authority for a mutation this rare error path blocks.
+//
+// And it answers for a session, not for a connection. The relay stamps one
+// answer onto a notification and broadcasts it to every subscriber
+// (app_relay.go's publishTarget), while sessionConnectionRecoveryError refuses
+// a mutation per connection: a connection established before a recovery
+// completed keeps being refused until it reconnects, even once the recovery has
+// cleared and this projection says the session is forkable again. Projecting
+// per connection would mean per-connection state on a shared broadcast, which
+// is a larger design question than this fence. The refusal that connection
+// meets is the retryable resume-required error, which names the action that
+// clears it, and the window closes on reconnect.
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {

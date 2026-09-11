@@ -2091,3 +2091,82 @@ func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
 		})
 	}
 }
+
+// Deletion is terminal for the session a fork would branch, not only for the
+// alias the client named, and a transient discovery failure must not mask
+// either. A stable alias resolving to a deleted current session is the case the
+// alias-only preflight missed: the resolved session's fence was read after the
+// refresh, so a refresh that failed first answered "retry" for a fork that can
+// never succeed. The live-resolved-session row keeps the refresh error where it
+// belongs.
+func TestHubForkReportsAResolvedSessionsDeletionEvenWhenTheRefreshFails(t *testing.T) {
+	for _, deleted := range []bool{false, true} {
+		name := map[bool]string{false: "live resolved session, refresh fails", true: "deleted resolved session, refresh fails"}[deleted]
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			aliasID := buildRPCParentSession(t, stateDir)
+			currentID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID: os.Getpid(), SourceID: "local", ThreadID: currentID, SessionID: currentID, InstanceID: currentID,
+				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+			})
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
+			roster.Refresh()
+			store, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deleted {
+				// The alias itself is clear: only the session it resolves to is
+				// fenced, which is the identity the alias-only preflight missed.
+				if _, err := store.Begin("project-resolved-0000000000", []hubcore.DeletionTarget{{
+					Ref: localAppRef(currentID), ThreadID: currentID,
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := hubcore.WebConfig{
+				StateDir: stateDir, RunDir: runDir, Roster: roster,
+				DeletionStore: store, ResumeLocks: hubcore.NewResumeLocks(),
+			}
+			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
+				t.Fatalf("the alias resolves to %q, want the daemon's current session %q", got, currentID)
+			}
+			if deletionFenceError(cfg, "local:"+aliasID, aliasID, "") != nil {
+				t.Fatal("the alias is fenced; this row would not isolate the resolved session")
+			}
+			previousRefresh := hubRosterRefresh
+			hubRosterRefresh = func(context.Context, *hubcore.Roster) error {
+				return errors.New("daemon discovery is incomplete")
+			}
+			t.Cleanup(func() { hubRosterRefresh = previousRefresh })
+
+			before, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if err == nil {
+				t.Fatal("fork proceeded while daemon discovery was failing")
+			}
+			if got := isTargetDeletedError(err); got != deleted {
+				t.Fatalf("fork error=%v reports a deleted target=%v, want %v", err, got, deleted)
+			}
+			after, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+			}
+		})
+	}
+}
