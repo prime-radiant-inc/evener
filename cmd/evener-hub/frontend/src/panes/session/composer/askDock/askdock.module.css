@@ -49,7 +49,7 @@
    * rather than shouting.
    */
   border: 1px solid color-mix(in oklab, var(--attention) 55%, var(--edge));
-  border-radius: var(--radius-pane);
+  border-radius: 0;
   background: color-mix(in oklab, var(--attention) 24%, var(--surface-1));
 }
 

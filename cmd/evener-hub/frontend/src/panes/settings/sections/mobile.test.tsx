@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -9,11 +9,14 @@ import { MobileSection } from "./mobile";
 // Lets one test simulate a rejected `import("qrcode.react")` chunk load: the
 // mock only throws while the flag is set, so every other test imports the
 // real renderer untouched.
-const qrChunkControl = vi.hoisted(() => ({ failChunkLoad: false }));
+const qrChunkControl = vi.hoisted(() => ({
+  failChunkLoad: false,
+  error: new Error("Simulated QR chunk load failure"),
+}));
 
 vi.mock("qrcode.react", async (importOriginal) => {
   if (qrChunkControl.failChunkLoad) {
-    throw new Error("Simulated QR chunk load failure");
+    throw qrChunkControl.error;
   }
   return importOriginal();
 });
@@ -39,6 +42,15 @@ function renderMobileSection() {
 }
 
 test("keeps the pairing link usable when the QR chunk fails to load", async () => {
+  // Vitest wraps the rejected mock factory; assert both that wrapper and the
+  // original failure instead of accepting an arbitrary QR rendering error.
+  const mockErrorMessage =
+    '[vitest] There was an error when mocking a module. If you are using "vi.mock" factory, make sure there are no top level variables inside, since this call is hoisted to top of the file. Read more: https://vitest.dev/api/vi.html#vi-mock';
+  const onCaughtError = vi.fn<NonNullable<RenderOptions["onCaughtError"]>>((error, info) => {
+    if (!(error instanceof Error) || error.message !== mockErrorMessage || error.cause !== qrChunkControl.error) {
+      console.error(error, info);
+    }
+  });
   const authURL = "https://hub.example.test/auth/mobile-secret";
   client.on("evener/mobile/pairing", () => ({ authUrl: authURL }));
 
@@ -63,6 +75,7 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
       <FreshClientProvider client={client}>
         <FreshMobileSection />
       </FreshClientProvider>,
+      { onCaughtError },
     );
 
     // The failure stays scoped to the QR slot: an error fallback instead of
@@ -72,6 +85,11 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
     expect(screen.getByRole("button", { name: "Copy pairing link" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Mobile app" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
+    expect(onCaughtError).toHaveBeenCalledTimes(1);
+    const caughtError = onCaughtError.mock.calls[0]?.[0];
+    expect(caughtError).toBeInstanceOf(Error);
+    expect(caughtError).toHaveProperty("message", mockErrorMessage);
+    expect((caughtError as Error).cause).toBe(qrChunkControl.error);
   } finally {
     qrChunkControl.failChunkLoad = false;
   }

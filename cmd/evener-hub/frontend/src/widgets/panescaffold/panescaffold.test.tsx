@@ -272,13 +272,12 @@ test("mobile: the body can never scroll sideways - wide content is contained, no
   expect(bodyRule![1]).toContain("overflow-x: clip");
 });
 
-// Micro-label pattern (design doc §2/§6): the pane title is chrome, not a
-// heading-sized title - small uppercase caption on the inset header band.
-test("the header sits on the inset surface", () => {
+// Approved editorial-instrument spec (2026-09-09): page headings are not bands.
+test("the header shares the page surface with a fine separating rule", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.header \{([^}]*)\}/)?.[1] ?? "";
-  expect(rule).toContain("background: var(--surface-inset)");
+  expect(rule).toContain("background: transparent");
   expect(rule).toContain("border-bottom: 1px solid var(--edge)");
 });
 
