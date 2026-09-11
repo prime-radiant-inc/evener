@@ -225,7 +225,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // "cd <cwd> && " prefix from its summary.
   const statedIntent = statedIntentOf(item);
   const useProjectedSummary = projectedSummary !== undefined && statedIntent === undefined;
-  const summary = useProjectedSummary ? projectedSummary : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
   let intent = item.description;
   if (isDelegate) {
     intent = delegateIntentOf(item);
@@ -287,6 +286,23 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const disclosureFallback = configDefault || (autoDefault && !superseded);
   const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
 
+  // A descriptor whose summary duplicates what its expanded body shows
+  // (shell: the raw one-line command vs the body's pretty-printed block)
+  // swaps its summary text for a placeholder while the row is open. The
+  // summary line itself stays - hiding it lifted the disclosure chevron off
+  // the line it rides (onto the intent line, or adrift on an intent-less
+  // row) - and the swap keeps the call from appearing twice. The placeholder
+  // also supersedes a projected summary while expanded: the intent-level
+  // neutral fallback ("Action summary unavailable") would deny the reader
+  // the call's kind while the open body below shows the command whole.
+  const expandedSummary = expanded ? descriptor.summaryWhenExpanded : undefined;
+  const summary =
+    expandedSummary !== undefined
+      ? expandedSummary
+      : useProjectedSummary
+        ? projectedSummary
+        : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+
   // Two-level disclosure: the summary line has its own open/closed state,
   // independent of the body disclosure. At verbosity levels where toolCalls is
   // true (tools/activity/full) the summary defaults open; at chat/intent it
@@ -299,19 +315,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const summaryConfigDefault = summaryOpenByDefault(config);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryConfigDefault);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
-  // A descriptor whose summary duplicates its expanded body (shell: the raw
-  // command vs the body's pretty-printed block) hides the summary while the
-  // body is open — the body is the single representation. ToolRow's own
-  // summaryHidden prop drives this; the summary disclosure key stays untouched
-  // so re-collapsing the body restores the summary to its prior state.
-  const summaryHidden = expanded && (descriptor.summaryHiddenWhenExpanded ?? false);
-
-  // ToolRow gates the summary on summaryHidden only in two-level mode
-  // (intent-bearing rows with onToggleSummary). For intent-less rows the
-  // summary prop itself must carry the gate: an empty string makes
-  // hasSummary false, so the summary line does not render at all.
-  const summaryVisible = summaryOpen && !summaryHidden;
-
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
   // row"). Checked AFTER the hooks above so the hook order stays stable across
@@ -367,15 +370,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
       data-attention={failed ? "error" : undefined}
     >
       <ToolRow
-        // A descriptor whose summary duplicates what its expanded body shows
-        // (shell: the raw one-line command vs the body's pretty-printed
-        // block) drops the summary line while open - the body is the single
-        // representation. Collapsed, the summary stays: it is the only glance.
-        // summaryVisible gates the summary for both intent-less rows (where
-        // ToolRow's summaryHidden has no effect, since two-level mode is
-        // intent-bearing only) and intent-bearing rows (where ToolRow also
-        // applies its own summaryHidden gate).
-        summary={isDelegate || !summaryVisible ? "" : summary}
+        // The summary text is the descriptor's own - or its expanded
+        // placeholder (expandedSummary above). The empty-string gate below
+        // serves the remaining no-summary states: delegate rows
+        // (subagentModule owns their presentation) and a two-level row whose
+        // summary line the reader collapsed (summaryOpen=false).
+        summary={isDelegate || !summaryOpen ? "" : summary}
         summaryLink={summaryLink}
         intent={intent}
         icon={descriptor.icon}
@@ -390,7 +390,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         summaryOpen={summaryOpen}
         onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)}
-        summaryHidden={summaryHidden}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
         title={detail}

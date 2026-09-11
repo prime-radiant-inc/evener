@@ -349,13 +349,15 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   expect(screen.getByTestId("intent-group")).toBeTruthy();
   expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
   // ToolCallItem renders eagerly inside the intent group. The failed row
-  // auto-expands its body (failure earns the eye). Shell's summaryHiddenWhenExpanded
-  // hides the summary line while the body is open, so "Action summary unavailable"
-  // (the projected neutral summary) is not shown as visible text — the body's
-  // error output is the single representation instead.
+  // auto-expands its body (failure earns the eye). While expanded, shell's
+  // summaryWhenExpanded placeholder replaces the projected neutral summary,
+  // so "Action summary unavailable" is not shown as visible text — the
+  // summary line names the call generically and the body's error output is
+  // the single representation of the command.
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
   expect(screen.getByText("command failed")).toBeTruthy();
   expect(screen.queryByText("Action summary unavailable")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
 });
 
 test("intent row drills down through 3 levels: intent button -> summary, body chevron -> body", () => {
