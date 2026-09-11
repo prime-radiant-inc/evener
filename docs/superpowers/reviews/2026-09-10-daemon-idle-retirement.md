@@ -881,6 +881,57 @@ inaccuracy; the writer's retained report is deliberately not edited post-hoc.
 Task 4 is accepted at `b28b3c56a9360f79213fef500e9fff3dc5c5c013` on base
 `a46103009`. Tasks 1–3 complete, 5–13 not started.
 
+### Task 5 delivered, reviewed, fixed and accepted
+
+Delivered in two commits on base `1e7eeb26a`: `47b95d75a` (store readiness,
+fallible `Prepare`, sandbox/execenv/agent scratch-retention primitives) and
+`d88662324` (launch wiring, `RetirementPreparation.lanes`, task/attention flush,
+aged cold-restore test), 2,798 insertions across the plan's Task 5 file list.
+The parent did not accept the first delivery: four requirements Task 5 itself
+owns had been deferred (launch wiring named in Task 5's own file list and absent
+from Task 6's; empty `lanes` against plan 534; no task/attention flush against
+plan 582; the aged-restore test named by plan 656/691, where the writer's reading
+of plan 693 was rejected). A completion round closed all four.
+
+Independent review of the whole task then returned **spec compliance NEEDS FIXES
+and quality NEEDS FIXES** with six findings, two proven by executed traces made
+with `go test -overlay` against an unmodified repo: F1 a stale-revision retry
+rewrote the caller's whole binding record and erased a concurrently minted slot
+(plan 648 forbids this); F2 the root consumer's retained scratch was never
+adopted on restore and a slotless republish wiped the stored slots, so a root
+that ran an unsandboxed shell, crashed and resumed lost the original directory's
+reachability — the aged test passed only because its child held the artifact;
+F3 the validator rejected the plan's single-transaction lease-owning move and a
+reuse path collapsed a distinct environment onto the source binding id against
+plan 646; F4 the concurrency test did not reproduce the plan's race; F5 plan-572
+coverage gaps including the explicitly required no-terminal-event/no-store-close
+assertion; F6 consumer roles could never resolve to a different binding (plan
+650's Task 6 join point). The review also verified sound the fallible
+preparation, store readiness, the scratch core's pin ordering and collector
+semantics, G1/G2/G3/G4, and test hygiene.
+
+All six were adjudicated into fix round 2 rather than deferred, because all six
+sit inside Task 5's own plan text and none is covered by Task 6's Modify list.
+`0f105ab65` fixed them: `UpsertScratchBinding` now loads fresh under the manifest
+lock and rebases per slot, `UpdateScratchBindings` validates the merged set,
+`reuseScratchBindingForEnv` was replaced by a distinct binding id per constructed
+environment, the root's current binding is adopted after
+`prepareRetainedScratch`, and the plan-572 cases were added. The parent verified
+the candidate itself: focused `-race` across five packages all PASS and the
+canonical `make test` exit 0 with all 8 modules PASS.
+
+Scoped re-review on a different model: **spec compliance PASS, quality
+Approved**, F1–F6 all fixed, with seven overlay probes including the validator's
+negative paths. Two new LOW findings, both latent, are carried forward rather
+than fixed here: the shared-consumer lease-less borrow branch works but is
+untested (goes into Task 6, whose shared-child cold restore must exercise the
+two-consumer adoption path), and a caller-supplied borrow slot could silently
+demote a stored owning slot though it is unreachable from every delivered caller
+(goes onto the final whole-branch hardening list).
+
+Task 5 is accepted at `0f105ab65025d1bb37566ea1b71852b363768e23` on base
+`1e7eeb26a`. Tasks 1–4 complete, 6–13 not started.
+
 ## Remaining workflow
 
 Subagent-driven TDD implementation with specification and quality review → fresh
