@@ -680,9 +680,10 @@ export function useTranscriptScroll({
 
   const wasAtBottomRef = useRef(true);
   // The geometry the previous measurement saw. Read only to classify the NEXT
-  // scroll event: an offset that never moved backwards under grown content is
-  // the virtualizer correcting its own estimates, where the same event with the
-  // offset moved back is the reader leaving the bottom (see handleScroll).
+  // scroll event (see handleScroll). Deliberately NOT reset alongside the other
+  // per-ref state below: the mount block reseeds it from a fresh measurement in
+  // the same effect pass, before the scroll listener is attached, so no handler
+  // can ever read the previous session's geometry.
   const lastScrollGeometryRef = useRef<ScrollMetrics>({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 });
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
@@ -1022,12 +1023,23 @@ export function useTranscriptScroll({
       // Content measured in BELOW a transcript that was already at the true
       // bottom, in the SAME scroll port, with the offset never moving
       // backwards: the virtualizer correcting its own estimates, not the reader
-      // leaving. Only the reader moves a transcript back from the bottom, so an
-      // offset that held or advanced cannot be them; and a correction only ever
-      // changes how much content there is, never the size of the box holding
-      // it, so a clientHeight that moved is a resized (or first-ever-measured)
-      // viewport, which is not this case and keeps the pill it would otherwise
-      // suppress.
+      // leaving.
+      //
+      // The offset clause alone does not carry that premise - the virtualizer
+      // writes scrollTop too (applyScrollAdjustment), and writes it BACKWARDS
+      // when a row above the viewport shrinks. What excludes a shrink is the
+      // scrollHeight clause: there is strictly MORE content than the last
+      // measurement saw. And a correction only ever changes how much content
+      // there is, never the size of the box holding it, so a clientHeight that
+      // moved is a resized (or first-ever-measured) viewport, which is not this
+      // case and keeps the pill it would otherwise suppress.
+      //
+      // One narrow window where this misreads the reader: an upward flick begun
+      // from the EXACT bottom during a mount-time measurement storm can have its
+      // first frame swallowed, when a forward correction coalesced into the same
+      // frame exceeds the reader's own delta and the net offset reads as
+      // advanced. It self-releases on the very next event, where their continued
+      // scroll moves the offset back with no further growth to hide it.
       //
       // The end-anchor is meant to hold the end across those corrections, but
       // its follow can under-count one that lands after the scroll-to-end
@@ -1045,6 +1057,12 @@ export function useTranscriptScroll({
       // is confirmed by the pin's own scroll event, like every other landing
       // here; a pin that a further correction leaves short is simply corrected
       // again by the next one.
+      //
+      // The early return defers the REST of this listener - the error anchor's
+      // own clear, the pill's arrow direction, and the near-top loadOlder
+      // trigger - to that same pin event. It always arrives: this branch is only
+      // taken when the gap is already past the at-bottom threshold, so the
+      // assignment genuinely moves scrollTop and the browser dispatches for it.
       const previous = lastScrollGeometryRef.current;
       lastScrollGeometryRef.current = m;
       if (
