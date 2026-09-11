@@ -14,7 +14,7 @@ func TestURLRemoveReservationCrashUnknownTarget(t *testing.T) {
 	s.clientMutations.faults.AfterReservation = func() error { return fault }
 	removed, err := s.RemoveSessionURL("remove-unknown", "never-existed")
 	var wire appwire.WireError
-	if removed || (!errors.Is(err, fault) && !(errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams)) {
+	if removed || !(errors.Is(err, fault) || (errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams)) {
 		t.Fatalf("initial unknown removal = %v, %v; want rejection or injected interruption", removed, err)
 	}
 	reloadHumanNoteStore(t, s)
