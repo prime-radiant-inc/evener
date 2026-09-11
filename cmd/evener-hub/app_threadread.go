@@ -441,10 +441,25 @@ func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
 	return cfg.Roster != nil && cfg.Roster.IsSubagentActive(threadID)
 }
 
+// resumeRequiredActiveFlag is the ThreadStatus.ActiveFlags entry that says a
+// session's own daemon is holding it behind recovery.
+//
+// NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
+// appwire.ThreadStatus with a Type and no flags (server/appwire_runtime.go's
+// appCapabilities path, internal/appprojector's threadStatus), and appwire
+// defines no constant for it, so this spelling has one side. It is named here
+// rather than left as a literal so the hub's own uses cannot be spelled apart,
+// and so a producer added later has one name to match.
+//
+// The hub-side recovery signal this complements — the one that does have a
+// producer — is cfg.ResumeLocks.RecoveryState, which hubForkRecoveryFencedNow
+// consults beside this predicate.
+const resumeRequiredActiveFlag = "resumeRequired"
+
 func hubForkRecoveryFenced(thread appwire.Thread) bool {
 	return thread.Evener.ResumeRequired ||
 		thread.Status.Type == appwire.ThreadStatusRestartRequired ||
-		slices.Contains(thread.Status.ActiveFlags, "resumeRequired")
+		slices.Contains(thread.Status.ActiveFlags, resumeRequiredActiveFlag)
 }
 
 // hubForkRecoveryFencedNow fences the alias the client is holding against
