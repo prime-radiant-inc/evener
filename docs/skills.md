@@ -174,6 +174,53 @@ sessions reconcile receipts so a retained complete body is proven, not
 redelivered or double-reported. A failed reinvocation never erases an earlier
 successful record.
 
+### Canonical skill input on AppWire
+
+AppWire's input-bearing turn mutations (`turn/start`, `turn/steer`,
+`turn/queue`, `turn/drainAsSteer`, and `thread/start`) accept skill
+selections as input items alongside text and images. A skill item is
+canonical-only: it names the catalog skill and carries nothing else. The
+user's original text travels as its own item, so a selection never replaces
+or edits prose:
+
+```json
+{
+  "ref": "local:th_1",
+  "clientMutationId": "m-47",
+  "input": [
+    { "type": "text", "text": "draft the release notes from the diff" },
+    { "type": "skill", "name": "plugin:release-notes" }
+  ]
+}
+```
+
+The wire rejects any other raw key on a skill item — `body`, `path`, and
+`text` included. A skill body always loads from the recorded `SKILL.md`
+source at activation; it is never carried on the input wire, and a client
+cannot smuggle one in a field ordinary JSON decoding would silently drop:
+
+```json
+{ "type": "skill", "name": "plugin:release-notes", "body": "ignored?" }   // rejected
+{ "type": "skill", "name": "plugin:release-notes", "path": "/sk.md" }     // rejected
+{ "type": "skill", "name": "plugin:release-notes", "text": "" }           // rejected
+```
+
+Names must be non-blank and are trimmed; duplicate selections are passed
+through for the runtime's identity and invocation policy to judge. Exact
+catalog identity and invocation policy remain consumption-time checks.
+
+Submission is capability-gated. `ThreadCapabilities.skillInput` advertises
+whether a thread accepts skill items; where it is false, a skill item is an
+unsupported-input error rather than a silently degraded message. Diagnostics
+carry the catalog context clients need to build a selection UI:
+`EvenerSkillInfo` reports `disableModelInvocation`, `userInvocable`,
+`available`, and preserved `allowedTools` metadata, while
+`EvenerDiagnostics.skillDiagnostics` reports discovery problems (collisions,
+unreadable sources, invalid metadata) with their explicit sources. Completion
+offers only skills that are both `available` and `userInvocable`, and the
+composer still requires the target's `skillInput` capability before
+submitting a selection.
+
 ### Reload selection at compaction
 
 Compaction can drop a loaded skill's instruction body, so both compaction

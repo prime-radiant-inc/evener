@@ -881,6 +881,11 @@ type ThreadCapabilities struct {
 	// session (the daemon method) and for ended local sessions (the hub edits
 	// meta); false for non-local/source-backed threads that do not advertise it.
 	Rename bool `json:"rename"`
+	// SkillInput advertises support for canonical {type:"skill", name} input
+	// items on the input-bearing turn mutations. False everywhere until
+	// runtime consumption is wired per endpoint; ValidateSkillInputSupport
+	// keeps skill items rejected wherever this capability is false.
+	SkillInput bool `json:"skillInput,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.
@@ -910,6 +915,12 @@ type EvenerDiagnostics struct {
 	// journal itself needs a vessel that does not depend on any delegate
 	// surviving to carry it.
 	DelegateDiagnostics []string `json:"delegateDiagnostics,omitempty"`
+	// SkillDiagnostics carries skill-discovery diagnostics copied from the
+	// Stage 1 catalog (collisions, unreadable sources, invalid metadata or
+	// controls). Skills stays the path-free completion catalog;
+	// SkillDiagnostics is the explicit source-detail view, so the two never
+	// borrow each other's identity.
+	SkillDiagnostics []EvenerSkillDiagnostic `json:"skillDiagnostics,omitempty"`
 }
 
 // MarshalJSON preserves an explicit empty plugin inventory while keeping a
@@ -952,6 +963,29 @@ type EvenerMCPServerInfo struct {
 type EvenerSkillInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	// DisableModelInvocation, UserInvocable, and Available copy the Stage 1
+	// invocation controls and availability verdict verbatim; AppWire adds no
+	// policy of its own. The two control booleans serialize without omission
+	// so an unwired source reads as a concrete false rather than an implied
+	// one. Composer completion uses Available && UserInvocable, and still
+	// requires the target's SkillInput capability before submission.
+	DisableModelInvocation bool     `json:"disableModelInvocation"`
+	UserInvocable          bool     `json:"userInvocable"`
+	Available              bool     `json:"available"`
+	AllowedTools           []string `json:"allowedTools,omitempty"`
+}
+
+// EvenerSkillDiagnostic is the wire form of one Stage 1 skill-discovery
+// diagnostic. Source and OtherSource carry explicit source detail (a
+// collision's winner and displaced source); the path-free EvenerSkillInfo
+// catalog never carries it.
+type EvenerSkillDiagnostic struct {
+	Category    string `json:"category"`
+	Name        string `json:"name,omitempty"`
+	Source      string `json:"source"`
+	OtherSource string `json:"otherSource,omitempty"`
+	Field       string `json:"field,omitempty"`
+	Message     string `json:"message"`
 }
 
 type EvenerPluginInfo struct {

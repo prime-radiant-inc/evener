@@ -367,7 +367,19 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo
 	entries := catalog.UserEntries()
 	result := make([]appwire.EvenerSkillInfo, 0, len(entries))
 	for _, entry := range entries {
-		result = append(result, appwire.EvenerSkillInfo{Name: entry.CatalogName, Description: entry.Meta.Description})
+		result = append(result, appwire.EvenerSkillInfo{
+			Name:        entry.CatalogName,
+			Description: entry.Meta.Description,
+			// Stage 1's discovery view copied verbatim: the invocation
+			// controls and availability verdict are the catalog's own, and
+			// AllowedTools rides as metadata only. The completion identity
+			// stays path-free; discovery-source detail belongs to
+			// EvenerDiagnostics.SkillDiagnostics, not to this catalog.
+			DisableModelInvocation: entry.Controls.DisableModelInvocation,
+			UserInvocable:          entry.Controls.UserInvocable,
+			Available:              !entry.Unavailable,
+			AllowedTools:           append([]string(nil), entry.Meta.AllowedTools...),
+		})
 	}
 	return result
 }

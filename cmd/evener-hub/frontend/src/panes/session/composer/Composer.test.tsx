@@ -3383,7 +3383,17 @@ test("a focused thread skill completes inline text and submits the unchanged pro
       ref: "ref_slash_skill",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0 },
-      diagnostics: { skills: [{ name: "simplify", description: "rewrite" }] },
+      diagnostics: {
+        skills: [
+          {
+            name: "simplify",
+            description: "rewrite",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
     },
   });
   fake.on("turn/start", (params) => ({

@@ -282,6 +282,7 @@ export interface EvenerDiagnostics {
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
   delegateDiagnostics?: string[];
+  skillDiagnostics?: EvenerSkillDiagnostic[];
 }
 
 export interface EvenerHookEventStatus {
@@ -341,9 +342,22 @@ export interface EvenerPluginInfo {
   mcpCount: number;
 }
 
+export interface EvenerSkillDiagnostic {
+  category: string;
+  name?: string;
+  source: string;
+  otherSource?: string;
+  field?: string;
+  message: string;
+}
+
 export interface EvenerSkillInfo {
   name: string;
   description?: string;
+  disableModelInvocation: boolean;
+  userInvocable: boolean;
+  available: boolean;
+  allowedTools?: string[];
 }
 
 export interface EvenerSteeringInjectedParams {
@@ -1648,6 +1662,7 @@ export interface ThreadCapabilities {
   queue: boolean;
   goal: boolean;
   rename: boolean;
+  skillInput?: boolean;
 }
 
 export interface ThreadClearParams {
