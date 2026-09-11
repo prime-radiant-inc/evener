@@ -1371,10 +1371,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	return nil
 }
 
-// closeSupersededSession preserves shutdown's ownership of a session when a
-// concurrent clear has already replaced it. A normal close may have consumed
-// the session's close-once path after an interrupted turn; a shutdown close
-// must still publish the terminal boundary in that case.
+// closeSupersededSession closes a session a concurrent clear has replaced, in
+// the form its owner is entitled to. shutdownClaimed means shutdown's single
+// pass already reached this session -- and already closed it with
+// CloseForShutdown, because closeLiveSession holds identityTransitionMu across
+// that close and the claim is read under the same lock -- so the call below is
+// a no-op over a terminal boundary shutdown has already published. Without the
+// claim this is the session's only close, and the ordinary form is the right
+// one: the clear announces the replaced identity with a resync.
+//
+// Double close buys nothing either way. Both forms run through the session's
+// close-once, so the terminal boundary belongs to whichever close runs FIRST,
+// and a second call cannot publish one the first declined. The agent package's
+// TestSession_DoubleCloseCannotRecoverATerminalBoundary pins that.
 func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 	if shutdownClaimed {
 		sess.CloseForShutdown()

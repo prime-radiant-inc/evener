@@ -1694,3 +1694,153 @@ func TestSession_QueuePreview_FirstLineTruncated_FIFO(t *testing.T) {
 		}
 	}
 }
+
+// TestSession_DoubleCloseCannotRecoverATerminalBoundary pins that a second
+// close is exactly a no-op, because the call sites make the opposite easy to
+// assume: cmd/evener/serve.go's closeSupersededSession picks between Close and
+// CloseForShutdown for a session a concurrent clear replaced, and reads as
+// though the shutdown form could still publish a boundary an earlier ordinary
+// close had swallowed.
+//
+// It cannot. Both forms run through closeOnce, so the FIRST call is the whole
+// close and the second returns having done nothing -- including when the first
+// published no closed boundary at all, which is what an ordinary close does
+// after a turn already ended the session (the sessionEndEmitted gate). Double
+// close is not a second chance at the terminal boundary; the close that runs
+// first has to be the one that wants it. What CloseForShutdown adds is
+// forceTerminal, which overrides that gate for the close it actually performs,
+// pinned by TestSession_CloseForShutdownAfterInterruptedTurnEmitsClosedBoundary
+// and TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary.
+func TestSession_DoubleCloseCannotRecoverATerminalBoundary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		runTurn  bool
+		wantEnds int
+	}{
+		// Nothing ended the session first, so the ordinary close owns the
+		// boundary and publishes it; the shutdown close behind it adds none.
+		{name: "close owns the boundary", runTurn: false, wantEnds: 1},
+		// The completed turn already ended the session, so the ordinary close
+		// declines the boundary -- and the shutdown close behind it cannot take
+		// the decision back.
+		{name: "close declined the boundary", runTurn: true, wantEnds: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(req llm.Request) llm.Response { return finalResponse("done") },
+			}})
+			sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			eventsPtr, mu, doneCh := collectEvents(sess)
+			if tc.runTurn {
+				if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sess.Close()
+			sess.CloseForShutdown()
+			<-doneCh
+
+			mu.Lock()
+			defer mu.Unlock()
+			closed := 0
+			for _, ev := range *eventsPtr {
+				if ev.Kind != events.EventSessionEnd {
+					continue
+				}
+				if d, ok := ev.Data.(events.SessionEndData); ok && d.State == string(SessionClosed) {
+					closed++
+				}
+			}
+			if closed != tc.wantEnds {
+				t.Fatalf("closed SESSION_END boundaries = %d, want %d", closed, tc.wantEnds)
+			}
+		})
+	}
+}
+
+// TestSession_TerminalBoundaryReachesNoJobWatch pins what a dropped terminal
+// boundary costs the job manager, which is nothing.
+//
+// The emit site hands the terminal SESSION_END to jobManager.onSessionEvent
+// only when the event channel accepted it, while every other emitter fans out
+// unconditionally, and that asymmetry reads as a projection gap: a full buffer
+// with nothing draining, or a bridge wedged until the close deadline, drops
+// the event and skips the fan-out with it.
+//
+// Nothing is lost, because close settles the job manager's runtime state --
+// every watch detached, the manager marked closing -- in its durable-jobs step,
+// well before it emits the terminal boundary. A fan-out at the emit would find
+// an empty registry. The watch registered here is live across the whole close,
+// crosses it, and still records no fire from the terminal boundary.
+func TestSession_TerminalBoundaryReachesNoJobWatch(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm := sess.jobManager
+	if jm == nil {
+		t.Fatal("session has no job manager; this test would prove nothing")
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: "*", Events: []string{"*"}}); err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+	jm.mu.Lock()
+	var watched *watchConfig
+	for _, cfg := range jm.watches {
+		watched = cfg
+	}
+	firesBefore := 0
+	if watched != nil {
+		firesBefore = watched.conditionFires
+	}
+	jm.mu.Unlock()
+	if watched == nil {
+		t.Fatal("wildcard session watch was not registered")
+	}
+
+	// Fill the event buffer with nothing draining it, so the terminal boundary
+	// below cannot be delivered and takes exactly the path the asymmetry is
+	// about. Emitting past the buffer is what proves it is full: a session with
+	// no authoritative consumer drops rather than waiting.
+	emitN(sess, cap(sess.events)*2)
+	if got := len(sess.events); got != cap(sess.events) {
+		t.Fatalf("buffered %d events, want the buffer full at %d", got, cap(sess.events))
+	}
+	sess.CloseForShutdown()
+
+	terminal := 0
+	for ev := range sess.events {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && d.State == string(SessionClosed) {
+			terminal++
+		}
+	}
+	if terminal != 0 {
+		t.Fatalf("terminal boundary was delivered %d times; the full-buffer drop this test is about did not happen", terminal)
+	}
+
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if !jm.closing {
+		t.Fatal("job manager is not closing after the session closed")
+	}
+	if len(jm.watches) != 0 {
+		t.Fatalf("job manager still holds %d watch(es) after close; the terminal boundary's fan-out would have had a registry to reach", len(jm.watches))
+	}
+	if watched.conditionFires != firesBefore {
+		t.Fatalf("watch fires = %d, want %d unchanged: the terminal boundary reached job-tree projection after all", watched.conditionFires, firesBefore)
+	}
+}
