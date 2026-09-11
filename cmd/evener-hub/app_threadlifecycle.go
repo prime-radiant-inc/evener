@@ -1026,16 +1026,47 @@ func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
 // which in admission runs first and refuses with its own error whenever it can
 // resolve the same daemon as this thread's owner.
 func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
+	return forkThreadOwnerFor(cfg, threadID).statusFenced()
+}
+
+// forkThreadOwner is the roster's answer about one thread. liveDaemonForThread
+// is a map lookup that falls through to a full roster snapshot clone-and-sort
+// for any thread that is not a live daemon's current session — the bulk of a
+// list response — so a caller that needs the answer more than once resolves it
+// into this and hands it on rather than asking again.
+type forkThreadOwner struct {
+	entry hubcore.LiveEntry
+	live  bool
+}
+
+func forkThreadOwnerFor(cfg hubcore.WebConfig, threadID string) forkThreadOwner {
 	if cfg.Roster == nil {
-		return false
+		return forkThreadOwner{}
 	}
-	owner, ok := liveDaemonForThread(cfg.Roster, threadID)
-	if !ok {
+	entry, live := liveDaemonForThread(cfg.Roster, threadID)
+	return forkThreadOwner{entry: entry, live: live}
+}
+
+// statusFenced reports whether this daemon is announcing a recovery fence in
+// the status it reports.
+func (o forkThreadOwner) statusFenced() bool {
+	if !o.live {
 		return false
 	}
 	return hubForkRecoveryFenced(appwire.Thread{
-		Status: appwire.ThreadStatus{Type: owner.Status, ActiveFlags: owner.ActiveFlags},
+		Status: appwire.ThreadStatus{Type: o.entry.Status, ActiveFlags: o.entry.ActiveFlags},
 	})
+}
+
+// sessionID is the session this daemon is running, with the fallback order
+// liveDaemonForSession uses: a probe that answered without naming its session
+// leaves LiveEntry.SessionID empty, and the rendezvous entry it carries still
+// names the daemon's current one. It answers "" when no daemon owns the thread.
+func (o forkThreadOwner) sessionID() string {
+	if !o.live {
+		return ""
+	}
+	return cmp.Or(o.entry.SessionID, o.entry.Entry.SessionID, o.entry.ThreadID)
 }
 
 // forkTargetSessionIDUnderLock resolves the session the requested thread names
@@ -1190,14 +1221,14 @@ func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
 			return sessionID
 		}
 	}
-	if cfg.Roster != nil {
-		if owner, ok := liveDaemonForThread(cfg.Roster, threadID); ok {
-			// Same fallback order as liveDaemonForSession: a probe that answered
-			// without naming its session leaves LiveEntry.SessionID empty, and
-			// the rendezvous entry it carries still names the daemon's current
-			// one.
-			return cmp.Or(owner.SessionID, owner.Entry.SessionID, owner.ThreadID, threadID)
-		}
+	return forkTargetSessionIDFor(cfg, threadID, forkThreadOwnerFor(cfg, threadID))
+}
+
+// forkTargetSessionIDFor is forkTargetSessionID with the roster already asked,
+// for a caller that needs the same answer more than once in one pass.
+func forkTargetSessionIDFor(cfg hubcore.WebConfig, threadID string, owner forkThreadOwner) string {
+	if sessionID := owner.sessionID(); sessionID != "" {
+		return sessionID
 	}
 	// No live daemon owns the thread, so the recovery redirect answers — the
 	// same tail forkTargetSessionIDUnderLock reaches, so the pre-lock reading

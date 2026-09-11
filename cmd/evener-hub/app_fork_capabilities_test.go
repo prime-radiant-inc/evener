@@ -2555,3 +2555,34 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 		t.Fatalf("relaying 5 item notifications projected the fork capability %d more times, want 0", got-settled)
 	}
 }
+
+// liveDaemonForThread is a map lookup that falls through to a full roster
+// snapshot clone-and-sort for any thread that is not a live daemon's current
+// session — the bulk of a list response. One projection asked twice: once
+// through the recovery fence and again to resolve the target. It asks once.
+func TestHubForkCapabilityResolvesLivenessOncePerProjection(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionID := buildRPCParentSession(t, stateDir)
+	runDir := t.TempDir()
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	var listCalls atomic.Int64
+	previousList := hubRosterList
+	hubRosterList = func(r *hubcore.Roster) []hubcore.LiveEntry {
+		listCalls.Add(1)
+		return previousList(r)
+	}
+	t.Cleanup(func() { hubRosterList = previousList })
+
+	cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+	thread := appwire.Thread{
+		ID: sessionID, SessionID: sessionID,
+		Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+	}
+	if !applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn {
+		t.Fatal("a saved session with no live daemon was not advertised as forkable")
+	}
+	if got := listCalls.Load(); got != 1 {
+		t.Fatalf("one projection scanned the roster %d times, want 1", got)
+	}
+}
