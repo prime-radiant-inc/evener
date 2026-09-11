@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"slices"
 	"strconv"
@@ -1076,6 +1077,12 @@ func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (strin
 			}
 			live, verifyErr := forkClaimIsLiveOwner(controller, entry)
 			if verifyErr != nil {
+				// The refusal reaches the client as a retryable unavailable,
+				// which says nothing about WHICH entry could not be verified.
+				// A hub whose process handles cannot be opened at all — a
+				// permission or sandbox problem, not a per-fork one — would
+				// otherwise refuse every fork with no server-side trace of why.
+				log.Printf("fork refused: cannot verify the daemon claiming %s (pid %d): %v", localAppRef(threadID), entry.PID, verifyErr)
 				return "", verifyErr
 			}
 			if live {
@@ -1177,6 +1184,11 @@ func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
 // it: with a single claim resumeClaimTarget returns it without opening
 // anything, so calling an unverifiable claim live would let a file alone
 // authorize a fork with ownership never established.
+//
+// The caller stops at the first unverifiable claim, so an alias carrying one
+// unverifiable entry and one that verifies refuses as unverifiable without
+// reaching the ambiguity path — the conservative reading: a set the hub cannot
+// fully account for is not a set it should pick a winner from.
 //
 // An ambiguous alias is therefore probed twice, here and again in
 // resumeClaimTarget's conflict branch; that is accepted rather than threaded

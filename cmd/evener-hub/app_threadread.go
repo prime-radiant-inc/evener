@@ -480,9 +480,9 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool
 // authority grant for persisted local forks, and a session needing recovery
 // cannot accept a fork until that fence clears.
 //
-// Two gaps are deliberate, and in both the fork RPC is the stricter side, so
-// what they cost is an offered action that is then refused — never a fork that
-// should not have happened.
+// Three gaps are deliberate, and in every one the fork RPC is the stricter
+// side, so what they cost is an offered action that is then refused — never a
+// fork that should not have happened.
 //
 // It stops short of the ownership resolution hubThreadFork performs, so a
 // session whose metadata is missing, unreadable, or claimed by two project
@@ -505,6 +505,15 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool
 // sessionActionRecoveryError reaches before any session-level fence — and it is
 // retryable and names the action that clears it: the window closes on
 // reconnect.
+//
+// And it never opens a process. The fork RPC verifies the daemon behind a
+// rendezvous claim before resolving through it (forkClaimIsLiveOwner) and
+// refuses when it cannot; this projection reads the roster, which asks only
+// whether the PID exists. On a host where process handles cannot be opened at
+// all — a permission or sandbox problem — every thread with a live claim is
+// advertised as forkable and every fork of one is refused as unverifiable. The
+// refusal is retryable and carries the reason, and the hub logs the claim it
+// could not verify.
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {

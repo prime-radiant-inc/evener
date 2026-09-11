@@ -1,9 +1,11 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -893,6 +895,18 @@ func (p *delegateArrivalProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 		result.RunningSubagentStates = map[string]string{p.childID: appwire.ThreadStatusActive}
 	}
 	return result
+}
+
+// captureHubLog redirects the hub's log output for one test and returns what it
+// wrote. A refusal the hub logs is behaviour, so a test that triggers one
+// asserts the line rather than letting it leak into the suite's output.
+func captureHubLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logged bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return &logged
 }
 
 // liveClaimController verifies every rendezvous claim it is asked about, which
@@ -2231,6 +2245,7 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
 					return tc.open(&probes)
 				}),
 			}
+			logged := captureHubLog(t)
 			// One claim, and the roster agrees with it, so nothing but that
 			// claim's own verification can decide this fork.
 			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
@@ -2259,6 +2274,9 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
 				if meta.ParentSessionID != currentID {
 					t.Fatalf("fork branched %q, want the claimed session %q", meta.ParentSessionID, currentID)
 				}
+				if logged.Len() != 0 {
+					t.Errorf("a fork through a verified claim logged %q", logged.String())
+				}
 				return
 			}
 			if err == nil {
@@ -2270,6 +2288,15 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
 			}
 			if !strings.Contains(wire.Message, verificationFailure) {
 				t.Errorf("refusal %q does not carry why the claim could not be verified", wire.Message)
+			}
+			// A hub that cannot verify any claim refuses every fork, and the
+			// client's retryable error says nothing about which entry or why.
+			// The server-side line is how that is diagnosed, so it is asserted
+			// rather than merely emitted.
+			for _, want := range []string{"local:" + aliasID, "pid 1001", verificationFailure} {
+				if !strings.Contains(logged.String(), want) {
+					t.Errorf("hub log %q does not name %q", logged.String(), want)
+				}
 			}
 			if len(after) != len(before) {
 				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
