@@ -12403,6 +12403,98 @@ describe("ConversationStore", () => {
       );
     });
   });
+
+  describe("Task 2A-Cluster: paging dedupe spans every incoming identity", () => {
+    function member(id: string, transcriptKey: string): ActivityMember {
+      return {
+        id,
+        transcriptKey,
+        label: "shell",
+        family: "tool",
+        state: "completed",
+        detail: { output: transcriptKey, callId: `call-${transcriptKey}` },
+      };
+    }
+
+    function cluster(
+      id: string,
+      transcriptKey: string,
+      members: ActivityMember[],
+    ): MobileTimelineItem {
+      return {
+        kind: "activity",
+        id,
+        transcriptKey,
+        label: "shell",
+        family: "tool",
+        state: "completed",
+        detail: { output: transcriptKey, callId: `call-${transcriptKey}` },
+        members,
+      };
+    }
+
+    function memberIdentities(items: MobileTimelineItem[]): string[] {
+      return items.flatMap((item) =>
+        item.kind === "activity"
+          ? (item.members ?? []).map((m) => m.transcriptKey ?? m.id)
+          : [],
+      );
+    }
+
+    async function pagedStore(
+      current: MobileTimelineItem[],
+      older: MobileTimelineItem[],
+    ): Promise<ReturnType<typeof createConversationStore>> {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items: current });
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = { items: older, nextCursor: "next" };
+      await store.getState().loadOlder(service);
+      return store;
+    }
+
+    it("skips an incoming cluster whose member identity is already present under a new top-level id", async () => {
+      const store = await pagedStore(
+        [cluster("wire-X", "key-X", [member("wire-X", "key-X"), member("wire-A", "key-A")])],
+        [
+          cluster("wire-old", "key-old", [
+            member("wire-old", "key-old"),
+            member("wire-A2", "key-A"),
+          ]),
+          { kind: "user", id: "older", text: "older" },
+        ],
+      );
+
+      const items = store.getState().conversation?.items ?? [];
+      expect(items.map((i) => i.id)).not.toContain("wire-old");
+      // The member is not duplicated across rows.
+      expect(memberIdentities(items).filter((id) => id === "key-A")).toEqual([
+        "key-A",
+      ]);
+      // A genuinely new row from the same page is still admitted.
+      expect(items.map((i) => i.id)).toContain("older");
+    });
+
+    it("admits an older attachment whose source row arrives in the same page", async () => {
+      const store = await pagedStore(
+        [{ kind: "user", id: "current", text: "current" }],
+        [
+          { kind: "user", id: "wire-src", transcriptKey: "key-src", text: "older" },
+          {
+            kind: "attachments",
+            id: "wire-src:attachments",
+            sourceTranscriptKey: "key-src",
+            items: [{ id: "att-1", src: "https://example.com/new.png" }],
+          },
+        ],
+      );
+
+      const items = store.getState().conversation?.items ?? [];
+      expect(items.map((i) => i.id)).toContain("wire-src:attachments");
+    });
+  });
   // --- C1: Service-specific operation binding ---------------------------------------
 
   describe("C1: wrong service at entry => zero request/state change", () => {

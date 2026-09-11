@@ -76,13 +76,21 @@ function activityIdentity(activity: ActivityMember): string {
   return activity.transcriptKey ?? activity.id;
 }
 
-function timelineIdentities(item: MobileTimelineItem): Set<string> {
+// The identities a row IS: its own, plus every clustered member's. Distinct
+// from timelineIdentities, which also carries the identity of the row an
+// attachment belongs to — an attachment is not a duplicate of its source.
+function ownTimelineIdentities(item: MobileTimelineItem): Set<string> {
   const identities = new Set([timelineIdentity(item)]);
   if (item.kind === "activity" && item.members) {
     for (const member of item.members) {
       identities.add(activityIdentity(member));
     }
   }
+  return identities;
+}
+
+function timelineIdentities(item: MobileTimelineItem): Set<string> {
+  const identities = ownTimelineIdentities(item);
   const source = attachmentSourceIdentity(item);
   if (source !== null) identities.add(source);
   return identities;
@@ -2104,8 +2112,13 @@ export function createConversationStore() {
             const currentIds = new Set(existingIds);
             const deduped: MobileTimelineItem[] = [];
             for (const item of result.items) {
-              const identity = timelineIdentity(item);
-              if (existingIds.has(identity)) continue;
+              // A row is a duplicate when ANY identity it carries is already
+              // present — an incoming cluster can reintroduce a member under
+              // a brand-new top-level id.
+              const duplicate = [...ownTimelineIdentities(item)].some((id) =>
+                existingIds.has(id),
+              );
+              if (duplicate) continue;
               const sourceId = attachmentSourceIdentity(item);
               if (sourceId !== null && currentIds.has(sourceId)) continue;
               // I3: Defense-in-depth — filter question rows at the state merge
