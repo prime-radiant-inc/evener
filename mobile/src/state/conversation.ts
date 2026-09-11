@@ -31,6 +31,7 @@ import type {
   ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
+  ActivityDetail,
   ActivityState,
   MobileCapabilities,
   MobileConversation,
@@ -454,14 +455,49 @@ export function exceedsByteLimit(text: string, maxBytes: number): boolean {
   return textEncoder.encode(text).length > maxBytes;
 }
 
+// Check if an activity detail's arguments/output/error exceed the byte limit
+// — the same rule applies to a top-level activity detail and to each of a
+// cluster's member details.
+function exceedsActivityDetailLimit(detail: ActivityDetail): boolean {
+  return (
+    (detail.arguments !== undefined &&
+      exceedsByteLimit(detail.arguments, MAX_ITEM_BYTES)) ||
+    (detail.output !== undefined &&
+      exceedsByteLimit(detail.output, MAX_ITEM_BYTES)) ||
+    (detail.error !== undefined &&
+      exceedsByteLimit(detail.error, MAX_ITEM_BYTES))
+  );
+}
+
 // F12: Per-item truncation ownership. Instead of checking if the text ends
 // with the marker (which would freeze if genuine content ends with "…
 // truncated"), the store tracks which item IDs have been truncated in a
 // private set. This allows genuine marker suffixes in content without
 // freezing delta appends.
 
+// Apply truncation to an activity detail's text-bearing fields (arguments,
+// output, error). Shared by an activity's own top-level detail and each of
+// its clustered members' details, so both are bounded the same way.
+function truncateActivityDetail(detail: ActivityDetail): ActivityDetail {
+  return {
+    ...detail,
+    arguments: detail.arguments
+      ? truncateText(detail.arguments, MAX_ITEM_BYTES)
+      : detail.arguments,
+    output: detail.output
+      ? truncateText(detail.output, MAX_ITEM_BYTES)
+      : detail.output,
+    error: detail.error
+      ? truncateText(detail.error, MAX_ITEM_BYTES)
+      : detail.error,
+  };
+}
+
 // Apply truncation to an item's text-bearing fields (arguments, output, error,
-// markdown). Returns a new item with truncated fields.
+// markdown). Returns a new item with truncated fields. Native transcript
+// projection expands a clustered activity's members directly, so each
+// member's own detail is truncated too — not just the cluster's top-level
+// detail (the first member's).
 function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   switch (item.kind) {
     case "assistant":
@@ -469,18 +505,15 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
     case "activity":
       return {
         ...item,
-        detail: {
-          ...item.detail,
-          arguments: item.detail.arguments
-            ? truncateText(item.detail.arguments, MAX_ITEM_BYTES)
-            : item.detail.arguments,
-          output: item.detail.output
-            ? truncateText(item.detail.output, MAX_ITEM_BYTES)
-            : item.detail.output,
-          error: item.detail.error
-            ? truncateText(item.detail.error, MAX_ITEM_BYTES)
-            : item.detail.error,
-        },
+        detail: truncateActivityDetail(item.detail),
+        ...(item.members
+          ? {
+              members: item.members.map((member) => ({
+                ...member,
+                detail: truncateActivityDetail(member.detail),
+              })),
+            }
+          : {}),
       };
     default:
       return item;
@@ -1135,13 +1168,7 @@ export function createConversationStore() {
       if (item.kind === "assistant") {
         needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
       } else if (item.kind === "activity") {
-        needsTruncation =
-          (item.detail.arguments !== undefined &&
-            exceedsByteLimit(item.detail.arguments, MAX_ITEM_BYTES)) ||
-          (item.detail.output !== undefined &&
-            exceedsByteLimit(item.detail.output, MAX_ITEM_BYTES)) ||
-          (item.detail.error !== undefined &&
-            exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
+        needsTruncation = exceedsActivityDetailLimit(item.detail);
       }
       // Freeze if: original content is oversized, OR the item was already
       // frozen and remains in the final set (priorFrozenIds), OR the item
@@ -1154,6 +1181,17 @@ export function createConversationStore() {
           retainedIds.has(timelineIdentity(item)))
       ) {
         truncatedItemIds.add(timelineIdentity(item));
+      }
+      // A clustered member's own oversized detail freezes under the
+      // member's own identity, independent of the top-level freeze above —
+      // native expands members directly, so each is bounded and guarded on
+      // its own.
+      if (item.kind === "activity" && item.members) {
+        for (const member of item.members) {
+          if (exceedsActivityDetailLimit(member.detail)) {
+            truncatedItemIds.add(member.transcriptKey ?? member.id);
+          }
+        }
       }
     }
   }
@@ -1172,13 +1210,7 @@ export function createConversationStore() {
     if (item.kind === "assistant") {
       needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
     } else if (item.kind === "activity") {
-      needsTruncation =
-        (item.detail.arguments !== undefined &&
-          exceedsByteLimit(item.detail.arguments, MAX_ITEM_BYTES)) ||
-        (item.detail.output !== undefined &&
-          exceedsByteLimit(item.detail.output, MAX_ITEM_BYTES)) ||
-        (item.detail.error !== undefined &&
-          exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
+      needsTruncation = exceedsActivityDetailLimit(item.detail);
     }
     if (needsTruncation) {
       truncatedItemIds.add(timelineIdentity(item));
@@ -1193,16 +1225,21 @@ export function createConversationStore() {
   // re-introduction (page load or lifecycle) independently judges the new
   // content instead of inheriting a stale freeze.
   function pruneEvictedIds(items: MobileTimelineItem[]): void {
-    const retainedIds = new Set(items.map(timelineIdentity));
+    // Member-inclusive: truncatedItemIds can now hold a clustered member's
+    // own identity (transcriptKey ?? id), not just a top-level one — a
+    // top-level-only retained set would prune a still-present member's
+    // freeze right after reconcileTruncationFrom sets it. pageOwnedIds and
+    // liveOwnedRevs only ever hold identities from this same union, so the
+    // richer set is a safe superset for them too.
+    const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
     for (const id of [...truncatedItemIds]) {
       if (!retainedIds.has(id)) truncatedItemIds.delete(id);
     }
     for (const id of [...pageOwnedIds]) {
       if (!retainedIds.has(id)) pageOwnedIds.delete(id);
     }
-    const retainedIdentities = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
     for (const id of [...liveOwnedRevs.keys()]) {
-      if (!retainedIdentities.has(id)) liveOwnedRevs.delete(id);
+      if (!retainedIds.has(id)) liveOwnedRevs.delete(id);
     }
   }
 

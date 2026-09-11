@@ -11995,6 +11995,124 @@ describe("ConversationStore", () => {
       );
     });
   });
+
+  describe("Task 2A-Truncation residual fix round 3", () => {
+    async function openProjectedWithItems(items: ThreadItem[]): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items })] }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      return { store, service };
+    }
+
+    it("truncates every clustered member's oversized detail and freezes each under its own identity", async () => {
+      const oversizedA = "a".repeat(MAX_ITEM_BYTES + 100);
+      const oversizedB = "b".repeat(MAX_ITEM_BYTES + 100);
+      const { store } = await openProjectedWithItems([
+        {
+          type: "commandExecution",
+          id: "wire-a",
+          transcriptKey: "key-a",
+          toolName: "shell",
+          status: "completed",
+          callId: "call-a",
+          output: oversizedA,
+        },
+        {
+          type: "commandExecution",
+          id: "wire-b",
+          transcriptKey: "key-b",
+          toolName: "shell",
+          status: "completed",
+          callId: "call-b",
+          output: oversizedB,
+        },
+      ]);
+      const cluster = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "wire-a");
+      expect(cluster?.kind).toBe("activity");
+      if (cluster?.kind !== "activity")
+        throw new Error("expected a clustered activity");
+      expect(cluster.members?.length).toBe(2);
+      const [memberA, memberB] = cluster.members ?? [];
+      // Top-level truncation behaviour unchanged — the cluster's own
+      // (first member's) detail is bounded, as before.
+      expect(cluster.detail.output?.endsWith("… truncated")).toBe(true);
+      // Every member's OWN detail is now bounded too, not just the top level.
+      expect(memberA?.detail.output?.endsWith("… truncated")).toBe(true);
+      expect(memberB?.detail.output?.endsWith("… truncated")).toBe(true);
+      // Each member is frozen under its own identity.
+      expect(store.getState().getTruncatedItemIds().has("key-a")).toBe(true);
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+
+      // A delta aimed at the frozen member's wire id is refused.
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "wire-a",
+          callId: "call-a",
+          delta: " MORE",
+        },
+      } as AnyNotification);
+      const after = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "wire-a");
+      expect(after?.kind).toBe("activity");
+      expect(after?.kind === "activity" && after.detail.output).toBe(
+        cluster.detail.output,
+      );
+    });
+
+    it("keeps a clustered member's freeze after an unrelated lifecycle event prunes evicted ownership", async () => {
+      const oversizedB = "b".repeat(MAX_ITEM_BYTES + 100);
+      const { store } = await openProjectedWithItems([
+        {
+          type: "commandExecution",
+          id: "wire-a",
+          transcriptKey: "key-a",
+          toolName: "shell",
+          status: "completed",
+          callId: "call-a",
+          output: "short",
+        },
+        {
+          type: "commandExecution",
+          id: "wire-b",
+          transcriptKey: "key-b",
+          toolName: "shell",
+          status: "completed",
+          callId: "call-b",
+          output: oversizedB,
+        },
+      ]);
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+
+      // An unrelated lifecycle event (a brand-new item) triggers the store's
+      // evicted-ownership prune. It must not sweep up the member's freeze,
+      // which lives outside the top-level identity space pruneEvictedIds
+      // checked before this fix.
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: { type: "userMessage", id: "unrelated", text: "hi" },
+        },
+      } as AnyNotification);
+
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+    });
+  });
   // --- C1: Service-specific operation binding ---------------------------------------
 
   describe("C1: wrong service at entry => zero request/state change", () => {
