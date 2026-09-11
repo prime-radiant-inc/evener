@@ -219,22 +219,40 @@ interface ActivityTarget {
   activity: ActivityMember;
 }
 
-function findActivityTarget(
+function findActivityTargetBy(
   items: MobileTimelineItem[],
-  itemId: string,
+  matches: (activity: ActivityMember) => boolean,
 ): ActivityTarget | null {
   for (const [rowIndex, row] of items.entries()) {
     if (row.kind !== "activity") continue;
-    const memberIndex = (row.members ?? []).findIndex(
-      (member) => member.id === itemId,
-    );
+    const memberIndex = (row.members ?? []).findIndex(matches);
     const member = row.members?.[memberIndex];
     if (member) return { row, rowIndex, memberIndex, activity: member };
-    if (row.id === itemId) {
+    if (matches(row)) {
       return { row, rowIndex, memberIndex: null, activity: row };
     }
   }
   return null;
+}
+
+// Deltas address their target by wire item id — they carry nothing else.
+function findActivityTarget(
+  items: MobileTimelineItem[],
+  itemId: string,
+): ActivityTarget | null {
+  return findActivityTargetBy(items, (activity) => activity.id === itemId);
+}
+
+// Lifecycle events carry a transcriptKey, which outlives a changing wire id;
+// this is the form that matches how they replace their target.
+function findActivityTargetByIdentity(
+  items: MobileTimelineItem[],
+  identity: string,
+): ActivityTarget | null {
+  return findActivityTargetBy(
+    items,
+    (activity) => activityIdentity(activity) === identity,
+  );
 }
 
 // Write a new detail onto the addressed activity. A clustered member is
@@ -2793,15 +2811,15 @@ export function createConversationStore() {
                 : decorateLifecycleItem(projectedRaw, params.item);
             // A sparse completion carries no text, so the accumulated output
             // must come from the row the event settles — which is a clustered
-            // member whenever this item runs beside its neighbours.
-            // Asymmetry, inherited from the lookup this replaced: the row is
-            // found by wire id, but replaced below by canonical identity
-            // (eventIdentity). A member whose wire id changes across the
-            // lifecycle while its transcriptKey holds is still replaced, yet
-            // misses this lookup and settles with output undefined.
-            const existing = findActivityTarget(
-              conv.items,
-              params.item.id,
+            // member whenever this item runs beside its neighbours. Resolve it
+            // the way the replacement below resolves it: by canonical identity
+            // first, so a member whose wire id changed while its transcriptKey
+            // held keeps its output, then by wire id for a row that has no
+            // transcriptKey to be found under.
+            const eventIdentity = params.item.transcriptKey ?? params.item.id;
+            const existing = (
+              findActivityTargetByIdentity(conv.items, eventIdentity) ??
+              findActivityTarget(conv.items, params.item.id)
             )?.activity;
             const preservesReasoningOutput =
               projected?.kind === "activity" &&
@@ -2844,7 +2862,6 @@ export function createConversationStore() {
               }
               const items: MobileTimelineItem[] = [];
               let replaced = false;
-              const eventIdentity = params.item.transcriptKey ?? params.item.id;
               const consumedAttachments = new Set<string>();
               for (const item of conv.items) {
                 if (consumedAttachments.has(item.id)) continue;

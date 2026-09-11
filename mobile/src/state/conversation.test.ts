@@ -12409,6 +12409,35 @@ describe("ConversationStore", () => {
       expect(memberA?.detail.output).toBe("first");
     });
 
+    it("preserves a clustered member's output when a sparse completion changes its wire id", async () => {
+      const { store } = await openProjectedWithItems([
+        reasoningItem("wire-a", "key-a", "first"),
+        reasoningItem("wire-b", "key-b", "accumulated"),
+      ]);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            type: "reasoning",
+            id: "wire-b2",
+            transcriptKey: "key-b",
+            status: "completed",
+          },
+        },
+      } as AnyNotification);
+
+      const [memberA, memberB] = clusterMembers(store, "wire-a");
+      // The member is replaced under its new wire id, keeping the output it
+      // accumulated under the stable transcriptKey.
+      expect(memberB?.id).toBe("wire-b2");
+      expect(memberB?.detail.output).toBe("accumulated");
+      expect(memberA?.detail.output).toBe("first");
+    });
+
     it("keeps an already-truncated member frozen when a page reconciles truncation", async () => {
       const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
       const { store, service } = await openProjectedWithItems([
