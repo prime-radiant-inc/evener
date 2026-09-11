@@ -29,7 +29,18 @@ type launchCheckModel struct {
 	Model    string `json:"model"`
 }
 
+// supportedLaunchFlags advertises the serve/run flags this binary accepts
+// that a launcher (the hub) passes on the command line. Keep in sync with
+// the flag definitions in cmd/evener's run/serve commands: a launcher gates
+// on this list before passing a flag, so a flag listed here must parse.
+var supportedLaunchFlags = []string{"api-log"}
+
 type launchCheckResponse struct {
+	// LaunchFlags is the CLI-capability half of the launch contract: a
+	// binary predating a flag omits it, which is itself the signal a
+	// launcher needs to reject the pairing up front instead of dying on an
+	// unknown flag at spawn time.
+	LaunchFlags []string                      `json:"launch_flags,omitempty"`
 	Version     string                        `json:"version"`
 	Protocol    string                        `json:"protocol"`
 	Provider    string                        `json:"provider,omitempty"`
@@ -56,8 +67,9 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	}
 
 	resp := launchCheckResponse{
-		Version:  buildinfo.Version(),
-		Protocol: appwire.ProtocolVersion,
+		LaunchFlags: supportedLaunchFlags,
+		Version:     buildinfo.Version(),
+		Protocol:    appwire.ProtocolVersion,
 	}
 	if *modelsOut {
 		models, diagnostics, err := launchCheckModels()
