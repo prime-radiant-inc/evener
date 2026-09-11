@@ -806,6 +806,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
+	if hubForkLiveStatusFenced(cfg, ref.ThreadID) {
+		return appwire.ThreadForkResponse{}, sessionResumeRequiredError()
+	}
 	sessionID := forkTargetSessionID(cfg, ref.ThreadID)
 	entry, ok, entryErr := ownershipEntry(ctx, cfg, sessionID)
 	if entryErr != nil {
@@ -885,6 +888,27 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		},
 		OriginalInput: originalInput,
 	}, nil
+}
+
+// hubForkLiveStatusFenced reports whether the daemon behind this thread is
+// announcing a recovery fence in the status it reports. The capability
+// projection hides fork for the same signal, so admission decides it with the
+// same predicate rather than a second description of it; the roster carries the
+// flags that daemon reported at the refresh admission just performed, so this
+// costs no extra round-trip. Its restart-required conjunct overlaps
+// refreshDaemonRestartRequiredError above, which refuses first and with its own
+// error whenever it can resolve the same daemon as this thread's owner.
+func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
+	if cfg.Roster == nil {
+		return false
+	}
+	owner, ok := liveDaemonForThread(cfg.Roster, threadID)
+	if !ok {
+		return false
+	}
+	return hubForkRecoveryFenced(appwire.Thread{
+		Status: appwire.ThreadStatus{Type: owner.Status, ActiveFlags: owner.ActiveFlags},
+	})
 }
 
 // forkTargetSessionID resolves the transcript a fork request names. A daemon

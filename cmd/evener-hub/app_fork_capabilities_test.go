@@ -548,8 +548,13 @@ func TestHubForkFencesLiveDelegateFromOneSignal(t *testing.T) {
 // a fence both advertises fork and branches a child.
 func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		fence       func(t *testing.T, cfg *hubcore.WebConfig, runDir, sessionID string)
+		name  string
+		fence func(t *testing.T, cfg *hubcore.WebConfig, runDir, sessionID string)
+		// projected overrides the thread the capability projection is asked
+		// about. The past projection has no way to express a live daemon's own
+		// status flags, so the row that fences on them supplies the shape
+		// applyHubForkCapability sees on a thread/read of that daemon instead.
+		projected   func(sessionID string) appwire.Thread
 		wantRefusal func(error) bool
 	}{
 		{name: "unfenced"},
@@ -583,6 +588,28 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			},
 			wantRefusal: isDaemonRestartRequiredError,
 		},
+		{
+			name: "daemon status carries the resumeRequired flag",
+			fence: func(t *testing.T, cfg *hubcore.WebConfig, runDir, sessionID string) {
+				writeRendezvous(t, runDir, rendezvous.Entry{
+					PID: os.Getpid(), SourceID: "local", ThreadID: sessionID, SessionID: sessionID,
+					Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+				})
+				cfg.Roster = hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: sessionID, flags: []string{"resumeRequired"}})
+				cfg.Roster.Refresh()
+				owner, ok := cfg.Roster.Find(sessionID)
+				if !ok || !slices.Contains(owner.ActiveFlags, "resumeRequired") {
+					t.Fatalf("roster owner=%+v ok=%v, want the daemon's recovery flag carried", owner, ok)
+				}
+			},
+			projected: func(sessionID string) appwire.Thread {
+				return appwire.Thread{
+					Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle, ActiveFlags: []string{"resumeRequired"}},
+					Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+				}
+			},
+			wantRefusal: isSessionRecoveryAdmissionError,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -605,14 +632,19 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 				tc.fence(t, &cfg, runDir, sessionID)
 			}
 
-			thread, err := pastEntryThreadForList(t.Context(), cfg, entry)
-			if err != nil {
-				t.Fatalf("project thread: %v", err)
+			thread := appwire.Thread{}
+			if tc.projected != nil {
+				thread = applyHubForkCapability(cfg, tc.projected(sessionID))
+			} else {
+				var err error
+				if thread, err = pastEntryThreadForList(t.Context(), cfg, entry); err != nil {
+					t.Fatalf("project thread: %v", err)
+				}
 			}
 			if got := thread.Evener.Capabilities.ForkFromTurn; got != (tc.fence == nil) {
 				t.Errorf("projected forkFromTurn=%v, want %v", got, tc.fence == nil)
 			}
-			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+			_, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
 				Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "forked input",
 			})
 			wantMetas := 1
@@ -858,6 +890,22 @@ func (p *delegateArrivalProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 		result.RunningSubagentStates = map[string]string{p.childID: appwire.ThreadStatusActive}
 	}
 	return result
+}
+
+// recoveryFlagProber reports a healthy daemon whose own thread status carries a
+// recovery flag, the signal applyHubForkCapability fences fork on.
+type recoveryFlagProber struct {
+	sessionID string
+	flags     []string
+}
+
+func (p recoveryFlagProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
+	return hubcore.ProbeResult{
+		SessionID:   p.sessionID,
+		Status:      appwire.ThreadStatusIdle,
+		ActiveFlags: p.flags,
+		OK:          true,
+	}
 }
 
 // A delegate its parent daemon picked up after the hub's last roster scan is

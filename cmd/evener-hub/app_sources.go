@@ -202,13 +202,20 @@ func isSessionRecoveryAdmissionError(err error) bool {
 	return ok
 }
 
+// sessionResumeRequiredError is the refusal for an action whose session is
+// under a recovery fence, whether the hub holds it in the resume locks or the
+// session's own daemon announces it in the status it reports.
+func sessionResumeRequiredError() error {
+	return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
+}
+
 func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
 	if err := sessionConnectionRecoveryError(ctx, cfg, ref, threadID); err != nil {
 		return err
 	}
 	state := sessionRecoveryState(cfg, ref, threadID)
 	if state.Stopping > 0 || state.ResumeRequired {
-		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
+		return sessionResumeRequiredError()
 	}
 	if state.Epoch != epoch {
 		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery canceled this pending action; submit it again")}

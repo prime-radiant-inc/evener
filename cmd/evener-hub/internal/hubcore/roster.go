@@ -26,6 +26,7 @@ type LiveEntry struct {
 	rendezvous.Entry
 	SessionID          string
 	Status             string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	ActiveFlags        []string // the status flags the daemon reported alongside Status
 	Crashed            bool     // true only for a retained record whose daemon PID is confirmed gone
 	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
 	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
@@ -52,6 +53,7 @@ type LiveEntry struct {
 type ProbeResult struct {
 	SessionID             string
 	Status                string
+	ActiveFlags           []string
 	PendingAsk            bool
 	PendingEscalation     bool
 	RunningSubagentIDs    []string
@@ -87,6 +89,7 @@ func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
 
 func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
+	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -831,6 +834,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Entry:                 e,
 		SessionID:             result.SessionID,
 		Status:                result.Status,
+		ActiveFlags:           append([]string(nil), result.ActiveFlags...),
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
 		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
