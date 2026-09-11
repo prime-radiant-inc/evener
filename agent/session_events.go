@@ -395,10 +395,13 @@ func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, d
 		// before it reaches the call that would publish either -- so without
 		// this arm the wait and the publisher wait on each other.
 		//
-		// A published budget SUPERSEDES it, and a nil channel never fires, so
-		// the bounded delivery window is untouched: close cancels the session
-		// context as its own step 2, and a send released by that instead of by
-		// the budget would drop an event the budget still had time to deliver.
+		// A budget published BEFORE this send arrives supersedes the lifetime
+		// outright, and a nil channel never fires. A budget published while the
+		// send is already parked is handled on the arm itself: close publishes
+		// and then cancels the session context a few statements later, so an
+		// already-parked send sees the lifetime end with a fresh budget in hand
+		// and must come back to that budget rather than drop an event it still
+		// has its whole window to deliver.
 		var lifetimeDone <-chan struct{}
 		if closeCtx != nil {
 			ctx = closeCtx
@@ -443,6 +446,27 @@ func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, d
 				case <-ctx.Done():
 				case <-closeSignal:
 				case <-lifetimeDone:
+					// The lifetime ended under this send. If a close published
+					// its budget in the meantime, that budget owns the event
+					// exactly as it would for a send that arrived after the
+					// publication, so re-park on it. At daemon shutdown there
+					// is none and none is possible -- the call that would
+					// publish one waits on the goroutine parked here -- so that
+					// path still leaves immediately.
+					s.closeCtxMu.RLock()
+					published := s.closeCtx
+					s.closeCtxMu.RUnlock()
+					if published != nil {
+						if observe := s.testOnlyBlockedSendEntered; observe != nil {
+							observe()
+						}
+						select {
+						case s.events <- ev:
+							delivered = true
+						case <-published.Done():
+						case <-closeSignal:
+						}
+					}
 				}
 			}
 		}

@@ -252,6 +252,95 @@ func TestPublishedCloseBudgetOutranksTheSessionLifetimeForBlockedSends(t *testin
 	}
 }
 
+// fillEventBuffer emits until the session's buffer is exactly at capacity.
+// A session built through NewSession has already emitted during construction,
+// so a fixed count would either leave room or park the filler itself.
+func fillEventBuffer(s *Session) {
+	for len(s.events) < cap(s.events) {
+		s.sendEvent(events.EventWarning, events.WarningData{Message: "fill"}, nil)
+	}
+}
+
+// A send ALREADY parked when a close begins captured its lifetime channel while
+// no budget existed, so the "a published budget supersedes the lifetime" rule
+// cannot reach it: close publishes the budget and then cancels the session
+// context a few statements later (session_lifecycle.go, step 2), and that
+// cancellation would otherwise drop an event the fresh budget still had 30s to
+// deliver.
+//
+// This is not a daemon-shutdown path. Every session NewSession or restore builds
+// owns a cancellable context whether or not a LifetimeContext was supplied
+// (session_init.go), so it covers an ordinary Close: the clear that supersedes a
+// session with a send parked on its full buffer, a one-shot run's close, any
+// library close. The session here is therefore a real one, not the struct
+// literal the other tests in this file use -- that one has no session context at
+// all, which is exactly why it cannot see this.
+func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
+	// The fixture leaves a full buffer with nothing draining, so the close this
+	// session's cleanup runs would spend the shipped budget parked on its own
+	// terminal boundary. What is under test is which deadline owns the event,
+	// not how long the shipped one is.
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 20 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	s := newSession(t, withoutGitSnapshot())
+	s.authoritativeConsumer = true
+	fillEventBuffer(s)
+
+	parked := make(chan struct{}, 2)
+	s.testOnlyBlockedSendEntered = func() {
+		select {
+		case parked <- struct{}{}:
+		default:
+		}
+	}
+	results := make(chan bool, 1)
+	go func() {
+		_, _, delivered := s.sendEventContext(context.Background(), events.EventWarning,
+			events.WarningData{Message: "parked before the close"}, nil)
+		results <- delivered
+	}()
+	select {
+	case <-parked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	// Close's own order: publish the budget, then cancel the session context.
+	s.closeCtxMu.Lock()
+	s.closeCtx = t.Context()
+	s.closeCtxMu.Unlock()
+	s.cancelFunc()
+
+	// The parked send must come back to the freshly published budget rather
+	// than leave on the lifetime, which is observable as a second park.
+	select {
+	case <-parked:
+	// TRIPWIRE: the re-park is a channel read and a lock away from the
+	// cancellation above; 10s only fires if the send left on the lifetime
+	// instead, taking the event with it.
+	case <-time.After(10 * time.Second):
+		t.Fatal("a send parked before the close did not re-park on the budget the close published; " +
+			"the 30s delivery window is gone for every already-parked send")
+	}
+
+	<-s.events
+	select {
+	case delivered := <-results:
+		if !delivered {
+			t.Fatal("a send parked before the close lost its event to the session lifetime; " +
+				"the budget that close published still had its whole window left")
+		}
+	// TRIPWIRE: this ceiling only fires if the send neither delivers nor
+	// returns; the drain above is the real completion signal.
+	case <-time.After(10 * time.Second):
+		t.Fatal("blocked authoritative send never returned after the consumer drained")
+	}
+}
+
 // A Notification hook that is ALREADY running when shutdown starts has to
 // observe the shutdown. The hook runs synchronously on the goroutine that
 // emitted the warning -- in the daemon that is the input loop shutdown waits
