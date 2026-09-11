@@ -103,15 +103,17 @@ function isSystemMessage(item: ThreadItem): boolean {
 }
 
 // A settled command/tool item is a failure when the tool result itself
-// carried an error message, OR when the process behind it exited nonzero.
-// The daemon never fabricates exitCode as 0 (appwire/types.go's ThreadItem.
-// ExitCode doc), so a defined nonzero value is an honest signal even when
-// Error is empty (e.g. `make test` failing with no denial/exception). This
-// mirrors the web frontend's hasItemFailure/isNonZeroExit predicate
-// (cmd/evener-hub/frontend/src/transcriptDisplay/projector.ts) so native and
-// web classify the same settled command the same way.
+// carried a non-blank error message, OR the item's own status settled as
+// failed/interrupted, OR the process behind it exited nonzero. The daemon
+// never fabricates exitCode as 0 (appwire/types.go's ThreadItem.ExitCode
+// doc), so a defined nonzero value is an honest signal even when Error is
+// empty (e.g. `make test` failing with no denial/exception). This mirrors
+// the web frontend's hasItemFailure/hasFailureStatus/isNonZeroExit predicate
+// (cmd/evener-hub/frontend/src/transcriptDisplay/projector.ts:118-130)
+// exactly, so native and web classify the same settled command the same way.
 export function toolCallFailed(item: ThreadItem): boolean {
-  if (item.error !== undefined && item.error !== "") return true;
+  if (item.error !== undefined && item.error.trim() !== "") return true;
+  if (item.status === "failed" || item.status === "interrupted") return true;
   return typeof item.exitCode === "number" && item.exitCode !== 0;
 }
 

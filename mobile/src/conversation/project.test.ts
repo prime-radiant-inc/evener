@@ -526,6 +526,55 @@ describe("projectThread", () => {
       if (a?.kind === "activity") expect(a.state).toBe("failed");
     });
 
+    it("projects a failed-status tool call with no error or exit code as failed state (web parity)", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "failed",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      if (a?.kind === "activity") expect(a.state).toBe("failed");
+    });
+
+    it("projects an interrupted-status tool call with no error or exit code as failed state (web parity)", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "interrupted",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      if (a?.kind === "activity") expect(a.state).toBe("failed");
+    });
+
+    it("does not count a whitespace-only error as a failure (trim parity with web)", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "completed",
+            error: "   ",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      if (a?.kind === "activity") expect(a.state).toBe("completed");
+    });
+
     it("uses description as label when toolName absent", () => {
       const t = thread([
         turn("t1", [
