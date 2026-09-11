@@ -1050,7 +1050,8 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 // failure refuses the fork as unverifiable, where resumeOwnershipStep degrades
 // to the roster. A recheck that fell back to the reading it exists to
 // second-guess would answer nothing, and a retryable refusal is the safe
-// direction for a mutation.
+// direction for a mutation. A claim whose own process cannot be verified is
+// refused the same way, and for the same reason.
 //
 // With no run dir configured, and for a thread nothing currently claims, it
 // answers the requested id — the same thing the roster-backed resolution
@@ -1070,7 +1071,14 @@ func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (strin
 			if entry.SourceID != "" && entry.SourceID != "local" {
 				continue
 			}
-			if slices.Contains(forceStopAliases(entry), threadID) && forkClaimIsLiveOwner(controller, entry) {
+			if !slices.Contains(forceStopAliases(entry), threadID) {
+				continue
+			}
+			live, verifyErr := forkClaimIsLiveOwner(controller, entry)
+			if verifyErr != nil {
+				return "", verifyErr
+			}
+			if live {
 				claims = append(claims, entry)
 			}
 		}
@@ -1161,12 +1169,19 @@ func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
 // is dead to both — and the stricter one only ever withholds liveness from a
 // PID that has been reused, which is not an owner either.
 //
-// A process the controller cannot decide about stays a claim: resumeClaimTarget
-// then refuses an ambiguous alias, which is the safer of the two ways to be
-// wrong about it. An ambiguous alias is therefore probed twice, here and again
-// in resumeClaimTarget's conflict branch; that is accepted rather than threaded
+// There are three outcomes, not two, and the third is why this returns an
+// error. A claim whose process verifies is live. A claim whose process has
+// exited is gone and is dropped. A claim whose verification fails for any other
+// reason — a malformed entry, a stale one, a PID since reused — is
+// UNVERIFIABLE, and the caller refuses the fork rather than resolving through
+// it: with a single claim resumeClaimTarget returns it without opening
+// anything, so calling an unverifiable claim live would let a file alone
+// authorize a fork with ownership never established.
+//
+// An ambiguous alias is therefore probed twice, here and again in
+// resumeClaimTarget's conflict branch; that is accepted rather than threaded
 // through, since only a contested alias pays it.
-func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.Entry) bool {
+func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.Entry) (bool, error) {
 	process, err := controller.Open(daemonprocess.Target{
 		PID:       entry.PID,
 		SessionID: cmp.Or(entry.SessionID, entry.ThreadID),
@@ -1174,15 +1189,15 @@ func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.
 		StartedAt: entry.StartedAt,
 	})
 	if errors.Is(err, daemonprocess.ErrExited) {
-		return false
+		return false, nil
 	}
 	if err != nil {
-		return true
+		return false, err
 	}
 	// The daemon answered, which is the whole question here; the probe handle
 	// is released immediately and a close failure does not change that answer.
 	_ = process.Close()
-	return true
+	return true, nil
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {

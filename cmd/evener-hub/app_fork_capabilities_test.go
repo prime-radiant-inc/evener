@@ -629,6 +629,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			cfg := hubcore.WebConfig{
 				StateDir: root, Past: past, RunDir: runDir,
 				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
+				DaemonProcesses: liveClaimController(),
 			}
 			if tc.fence != nil {
 				tc.fence(t, &cfg, runDir, sessionID)
@@ -894,6 +895,18 @@ func (p *delegateArrivalProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 	return result
 }
 
+// liveClaimController verifies every rendezvous claim it is asked about, which
+// is what an entry for a running daemon means. Fixtures that write a self-PID
+// entry need it: the real controller cannot verify this test process as a
+// daemon, and since round 13 a claim whose verification fails is unverifiable
+// and refuses the fork rather than counting as live (forkClaimIsLiveOwner).
+func liveClaimController() daemonprocess.Controller {
+	var probes []string
+	return forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		return &forceStopProcess{events: &probes}, nil
+	})
+}
+
 // recoveryFlagProber reports a healthy daemon whose own thread status carries a
 // recovery flag, the signal applyHubForkCapability fences fork on.
 type recoveryFlagProber struct {
@@ -1012,7 +1025,7 @@ func TestHubForkByStableRefBranchesTheCurrentSession(t *testing.T) {
 				t.Fatalf("roster owner workspace ref = %q, want the retired session's stable ref", listed[0].WorkspaceRef)
 			}
 
-			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, DaemonProcesses: liveClaimController()}
 			thread := appwire.Thread{ID: currentID, SessionID: currentID, Evener: appwire.EvenerThread{Ref: "local:" + retiredID}}
 			if !applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn {
 				t.Fatal("the stable ref was not advertised as forkable; this fixture cannot reach the handler")
@@ -1417,7 +1430,7 @@ func TestHubForkRefusesWhenItsTargetMovesUnderTheLocks(t *testing.T) {
 			}
 			t.Cleanup(func() { hubRosterList = previousList })
 
-			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, DaemonProcesses: liveClaimController()}
 			before, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
 				t.Fatal(listErr)
@@ -1520,7 +1533,7 @@ func TestHubForkRechecksItsTargetAgainstTheRendezvousNotTheRoster(t *testing.T) 
 			}
 			t.Cleanup(func() { hubRosterList = previousList })
 
-			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, DaemonProcesses: liveClaimController()}
 			before, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
 				t.Fatal(listErr)
@@ -1806,7 +1819,7 @@ func TestHubForkCapabilityHidesADeletionFencedThread(t *testing.T) {
 			}
 			buildRPCSessionWithWorkingDir(t, stateDir, sessionID, t.TempDir())
 			runDir := t.TempDir()
-			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir}
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, DaemonProcesses: liveClaimController()}
 			requestedID := sessionID
 			if tc.alias {
 				// The cleared-daemon shape: the client still holds the stable
@@ -1964,7 +1977,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			roster := hubcore.NewRoster(runDir, nil)
 			roster.Refresh()
 			locks := hubcore.NewResumeLocks()
-			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, ResumeLocks: locks}
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, ResumeLocks: locks, DaemonProcesses: liveClaimController()}
 			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
 				t.Fatalf("the alias resolves to %q, want the daemon's current session %q", got, currentID)
 			}
@@ -2063,7 +2076,7 @@ func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
 			})
 			roster := hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: currentID, flags: flags})
 			roster.Refresh()
-			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, DaemonProcesses: liveClaimController()}
 			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
 				t.Fatalf("the alias resolves to %q, want the daemon's current session %q", got, currentID)
 			}
@@ -2163,6 +2176,100 @@ func TestHubForkReportsAResolvedSessionsDeletionEvenWhenTheRefreshFails(t *testi
 			after, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
 				t.Fatal(listErr)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+			}
+		})
+	}
+}
+
+// A rendezvous claim decides which transcript a fork branches, so a claim whose
+// process cannot be verified must not become that target. With one claim,
+// resumeClaimTarget returns it without opening anything, so treating an
+// unverifiable claim as live is the same as trusting a file: a malformed, stale
+// or PID-reused entry would authorize the fork with ownership never
+// established. Verified is live, exited is gone, and anything else is refused
+// retryably with the verification error — the client can look, or try again.
+func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
+	const verificationFailure = "daemon start time does not match the rendezvous"
+	for _, tc := range []struct {
+		name     string
+		open     func(probes *[]string) (daemonprocess.Process, error)
+		wantFork bool
+	}{
+		{
+			name:     "claim verifies",
+			open:     func(probes *[]string) (daemonprocess.Process, error) { return &forceStopProcess{events: probes}, nil },
+			wantFork: true,
+		},
+		{
+			name: "claim cannot be verified",
+			open: func(*[]string) (daemonprocess.Process, error) { return nil, errors.New(verificationFailure) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			aliasID := buildRPCParentSession(t, stateDir)
+			currentID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID: 1001, SourceID: "local", ThreadID: currentID, SessionID: currentID, InstanceID: currentID,
+				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+			})
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
+			roster.Refresh()
+			var probes []string
+			cfg := hubcore.WebConfig{
+				StateDir: stateDir, RunDir: runDir, Roster: roster,
+				DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+					return tc.open(&probes)
+				}),
+			}
+			// One claim, and the roster agrees with it, so nothing but that
+			// claim's own verification can decide this fork.
+			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
+				t.Fatalf("the alias resolves to %q, want the session claiming it %q", got, currentID)
+			}
+
+			before, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			after, listErr := schema.ListSessionMetas(stateDir)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if tc.wantFork {
+				if err != nil {
+					t.Fatalf("fork through a verified claim: %v", err)
+				}
+				meta, metaErr := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+				if metaErr != nil {
+					t.Fatal(metaErr)
+				}
+				if meta.ParentSessionID != currentID {
+					t.Fatalf("fork branched %q, want the claimed session %q", meta.ParentSessionID, currentID)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("fork branched a transcript through a claim nothing verified")
+			}
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeUnavailable || isTargetDeletedError(err) {
+				t.Fatalf("fork error=%v, want a retryable structured unavailable", err)
+			}
+			if !strings.Contains(wire.Message, verificationFailure) {
+				t.Errorf("refusal %q does not carry why the claim could not be verified", wire.Message)
 			}
 			if len(after) != len(before) {
 				t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
