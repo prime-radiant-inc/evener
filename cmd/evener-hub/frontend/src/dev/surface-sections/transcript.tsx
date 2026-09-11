@@ -1,8 +1,8 @@
 import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
 import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
-import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
+import { makeEditorialTranscriptModel } from "./transcript-fixture";
 
 const SESSION_REF = "dev-surface-transcript";
 const PREVIEW_CONFIG = makeTranscriptDisplayConfig(
@@ -28,11 +28,12 @@ export default function TranscriptSurfaceSection() {
       <h2>Transcript</h2>
       <p className={styles.note}>
         A fixed user request, successful and failed tool calls, reasoning, an agent response, and optional metrics and
-        system events. Rendered through the production TranscriptBody preview surface with no store or network.
+        system events, plus durable collaborators with attention, failure, exhaustion, and unavailable lifecycle data.
+        Rendered through the production TranscriptBody preview surface with no store or network.
       </p>
       <ThemeFlip>
         <TranscriptBody
-          model={makeTranscriptPreviewModel()}
+          model={makeEditorialTranscriptModel()}
           config={PREVIEW_CONFIG}
           surface="preview"
           disclosureScope="preview:dev-transcript"

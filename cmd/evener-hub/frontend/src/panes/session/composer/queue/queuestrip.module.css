@@ -9,7 +9,7 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--edge);
-  background: var(--surface-1);
+  background: var(--surface-0);
 }
 
 .header {
@@ -40,8 +40,8 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
+  border-bottom: 1px solid var(--edge);
+  background: transparent;
 }
 
 /* An optimistic row awaiting the daemon's own confirmation - dimmed rather

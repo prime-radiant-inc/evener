@@ -210,19 +210,20 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
   expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-test("the user bubble is an accent-wash token fill, hugging its content, tailed toward the avatar", () => {
+// Approved 2026-09-09 editorial design §Visual grammar replaces enclosing
+// chat fills with authored serif prose, not different containment geometry.
+test("the user reading surface is flat serif prose, bounded by its content column", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/background:\s*var\(--accent-bg\)/);
+  expect(body![1]).not.toMatch(/background:|border-radius:/);
   expect(body![1]).toMatch(/width:\s*fit-content/);
   expect(body![1]).toMatch(/max-width:\s*100%/);
   expect(body![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-  // The 4px (control-radius) corner is the top-left one - toward the avatar.
-  expect(body![1]).toMatch(
-    /border-radius:\s*var\(--radius-control\) var\(--radius-pane\) var\(--radius-pane\) var\(--radius-pane\)/,
-  );
+  const text = /\.text\s*\{([^}]*)\}/.exec(css);
+  expect(text?.[1]).toMatch(/font-family:\s*var\(--font-prose\)/);
+  expect(text?.[1]).toMatch(/font-size:\s*var\(--font-size-prose\)/);
 });
 
 test("no gallery thumbnails when the item carries no images", () => {

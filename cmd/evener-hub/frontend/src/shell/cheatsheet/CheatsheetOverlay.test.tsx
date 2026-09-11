@@ -85,11 +85,13 @@ function overridesPayload(revision: number, rules: KeybindingsRule[]): Keybindin
 }
 
 async function wireClient(client: FakeClient, supported: boolean): Promise<void> {
-  connectionStore.getState().connect(client);
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: supported },
+  await act(async () => {
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: supported },
+    });
+    await keybindingsStore.getState().refreshOverrides();
   });
-  await keybindingsStore.getState().refreshOverrides();
 }
 
 function questionTriggerRegistered(): boolean {
@@ -319,7 +321,9 @@ test("override removal with the pref OFF restores the defaults and strips the ? 
   // with no knowledge of the pref - and the reconcile strips it again
   // without throwing (a rollback would surface as hubError).
   payload = overridesPayload(4, []);
-  await keybindingsStore.getState().refreshOverrides();
+  await act(async () => {
+    await keybindingsStore.getState().refreshOverrides();
+  });
   expect(keybindingsStore.getState().hubError).toBeNull();
   expect(questionTriggerRegistered()).toBe(false);
   expect(
@@ -344,7 +348,9 @@ test("override removal with the pref ON restores the defaults with exactly one ?
   // The restore re-registers "?" itself; the reconcile must be a no-op here -
   // re-registering the same id would throw into the store's rollback path.
   payload = overridesPayload(4, []);
-  await keybindingsStore.getState().refreshOverrides();
+  await act(async () => {
+    await keybindingsStore.getState().refreshOverrides();
+  });
   expect(keybindingsStore.getState().hubError).toBeNull();
   expect(keybindingsRegistry.getState().bindings.filter((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID)).toHaveLength(
     1,
