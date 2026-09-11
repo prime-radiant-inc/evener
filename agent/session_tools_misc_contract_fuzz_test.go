@@ -297,7 +297,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 		mediaType = "application/pdf"
 		wantKind = llm.ContentDocument
 	}
-	if description := s.describeImage(ctx, tool.ExecResult{ImageData: []byte("fixture-" + value), ImageMediaType: mediaType, ImageIntent: "describe " + value}); description != "scripted vision" {
+	if description := s.describeImage(ctx, tool.ExecResult{ImageData: []byte("fixture-" + value), ImageMediaType: mediaType, ImagePrompt: "describe " + value}); description != "scripted vision" {
 		t.Fatalf("scripted image description = %q", description)
 	}
 	requests := adapter.Requests()
