@@ -886,38 +886,65 @@ func TestSkillCompaction_RestartAfterPublish(t *testing.T) {
 	}
 
 	restored := restoreForPublication(t, stateDir, id, "restart-after-cheap", func(llm.Request) llm.Response {
-		t.Error("a delivery-only restored session must not fold")
+		t.Error("a recovered publication must not fold again")
 		return llm.Response{}
 	})
-	// The transcript receipts reconciled the stale snapshot: the claimed
-	// operation resumes PUBLISHED — delivery-only.
+	// The transcript receipts reconciled the stale snapshot and COMPLETED the
+	// interrupted delivery (R18): the live transaction defines
+	// delivery-complete as the slot cleared, the selection consumed, and the
+	// publication's coalesced handoff advanced to delivered — a crash before
+	// the delivery save must not change the post-recovery state.
 	op := restored.pendingSkillCompactionSnapshot()
-	if op == nil || op.Generation != forced || op.Phase != "published" || op.PublicationID == "" {
-		t.Fatalf("reconciliation must adopt the published operation for generation %d, got %+v", forced, op)
+	if op != nil {
+		t.Fatalf("reconciliation must complete generation %d's delivery, still holding %+v", forced, op)
 	}
 	restored.mu.Lock()
 	armed := restored.forceRequested
+	noteGen := restored.pinnedNoteGen
 	restored.mu.Unlock()
 	if armed {
-		t.Fatal("a published operation is delivery-only: restart must not re-arm a fold")
+		t.Fatal("a completed delivery is never re-armed: restart must not arm a fold")
 	}
 	// The claiming publication consumed the cycle's selection; the stale
 	// snapshot's copy must not survive to attach to another fold.
 	if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
-		t.Fatalf("the published claim must have consumed the stale selection, got %+v", sel)
+		t.Fatalf("the completed delivery must have consumed the stale selection, got %+v", sel)
 	}
-	// The final handoff is preserved from the transcript receipts.
+	// The final handoff is preserved from the transcript receipts — delivered.
 	handoffs := pendingHandoffsSnapshot(restored)
 	if len(handoffs) != 1 || handoffs[0].Operation.Generation != forced ||
-		handoffs[0].Operation.PublicationID != op.PublicationID || handoffs[0].SessionID != id {
-		t.Fatalf("restored handoffs = %+v, want the preserved published handoff for generation %d", handoffs, forced)
+		handoffs[0].Operation.PublicationID == "" || handoffs[0].SessionID != id {
+		t.Fatalf("restored handoffs = %+v, want the completed handoff for generation %d", handoffs, forced)
 	}
-	if handoffs[0].Phase != skillCompactionReceiptPublished {
-		t.Fatalf("a crash before the delivery save preserves the published-phase handoff, got %+v", handoffs[0])
+	if handoffs[0].Phase != skillCompactionReceiptDelivered {
+		t.Fatalf("reconciliation must advance the interrupted handoff to delivered, got %+v", handoffs[0])
 	}
 	// The resumed history anchors on the publication's summary marker.
 	if !historyContainsSubstring(currentHistory(t, restored), "SUMMARY_f1e9") {
 		t.Fatal("the restored history must anchor on the publication's summary marker")
+	}
+	// The cycle reopened: the note-elicitation latch is gone — a fresh
+	// automatic acceptance is taken — and a fresh forced request mints a
+	// generation beyond the recovered one.
+	accepted, err := restored.acceptAutomaticSkillCompaction(context.Background(), noteGen, "recovery-note",
+		schema.SkillReloadSelection{State: "absent"})
+	if err != nil {
+		t.Fatalf("acceptAutomaticSkillCompaction: %v", err)
+	}
+	if !accepted {
+		t.Fatal("a completed delivery must unlatch note elicitation for a fresh automatic acceptance")
+	}
+	if _, err := restored.requestSkillCompaction(context.Background(), "", "",
+		schema.SkillReloadSelection{State: "absent"}); err != nil {
+		t.Fatalf("clearing the recovery note: %v", err)
+	}
+	second, err := restored.requestSkillCompaction(context.Background(), "after-recovery", "",
+		schema.SkillReloadSelection{State: "absent"})
+	if err != nil {
+		t.Fatalf("the cycle must reopen after reconciliation completes the delivery: %v", err)
+	}
+	if second <= forced {
+		t.Fatalf("the reopened cycle must mint a generation beyond %d, got %d", forced, second)
 	}
 }
 
@@ -974,15 +1001,16 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 			t.Error("the restored session must not fold")
 			return llm.Response{}
 		})
-		// The FIRST (delivered) generation is not resurrected into the slot;
-		// the second is adopted as published — delivery-only, generation-
-		// matched, its selection consumed by the publication that claimed it.
+		// The FIRST (delivered) generation is not resurrected into the slot,
+		// and the SECOND's interrupted delivery is COMPLETED by
+		// reconciliation (R18): a crash before its delivery save must not
+		// change the post-recovery state.
 		op := restored.pendingSkillCompactionSnapshot()
-		if op == nil || op.Generation != second || op.Phase != "published" || op.PublicationID == "" {
-			t.Fatalf("reconciliation adopted %+v, want only generation %d published (generation %d must not repeat)", op, second, first)
+		if op != nil {
+			t.Fatalf("reconciliation must complete generation %d's delivery without resurrecting generation %d, still holding %+v", second, first, op)
 		}
 		if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
-			t.Fatalf("the claimed publication's selection must not attach to a later fold, got %+v", sel)
+			t.Fatalf("the completed delivery must have consumed the stale selection, got %+v", sel)
 		}
 		// Both publications' final handoffs are preserved, coalesced by
 		// publication identity, the final publication's handoff last.
@@ -995,6 +1023,9 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		}
 		if handoffs[0].Operation.PublicationID == "" || handoffs[0].Operation.PublicationID == handoffs[1].Operation.PublicationID {
 			t.Fatalf("each publication keeps its own identity, got %+v", handoffs)
+		}
+		if handoffs[0].Phase != skillCompactionReceiptDelivered || handoffs[1].Phase != skillCompactionReceiptDelivered {
+			t.Fatalf("both recovered handoffs must be delivered, got %+v", handoffs)
 		}
 	})
 
@@ -1131,4 +1162,65 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 			t.Fatalf("restored handoffs = %+v, want the delivered receipt for generation 8 alone", handoffs)
 		}
 	})
+}
+
+// TestSkillCompaction_RestartHandoffIdentity pins the publication identity's
+// restart stability: a restored session's own next publication must never
+// reuse a prior publication's identity, so the coalesced handoff list keeps
+// both final handoffs instead of silently overwriting the restored one.
+func TestSkillCompaction_RestartHandoffIdentity(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	summary := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_9d2f\n[END SUMMARY]")}
+	}
+	s := newScriptedSummaryCompactSession(t, "handoff-id-cheap", summary,
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}))
+	id := s.Meta().ID
+	disableSessionNaming(s)
+	seedNumberedSessionHistory(t, s, 20)
+	first, err := s.requestSkillCompaction(context.Background(), "first-note", "first-instructions",
+		schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}})
+	if err != nil {
+		t.Fatalf("requestSkillCompaction (first): %v", err)
+	}
+	s.applyPendingForceCompact(context.Background())
+	if op := s.pendingSkillCompactionSnapshot(); op != nil {
+		t.Fatalf("test setup: the first cycle must be delivered, still holding %+v", op)
+	}
+	s.Close()
+
+	restored := restoreForPublication(t, stateDir, id, "handoff-id-cheap", summary)
+	disableSessionNaming(restored)
+	before := pendingHandoffsSnapshot(restored)
+	if len(before) != 1 || before[0].Operation.Generation != first || before[0].Operation.PublicationID == "" {
+		t.Fatalf("restored handoffs = %+v, want the first publication's delivered handoff", before)
+	}
+	// The restored session runs its own next cycle: the new publication must
+	// carry a DIFFERENT identity, so its handoff appends beside the restored
+	// one instead of coalescing over it.
+	seedNumberedSessionHistory(t, restored, 20)
+	second, err := restored.requestSkillCompaction(context.Background(), "second-note", "second-instructions",
+		schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}})
+	if err != nil {
+		t.Fatalf("requestSkillCompaction (second): %v", err)
+	}
+	restored.applyPendingForceCompact(context.Background())
+	if second <= first {
+		t.Fatalf("test setup: the second cycle must mint generation %d beyond %d", second, first)
+	}
+
+	handoffs := pendingHandoffsSnapshot(restored)
+	if len(handoffs) != 2 {
+		t.Fatalf("both publications' final handoffs must survive, got %+v", handoffs)
+	}
+	if handoffs[0].Operation.Generation != first || handoffs[1].Operation.Generation != second {
+		t.Fatalf("handoffs = %+v, want generation %d then %d in publication order", handoffs, first, second)
+	}
+	if handoffs[0].Operation.PublicationID == "" || handoffs[0].Operation.PublicationID == handoffs[1].Operation.PublicationID {
+		t.Fatalf("a post-restart publication must not reuse a restored publication's identity, got %+v", handoffs)
+	}
+	if handoffs[0].Phase != skillCompactionReceiptDelivered || handoffs[1].Phase != skillCompactionReceiptDelivered {
+		t.Fatalf("both handoffs must be delivered, got %+v", handoffs)
+	}
 }

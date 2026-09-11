@@ -242,7 +242,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// fold's requesting caller captured — so an unchanged publication, a
 	// losing fold, or a fold with no captured operation claims nothing.
 	commit.actualCompaction = commit.stagedCompactionCount() > 0
-	commit.claimCompactionLocked(foldPublicationID(commit.publishedRevision))
+	commit.claimCompactionLocked()
 	// Publication-order marker for last-write-wins effect suppression, set
 	// HERE — at publish, not at flush: an older fold whose deferred flush
 	// runs after this publish must find it and stay silent, even before
@@ -424,10 +424,11 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // fold's pending automatic operation); an unrelated manual fold captures
 // nothing and can therefore claim nothing. claimCompactionLocked runs the
 // generation-matched publication claim inside the winning publish's s.mu
-// critical section and stages the resulting handoff receipt; the receipt is
-// attached to the fold's compaction turns by commitTranscriptsLocked and
-// delivered (with its metadata save) by commitSkillCompactionPublication
-// after the flush.
+// critical section — minting the publication identity from the persisted
+// lifecycle revision it stamps — and stages the resulting handoff receipt;
+// the receipt is attached to the fold's compaction turns by
+// commitTranscriptsLocked and delivered (with its metadata save) by
+// commitSkillCompactionPublication after the flush.
 type foldCommit struct {
 	claimNoteLocked              func()
 	commitTranscriptsLocked      func()
@@ -437,17 +438,20 @@ type foldCommit struct {
 	actualCompaction             bool
 	captured                     *schema.SkillCompactionOperation
 	stagedCompactionCount        func() int
-	claimCompactionLocked        func(publicationID string)
+	claimCompactionLocked        func()
 	receipt                      *schema.SkillCompactionReceipt
 }
 
-// foldPublicationID renders the winning publication's identity: the
-// historyRevision stamped at its publish — the same publication-order marker
-// that suppresses stale steering effects — formatted as the receipt's
-// publication id. Publications stamp strictly increasing revisions, so the
-// identity is unique per winning publication and stable across restarts.
-func foldPublicationID(publishedRevision int) string {
-	return fmt.Sprintf("fold-%d", publishedRevision)
+// foldPublicationID renders the winning publication's identity from the
+// PERSISTED lifecycle revision stamped at its claim: that revision is saved
+// in every lifecycle snapshot and receipt, and each recorded publication
+// bumps it exactly once, so the identity is unique per winning publication
+// and stable across restarts. The memory-only historyRevision is never
+// seeded on restore — minting the identity from it would re-mint fold-1,
+// fold-2… onto a restored session's publications and collide with its
+// restored handoffs.
+func foldPublicationID(lifecycleRevision uint64) string {
+	return fmt.Sprintf("fold-%d", lifecycleRevision)
 }
 
 func environmentTurnIDs(history []schema.Turn) map[string]int {
@@ -697,11 +701,15 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// decided by the publisher from the staged EventContextCompaction
 	// payloads; the claim itself matches the captured operation's generation
 	// AND note generation against the live pending operation, so a fold
-	// whose intent was superseded or cleared mid-flight claims nothing. A
-	// real compaction that captured no operation still records the
-	// absent-selection reminder handoff.
+	// whose intent was superseded or cleared mid-flight claims nothing. The
+	// publication identity is minted from the lifecycle revision the claim
+	// stamps — persisted in every snapshot and receipt, and bumped exactly
+	// once per recorded publication, so a restored session's publications
+	// can never re-mint a prior publication's identity. A real compaction
+	// that captured no operation still records the absent-selection
+	// reminder handoff.
 	commit.stagedCompactionCount = func() int { return len(pendingCompactionEvents) }
-	commit.claimCompactionLocked = func(publicationID string) {
+	commit.claimCompactionLocked = func() {
 		captured := commit.captured
 		pending := s.skillLifecycle.PendingCompaction
 		claim := commit.actualCompaction && pending != nil && captured != nil &&
@@ -709,8 +717,8 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		var receipt *schema.SkillCompactionReceipt
 		if claim {
 			pending.Phase = skillCompactionPhasePublished
-			pending.PublicationID = publicationID
 			s.skillLifecycle.Revision++
+			pending.PublicationID = foldPublicationID(s.skillLifecycle.Revision)
 			claimed := *pending
 			claimed.Selection.Names = slices.Clone(pending.Selection.Names)
 			receipt = &schema.SkillCompactionReceipt{
@@ -727,7 +735,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			receipt = &schema.SkillCompactionReceipt{
 				Revision:  s.skillLifecycle.Revision,
 				SessionID: s.id,
-				Operation: schema.SkillCompactionOperation{PublicationID: publicationID},
+				Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision)},
 				Phase:     skillCompactionReceiptPublished,
 				Reason:    skillCompactionReminderNoOperation,
 			}
