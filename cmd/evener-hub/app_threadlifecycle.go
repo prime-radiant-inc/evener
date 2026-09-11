@@ -1016,13 +1016,13 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 // two resumeOwnershipStep reads, which is why resumeThread's recheck is not
 // fooled by a roster that has not caught up.
 //
-// Every local claim on the alias is collected, not just the first the directory
-// listed: two daemons can claim one stable workspace ref, and nothing
-// downstream catches that — ownershipEntry refuses a session id found in two
-// project directories, never a second daemon claiming the same alias. So the
-// claims go through resumeClaimTarget, the conflict check the resume path
-// already uses for this shape, which settles them by liveness and refuses when
-// it cannot.
+// Every local claim on the alias that forkClaimIsLiveOwner admits is collected,
+// not just the first the directory listed: two daemons can claim one stable
+// workspace ref, and nothing downstream catches that — ownershipEntry refuses a
+// session id found in two project directories, never a second daemon claiming
+// the same alias. So the claims go through resumeClaimTarget, the conflict
+// check the resume path already uses for this shape, which settles them by
+// liveness and refuses when it cannot.
 //
 // It diverges from resumeOwnershipStep in one deliberate way: a ListStrict
 // failure refuses the fork as unverifiable, where resumeOwnershipStep degrades
@@ -1039,12 +1039,16 @@ func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (strin
 		if err != nil {
 			return "", err
 		}
+		controller := cfg.DaemonProcesses
+		if controller == nil {
+			controller = daemonprocess.NewController()
+		}
 		var claims []rendezvous.Entry
 		for _, entry := range entries {
 			if entry.SourceID != "" && entry.SourceID != "local" {
 				continue
 			}
-			if slices.Contains(forceStopAliases(entry), threadID) {
+			if slices.Contains(forceStopAliases(entry), threadID) && forkClaimIsLiveOwner(controller, entry) {
 				claims = append(claims, entry)
 			}
 		}
@@ -1110,8 +1114,40 @@ func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
 	}
 	// No live daemon owns the thread, so the recovery redirect answers — the
 	// same tail forkTargetSessionIDUnderLock reaches, so the pre-lock reading
-	// and the recheck cannot disagree while nothing is moving.
+	// and the recheck cannot disagree while nothing is moving. The roster has
+	// already applied forkClaimIsLiveOwner's rule for this reading: a marker
+	// whose process is gone is retained as crashed and liveDaemonForThread
+	// skips it.
 	return forkRedirectSessionID(cfg, threadID)
+}
+
+// forkClaimIsLiveOwner reports whether a rendezvous claim still has a daemon
+// behind it. This is the single liveness rule both fork resolutions answer
+// from. The pre-lock one gets it from the roster, which marks an entry whose
+// PID is confirmed gone as Crashed and retains it only for crash reporting, so
+// liveDaemonForThread never returns one; the under-lock collection applies it
+// here. Without that, a daemon that cleared to a new session and then crashed
+// would leave a marker the two readings disagreed about, and every fork through
+// its alias would be refused for an ownership change that never happened.
+//
+// A process the controller cannot decide about stays a claim: resumeClaimTarget
+// then refuses an ambiguous alias, which is the safer of the two ways to be
+// wrong about it.
+func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.Entry) bool {
+	process, err := controller.Open(daemonprocess.Target{
+		PID:       entry.PID,
+		SessionID: cmp.Or(entry.SessionID, entry.ThreadID),
+		StateDir:  entry.StateDir,
+		StartedAt: entry.StartedAt,
+	})
+	if errors.Is(err, daemonprocess.ErrExited) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	defer process.Close() //nolint:errcheck // liveness probe cleanup; a close failure does not change the answer
+	return true
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {

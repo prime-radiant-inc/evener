@@ -1610,10 +1610,14 @@ func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
 			}
 			t.Cleanup(func() { hubRosterList = previousList })
 
+			// Both claiming daemons are running: a marker whose process is
+			// gone is not a claim at all (forkClaimIsLiveOwner), so the
+			// ambiguity this test is about needs live ones.
+			var probes []string
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries(),
 				DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
-					return nil, daemonprocess.ErrExited
+					return &forceStopProcess{events: &probes}, nil
 				}),
 			}
 			before, listErr := schema.ListSessionMetas(stateDir)
@@ -1847,5 +1851,57 @@ func TestHubForkCapabilityHidesADeletionFencedThread(t *testing.T) {
 				t.Fatalf("fork error=%v, want the deletion refusal the projection now hides", err)
 			}
 		})
+	}
+}
+
+// A daemon that cleared to a new session and then crashed leaves its rendezvous
+// marker on disk: the roster retains it as crashed and stops treating it as a
+// live owner, so the pre-lock resolution answers the stable alias. A resolver
+// that read the same marker as a live claim would answer the replacement
+// session instead, and every fork through that alias would be refused as
+// "session ownership changed" with nothing having changed. Both resolvers apply
+// the roster's liveness rule, so the alias resolves to one session throughout
+// and its saved transcript stays forkable.
+func TestHubForkIgnoresACrashRetainedClaimOnTheAlias(t *testing.T) {
+	stateDir := t.TempDir()
+	aliasID := buildRPCParentSession(t, stateDir)
+	currentID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: 1001, SourceID: "local", ThreadID: currentID, SessionID: currentID, InstanceID: currentID,
+		WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
+		Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+	})
+	// kill -9 after the clear: the probe fails and the process is confirmed
+	// gone, so the roster retains the marker as crashed.
+	roster := hubcore.NewRoster(runDir, fakeProber{shouldFail: true}).SetProcessAlive(func(int) bool { return false })
+	roster.Refresh()
+	marker, ok := roster.Find(currentID)
+	if !ok || !marker.Crashed {
+		t.Fatalf("roster entry=%+v ok=%v, want a retained crashed marker", marker, ok)
+	}
+
+	cfg := hubcore.WebConfig{
+		StateDir: stateDir, RunDir: runDir, Roster: roster,
+		DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			return nil, daemonprocess.ErrExited
+		}),
+	}
+	resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+		Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+	})
+	if err != nil {
+		t.Fatalf("fork through an alias whose only claim is a crash marker: %v", err)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ParentSessionID != aliasID {
+		t.Fatalf("fork branched %q, want the alias's own saved session %q", meta.ParentSessionID, aliasID)
 	}
 }
