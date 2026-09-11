@@ -734,6 +734,28 @@ func armEnvironmentPartialWriteAfter(fs *environmentSyncFailureFS, skip int) {
 	fs.mu.Unlock()
 }
 
+// assertOneTurnFailedSessionEnd requires the refused input to have ended the
+// way a failed turn ends one. Without it the session looks perpetually mid-input
+// to every client on the event stream, because admission already cleared the
+// emit-once gate on its way in.
+func assertOneTurnFailedSessionEnd(t *testing.T, drained []events.SessionEvent) {
+	t.Helper()
+	var reasons []string
+	for _, event := range drained {
+		if event.Kind != events.EventSessionEnd {
+			continue
+		}
+		data, ok := event.Data.(events.SessionEndData)
+		if !ok {
+			t.Fatalf("session-end event data = %#v, want SessionEndData", event.Data)
+		}
+		reasons = append(reasons, data.Reason)
+	}
+	if len(reasons) != 1 || reasons[0] != "turn_failed" {
+		t.Fatalf("session-end reasons after the refusal = %v, want exactly one turn_failed", reasons)
+	}
+}
+
 // TestPoisonedWriterRefusesTheNextInput: a poisoned writer has stopped
 // accepting records for the rest of the session, so a turn that runs against it
 // cannot be persisted at all — every record it makes is lost on the next
@@ -762,6 +784,7 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	}
 
 	before := len(sessionHistoryText(sess))
+	drainPendingEvents(sess)
 	_, err := sess.ProcessInput(t.Context(), "second", nil)
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("input against a poisoned transcript = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
@@ -772,6 +795,7 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	if after := len(sessionHistoryText(sess)); after != before {
 		t.Fatal("the refused input changed model history")
 	}
+	assertOneTurnFailedSessionEnd(t, drainPendingEvents(sess))
 }
 
 // TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn: admission is not the
@@ -804,6 +828,7 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 		return finalResponse("ok")
 	}
 	sess.FollowUp("runs behind the poisoning")
+	drainPendingEvents(sess)
 
 	_, err := sess.ProcessInput(t.Context(), "poisons mid-turn", nil)
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
@@ -812,4 +837,5 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("model requests = %d, want the follow-up never to have run", got)
 	}
+	assertOneTurnFailedSessionEnd(t, drainPendingEvents(sess))
 }

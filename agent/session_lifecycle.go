@@ -1024,8 +1024,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// append holds it across a write and an fsync), and poisoned is never
 		// cleared, so a stale read costs one turn that then meets the writer's
 		// own refusal.
-		if s.attachedTranscript().Poisoned() {
-			return strings.Join(outputs, "\n"), fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
+		if err := s.refuseTurnOnPoisonedTranscript(); err != nil {
+			return strings.Join(outputs, "\n"), err
 		}
 		// Capture the kind actually being processed this iteration before the
 		// follow-up reset below; the goal gate needs it to know whether the turn
@@ -1152,26 +1152,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// (kata hen0): turn/completed(Failed) told a live subscriber the turn
 			// failed, but nothing told it the thread is idle again, so its belief
 			// that a turn was still running leaked until it left and re-entered
-			// the session. This is the same emit-once dance as the cancellation
-			// branch, reusing its sessionEndEmitted gate: for a cancelled turn
-			// that falls through to this shared tail (nothing left to drain),
-			// the gate is already tripped and this is a no-op, so the two
-			// branches never both fire for the same completion.
-			s.mu.Lock()
-			closed := s.closingOrClosedLocked()
-			turns := s.modelResponses
-			emitEnd := !s.sessionEndEmitted && !closed
-			if emitEnd {
-				s.sessionEndEmitted = true
-			}
-			s.mu.Unlock()
-			if emitEnd {
-				s.emit(events.EventSessionEnd, events.SessionEndData{
-					Reason: "turn_failed",
-					State:  string(SessionIdle),
-					Turns:  turns,
-				})
-			}
+			// the session.
+			s.endInputAtTurnFailure()
 			return strings.Join(outputs, "\n"), err
 		}
 		// Drain the next action after a completed (non-error) turn. The pops and the
@@ -1363,6 +1345,44 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		}
 		return strings.Join(outputs, "\n"), nil
 	}
+}
+
+// endInputAtTurnFailure tells a live subscriber that this input is over and the
+// thread is idle again. It is the emit-once dance the cancellation branch owns,
+// reusing its sessionEndEmitted gate, so a completion that reaches this twice —
+// or reaches it after the cancellation branch already fired — emits once.
+func (s *Session) endInputAtTurnFailure() {
+	s.mu.Lock()
+	closed := s.closingOrClosedLocked()
+	turns := s.modelResponses
+	emitEnd := !s.sessionEndEmitted && !closed
+	if emitEnd {
+		s.sessionEndEmitted = true
+	}
+	s.mu.Unlock()
+	if emitEnd {
+		s.emit(events.EventSessionEnd, events.SessionEndData{
+			Reason: "turn_failed",
+			State:  string(SessionIdle),
+			Turns:  turns,
+		})
+	}
+}
+
+// refuseTurnOnPoisonedTranscript reports why no further turn may run when the
+// transcript has stopped accepting records, and ends the input the way a failed
+// turn ends one — admission cleared the emit-once gate on its way in, so a
+// refusal that returns without this leaves the session looking mid-input to
+// every client on the event stream. It reads the writer's own lock outside s.mu
+// (an append holds that lock across a write and an fsync), and poisoned is never
+// cleared, so a stale read costs one turn that then meets the writer's own
+// refusal.
+func (s *Session) refuseTurnOnPoisonedTranscript() error {
+	if !s.attachedTranscript().Poisoned() {
+		return nil
+	}
+	s.endInputAtTurnFailure()
+	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
 }
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
