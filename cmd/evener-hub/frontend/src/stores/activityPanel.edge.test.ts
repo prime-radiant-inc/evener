@@ -4,7 +4,7 @@
 // - applyFetchResult continuation-failed (lines 371, 380)
 
 import { describe, expect, test } from "vitest";
-import type { ActivityTree } from "../panes/session/chrome/activityData";
+import type { ActivityTree } from "../protocol/activityData";
 import { activityPanelStore, resetActivityPanelStoreForTests, retainedActivityTree } from "./activityPanel";
 
 function makeTree(revision = 1): ActivityTree {

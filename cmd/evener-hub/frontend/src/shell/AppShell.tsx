@@ -8,6 +8,7 @@ import { isEditableTarget } from "../keybindings/dispatcher";
 import { keybindingsRegistry } from "../keybindings/registry";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
+import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
 import { AppwireClient } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
@@ -166,7 +167,7 @@ function routePlacementIsApplied(
   location: NavigationSessionLocation | null,
   locationTerminal = false,
   locationGone = false,
-  allowFocusedPanel = false,
+  allowFocusedCompanion = false,
 ): boolean {
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
@@ -194,12 +195,22 @@ function routePlacementIsApplied(
   }
   const ancestorRef = location.top_level ? ref : location.top_level_ref;
   const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
-  const focusedPanel =
+  const focusedTranscriptParams =
+    focusedPane?.type === "transcript" ? (focusedPane.params as { ref?: unknown; parentRef?: unknown }) : null;
+  const focusedTranscriptMatchesRoute =
+    focusedTranscriptParams !== null &&
+    ((typeof focusedTranscriptParams.parentRef === "string" &&
+      transcriptContextIncludes(focusedTranscriptParams.parentRef, ref)) ||
+      (ancestorRef !== ref &&
+        focusedTranscriptParams.ref === ref &&
+        focusedTranscriptParams.parentRef === ancestorRef));
+  const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionActivity" ||
-    focusedPane?.type === "sessionDetails";
+    focusedPane?.type === "sessionDetails" ||
+    focusedTranscriptMatchesRoute;
   const focusIsApplied = (paneId: string): boolean =>
-    workspace.focusedPaneId === paneId || (allowFocusedPanel && focusedPanel);
+    workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion);
 
   if (ancestorRef === null || ancestorRef === ref) {
     return (
@@ -867,11 +878,11 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           return;
         }
       }
-      const allowFocusedPanel =
+      const allowFocusedCompanion =
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
-      if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedPanel)) {
+      if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedCompanion)) {
         placedPathnameRef.current = pathname;
         return;
       }

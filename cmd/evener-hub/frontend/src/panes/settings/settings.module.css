@@ -32,7 +32,7 @@
   width: 100%;
   padding: var(--space-2);
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: 0;
   background: transparent;
   color: var(--ink-hi);
   font-family: var(--font-sans);
@@ -64,6 +64,7 @@
   background: var(--accent-bg);
   color: var(--accent-ink);
   font-weight: var(--font-weight-medium);
+  border-inline-start: 2px solid var(--accent);
 }
 
 .content {

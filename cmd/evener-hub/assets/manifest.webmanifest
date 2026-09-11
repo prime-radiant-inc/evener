@@ -4,8 +4,8 @@
   "description": "Watch your agents work.",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#17181a",
-  "theme_color": "#17181a",
+  "background_color": "#191918",
+  "theme_color": "#191918",
   "start_url": "/",
   "scope": "/",
   "icons": [

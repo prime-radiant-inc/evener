@@ -324,7 +324,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // The transcript's keyboard scroll (Alt+Arrow/Alt+Shift+Arrow, Phase 3):
   // per-pane handlers against the shared registry that decline unless THIS
   // pane is the workspace's focused one. Nothing registers on mobile.
-  useTranscriptScrollKeys({ paneId, listRef: virtualListRef, jumpToBottom: flow.jumpToBottom });
+  useTranscriptScrollKeys({
+    paneId,
+    listRef: virtualListRef,
+    jumpToBottom: flow.jumpToBottom,
+    markGesture: flow.markGesture,
+  });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.

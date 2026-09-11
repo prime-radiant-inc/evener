@@ -107,6 +107,7 @@ const CLASS = {
   parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
+  staticSectionLabel: requireClass(styles.staticSectionLabel, "Rail.module.css", "staticSectionLabel"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
@@ -209,7 +210,7 @@ function RailSection({ title, nodes, onToggle, onActivate, actions, projectRetry
   if (nodes.length === 0) return null;
   return (
     <section className={CLASS.section}>
-      <h3 className={CLASS.sectionTitle}>{title}</h3>
+      <h3 className={`${CLASS.sectionTitle} ${CLASS.staticSectionLabel}`}>{title}</h3>
       <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />
     </section>
   );
@@ -299,7 +300,12 @@ function ArchivedSection({
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   return (
     <section className={CLASS.section}>
-      <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
+      <button
+        type="button"
+        className={`${CLASS.sectionDisclosure} ${CLASS.staticSectionLabel}`}
+        aria-expanded={open}
+        onClick={onToggleOpen}
+      >
         <Chevron direction={open ? "down" : "right"} /> {`Archived sessions (${count})`}
       </button>
       {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}

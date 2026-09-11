@@ -60,6 +60,7 @@ type WebConfig struct {
 	ProvidersConfigPath       string             // path to providers.toml; the instances pane is its only writer
 	CredentialsPath           string             // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
 	NoUserLayer               bool               // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
+	APILogDefault             bool               // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
 
 	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
 	Favorite    *FavoriteStore   // favorite decision store; nil when not configured

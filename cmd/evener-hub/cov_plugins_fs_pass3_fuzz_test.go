@@ -55,7 +55,7 @@ func fuzzExerciseLaunch(t *testing.T, root string) {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := newHubLaunchController(state)
+	c := newHubLaunchController(state, false)
 	c.now = func() time.Time { return time.Unix(123, 0).UTC() }
 	_, _ = c.Schema(ctx, appwire.EmptyParams{})
 	_, _ = c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
@@ -85,7 +85,7 @@ func fuzzExerciseLaunch(t *testing.T, root string) {
 	_, _ = c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
 	blocker := filepath.Join(root, "blocker")
 	fuzzWriteFile(t, blocker, "x")
-	blocked := newHubLaunchController(blocker)
+	blocked := newHubLaunchController(blocker, false)
 	_, _ = blocked.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "global"})
 	_, _ = blocked.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: resolved.Repo.Hash})
 	_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: filepath.Join(root, "missing"), Hash: "x"})

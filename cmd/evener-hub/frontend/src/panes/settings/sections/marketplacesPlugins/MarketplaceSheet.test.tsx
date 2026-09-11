@@ -662,13 +662,10 @@ test("a pending Remove confirm does not follow a selection change", async () => 
 test("a remove still in flight does not leave the next marketplace's confirm busy", async () => {
   const fake = connectionStore.getState().client as FakeClient;
   let release: (() => void) | undefined;
-  fake.on(
-    "evener/marketplace/remove",
-    () =>
-      new Promise((resolve) => {
-        release = () => resolve({ marketplaces: [OTHER] });
-      }),
-  );
+  const removal = new Promise<{ marketplaces: MarketplaceEntry[] }>((resolve) => {
+    release = () => resolve({ marketplaces: [OTHER] });
+  });
+  fake.on("evener/marketplace/remove", () => removal);
   const { select } = renderSheet(ACME);
   act(() => extensionsStore.setState({ marketplaces: [ACME, OTHER] }));
   const user = userEvent.setup();
@@ -683,7 +680,10 @@ test("a remove still in flight does not leave the next marketplace's confirm bus
   const confirm = screen.getByRole("dialog", { name: "Remove marketplace" });
   expect(within(confirm).getByText(/"other"/)).toBeTruthy();
   expect((within(confirm).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
-  act(() => release?.());
+  await act(async () => {
+    release?.();
+    await removal;
+  });
 });
 
 // The removal names the marketplace it was confirmed for, and so does the

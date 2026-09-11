@@ -1,0 +1,42 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { mergeConfig } from "vite";
+import base from "../vite.config.ts";
+
+const frontend = fileURLToPath(new URL("../", import.meta.url));
+const isolated = mergeConfig(base, {
+  plugins: [{
+    name: "editorial-fixture-only",
+    configResolved(config) {
+      // mergeConfig merges proxy dictionaries. Delete the RESOLVED routes,
+      // rather than assuming proxy:{} removes the inherited live :9180 hub.
+      config.server.proxy = undefined;
+      config.server.fs.allow = [frontend];
+      if (config.server.proxy !== undefined) throw new Error("Preview proxy must be absent");
+    },
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = new URL(req.url ?? "/", "http://fixture.invalid").pathname;
+        if (/^\/(rpc|api|auth|doc)(\/|$)/.test(pathname) || pathname.includes("/images/")) {
+          res.statusCode = 403;
+          res.end("Fixture preview: live backend routes are disabled");
+          return;
+        }
+        if (req.headers.accept?.includes("text/html") && !pathname.startsWith("/@") && !pathname.startsWith("/src/") && !pathname.startsWith("/node_modules/")) {
+          req.url = "/editorial-preview.html";
+        }
+        next();
+      });
+    },
+  }],
+  server: {
+    host: "0.0.0.0", allowedHosts: ["m5"], strictPort: true, hmr: false,
+    watch: { ignored: ["**/*"] }, fs: { strict: true, allow: [frontend], deny: [".env", ".env.*", "**/.git/**", "**/.superpowers/**", "**/*.{crt,pem}"] },
+  },
+});
+// No broad workspace root or shared install is required: run npm ci locally.
+if (fs.realpathSync(path.join(frontend, "node_modules")) !== path.join(frontend, "node_modules")) {
+  throw new Error("Editorial preview requires its own npm ci, not a shared writable install");
+}
+export default isolated;
