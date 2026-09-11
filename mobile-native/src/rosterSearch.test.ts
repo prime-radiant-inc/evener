@@ -222,4 +222,34 @@ describe("roster search", () => {
 		await retry;
 		expect(search.getSnapshot().error).toBeNull();
 	});
+	it("clears rows immediately on a query change and preserves them across a same-query refresh", async () => {
+		const { requests, search } = boundary();
+		const thread = (name: string) =>
+			({
+				id: name,
+				evener: { ref: `local:${name}` },
+				name,
+				status: { type: "notLoaded" },
+			}) as ThreadListResponse["data"][number];
+		const first = search.load("first");
+		requests[0].resolve({ data: [thread("A")] });
+		await first;
+		expect(search.getSnapshot().rows.map((r) => r.title)).toEqual(["A"]);
+
+		// Query change: rows must be cleared the instant the new request is
+		// published, before it resolves.
+		const second = search.load("second");
+		expect(search.getSnapshot().rows).toEqual([]);
+		requests[1].resolve({ data: [thread("B")] });
+		await second;
+		expect(search.getSnapshot().rows.map((r) => r.title)).toEqual(["B"]);
+
+		// Same-query refresh (no arg): rows must be preserved while the
+		// refresh is in flight.
+		const refresh = search.load();
+		expect(search.getSnapshot().rows.map((r) => r.title)).toEqual(["B"]);
+		requests[2].resolve({ data: [thread("C")] });
+		await refresh;
+		expect(search.getSnapshot().rows.map((r) => r.title)).toEqual(["C"]);
+	});
 });
