@@ -510,6 +510,10 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 				w.dirty = previousDirty
 				return fmt.Errorf("sync transcript entry: %w", err)
 			}
+			// The buffered door rolls nothing back, so the whole line stays in
+			// the file and every reader of this transcript sees it. Spend its
+			// sequence number here or the next append takes that number again.
+			w.countAppendedEntryLocked(turn)
 			return fmt.Errorf("sync transcript entry: %w", err)
 		}
 		w.lastSync = time.Now()

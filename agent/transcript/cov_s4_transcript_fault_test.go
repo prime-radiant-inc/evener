@@ -431,6 +431,52 @@ func faultTestEntries(t *testing.T, fs afero.Fs) []Entry {
 	return entries
 }
 
+// The buffered door rolls nothing back, so a sync that fails leaves the whole
+// line in the file — a record every reader of this transcript will see for the
+// rest of the process. Its sequence number is spent even though the call
+// reports failure, or the next append takes that number again and a reader
+// finds two entries claiming one sequence. This is the ordinary recordTurn
+// door: the default SyncInterval of 0 sends every buffered append through it.
+// Indices: entry Write 4, entry Sync 5 (fault).
+func TestAppend_SyncFailureSpendsTheSequenceOfTheLineItLeft(t *testing.T) {
+	plan := bytes.Repeat([]byte{0x01}, 128)
+	plan[5] = 0x00 // entry Sync
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	w.TrackFailures(nil, 0)
+
+	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
+	if err := w.Append(retained); err == nil {
+		t.Fatal("buffered append reported success over a faulted sync")
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
+		t.Fatalf("append after the faulted sync: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := faultTestEntries(t, base)
+	if len(entries) != 2 {
+		t.Fatalf("entries a reader sees = %d, want the unsynced line and the one after it", len(entries))
+	}
+	if entries[1].Seq <= entries[0].Seq {
+		t.Fatalf("seq %d follows seq %d, want a strictly greater sequence", entries[1].Seq, entries[0].Seq)
+	}
+
+	reader := NewFailureCounter(0)
+	for _, entry := range entries {
+		reader.Observe(entry.Turn)
+	}
+	count, ok := w.FailedToolCalls()
+	if !ok || count != reader.Count() {
+		t.Fatalf("writer failure count = %d (counted=%v), want the %d a reader of the transcript counts", count, ok, reader.Count())
+	}
+}
+
 // Nil and closed receivers must swallow every write as a no-op, never panicking
 // or erroring.
 func TestWriter_NilAndClosedNoOps(t *testing.T) {
