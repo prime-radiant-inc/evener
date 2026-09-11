@@ -611,11 +611,14 @@ describe("ActivityStore", () => {
     });
 
     it("task/updated trusts an authoritative zero remaining over total - done - cancelled", () => {
+      // total - done - cancelled = 3 here, which differs from remaining: 0 —
+      // a buggy implementation that ignores `remaining` and always falls
+      // back to the subtraction formula would report open: 3, not 0.
       const store = createActivityStore();
       store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
       const result = store.getState().applyLiveNotification(
         taskNotification(5, 2, identity({ generation: 1 }), {
-          cancelled: 3,
+          cancelled: 0,
           remaining: 0,
         }),
         identity({ generation: 1 }),

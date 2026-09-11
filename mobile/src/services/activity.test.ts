@@ -175,9 +175,12 @@ describe("ActivityService — projectActivity", () => {
     });
 
     it("trusts an authoritative zero remaining over total - done - cancelled", () => {
+      // total - done - cancelled = 3 here, which differs from remaining: 0 —
+      // a buggy implementation that ignores `remaining` and always falls
+      // back to the subtraction formula would report open: 3, not 0.
       const t = thread({
         evener: evenerThread({
-          tasks: { total: 5, done: 2, cancelled: 3, remaining: 0 },
+          tasks: { total: 5, done: 2, cancelled: 0, remaining: 0 },
         }),
       });
       const view = service.projectActivity(t);
