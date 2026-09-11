@@ -466,17 +466,9 @@ func hubForkRecoveryFenced(thread appwire.Thread) bool {
 // recovery. Its counterpart for the session that alias resolves to is
 // hubForkResolvedSessionFenced: a fence added here is owed there too, or a
 // stable-ref client is advertised a fork the RPC refuses.
-func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool {
-	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" {
-		return hubForkRecoveryFenced(thread)
-	}
-	return hubForkRecoveryFencedNowFor(cfg, thread, forkThreadOwnerFor(cfg, ref.ThreadID))
-}
-
-// hubForkRecoveryFencedNowFor is hubForkRecoveryFencedNow with the roster
-// already asked, for a caller that needs the same answer more than once.
-func hubForkRecoveryFencedNowFor(cfg hubcore.WebConfig, thread appwire.Thread, owner forkThreadOwner) bool {
+// The owner is the caller's — one projection resolves the roster once and hands
+// the same answer to every fence that needs it.
+func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owner forkThreadOwner) bool {
 	if hubForkRecoveryFenced(thread) {
 		return true
 	}
@@ -571,7 +563,7 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 	// a list response. The two fences above are cheap and roster-scan free, so
 	// they still settle what they can before this is paid.
 	owner := forkThreadOwnerFor(cfg, ref.ThreadID)
-	if hubForkRecoveryFencedNowFor(cfg, thread, owner) {
+	if hubForkRecoveryFencedNow(cfg, thread, owner) {
 		thread.Evener.Capabilities.ForkFromTurn = false
 		return thread
 	}
