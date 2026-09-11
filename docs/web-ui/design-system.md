@@ -544,6 +544,13 @@ is streaming or hung is worse than no indicator). Every widget with motion of it
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
 SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
+One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
+shown for a live reasoning item while the Reasoning content flag is off, uses the catalog
+`Loader`'s pulsing pixel grid (Jesse's call). It renders no reasoning text, disappears once the
+thought is no longer the turn's current activity, and is the only animation the transcript itself
+adds. Unlike Cadence it is not activity-gated, so it keeps pulsing if the stream stalls; Cadence's
+decaying trace remains the honest liveness signal. Every other idle pulse or shimmer stays banned.
+
 ---
 
 ## 6. Copy rules
@@ -809,7 +816,9 @@ only until the first authoritative transcript item. It must disappear on an
 authoritative frame, terminal/error/cancel state, session change, or pending
 failure; it must never appear for an untouched empty session. Reuse the static
 `Skeleton` widget, keep its accessible loading status and decorative bars, and
-do not add shimmer, pulse, or other motion that implies live data.
+do not add shimmer, pulse, or other motion that implies live data (the one
+motion exception, the Reasoning placeholder's `Loader` grid, is recorded in the
+motion budget above).
 
 Below 700px both speaker rows become a grid rather than a flex row: the avatar
 and the speaker header share the first row and the prose spans the full pane
