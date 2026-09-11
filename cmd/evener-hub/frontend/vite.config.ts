@@ -87,7 +87,7 @@ export default defineConfig({
     // Vitest use on many-core hosts; the canonical npm test command tightens
     // it to four workers so the root gate retains capacity for its Go streams.
     maxWorkers: Math.max(1, Math.min(os.availableParallelism(), 12)),
-    setupFiles: [],
+    setupFiles: ["./src/testing/setup.ts"],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in
     // stores/prefs, whose createStore initializer reads localStorage at module
