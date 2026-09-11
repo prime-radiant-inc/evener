@@ -215,7 +215,7 @@ describe("transcript projector", () => {
     },
   );
 
-  test("uses the neutral action summary for a blank tool intent without dropping the action", () => {
+  test("keeps a blank-intent tool call visible without dropping the action", () => {
     const model = threadWith(item("blank-tool", "commandExecution", { toolName: "shell", description: "   " }));
 
     expect(entriesFor(model, preset("intent"))).toEqual([
@@ -233,10 +233,10 @@ describe("transcript projector", () => {
         rationale: "Action summary unavailable",
       }),
     ]);
+    // At tool-call levels the row is now an ordinary item; its renderer derives
+    // the summary from the call's own arguments instead of the neutral text.
     for (const level of ["tools", "activity", "full"] as const) {
-      expect(entriesFor(model, preset(level))).toEqual([
-        expect.objectContaining({ kind: "critical", id: "blank-tool", summary: "Action summary unavailable" }),
-      ]);
+      expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "item", id: "blank-tool" })]);
     }
   });
 

@@ -105,8 +105,8 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("executor calls = %d, want %d", *calls, beforeCalls+6)
 		}
 
-		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || !*readFileSawIntent {
-			t.Fatalf("read_file intent preservation = result=%+v saw=%v", got, *readFileSawIntent)
+		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || *readFileSawIntent {
+			t.Fatalf("read_file must not see intent (stripped like every other tool) = result=%+v saw=%v", got, *readFileSawIntent)
 		}
 
 		toolProgramPatchBoundary(t, reg, deny, payload)
@@ -151,7 +151,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			case 2:
 				return TextResult{Output: "text:" + value, FullOutput: "full:" + value}, nil
 			case 3:
-				return ImageResult{Text: "image:" + value, Data: encodeRasterFixture(t, "png"), MediaType: "image/png", Intent: "program"}, nil
+				return ImageResult{Text: "image:" + value, Data: encodeRasterFixture(t, "png"), MediaType: "image/png", Prompt: "program"}, nil
 			case 4:
 				return "partial:" + value, errors.New("program executor error")
 			case 5:
