@@ -965,3 +965,67 @@ func TestFailedDirectInputReturnsItsTurnClaim(t *testing.T) {
 		t.Fatalf("accepted turns after the failed input = %d, want the %d it started from", got, start)
 	}
 }
+
+// poisonSessionTranscript poisons the session's writer through the buffered door
+// recordTurn uses, leaving it refusing every later append.
+func poisonSessionTranscript(t *testing.T, sess *Session) {
+	t.Helper()
+	fs := attachEnvironmentFailureFS(t, sess)
+	armEnvironmentPartialWrite(fs)
+	if err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
+		t.Fatal("partial transcript write reported success")
+	}
+	if !sess.attachedTranscript().Poisoned() {
+		t.Fatal("the partial write did not poison the writer")
+	}
+}
+
+// TestPoisonedWriterDoesNotClaimAStartMutation: the turn gate refuses inside the
+// drain loop, but ProcessClientMutationStart claims its mutation — and spends a
+// turn of the budget — before it gets there. A refusal after that leaves the
+// start claimed and the budget gone, with nothing to run it and nothing to give
+// it back until a restart recovers the session.
+func TestPoisonedWriterDoesNotClaimAStartMutation(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-behind-a-dead-transcript",
+		Input:            []appwire.InputItem{{Type: "text", Text: "waits for the restart"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	poisonSessionTranscript(t, sess)
+	start := sess.clientMutations.snapshot().AcceptedTurns
+
+	_, _, err := sess.ProcessClientMutationStart(t.Context(), nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("start against a poisoned transcript = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := sess.clientMutations.snapshot().AcceptedTurns; got != start {
+		t.Fatalf("accepted turns after the refusal = %d, want the %d the refused start never spent", got, start)
+	}
+	if _, runnable := sess.runnableClientMutationStartTurnID(); !runnable {
+		t.Fatal("the refused start is no longer runnable: its claim was consumed by a turn that never ran")
+	}
+}
+
+// TestPoisonedWriterDoesNotPopAQueuedMessage: same door, the other caller.
+// ProcessPendingUserInput takes the queue head durably before the gate can
+// refuse, so a refusal leaves the message in no queue and no transcript.
+func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: "queued-behind-a-dead-transcript",
+		Input:            []appwire.InputItem{{Type: "text", Text: "waits for the restart"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	poisonSessionTranscript(t, sess)
+
+	_, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("queued message against a poisoned transcript = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
+	}
+}

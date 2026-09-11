@@ -1408,6 +1408,20 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
 }
 
+// refuseBeforeClaimingOnPoisonedTranscript reports why a durable claim must not
+// be taken when the transcript has stopped accepting records. The turn loop's
+// own gate refuses too, but by then the caller has already claimed its mutation
+// or taken the queue head, and a claim spent on a turn that never runs is
+// recoverable only by restarting the session. This is the first of two guards:
+// poisoning can land between this read and that gate, which is why both callers
+// also give the claim back when the loop refuses.
+func (s *Session) refuseBeforeClaimingOnPoisonedTranscript() error {
+	if !s.attachedTranscript().Poisoned() {
+		return nil
+	}
+	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
+}
+
 func delegateEntryRequiresReport(kind EntryKind) bool {
 	switch kind {
 	case EntryUserInput, EntryContinuation, EntrySteeringCarrier:

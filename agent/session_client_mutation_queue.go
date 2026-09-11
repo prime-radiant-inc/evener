@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -205,6 +206,9 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
 	}
+	if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
+		return "", false, err
+	}
 	queued := s.popQueueHead()
 	if strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
 		if onRunnable != nil && queued.StableTurnID != "" {
@@ -212,6 +216,16 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		}
 		ctx = withQueuedClientMutation(ctx, queued)
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
+		// The pop above is durable and the turn loop's gate can refuse after it,
+		// when poisoning lands in between. Put the message back rather than
+		// leave it in no queue and no transcript; turn completion is the queue's
+		// own restore, the same one the environment-append failure uses.
+		if errors.Is(err, transcript.ErrWriterPoisoned) &&
+			!s.clientMutationUserTranscriptIncorporated(queued.ClientMutationID, queued.StableTurnID) {
+			if restoreErr := s.completeClientMutationTurn(queued.ClientMutationID); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("return queued input: %w", restoreErr))
+			}
+		}
 		return result, true, err
 	}
 	if !s.hasPendingUserSteering() {
