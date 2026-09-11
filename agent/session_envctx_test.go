@@ -170,7 +170,9 @@ drainedBeforeFailure:
 	s.transcriptReady = true
 	s.mu.Unlock()
 
-	s.maybeAppendEnvironmentContext()
+	if err := s.maybeAppendEnvironmentContext(); err == nil {
+		t.Fatal("environment append reported success over a failing transcript")
+	}
 
 	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns {
 		t.Fatalf("environment history turns = %d, want unchanged at %d after transcript failure", got, initialEnvironmentTurns)
@@ -195,7 +197,9 @@ drained:
 	}
 
 	fs.fail = false
-	s.maybeAppendEnvironmentContext()
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatalf("retry after a recovered transcript: %v", err)
+	}
 	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
 		t.Fatalf("retry environment history turns = %d, want one emitted turn after failure", got)
 	}
@@ -230,7 +234,9 @@ drainedAfterRetry:
 	if durable[0].StableTurnID != environmentEvents[0].Data.(events.EnvironmentData).TurnID {
 		t.Fatalf("retry durable stable ID = %q, event stable ID = %q", durable[0].StableTurnID, environmentEvents[0].Data.(events.EnvironmentData).TurnID)
 	}
-	s.maybeAppendEnvironmentContext()
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatalf("turn over an unchanged environment: %v", err)
+	}
 	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
 		t.Fatalf("unchanged retry environment history turns = %d, want suppressed after success", got)
 	}
@@ -492,7 +498,10 @@ func TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact(t *testing.T) {
 	var hammer sync.WaitGroup
 	hammer.Go(func() {
 		for range 5000 {
-			sess.maybeAppendEnvironmentContext()
+			// The hammer races the append against the fold reset to drive the
+			// tracker's locking; which attempts win and which report a failure
+			// is the race under test, so the results are deliberately dropped.
+			_ = sess.maybeAppendEnvironmentContext()
 		}
 	})
 	hammer.Go(func() {
