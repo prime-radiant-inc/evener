@@ -251,6 +251,16 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
+		// Gate the initial input on the capability the spawned session's own read
+		// reported — the same read that established this thread's identity, so a
+		// selection is never delivered to a daemon that did not advertise skill
+		// input support. A failed read synthesized the thread above without
+		// capabilities, so the gate fails closed: support must be known, never
+		// assumed for an unread target. The start rechecks on its own connection
+		// (gateSkillInputOnClient), covering a replacement or resumed daemon.
+		if err := appwire.ValidateSkillInputSupport(params.Input, threadResp.Thread.Evener.Capabilities.SkillInput); err != nil {
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		}
 		clientMutationID, err := identifier.NewClientMutationID()
 		if err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InternalError("create initial turn mutation id: " + err.Error())
