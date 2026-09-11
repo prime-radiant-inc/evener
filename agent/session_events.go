@@ -387,8 +387,23 @@ func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, d
 		s.closeCtxMu.RLock()
 		closeCtx := s.closeCtx
 		s.closeCtxMu.RUnlock()
+		// Until a close publishes its budget, the session's own lifetime is the
+		// ONLY thing that can release a send parked below: the caller's context
+		// is context.Background() for every ordinary emit, and closeSignal is
+		// closed off that same unpublished budget. The goroutine parked there
+		// can be the daemon's input loop, and shutdown waits for that loop
+		// before it reaches the call that would publish either -- so without
+		// this arm the wait and the publisher wait on each other.
+		//
+		// A published budget SUPERSEDES it, and a nil channel never fires, so
+		// the bounded delivery window is untouched: close cancels the session
+		// context as its own step 2, and a send released by that instead of by
+		// the budget would drop an event the budget still had time to deliver.
+		var lifetimeDone <-chan struct{}
 		if closeCtx != nil {
 			ctx = closeCtx
+		} else {
+			lifetimeDone = s.sessionContext().Done()
 		}
 		select {
 		case s.events <- ev:
@@ -427,6 +442,7 @@ func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, d
 					delivered = true
 				case <-ctx.Done():
 				case <-closeSignal:
+				case <-lifetimeDone:
 				}
 			}
 		}

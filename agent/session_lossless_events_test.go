@@ -144,6 +144,114 @@ func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
 	}
 }
 
+// A blocked authoritative send has to observe the session lifetime too, and for
+// the same structural reason the notification hook did.
+//
+// The send parks holding eventsMu.RLock, and before a close publishes its budget
+// the only things it selects on are the caller's context (context.Background()
+// for every ordinary emit) and closeSignal (closed by close, off the same
+// budget). In the daemon the goroutine parked there can be the input loop, and
+// shutdown waits for that loop before it calls CloseForShutdown -- the only
+// publisher of either. So without a lifetime arm the wait and the publisher are
+// each waiting on the other.
+func TestBlockedAuthoritativeSendReleasedByTheSessionLifetime(t *testing.T) {
+	owner, shutdown := context.WithCancel(context.Background())
+	s := losslessTestSession("lifetime-release")
+	s.sessionCtx = owner
+	s.authoritativeConsumer = true
+	emitN(s, testEventBuffer)
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	emitterDone := make(chan struct{})
+	go func() {
+		defer close(emitterDone)
+		s.sendEvent(events.EventWarning, events.WarningData{Message: "blocked"}, nil)
+	}()
+	select {
+	case <-blocked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	s.closeCtxMu.RLock()
+	published := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if published != nil {
+		t.Fatal("a close budget was already published; this test covers the window before one exists")
+	}
+
+	shutdown()
+	select {
+	case <-emitterDone:
+	// TRIPWIRE: this ceiling only fires if the parked send never observes the
+	// lifetime; emitterDone is the real completion signal and the release is a
+	// channel close away from it.
+	case <-time.After(10 * time.Second):
+		t.Fatal("a blocked authoritative send did not observe the session lifetime ending; " +
+			"shutdown's wait on the goroutine parked here can never finish")
+	}
+}
+
+// The lifetime arm must not cost round 1 its bounded delivery. Once a close has
+// published its budget, THAT budget governs: close cancels the session context
+// as its own step 2, so a send released by the lifetime instead would drop an
+// event the budget still had time to deliver -- silently truncating the tail
+// shutdown exists to flush.
+func TestPublishedCloseBudgetOutranksTheSessionLifetimeForBlockedSends(t *testing.T) {
+	owner, shutdown := context.WithCancel(context.Background())
+	s := losslessTestSession("budget-outranks-lifetime")
+	s.sessionCtx = owner
+	s.authoritativeConsumer = true
+	emitN(s, testEventBuffer)
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	// A live budget: t.Context() runs out only when this test does, so the
+	// window round 1 opened for a wedged bridge is genuinely still open here.
+	s.closeCtxMu.Lock()
+	s.closeCtx = t.Context()
+	s.closeSignal = make(chan struct{})
+	s.closeCtxMu.Unlock()
+
+	type sendResult struct{ delivered bool }
+	results := make(chan sendResult, 1)
+	go func() {
+		_, _, delivered := s.sendEventContext(context.Background(), events.EventWarning,
+			events.WarningData{Message: "waiting on the budget"}, nil)
+		results <- sendResult{delivered: delivered}
+	}()
+	select {
+	case <-blocked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	// The lifetime ends first, exactly as it does inside close. The live budget
+	// must still own the decision, so the event is delivered as soon as the
+	// consumer takes one.
+	shutdown()
+	<-s.events
+
+	select {
+	case got := <-results:
+		if !got.delivered {
+			t.Fatal("a live close budget lost a blocked authoritative event to the session lifetime; " +
+				"the bounded delivery window is gone")
+		}
+	// TRIPWIRE: this ceiling only fires if the send neither delivers nor
+	// returns; the drain above is the real completion signal.
+	case <-time.After(10 * time.Second):
+		t.Fatal("blocked authoritative send never returned after the consumer drained")
+	}
+}
+
 // A Notification hook that is ALREADY running when shutdown starts has to
 // observe the shutdown. The hook runs synchronously on the goroutine that
 // emitted the warning -- in the daemon that is the input loop shutdown waits
