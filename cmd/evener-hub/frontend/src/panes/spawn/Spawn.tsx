@@ -584,8 +584,16 @@ function SpawnForm({
     const unsubscribe = spawnDraftsStore.subscribe((state, previous) => {
       if (state.current?.fields !== previous.current?.fields) revoke();
     });
+    // The user's most recent navigation wins: ANY real URL change - even a
+    // query-only one that keeps the same /new pathname and draft - retires a
+    // pending launch's claim to the screen. A popstate carrying no URL
+    // change (a redundant dispatch) does not revoke, and the launch's own
+    // programmatic navigate() is safe: ownsLaunchView() runs before it.
+    let lastURL = window.location.href;
     const onNavigation = () => {
-      if (window.location.pathname !== "/new") revoke();
+      if (window.location.href === lastURL) return;
+      lastURL = window.location.href;
+      revoke();
     };
     window.addEventListener("popstate", onNavigation);
     return () => {

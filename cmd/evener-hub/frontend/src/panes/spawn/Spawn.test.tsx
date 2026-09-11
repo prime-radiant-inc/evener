@@ -285,6 +285,50 @@ test("project navigation isolates drafts and ignores non-new URL prefill", async
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
 });
 
+test("re-entering the same /new URL after leaving /new re-applies its explicit prefill", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/reentry-a");
+  const client = readyClient();
+  const mounted = renderSpawn(client);
+  await settled();
+  await user.type(promptField(), "sentinel-a");
+  // The picker switches drafts without touching the URL, so the prefill
+  // marker still names this same URL.
+  await setWorkingDir(user, "/tmp/reentry-b");
+  await user.type(promptField(), "sentinel-b");
+  expectWorkingDir("/tmp/reentry-b");
+  expect(window.location.search).toBe("?dir=/tmp/reentry-a");
+  // Leaving /new can unmount the pane (mobile StackHost mounts only the
+  // active route). Returning to the identical explicit URL is a fresh
+  // request: it selects draft A again, and B's draft persists in the map.
+  mounted.unmount();
+  await visitSpawnURL("/settings");
+  await visitSpawnURL("/new?dir=/tmp/reentry-a");
+  renderSpawn(client);
+  await settled();
+  expectWorkingDir("/tmp/reentry-a");
+  expect(promptField().value).toBe("sentinel-a");
+  expect(completionDraft("/tmp/reentry-b").fields.getState().prompt).toBe("sentinel-b");
+});
+
+test("remounting the same /new URL without leaving /new keeps the picker-selected draft", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/reentry-a");
+  const client = readyClient();
+  const mounted = renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/reentry-b");
+  await user.type(promptField(), "sentinel-b");
+  expectWorkingDir("/tmp/reentry-b");
+  // A remount with no intervening departure must not clobber the current
+  // draft back to the URL's prefill directory.
+  mounted.unmount();
+  renderSpawn(client);
+  await settled();
+  expectWorkingDir("/tmp/reentry-b");
+  expect(promptField().value).toBe("sentinel-b");
+});
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: Error) => void;
@@ -455,6 +499,24 @@ test("completion ownership: late missing-directory preflight cannot open a dialo
   await completionNavigate("/new");
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+});
+
+test("completion ownership: a query-only navigation retires a pending launch's claim to the view", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-a");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  // Same draft, same pathname: only the query changes. The user's newest
+  // navigation still wins over the older in-flight launch.
+  await completionNavigate("/new?dir=/tmp/completion-a&prompt=updated");
+  await act(async () => started.resolve(startResponse("local:completion-a")));
+  await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+  expect(window.location.pathname).toBe("/new");
+  expect(window.location.search).toBe("?dir=/tmp/completion-a&prompt=updated");
 });
 
 test("completion menu ownership: a remounted prompt's cleared snapshot retires its menu", async () => {

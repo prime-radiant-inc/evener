@@ -25,7 +25,11 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
 } {
   const { client, cwd, harness = "", launchOverrides, pluginRevision, enabled = true } = args;
   const [retryRevision, setRetryRevision] = useState(0);
-  const [state, setState] = useState<SpawnSlashCatalogLoadState>({ status: "loading" });
+  const [result, setResult] = useState<{
+    client: AppwireClientLike;
+    requestKey: string;
+    state: SpawnSlashCatalogLoadState;
+  } | null>(null);
   const latestKey = useRef("");
   const lastResponse = useRef<{ cwd: string; logicalKey: string; response: SpawnSlashCatalogResponse } | null>(null);
   const launchOverridesRef = useRef(launchOverrides);
@@ -51,6 +55,8 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     }
   }, [client]);
   const serializedOverrides = JSON.stringify(launchOverrides);
+  const logicalKey = `${cwd}\u0000${serializedOverrides}\u0000${harness}\u0000${pluginRevision}`;
+  const requestKey = `${logicalKey}\u0000${retryRevision}`;
 
   const retry = useCallback(() => setRetryRevision((revision) => revision + 1), []);
 
@@ -58,14 +64,12 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     if (!enabled) {
       latestKey.current = "";
       lastResponse.current = null;
-      setState({ status: "ready", response: { commands: [], skills: [] } });
+      setResult(null);
       return undefined;
     }
 
-    const baseKey = `${cwd}\u0000${serializedOverrides}\u0000${harness}`;
-    const logicalKey = `${baseKey}\u0000${pluginRevision}`;
-    const requestKey = `${logicalKey}\u0000${retryRevision}`;
     latestKey.current = requestKey;
+    const setState = (state: SpawnSlashCatalogLoadState) => setResult({ client, requestKey, state });
     // Keep the previous response mounted while a same-cwd refresh (a selection
     // toggle, a revision bump, a retry) is in flight, so the panel doesn't
     // collapse to an empty loading state and back. A cwd change drops it: the
@@ -106,7 +110,21 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     }, SPAWN_SLASH_CATALOG_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [client, cwd, enabled, harness, pluginRevision, retryRevision, serializedOverrides]);
+  }, [client, cwd, enabled, logicalKey, requestKey]);
 
+  // Effects reset state after consumers have already rendered. Never expose
+  // another request's ready/error state during that first render: SpawnForm
+  // stays mounted across draft switches, and the new draft would otherwise
+  // complete from the previous directory's catalog for one commit. The
+  // same-cwd cached-loading and disabled ready-empty contracts are derived
+  // here exactly as the effect resets them.
+  const cached = lastResponse.current;
+  const state: SpawnSlashCatalogLoadState = !enabled
+    ? { status: "ready", response: { commands: [], skills: [] } }
+    : result?.client === client && result.requestKey === requestKey
+      ? result.state
+      : cached !== null && cached.cwd === cwd
+        ? { status: "loading", response: cached.response }
+        : { status: "loading" };
   return { state, retry };
 }

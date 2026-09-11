@@ -94,6 +94,21 @@ export function applySpawnURL(onNavigation = false): void {
   }
 }
 
+// The same-URL suppression above is valid only while the route never leaves
+// /new: returning to an explicit /new?dir=... URL is a fresh request that
+// must re-apply its prefill. The pane cannot observe such a departure while
+// it is unmounted (a single-pane host mounts only the active route), so the
+// marker's invalidation lives at module scope, alongside the store it
+// protects. A remount with no intervening navigation fires no popstate and
+// keeps the marker, so its suppression of a redundant re-apply survives.
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", () => {
+    if (window.location.pathname === "/new") return;
+    const state = spawnDraftsStore.getState();
+    if (state.lastPrefillURL !== null) spawnDraftsStore.setState({ lastPrefillURL: null });
+  });
+}
+
 export function setDraftField<K extends keyof DraftFields>(
   draft: SpawnDraft,
   key: K,
