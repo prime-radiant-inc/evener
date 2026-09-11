@@ -200,6 +200,21 @@ test.each(["error", "failed", "exhausted"])(
   },
 );
 
+// The daemon derives a shell job's or turn's outcome from its status, so a
+// failure reaches the client as "failure"; a stable delegate carries its
+// delegatestore outcome verbatim, so a failure reaches it as "failed" or
+// "exhausted". Neither kind's word means failure in the other's vocabulary,
+// and summarizeSession has always counted them that way.
+test("terminal rows read each entry kind's own failure vocabulary", () => {
+  const job = shell("job", true, "completed") as ActivityShellEntry;
+  job.job.outcome = "failed";
+  const stable = delegate("dlg_stable", {});
+  stable.delegate.outcome = "failure";
+  const rows = buildActivityRows(tree([job, stable]), new Set());
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 2, failedCount: 0 });
+  expect(activityDelegateState(stable.delegate)).toMatchObject({ failed: false });
+});
+
 test("fold row counts a terminal delegate outcome when lifecycle status is idle", () => {
   const rows = buildActivityRows(tree([delegate("dlg_failed", { failed: true })]), new Set());
   const fold = rows.find((row) => row.kind === "fold");
@@ -284,11 +299,11 @@ test("running stable delegate ignores stale failure outcome", () => {
   const entry = delegate("dlg_resumed", {});
   entry.delegate.terminal = false;
   entry.delegate.status = "running";
-  entry.delegate.outcome = "failure";
+  entry.delegate.outcome = "failed";
   expect(activityDelegateState(entry.delegate)).toMatchObject({ active: true, failed: false, status: "running" });
 
   entry.delegate.terminal = true;
-  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failure" });
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: false, failed: true, status: "failed" });
 
   entry.delegate.terminal = false;
   entry.delegate.status = "error";

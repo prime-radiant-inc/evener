@@ -9,15 +9,23 @@ export interface ActivityCounts {
   complete: boolean;
 }
 
-// The backend's whole failure verdict for a terminal entry: agent/jobs_activity.go
-// derives every outcome from the record's status and then counts failures from
-// the outcome alone, so a terminal status carries no verdict of its own.
-export function isActivityFailureOutcome(outcome: string | undefined): boolean {
-  return outcome === "failure" || outcome === "failed" || outcome === "exhausted";
+// A terminal entry's failure is the outcome the daemon already decided
+// (agent/jobs_activity.go's aggregateActivity counts nothing else), and each
+// kind states it in its own vocabulary. activityOutcome derives a shell job's
+// and a delegate turn's outcome from its jobstore status, so a failure arrives
+// as "failure"; a stable delegate carries its delegatestore outcome verbatim,
+// so a failure arrives as "failed" or "exhausted". These are the one definition
+// per kind, shared by the rows and by the merged summaries.
+export function isFailedJobOutcome(outcome: string | undefined): boolean {
+  return outcome === "failure";
+}
+
+export function isFailedDelegateOutcome(outcome: string | undefined): boolean {
+  return outcome === "failed" || outcome === "exhausted";
 }
 
 export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
-  if (isActivityFailureOutcome(outcome)) return true;
+  if (isFailedJobOutcome(outcome) || isFailedDelegateOutcome(outcome)) return true;
   const normalized = status?.trim().toLowerCase();
   return normalized === "failed" || normalized === "exhausted" || normalized === "error";
 }

@@ -4,6 +4,8 @@ import {
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
+  isFailedDelegateOutcome,
+  isFailedJobOutcome,
 } from "./activityData";
 
 function cloneEntry(entry: ActivityEntry): ActivityEntry {
@@ -114,8 +116,6 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
   const completeBranch = (branch: ActivitySessionNode["branch"]) =>
     !branch.error && !branch.truncated && !branch.continuation;
   const counts = { active: 0, failed: 0, completed: 0, complete: completeBranch(session.branch) };
-  const jobOutcomeFailure = (outcome: string | undefined) => outcome === "failure";
-  const delegateOutcomeFailure = (outcome: string | undefined) => outcome === "failed" || outcome === "exhausted";
   const add = (terminal: boolean, failed: boolean) => {
     if (!terminal) counts.active++;
     else if (failed) counts.failed++;
@@ -123,12 +123,12 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
   };
   for (const entry of session.entries) {
     if (entry.kind === "shell") {
-      add(entry.job.terminal, jobOutcomeFailure(entry.job.outcome));
+      add(entry.job.terminal, isFailedJobOutcome(entry.job.outcome));
       continue;
     }
     const delegate = entry.delegate;
-    if (delegate.type === "delegate") add(delegate.terminal === true, delegateOutcomeFailure(delegate.outcome));
-    else for (const turn of delegate.turns ?? []) add(turn.terminal, jobOutcomeFailure(turn.outcome));
+    if (delegate.type === "delegate") add(delegate.terminal === true, isFailedDelegateOutcome(delegate.outcome));
+    else for (const turn of delegate.turns ?? []) add(turn.terminal, isFailedJobOutcome(turn.outcome));
     if (!completeBranch(delegate.branch)) counts.complete = false;
     if (delegate.child) {
       counts.active += delegate.child.counts.active;

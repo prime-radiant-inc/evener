@@ -14,7 +14,8 @@ import {
   activityNodeID,
   delegateHasActiveWork,
   isActivityFailure,
-  isActivityFailureOutcome,
+  isFailedDelegateOutcome,
+  isFailedJobOutcome,
 } from "../../../protocol/activityData";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 
@@ -69,7 +70,7 @@ export interface ActivityDelegateState {
 // Work that has not ended carries no outcome and can only say so through its
 // current status.
 export function jobIsFailed(job: ActivityJob): boolean {
-  return job.terminal ? isActivityFailureOutcome(job.outcome) : isActivityFailure(job.outcome, job.status);
+  return job.terminal ? isFailedJobOutcome(job.outcome) : isActivityFailure(job.outcome, job.status);
 }
 
 // Stable delegates describe one reusable resource; other delegate types are
@@ -81,7 +82,7 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
   if (delegate.type === "delegate") {
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
     const ownFailure =
-      delegate.terminal === true ? isActivityFailureOutcome(delegate.outcome) : isActivityFailure(undefined, status);
+      delegate.terminal === true ? isFailedDelegateOutcome(delegate.outcome) : isActivityFailure(undefined, status);
     return {
       active: delegateHasActiveWork(delegate),
       failed: ownFailure || childFailed,
