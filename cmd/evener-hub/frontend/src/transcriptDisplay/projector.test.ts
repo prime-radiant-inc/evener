@@ -350,21 +350,38 @@ describe("transcript projector", () => {
     ]);
   });
 
-  test("hides an in-progress reasoning item while the turn is live when reasoning is off", () => {
+  test("replaces a live current thought with a content-free placeholder when reasoning is off", () => {
     const liveTurn = turn([item("think", "reasoning", { status: "inProgress", text: "in-flight thought" })], {
       status: "inProgress",
     });
     const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
 
-    expect(entriesFor(model, preset("chat"))).toEqual([]);
-    expect(entriesFor(model, preset("tools"))).toEqual([]);
+    const placeholder = [expect.objectContaining({ kind: "thinking", id: "think" })];
+    expect(entriesFor(model, preset("chat"))).toEqual(placeholder);
+    expect(entriesFor(model, preset("tools"))).toEqual(placeholder);
     expect(
       entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false })),
-    ).toEqual([]);
+    ).toEqual(placeholder);
+    // A content-free placeholder is not openable, so it contributes no
+    // disclosure id the Full-view baseline would have to reach.
+    expect(projectThread(model, preset("tools")).eligibleDisclosureIds).toEqual([]);
 
     // With reasoning on, the same live item is ordinary (streaming) content.
     expect(entriesFor(model, preset("full")).map((entry) => entry.id)).toEqual(["think"]);
     expect(entriesFor(model, preset("full")).map((entry) => entry.kind)).toEqual(["item"]);
+  });
+
+  test("hides an in-progress reasoning item that is no longer the turn's current thought when reasoning is off", () => {
+    const liveTurn = turn(
+      [
+        item("think", "reasoning", { status: "inProgress", text: "superseded thought" }),
+        item("agent", "agentMessage", { text: "answer" }),
+      ],
+      { status: "inProgress" },
+    );
+    const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
+
+    expect(entriesFor(model, preset("tools")).map((entry) => entry.id)).toEqual(["agent"]);
   });
 
   test("keeps the typed failure marker for failed and interrupted turns", () => {

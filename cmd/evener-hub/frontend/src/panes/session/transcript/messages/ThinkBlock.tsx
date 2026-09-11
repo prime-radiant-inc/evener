@@ -51,7 +51,7 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
+import { Chevron, Loader, Markdown, ToolIcon } from "../../../../widgets";
 import {
   disclosureDefault,
   isDisclosureOpen,
@@ -60,6 +60,7 @@ import {
 } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
+import { formatTokenCount } from "./format";
 import {
   formatThoughtDuration,
   joinedReasoningParagraphs,
@@ -157,6 +158,30 @@ function LiveThinkBlock({ item }: { item: ItemModel }) {
   );
 }
 
+// The content-free counterpart to LiveThinkBlock: shown when the reasoning
+// content flag is off, so the reader sees that the agent is thinking - through
+// the catalog Loader's pulsing grid - without any of the thought's text. The
+// brain glyph and body are deliberately absent; only the Loader and its label
+// render.
+//
+// The token figure is an ESTIMATE. The wire carries no live token accounting
+// for a reasoning stream (a turn's usage arrives only when the turn settles -
+// see turnMeta.ts), so this is the conventional characters/4 heuristic over
+// the same joined source the streaming body would have rendered, marked
+// approximate with "~". No count renders until the first chunk lands, so a
+// just-started thought shows the label alone rather than a fabricated "~0".
+function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+  const characters = paragraphs.reduce((total, paragraph) => total + paragraph.length, 0);
+  const estimatedTokens = Math.round(characters / 4);
+  const label = estimatedTokens > 0 ? `Thinking… · ~${formatTokenCount(estimatedTokens)} tokens` : "Thinking…";
+  return (
+    <div className={CLASS.block} data-testid="think-block" data-live="true" data-content-free="true">
+      <Loader label={label} />
+    </div>
+  );
+}
+
 // isCurrentThought: whether this reasoning item is still the turn's CURRENT
 // activity - the tail of turn.items. The wire never emits item/completed for
 // a reasoning item (only turn/completed settles it; TurnBlock's isItemLive
@@ -184,9 +209,12 @@ function thinkBlockPropsEqual(prev: ItemRenderProps, next: ItemRenderProps): boo
   return ignoringTurn(prev, next) && isCurrentThought(prev.item, prev.turn) === isCurrentThought(next.item, next.turn);
 }
 
-export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRef }: ItemRenderProps) {
+export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRef, contentFree }: ItemRenderProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
+  // The content-free projection never renders the thought's text, so it short
+  // circuits before any disclosure state is read.
+  if (contentFree) return <ContentFreeThinkBlock item={item} />;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);

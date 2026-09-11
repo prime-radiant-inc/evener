@@ -73,6 +73,20 @@ test("tags the root with the turn id", () => {
   expect(container.querySelector('[data-turn-id="turn_42"]')).toBeTruthy();
 });
 
+test("wires a content-free thinking entry through TurnBlock to the placeholder (never the thought body)", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const projected = turn(
+    [item({ type: "reasoning", status: "inProgress", reasoningSummaries: [["abcdefghijklmnop"]] })],
+    {},
+    config,
+  );
+  render(withConfig(config, <TurnBlock turn={projected} />));
+  expect(screen.getByText(/Thinking…/)).toBeTruthy();
+  expect(screen.getByTestId("loader-grid")).toBeTruthy();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+});
+
 test("the turn root remains a centered, shrinkable reading column", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");

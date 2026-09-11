@@ -28,6 +28,12 @@ export interface ItemRenderProps {
   // A projector-owned compact summary for a critical entry. When present,
   // renderers must not reconstruct a routine summary from raw tool fields.
   projectedSummary?: string;
+  // True when the projector chose a content-free entry for this item (the
+  // "thinking" projection of a live current reasoning item while the reasoning
+  // content flag is off). The renderer must render only a placeholder and must
+  // not read the item's own text. Set for every entry kind by TurnBlock, so a
+  // memoized renderer can compare it by value.
+  contentFree?: boolean;
   /** Snapshot inputs relevant to this item; stable when an unrelated delta lands. */
   threadFingerprint?: string;
   thread?: ThreadModel;
@@ -76,6 +82,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.opensExchange === next.opensExchange &&
     prev.agentLabel === next.agentLabel &&
     prev.projectedSummary === next.projectedSummary &&
+    prev.contentFree === next.contentFree &&
     prev.renderContext === next.renderContext &&
     prev.threadFingerprint === next.threadFingerprint
   );

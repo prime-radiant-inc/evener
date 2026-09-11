@@ -288,6 +288,7 @@ export function TurnBlock({
         opensExchange={exchangeOpeners?.has(item.id)}
         agentLabel={agentLabel}
         projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
+        contentFree={entry.kind === "thinking"}
         renderContext={itemRenderContext}
         thread={thread}
         threadFingerprint={threadFingerprintForItem(

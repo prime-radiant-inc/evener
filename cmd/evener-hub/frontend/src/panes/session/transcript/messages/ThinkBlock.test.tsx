@@ -86,6 +86,33 @@ test("live shows a Thinking label and renders the reasoning text open (not colla
   expect(document.querySelector("details")).toBeNull();
 });
 
+// --- content-free: Loader placeholder, no thought text ----------------------
+
+test("contentFree renders only the Loader placeholder and an approximate token count, never the thought text", () => {
+  render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
+      turn={turn}
+      live={true}
+      contentFree={true}
+    />,
+  );
+  expect(screen.getByText(/Thinking…/)).toBeTruthy();
+  // 16 characters -> characters/4 -> 4, marked approximate.
+  expect(screen.getByText(/~4 tokens/)).toBeTruthy();
+  expect(screen.getByTestId("loader-grid")).toBeTruthy();
+  // No body, no settled disclosure, and above all no thought text.
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+  expect(document.querySelector("details")).toBeNull();
+});
+
+test("contentFree with no chunks yet shows the label alone, never a fabricated token count", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [] })} turn={turn} live={true} contentFree={true} />);
+  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(screen.queryByText(/tokens/)).toBeNull();
+});
+
 // Jesse's review call: a blinking caret inside a read-only reasoning view
 // reads as an edit cursor. Liveness is carried by the "Thinking…" eyebrow
 // and the visibly growing text, so the live view mounts no StreamingText at

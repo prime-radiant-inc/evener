@@ -5,6 +5,32 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-09-11 the reasoning placeholder is content-free, on Loader's grid
+
+Turning the Reasoning content flag off still streamed a live thought open and
+then folded it away: the projector escalated any in-progress reasoning item to
+a critical row regardless of the flag, and the reasoning renderer streams an
+in-progress item open as the turn's current thought. The escalation is gone.
+Jesse asked that a live thought instead show a content-free "Thinking…" and
+picked the catalog `Loader`'s pulsing pixel grid as its motion.
+
+The projector now emits a distinct `thinking` entry for the turn's live current
+reasoning item when the flag is off (transcriptDisplay/projector.ts). It
+carries the source item only for a length estimate and never any rendered text,
+so the row cannot leak the thought. The renderer draws just
+`<Loader label=…>`: the label plus an approximate token figure
+(characters/4, marked "~" - the wire carries no live token accounting for a
+reasoning stream, so a real count would be fabricated). The placeholder
+disappears the moment the thought stops being the turn's current activity.
+
+This is the one approved exception to the motion budget's ban on pulses and
+shimmer on live data (design-system.md §5). The grid pulses while the
+placeholder is shown and, unlike Cadence, is not gated on deltas actually
+arriving, so it keeps pulsing if the stream stalls; Cadence's decaying trace
+stays the honest liveness signal. Every other idle pulse or shimmer remains
+banned, and `widgets/loader`'s own doc note no longer claims its motion is
+reserved away from agent liveness.
+
 ## Editorial instrument (2026-09-09)
 
 The user approved a comprehensive Tufte-inspired editorial direction and the
