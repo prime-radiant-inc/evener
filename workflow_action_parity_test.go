@@ -169,6 +169,26 @@ func TestWorkflowAndCompositeActionPinsFlagMirroredMultiRefSets(t *testing.T) {
 	}
 }
 
+// RoboRev combined review (round 4): the audit matched only official
+// actions/* references, but dependabot's directory: / scope equally fails
+// to rewrite third-party pins inside .github/actions/*/action.yml. The
+// invariant must cover any remote action used in both places, not just
+// actions/*.
+func TestWorkflowAndCompositeActionPinsAuditThirdPartyActions(t *testing.T) {
+	workflowDir := t.TempDir()
+	compositeDir := t.TempDir()
+
+	writeActionFixture(t, filepath.Join(workflowDir, "ci.yml"),
+		"jobs:\n  build:\n    steps:\n      - uses: goreleaser/goreleaser-action@v6\n")
+	writeActionFixture(t, filepath.Join(compositeDir, "setup-toolchain", "action.yml"),
+		"runs:\n  using: composite\n  steps:\n    - uses: goreleaser/goreleaser-action@v7\n")
+
+	errs := actionPinParity(t, workflowDir, compositeDir)
+	if len(errs) == 0 {
+		t.Fatal("a third-party action pinned at v6 in a workflow and v7 in a composite was not flagged")
+	}
+}
+
 // actionPinParity collects action pins from the workflow and composite trees
 // and returns the parity violations between them.
 func actionPinParity(t *testing.T, workflowDir, compositeDir string) []string {
@@ -238,7 +258,7 @@ func existingManifest(t *testing.T, dir string) string {
 	return ""
 }
 
-// actionPinRefs parses each file and maps every "actions/<name>" reference to
+// actionPinRefs parses each file and maps every remote action reference to
 // the set of refs it is pinned at across those files. Workflows hold steps
 // under jobs.<id>.steps while composite actions hold them under
 // runs.steps; both shapes are accepted.
@@ -354,16 +374,21 @@ func distinctRefs(refs []string) []string {
 	return distinct
 }
 
-var actionRefPattern = regexp.MustCompile(`^actions/([a-z0-9-]+)@(.+)$`)
+// Any remote owner/name action pinned at a ref. Local "./path" references
+// carry no "@ref" and cannot match, so they stay outside the audit; the
+// first character class also keeps them out even if one ever gained a ref.
+var actionRefPattern = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]*)@(.+)$`)
 
-// splitActionRef decomposes "actions/setup-node@v7" into name and ref,
-// reporting ok only for official actions pinned at a ref.
+// splitActionRef decomposes "goreleaser/goreleaser-action@v7" into name and
+// ref, reporting ok only for remote actions pinned at a ref. Dependabot's
+// root-only scope misses composite pins for third-party actions just as it
+// does for actions/*, so both are audited.
 func splitActionRef(uses string) (name, ref string, ok bool) {
 	match := actionRefPattern.FindStringSubmatch(uses)
 	if match == nil {
 		return "", "", false
 	}
-	return "actions/" + match[1], match[2], true
+	return match[1] + "/" + match[2], match[3], true
 }
 
 var majorVersionPattern = regexp.MustCompile(`^v(\d+)`)
