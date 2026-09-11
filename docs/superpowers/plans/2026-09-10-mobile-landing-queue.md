@@ -3838,3 +3838,55 @@ None.
 ### Report
 
 Append "Round 3" to your existing report file. Reply with: status, commit SHAs in order, the pushed head, the mutation/verification output lines for Medium 1 and Medium 3, one-line test summary, concerns.
+
+## Task 66: PR #1096 round 8 (head 2d4c7a4) — native checkpoint, RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1096 (branch codex/mobile-native-checkpoint). Files: `mobile/src/**`, `mobile-native/src/**`, and one web-frontend file (`cmd/evener-hub/frontend/src/protocol/activityList.ts`, which is under the web constraints: biome check --write on touched files, `make test-web` must pass).
+
+### RoboRev verdict (verbatim, 3 reviewers)
+
+## roborev: Combined Review (`2d4c7a4`)
+
+## Code Review Summary
+
+The changeset adds native/mobile conversation projection, activity reconciliation, and portable pagination; reviewers found four medium issues and one low issue—no critical or high findings.
+
+### Medium
+
+- **Rehydrate race loses frozen-member ownership** — `mobile/src/state/conversation.ts:1859-1865` and `:2003-2005`
+  `mergeLiveActivityMembers` can preserve a live-updated clustered member, but `supersededIds` records only the cluster's top-level identity. A later member truncated and frozen by a live delta is excluded from `rehydratePriorFrozen` (snapshot contains it, `supersededFrozen` doesn't), so reconciliation clears its freeze and lets later deltas append to already-truncated output. Track supersession for every live-updated member identity and preserve only those that remain frozen; add a regression for a frozen later member during an in-flight rehydrate with a stale snapshot.
+
+- **Stale error survives a successful queued page** — `cmd/evener-hub/frontend/src/protocol/activityList.ts:146`
+  Paged success publishes only `tree` without clearing `error`, so a failed queued page leaves a stale error even after a later queued page succeeds. Include `error: null` on the success publish or clear the error when a subsequent page succeeds.
+
+- **`loadEarlier` silently dropped during refresh** — `mobile-native/src/jobOutput.ts:52`
+  `run()` coalesces any concurrent call into the same `inFlight` promise and drops its `beforeBytes`, so a `loadEarlier` requested during a `refresh` silently never loads earlier output. Queue the `loadEarlier` cursor separately (like `ActivityList` does) or reject concurrent differing requests instead of returning the unrelated in-flight promise.
+
+- **Duplicated tone classification and redaction logic** — `mobile/src/state/activity.ts:114-171` (duplicating `mobile/src/services/activity.ts:121-172`) and `:177-215`
+  The store re-declares `classifyTone`, `formatOutputBytes`, `RUNNING_STATUSES`, `IDLE_STATUSES`, `TERMINAL_STATUSES`, and `FAILED_STATUSES` verbatim from the pure projection service, and adds `FAILED_OUTCOMES` (an exact copy of `FAILED_STATUSES`) used for the outcome check while the service uses `FAILED_STATUSES` for the same check. The two classifiers are byte-for-byte equivalent today, so a future edit to one set silently leaves store and service disagreeing on tone for the same wire status—row colour depends on whether it was last rendered from a full read or a live notification. The store also re-implements `projectJobEntry`/`projectDelegateEntry` inline, giving the diagnostic redaction allowlist two owners. Export `classifyTone`, `formatOutputBytes`, the status sets, and `projectJobEntry`/`projectDelegateEntry` (or a single `projectDiagnostics` helper) from the service and have the store import them, per the repo's own `CLAUDE.md` duplication prohibition.
+
+### Low
+
+- **Missing `uncertain` flag on failed sign-in completion** — `mobile-native/src/providerSignIn.ts:284-302`
+  `complete()`'s catch publishes `busy: false` and the "could not be confirmed" error but never sets `this.uncertain = true`, unlike every other uncertain-terminal path (`poll()` catch at `:232`, unrecognized-status branch at `:241`, `setConnection` interrupted-poll path at `:103`). With `uncertain` staying false, a subsequent `checkStatus()` (`:324`) publishes `error: null` and a non-conservative `credentialState`, and `schedule()` is no longer blocked by the guard—the user sees a silently clean status line instead of the explicit re-check prompt the surrounding code maintains. Set `this.uncertain = true` in `complete()`'s catch before publishing, matching the other paths.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 16s | Total: 35m46s*
+
+
+### Coordinator rulings
+
+Verify each finding against the code before touching it; a finding that cannot occur is refuted with file:line evidence under DONE_WITH_CONCERNS (Global Constraint 7). Rulings assuming they verify:
+
+- **Medium 1 (rehydrate race loses a frozen member's ownership, `conversation.ts` ~1859-1865 and ~2003-2005): real if `supersededIds` is keyed on the cluster's top-level identity only.** Task 54/60 made truncation and freezing per member and rehydration member-inclusive (`rereadIdentities`); supersession must be member-inclusive the same way, or the two encodings of "which identities did a live delta own" disagree — the exact class we keep meeting. RED-first with the shape the finding names: a later member truncated and frozen by a live delta while a rehydrate with a stale snapshot is in flight; the member must stay frozen after reconciliation and a later delta must not append to it. Fix by tracking supersession for every live-updated member identity through the same identity helpers (`timelineIdentities`/`ownTimelineIdentities`), not a parallel set.
+- **Medium 2 (stale `error` survives a successful queued page, web `activityList.ts` ~146): real if the paged-success publish omits `error`.** RED-first: a failed queued page followed by a successful one must publish `error: null`. Smallest fix: include `error: null` on the success publish. Web constraints apply (biome, `make test-web`).
+- **Medium 3 (`loadEarlier` silently dropped during a `refresh`, `mobile-native/src/jobOutput.ts` ~52): real if `run()` returns the unrelated in-flight promise and discards `beforeBytes`.** RED-first: `loadEarlier` called while a `refresh` is in flight must still load the earlier page after the refresh settles. Fix in the shape `ActivityList` already uses in this branch (queue the cursor and run it after the in-flight request), so the two paginators share one rule; if `ActivityList`'s queue logic can be lifted into a shared helper in a few lines, do that rather than copying it.
+- **Medium 4 (duplicated tone classification and redaction logic, `mobile/src/state/activity.ts` ~114-215 vs `mobile/src/services/activity.ts` ~121-172): real by inspection and a repo-rule violation (CLAUDE.md: never introduce duplication; extract and share).** Fix: export `classifyTone`, `formatOutputBytes`, the four status sets and `projectJobEntry`/`projectDelegateEntry` (or one `projectDiagnostics` helper) from the service and import them in the store; delete the store's copies and `FAILED_OUTCOMES` (use `FAILED_STATUSES`). RED-first is a characterization pin: a test that the store and the service classify the same wire status identically for every status in the sets (table over the union), which stays green through the consolidation and fails if anyone re-forks them. Do not change behaviour; if the two copies actually differ anywhere, STOP and report the difference before choosing which one wins.
+- **Low (missing `uncertain = true` in `complete()`'s catch, `providerSignIn.ts` ~284-302): real if the other three uncertain-terminal paths set it and this one does not.** RED-first: after a failed completion, `checkStatus()` must keep the explicit re-check prompt (not publish `error: null`) and `schedule()` must stay blocked by the guard. Fix: set `this.uncertain = true` before publishing, matching the other paths.
+
+### Requirements
+
+1. One commit per finding, RED output recorded before each fix, no existing test weakened or re-pointed (if one contradicts a finding, report it).
+2. `make test-native` green with counts; for Medium 2 additionally `npx biome check --write` on the touched web file and `make test-web` from the worktree root.
+3. Do not push. Do not merge main. Match each file's house style (tabs vs spaces per file).
+4. Append a "Task 66" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-54-report.md` with RED/GREEN evidence per finding and the gate outputs; reply with status, commit SHAs, one-line test summary, concerns.
