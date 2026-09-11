@@ -488,12 +488,18 @@ func (c *delegateTreeController) deliveryIntersectsMembersLocked(receipt *delega
 	return senderCovered || ownerCovered
 }
 
-func (c *delegateTreeController) CloseResumability(actor delegateActor, delegateID, reason string) (delegateMutationPlans, error) {
+func (c *delegateTreeController) CloseResumability(actor delegateActor, delegateID, reason string) (result delegateMutationPlans, resultErr error) {
 	retirementRelease, retirementErr := c.beginRetirementMutation()
 	if retirementErr != nil {
 		return delegateMutationPlans{}, retirementErr
 	}
-	defer retirementRelease()
+	defer func() {
+		if resultErr == nil && len(result.updates) != 0 {
+			result.retirementRelease = retirementRelease
+		} else {
+			retirementRelease()
+		}
+	}()
 	c.mu.Lock()
 	for {
 		if c.closing {

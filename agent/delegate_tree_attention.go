@@ -551,11 +551,35 @@ func (c *delegateTreeController) AttachIdleRuntime(delegateID string, runtime *S
 	if c == nil || runtime == nil || delegateID == "" {
 		return errDelegateTargetBusy
 	}
-	release, err := c.beginRetirementMutation()
+	installation, err := c.beginIdleRuntimeInstallation(delegateID)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer installation.release()
+	return installation.attach(runtime)
+}
+
+// An installation owns admission across manager bind and publication. Its
+// creator must release it only after the manager has dropped its owner lock.
+type delegateIdleRuntimeInstallation struct {
+	controller *delegateTreeController
+	delegateID string
+	release    func()
+}
+
+func (c *delegateTreeController) beginIdleRuntimeInstallation(delegateID string) (*delegateIdleRuntimeInstallation, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return nil, err
+	}
+	return &delegateIdleRuntimeInstallation{controller: c, delegateID: delegateID, release: release}, nil
+}
+
+func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) error {
+	c, delegateID := installation.controller, installation.delegateID
+	if c == nil || runtime == nil || delegateID == "" {
+		return errDelegateTargetBusy
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate := c.durable[delegateID]

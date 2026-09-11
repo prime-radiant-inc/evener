@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -273,6 +274,20 @@ func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 		},
 		"idle attach": func(root *Session, tree *delegateTreeController, d delegateResult) error {
 			return tree.AttachIdleRuntime(d.DelegateID, root.subagents.get(d.ChildSessionID).sess)
+		},
+		"shell registration": func(_ *Session, tree *delegateTreeController, d delegateResult) error {
+			tree.mu.Lock()
+			generation := tree.durable[d.DelegateID].Generation
+			before := len(tree.work)
+			tree.mu.Unlock()
+			_, err := tree.BeginShellWork(delegateLease{delegateID: d.DelegateID, generation: generation})
+			tree.mu.Lock()
+			after := len(tree.work)
+			tree.mu.Unlock()
+			if before != after {
+				t.Error("refused shell registration allocated work")
+			}
+			return err
 		},
 		"reconcile": func(_ *Session, tree *delegateTreeController, _ delegateResult) error {
 			plans, err := tree.Reconcile(emptyDelegateReconcileEvidence(tree))
@@ -948,6 +963,725 @@ func TestRetirementDelegateStaleClaimCannotClearTreeFence(t *testing.T) {
 	tree.mu.Unlock()
 	if !exact {
 		t.Fatal("stale claim cleared current tree fence")
+	}
+}
+
+func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := tree.idleDelegateRestoreCommit(d.DelegateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := delegateRuntime{owner: root}
+	candidate, restored, finish, err := runtime.restoreIdleForSend(started)
+	if err != nil {
+		finish(nil, err)
+		t.Fatal(err)
+	}
+	if !restored {
+		finish(candidate, nil)
+		t.Fatal("expected genuinely cold candidate")
+	}
+	defer finish(candidate, nil)
+	// Exercise the real manager's atomic bind/publication contract, observing
+	// callbacks within its bind rather than relying on racing a notification reader.
+	installation, err := tree.beginIdleRuntimeInstallation(d.DelegateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installation.release()
+	install := func(selected *subagent) error { return installation.attach(selected.sess) }
+	for len(c.changed) != 0 {
+		<-c.changed
+	}
+	c.mu.Lock()
+	before := c.nextLease
+	c.mu.Unlock()
+	tracked, inserted, err := root.subagents.admitReconstructed(candidate, func(selected *subagent) error {
+		if root.subagents.mu.TryLock() {
+			root.subagents.mu.Unlock()
+			t.Error("bind lost atomic manager ownership")
+		}
+		err := install(selected)
+		c.mu.Lock()
+		after := c.nextLease
+		c.mu.Unlock()
+		if before != after {
+			t.Error("idle installation acquired retirement admission under manager lock")
+		}
+		select {
+		case <-c.changed:
+			t.Error("idle installation notified retirement under manager lock")
+		default:
+		}
+		return err
+	})
+	if err != nil || !inserted || tracked != candidate {
+		t.Fatalf("install: inserted=%v tracked=%p candidate=%p err=%v", inserted, tracked, candidate, err)
+	}
+	if tree.residentDelegateRuntime(d.DelegateID) != candidate.sess {
+		t.Fatal("manager publication lost exact bound runtime")
+	}
+}
+
+func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans.updates) != 1 {
+		t.Fatalf("closure updates: %d", len(plans.updates))
+	}
+	before, err := tree.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(before, func(e delegatestore.Event) bool {
+		return e.DelegateID == d.DelegateID && e.ResumabilityClosed != nil && e.ResumabilityClosed.Reason == "closure-sentinel"
+	}) {
+		t.Fatal("original closure identity missing")
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		c.Abort(claim, "")
+	}
+	if err != nil || claim != nil {
+		t.Errorf("unapplied closure effects admitted retirement: %+v %v", state, err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	after, err := tree.store.Load()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("applying closure changed original events: %v", err)
+	}
+	claim, state, err = c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("applied closure blocks retirement: %+v %v", state, err)
+	}
+	defer c.Abort(claim, "")
+}
+
+// Pause an actual read of fixture-owned persisted bytes. The original inode is
+// restored before releasing the reader, so subsequent durable writes/readback
+// use the real original writer and file, not a synthetic persistence result.
+func retirementPauseFileRead(t *testing.T, path string, run func() error) func() {
+	t.Helper()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup := path + ".retirement-read-backup"
+	if err := os.Rename(path, backup); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("mkfifo", path).CombinedOutput(); err != nil {
+		os.Rename(backup, path)
+		t.Fatalf("mkfifo: %s %v", out, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- run() }()
+	type opened struct {
+		file *os.File
+		err  error
+	}
+	ready := make(chan opened, 1)
+	go func() { f, err := os.OpenFile(path, os.O_WRONLY, 0); ready <- opened{f, err} }()
+	var writer *os.File
+	select {
+	case got := <-ready:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		writer = got.file
+	case err := <-done:
+		t.Fatalf("operation failed before read barrier: %v", err)
+	case <-time.After(10 * time.Second): // TRIPWIRE: actual FIFO-open rendezvous, not elapsed-time synchronization.
+		t.Fatal("operation did not reach read barrier")
+	}
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			if err := os.Remove(path); err != nil {
+				t.Error(err)
+			}
+			if err := os.Rename(backup, path); err != nil {
+				t.Error(err)
+			}
+			if _, err := writer.Write(before); err != nil {
+				t.Error(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Error(err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(10 * time.Second): // TRIPWIRE: joins the exact resumed source operation; no sleep-based assertion.
+				t.Error("resumed source did not finish")
+			}
+		})
+	}
+	t.Cleanup(finish)
+	return finish
+}
+
+func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
+		t.Fatal(err)
+	}
+	r, err := tree.ReserveStart(rootDelegateActor(root.ID()), d.DelegateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := tree.CommitStart(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := tree.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("ack-outcome-sentinel"), "construction_failed"))
+	if err != nil || len(plans.deliveries) != 1 {
+		t.Fatalf("outcome: %v", err)
+	}
+	original := plans.deliveries[0]
+	before, err := tree.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish := retirementPauseFileRead(t, transcriptPath(root.stateDir, root.ID()), func() error { return root.executeDelegateMutationPlans(plans) })
+	defer finish()
+	tree.mu.Lock()
+	var exact *delegateDeliveryAdmission
+	for _, receipt := range tree.deliveries {
+		if receipt.token.deliveryID == original.deliveryID {
+			exact = receipt
+		}
+	}
+	tree.mu.Unlock()
+	if exact == nil {
+		t.Fatal("persistence barrier was reached without original admitted delivery receipt")
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("in-flight outcome acknowledgement admitted retirement: %+v %v", state, err)
+	}
+	after, err := tree.store.Load()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("paused acknowledgement changed original source records: %v", err)
+	}
+	finish()
+	after, err = tree.store.Load()
+	if err != nil || !slices.ContainsFunc(after, func(e delegatestore.Event) bool {
+		return e.DelegateID == d.DelegateID && e.DeliveryAcknowledged != nil && e.DeliveryAcknowledged.DeliveryID == original.deliveryID
+	}) {
+		t.Fatalf("original outcome not acknowledged: %v", err)
+	}
+	tree.mu.Lock()
+	remaining := tree.deliveries[exact.token.processID]
+	tree.mu.Unlock()
+	if remaining != nil {
+		t.Fatal("exact receipt did not settle")
+	}
+	if _, err := root.ProcessInput(context.Background(), "consume-ack-sentinel", nil); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err = c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("settled acknowledgement blocks: %+v %v", state, err)
+	}
+	defer c.Abort(claim, "")
+}
+
+func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	cold := retirementIdleDelegate(t, root)
+	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
+		t.Fatal(err)
+	}
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	const attentionID = "attention-original-sentinel"
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-content-sentinel"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := tree.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := transcriptPath(root.stateDir, d.ChildSessionID)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.mu.Lock()
+	generation := tree.durable[d.DelegateID].Generation
+	_, pending := tree.attentionWakeIDs[d.DelegateID][attentionID]
+	tree.mu.Unlock()
+	if !pending {
+		t.Fatal("original attention source was not populated")
+	}
+	finish := retirementPauseColdClaim(t, c, filepath.Join(root.stateDir, sessionsSubdir, cold.ChildSessionID+".meta.json"))
+	defer finish()
+	added, blocker, _, emit, err := tree.tryOpenDelegateAttention(d.DelegateID, attentionID)
+	if !errors.Is(err, ErrRetirementUnavailable) || added || blocker != nil || emit {
+		t.Fatalf("populated attention entry not refused: added=%v emit=%v %v", added, emit, err)
+	}
+	tree.mu.Lock()
+	_, pending = tree.attentionWakeIDs[d.DelegateID][attentionID]
+	exact := tree.durable[d.DelegateID].Generation == generation
+	tree.mu.Unlock()
+	if !pending || !exact {
+		t.Fatal("refusal lost original attention source/generation")
+	}
+	after, err := tree.store.Load()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("refusal changed original attention events: %v", err)
+	}
+	preserved, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(original, preserved) {
+		t.Fatalf("refusal changed original attention transcript: %v", err)
+	}
+	finish()
+	if !root.driveStableDelegateAttention(sub) {
+		t.Fatal("real attention owner did not accept original source")
+	}
+	retirementSettleDelegate(t, root, d)
+	fold, err := readDelegateAttentionFold(path, d.ChildSessionID)
+	if err != nil || slices.Contains(fold.pendingIDs(), attentionID) {
+		t.Fatalf("original attention was not settled: %v", err)
+	}
+	tree.mu.Lock()
+	current := tree.durable[d.DelegateID].Generation
+	tree.mu.Unlock()
+	if current != generation+1 {
+		t.Fatalf("attention owner generation = %d, original=%d", current, generation)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("settled attention source blocks: %+v %v", state, err)
+	}
+	defer c.Abort(claim, "")
+}
+
+func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	adapter := &retirementModelBarrier{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}, entered: make(chan struct{}), resume: make(chan struct{})}
+	var release sync.Once
+	defer release.Do(func() { close(adapter.resume) })
+	root.client.Register(adapter)
+	if result := (delegateRuntime{owner: root}).send(context.Background(), d.DelegateID, "quiet-source-sentinel", 0).result; result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	retirementAwait(t, adapter.entered)
+	tree.mu.Lock()
+	live := tree.live[d.DelegateID]
+	lease, original := live.binding.lease, live.runtime
+	now := live.activityAt.Add(delegateQuietWindow)
+	tree.mu.Unlock()
+	// This source reports through the real activity API using a controlled
+	// timestamp. Earlier asynchronous wall-clock activity cannot invalidate the
+	// exact quiet stretch while its publication is deliberately held here.
+	if err := tree.ReportActivity(lease, now); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(delegateQuietWindow)
+	quiet, err := tree.BeginQuietAttention(root, lease, now)
+	if err != nil || quiet == nil {
+		t.Fatalf("original quiet owner: %v", err)
+	}
+	before, err := tree.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("populated quiet/running binding admitted retirement: %+v %v", state, err)
+	}
+	duplicate, err := tree.BeginQuietAttention(root, lease, now)
+	if err != nil || duplicate != nil {
+		t.Fatalf("duplicate quiet entry did not refuse existing source: %v", err)
+	}
+	tree.mu.Lock()
+	exact := tree.quietClaims[quiet.token] == quiet && tree.live[d.DelegateID].quietClaim == quiet && tree.live[d.DelegateID].binding.lease == lease
+	tree.mu.Unlock()
+	if !exact {
+		t.Fatal("refusal replaced original quiet source/generation")
+	}
+	// A successful fence with a running binding is unreachable. This is direct
+	// no-fence refusal, not coverage of the defensive fenced-binding guard.
+	durableBefore := retirementDelegateDurableState(t, tree)
+	tree.releaseRetiredRuntimes(map[string]*Session{d.DelegateID: original})
+	if tree.residentDelegateRuntime(d.DelegateID) != original {
+		t.Fatal("unfenced release detached real bound runtime")
+	}
+	if !bytes.Equal(durableBefore, retirementDelegateDurableState(t, tree)) {
+		t.Fatal("unfenced release changed original durable state")
+	}
+	after, err := tree.store.Load()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("refusal changed original quiet generation records: %v", err)
+	}
+	deferred, err := root.appendQuietAttentionAtTurnBoundary(quiet.attentionID, quiet.content)
+	if err != nil || deferred {
+		t.Fatalf("original quiet append: deferred=%v %v", deferred, err)
+	}
+	if err := tree.CompleteQuietAttention(quiet, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.armDelegateAttention(quiet.attentionID); err != nil {
+		t.Fatal(err)
+	}
+	retirementAwait(t, quiet.done)
+	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
+	if err != nil || !slices.Contains(fold.pendingIDs(), quiet.attentionID) || fold.content[quiet.attentionID].Text() != quiet.content {
+		t.Fatalf("original quiet identity/content not durably published: %v", err)
+	}
+	release.Do(func() { close(adapter.resume) })
+	retirementSettleDelegate(t, root, d)
+	claim, state, err = c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("settled quiet source blocks: %+v %v", state, err)
+	}
+	defer c.Abort(claim, "")
+}
+
+func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	adapter := &retirementModelBarrier{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}, entered: make(chan struct{}), resume: make(chan struct{})}
+	var release sync.Once
+	defer release.Do(func() { close(adapter.resume) })
+	root.client.Register(adapter)
+	if result := (delegateRuntime{owner: root}).send(context.Background(), d.DelegateID, "caller-source-sentinel", 0).result; result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	retirementAwait(t, adapter.entered)
+	tree.mu.Lock()
+	lease := tree.live[d.DelegateID].binding.lease
+	tree.mu.Unlock()
+	plans, err := tree.SteerCaller(context.Background(), delegateActor{lease: &lease}, "caller-root-sentinel", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	steering, _, err := loadQueues(root.stateDir, root.ID())
+	if err != nil || len(steering) != 1 || steering[0].Text != "caller-root-sentinel" {
+		t.Fatalf("original root queue missing: %#v %v", steering, err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("running caller handoff admitted retirement: %+v %v", state, err)
+	}
+	sub := root.subagents.get(d.ChildSessionID)
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	release.Do(func() { close(adapter.resume) })
+	retirementAwait(t, done)
+	// Do not consume root input while settling the caller: establish that the
+	// root's retained input, independently of the completed tree, still blocks.
+	blockers, _, err := tree.retirementEvidence()
+	if err != nil || len(blockers) != 0 {
+		t.Fatalf("caller did not settle independently: %+v %v", blockers, err)
+	}
+	if len(root.retirementInputBlockers()) == 0 {
+		t.Fatal("original root input lost handoff ownership")
+	}
+	claim, state, err = c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("retained root input admitted retirement: %+v %v", state, err)
+	}
+	preserved, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
+	if err != nil || !bytes.Equal(original, preserved) {
+		t.Fatalf("retirement changed original persisted root input: %v", err)
+	}
+	if _, err := root.ProcessInput(context.Background(), "consume-caller-root-sentinel", nil); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err = c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("consumed root input blocks: %+v %v", state, err)
+	}
+	defer c.Abort(claim, "")
+}
+
+func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
+	for _, mode := range []string{"stop driver"} {
+		t.Run(mode, func(t *testing.T) {
+			root, tree, c := newRetirementDelegateController(t)
+			defer root.Close()
+			d := retirementIdleDelegate(t, root)
+			adapter := &retirementModelBarrier{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}, entered: make(chan struct{}), resume: make(chan struct{})}
+			var release sync.Once
+			defer release.Do(func() { close(adapter.resume) })
+			root.client.Register(adapter)
+			if result := (delegateRuntime{owner: root}).send(context.Background(), d.DelegateID, "stop-handoff-sentinel", 0).result; result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			retirementAwait(t, adapter.entered)
+			tree.mu.Lock()
+			lease := tree.live[d.DelegateID].binding.lease
+			tree.mu.Unlock()
+			work, err := tree.BeginShellWork(lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tree.AbortShellWork(work)
+			var stop *delegateStopState
+			var driver *delegateStopDriver
+			result, cancel, plans, err := tree.StopSubtreeAndDrive(rootDelegateActor(root.ID()), d.DelegateID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stop = tree.stopForResult(result)
+			executeDelegateCancelPlan(cancel)
+			if err := root.executeDelegateMutationPlans(plans); err != nil {
+				t.Fatal(err)
+			}
+			tree.mu.Lock()
+			if stop == nil {
+				stop = tree.stop
+			}
+			if stop != nil {
+				driver = stop.driver
+			}
+			exactWork := tree.work[work.processID] != nil && tree.work[work.processID].owner == lease
+			_, trackedWork := stop.work[work]
+			tree.mu.Unlock()
+			if stop == nil || !exactWork || !trackedWork || mode == "stop driver" && driver == nil {
+				t.Fatal("stop handoff did not retain original registration/generation/driver owner")
+			}
+			before, err := tree.store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			claim, state, err := c.TryClaim(true)
+			if err != nil || claim != nil {
+				t.Fatalf("paused %s admitted retirement: %+v %v", mode, state, err)
+			}
+			after, err := tree.store.Load()
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("retirement changed original stop records: %v", err)
+			}
+			release.Do(func() { close(adapter.resume) })
+			if err := tree.AbortShellWork(work); err != nil {
+				t.Fatal(err)
+			}
+			retirementAwait(t, driver.done)
+			if driver.err != nil {
+				t.Fatal(driver.err)
+			}
+			after, err = tree.store.Load()
+			if err != nil || !slices.ContainsFunc(after, func(e delegatestore.Event) bool {
+				return e.SubtreeStopCompleted != nil && e.SubtreeStopCompleted.RequestSeq == stop.requestSeq
+			}) {
+				t.Fatalf("original driver stop did not settle: %v", err)
+			}
+			if _, err := root.ProcessInput(context.Background(), "consume-stop-driver-sentinel", nil); err != nil {
+				t.Fatal(err)
+			}
+			claim, state, err = c.TryClaim(true)
+			if err != nil || claim == nil {
+				t.Fatalf("settled driver blocks: %+v %v", state, err)
+			}
+			defer c.Abort(claim, "")
+
+		})
+	}
+}
+
+func TestRetirementDelegateTerminalCloseHandoff(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	child := tree.residentDelegateRuntime(d.DelegateID)
+	finish := retirementPauseFileRead(t, transcriptPath(root.stateDir, d.ChildSessionID), func() error { return tree.Close(context.Background()) })
+	defer finish()
+	tree.mu.Lock()
+	stop, closing := tree.stop, tree.closing
+	tree.mu.Unlock()
+	if stop == nil || !closing {
+		t.Fatal("filesystem boundary was not reached inside original terminal Close")
+	}
+	before, err := tree.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("paused terminal Close admitted retirement: %+v %v", state, err)
+	}
+	after, err := tree.store.Load()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("retirement changed original terminal stop records: %v", err)
+	}
+	finish()
+	if _, err := tree.store.Load(); err == nil {
+		t.Fatal("terminal Close left store open")
+	}
+	tree.mu.Lock()
+	terminal := tree.closing && tree.stop == nil && !tree.durable[d.DelegateID].CurrentRunOpen && tree.durable[d.DelegateID].PendingStopSeq == 0
+	tree.mu.Unlock()
+	child.mu.Lock()
+	childClosed := child.state == SessionClosed
+	child.mu.Unlock()
+	if !terminal || !childClosed {
+		t.Fatal("Close lost original terminal lifecycle semantics")
+	}
+}
+
+func TestRetirementDelegateReconcileReturnedOwner(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	result, cancel, initial, err := tree.StopSubtree(rootDelegateActor(root.ID()), d.DelegateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := tree.stopForResult(result)
+	if stop == nil {
+		t.Fatal("real stop owner missing")
+	}
+	executeDelegateCancelPlan(cancel)
+	if err := root.executeDelegateMutationPlans(initial); err != nil {
+		t.Fatal(err)
+	}
+	var retained delegateMutationPlans
+	for !delegateStopDone(stop) {
+		evidence, err := collectDelegateReconcileEvidence(tree.stateDir, tree.ReconcileRequirements())
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans, err := tree.Reconcile(evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if delegateStopDone(stop) {
+			retained = plans
+			break
+		}
+		if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if retained.retirementRelease == nil || len(retained.updates) == 0 {
+		t.Fatal("final direct reconciliation did not return owned effects")
+	}
+	before, err := tree.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(before, func(e delegatestore.Event) bool {
+		return e.SubtreeStopCompleted != nil && e.SubtreeStopCompleted.RequestSeq == stop.requestSeq
+	}) {
+		t.Fatal("original stop completion missing")
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		c.Abort(claim, "")
+	}
+	if err != nil || claim != nil {
+		t.Errorf("retained reconciliation admitted retirement: %+v %v", state, err)
+	}
+	if err := root.executeDelegateMutationPlans(retained); err != nil {
+		t.Fatal(err)
+	}
+	after, err := tree.store.Load()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("consumer changed original reconciliation events: %v", err)
+	}
+	claim, state, err = c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("settled reconciliation blocks: %+v %v", state, err)
+	}
+	defer c.Abort(claim, "")
+}
+
+func retirementDelegateDurableState(t *testing.T, tree *delegateTreeController) []byte {
+	t.Helper()
+	tree.mu.Lock()
+	state, err := json.Marshal(tree.durable)
+	tree.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func TestRetirementDelegateReleaseExactRuntime(t *testing.T) {
+	for _, mode := range []string{"no fence", "exact", "replacement"} {
+		t.Run(mode, func(t *testing.T) {
+			root, tree, c := newRetirementDelegateController(t)
+			defer root.Close()
+			d := retirementIdleDelegate(t, root)
+			original := tree.residentDelegateRuntime(d.DelegateID)
+			provided := original
+			if mode == "replacement" {
+				if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
+					t.Fatal(err)
+				}
+				_, sub, err := root.restoreColdDelegateAttentionRuntime(d.DelegateID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original = sub.sess
+				if original == provided {
+					t.Fatal("real reconstruction did not replace pointer")
+				}
+			}
+			before, err := tree.store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != "no fence" {
+				claim, state, err := c.TryClaim(true)
+				if err != nil || claim == nil {
+					t.Fatalf("claim: %+v %v", state, err)
+				}
+				defer c.Abort(claim, "")
+			}
+			durableBefore := retirementDelegateDurableState(t, tree)
+			tree.releaseRetiredRuntimes(map[string]*Session{d.DelegateID: provided})
+			want := original
+			if mode == "exact" {
+				want = nil
+			}
+			if tree.residentDelegateRuntime(d.DelegateID) != want {
+				t.Fatal("release did not preserve exact pointer contract")
+			}
+			if !bytes.Equal(durableBefore, retirementDelegateDurableState(t, tree)) {
+				t.Fatal("nonterminal pointer release changed original durable state")
+			}
+			after, err := tree.store.Load()
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("nonterminal pointer release changed durable events: %v", err)
+			}
+		})
 	}
 }
 

@@ -773,10 +773,22 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		finishRestore(nil, err)
 		return nil, err
 	}
+	var installation *delegateIdleRuntimeInstallation
+	if mode == delegateRuntimeAttachIdle {
+		installation, err = s.delegateController.beginIdleRuntimeInstallation(started.lease.delegateID)
+		if err != nil {
+			if restored {
+				sub.sess.discardRestoredCandidate()
+			}
+			finishRestore(nil, err)
+			return nil, err
+		}
+		defer installation.release()
+	}
 	attach := func(selected *subagent) error {
 		switch mode {
 		case delegateRuntimeAttachIdle:
-			return s.delegateController.AttachIdleRuntime(started.lease.delegateID, selected.sess)
+			return installation.attach(selected.sess)
 		case delegateRuntimeAttachStarted:
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		default:
