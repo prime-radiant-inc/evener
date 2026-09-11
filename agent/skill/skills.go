@@ -88,7 +88,7 @@ func ScanSkillsDir(dir string, out map[string]SkillMeta) {
 
 // LoadSkillBody reads a SKILL.md and returns the markdown body (after frontmatter).
 func LoadSkillBody(meta SkillMeta) (string, error) {
-	loaded, _, err := load(Descriptor{CatalogName: meta.Name, Meta: meta}, meta.Name != "")
+	loaded, _, err := Load(Descriptor{CatalogName: meta.Name, Meta: meta})
 	if err != nil {
 		return "", err
 	}
@@ -138,16 +138,6 @@ func ResolveSkill(skills map[string]SkillMeta, name string) (catalogName string,
 func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, error) {
 	catalogName, meta, ok := ResolveSkill(skills, name)
 	if ok {
-		// Metadata parsed during discovery records the declared name. Older callers
-		// may provide only a namespaced catalog name, so recover its suffix when
-		// no parsed metadata is available.
-		if declaredName, parsed := meta.Metadata["name"].(string); parsed {
-			meta.Name = declaredName
-		} else if meta.Name == catalogName {
-			if _, suffix, namespaced := strings.Cut(catalogName, ":"); namespaced {
-				meta.Name = suffix
-			}
-		}
 		loaded, _, err := Load(Descriptor{CatalogName: catalogName, Meta: meta})
 		if err != nil {
 			return "", err

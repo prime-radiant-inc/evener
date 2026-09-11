@@ -78,8 +78,14 @@ func TestScanSkillsDir_MissingDirIsNoop(t *testing.T) {
 
 func TestLoadSkillBody(t *testing.T) {
 	root := t.TempDir()
-	path := writeSkill(t, root, "tdd", validSkill)
-	body, err := LoadSkillBody(SkillMeta{SkillFile: path})
+	writeSkill(t, root, "tdd", validSkill)
+	skills := map[string]SkillMeta{}
+	ScanSkillsDir(root, skills)
+	meta, ok := skills["tdd"]
+	if !ok {
+		t.Fatal("discovery did not produce tdd metadata")
+	}
+	body, err := LoadSkillBody(meta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +100,14 @@ func TestLoadSkillBody(t *testing.T) {
 
 func TestResolveSkillContent_ExactAndUnnamespaced(t *testing.T) {
 	root := t.TempDir()
-	path := writeSkill(t, root, "tdd", validSkill)
-	skills := map[string]SkillMeta{"myplugin:tdd": {Name: "myplugin:tdd", SkillFile: path}}
+	writeSkill(t, root, "tdd", validSkill)
+	discovered := map[string]SkillMeta{}
+	ScanSkillsDir(root, discovered)
+	meta, ok := discovered["tdd"]
+	if !ok {
+		t.Fatal("discovery did not produce tdd metadata")
+	}
+	skills := map[string]SkillMeta{"myplugin:tdd": meta}
 
 	// Unnamespaced "tdd" resolves the namespaced key.
 	body, err := ResolveSkillContent(skills, "tdd")

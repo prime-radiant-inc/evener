@@ -34,10 +34,6 @@ type SkillDocument struct {
 
 // Load reads and validates the exact source recorded by d.
 func Load(d Descriptor) (LoadedSkill, []Diagnostic, error) {
-	return load(d, true)
-}
-
-func load(d Descriptor, verifyDeclaredName bool) (LoadedSkill, []Diagnostic, error) {
 	data, err := os.ReadFile(d.Meta.SkillFile)
 	if err != nil {
 		diagnostic := Diagnostic{
@@ -53,7 +49,7 @@ func load(d Descriptor, verifyDeclaredName bool) (LoadedSkill, []Diagnostic, err
 	if err != nil {
 		return LoadedSkill{}, diagnostics, err
 	}
-	if verifyDeclaredName && current.Meta.Name != d.Meta.Name {
+	if current.Meta.Name != d.Meta.Name {
 		diagnostic := Diagnostic{
 			Category: "source_identity_changed",
 			Name:     d.CatalogName,
