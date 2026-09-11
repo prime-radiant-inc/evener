@@ -9,7 +9,7 @@ import (
 // Removing lifecycle metadata from the real persistence boundary loses this
 // independent wire fixture, including explicit false controls and obligations.
 func TestSkillLifecycleSnapshot_MetaRoundTrip(t *testing.T) {
-	const lifecycle = `{"revision":7,"inventory":{"scope:alpha":{"ordinary":{"identity":{"name":"scope:alpha","declared_name":"alpha","source":"/fixture/alpha/SKILL.md","file_digest":"file-1","rendered_digest":"render-1"},"description":"fixture-description","controls":{"disable_model_invocation":false,"user_invocable":false},"route":"user_slash","invocation_id":"inv-1","user_authorized":true},"preload":{"name":"scope:alpha","description":"frozen-description","source":"/fixture/frozen/SKILL.md","file_digest":"frozen-file","rendered_digest":"frozen-render"}}},"obligations":[{"invocation_id":"inv-1","tool_call_id":"tool-1","client_mutation_id":"mutation-1","atomic_group_id":"group-1","identity":{"name":"scope:alpha","declared_name":"alpha","source":"/fixture/alpha/SKILL.md","file_digest":"file-1","rendered_digest":"render-1"},"route":"user_slash"}],"pinned_note_gen":19,"next_operation_gen":23}`
+	const lifecycle = `{"revision":7,"inventory":{"scope:alpha":{"ordinary":{"identity":{"name":"scope:alpha","declared_name":"alpha","source":"/fixture/alpha/SKILL.md","file_digest":"file-1","rendered_digest":"render-1"},"description":"fixture-description","controls":{"disable_model_invocation":false,"user_invocable":false},"route":"user_slash","invocation_id":"inv-1","user_authorized":true},"preload":{"name":"scope:alpha","description":"frozen-description","source":"/fixture/frozen/SKILL.md","file_digest":"frozen-file","rendered_digest":"frozen-render"}}},"obligations":[{"invocation_id":"inv-1","tool_call_id":"tool-1","client_mutation_id":"mutation-1","atomic_group_id":"group-1","identity":{"name":"scope:alpha","declared_name":"alpha","source":"/fixture/alpha/SKILL.md","file_digest":"file-1","rendered_digest":"render-1"},"route":"user_slash"}],"pinned_note_gen":19,"next_operation_gen":24,"pending_selection":{"state":"valid","names":["scope:alpha"]},"pending_compaction":{"generation":24,"origin":"forced","instructions":"opaque-instructions","note_generation":20,"selection":{"state":"valid","names":["scope:alpha"]},"phase":"pending"}}`
 	var meta SessionMeta
 	if err := json.Unmarshal([]byte(`{"id":"lifecycle-fixture","pinned_note":"opaque-note","skills":`+lifecycle+`}`), &meta); err != nil {
 		t.Fatal(err)
@@ -44,6 +44,34 @@ func TestSkillLifecycleSnapshot_MetaRoundTrip(t *testing.T) {
 	}
 	if got.PinnedNote != "opaque-note" {
 		t.Fatalf("pinned note=%q", got.PinnedNote)
+	}
+}
+
+// TestSkillLifecycleSnapshot_PendingCompactionCloneDetached pins that Clone
+// deep-copies the pending compaction operation, selection names included, so a
+// snapshot (Meta()) can never alias the runtime operation.
+func TestSkillLifecycleSnapshot_PendingCompactionCloneDetached(t *testing.T) {
+	snap := SkillLifecycleSnapshot{
+		Inventory: map[string]SkillInventoryEntry{},
+		PendingCompaction: &SkillCompactionOperation{
+			Generation:     9,
+			Origin:         "automatic",
+			NoteGeneration: 4,
+			Selection:      SkillReloadSelection{State: "valid", Names: []string{"scope:alpha"}},
+			Phase:          "pending",
+		},
+	}
+	clone := snap.Clone()
+	if clone.PendingCompaction == snap.PendingCompaction {
+		t.Fatal("Clone aliased the pending compaction operation pointer")
+	}
+	clone.PendingCompaction.Phase = "published"
+	clone.PendingCompaction.Selection.Names[0] = "mutated"
+	if snap.PendingCompaction.Phase != "pending" {
+		t.Fatal("Clone did not detach the operation phase")
+	}
+	if snap.PendingCompaction.Selection.Names[0] != "scope:alpha" {
+		t.Fatal("Clone did not detach the operation selection names")
 	}
 }
 

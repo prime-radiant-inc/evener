@@ -20,15 +20,26 @@ import (
 // It skips when a note is already set — the agent's own compact-tool note (or a
 // note elicited earlier this cycle) wins and is never overwritten; the slot reopens
 // when a winning compaction claims the note at publication
-// (claimPinnedNoteLocked), so the next cycle re-elicits fresh facts. That skip
-// also serves as the per-compaction latch, so a stuck-high pressure turn does
-// not re-fire the side LLM call every round.
+// (claimPinnedNoteLocked), so the next cycle re-elicits fresh facts. It also
+// skips when any pending or published-but-undelivered compaction operation
+// owns the cycle: the accepted response is recorded once per cycle, so that
+// latch is also the first-wins rule for the reload selection — a later
+// elicitation can never overwrite the concrete selection the cycle already
+// owns, not even with an invalid one.
+//
+// The note generation is captured BEFORE the elicitor call; the acceptance
+// (acceptAutomaticSkillCompaction) is rejected when the note changed or an
+// operation appeared mid-elicitation, and persists the elicited response as a
+// generation-owned automatic operation before any compaction runs.
 func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history []schema.Turn, sysPromptChars int) {
 	if s.contextMgr == nil {
 		return
 	}
 	if s.PinnedNote() != "" {
 		return // a note is already set — don't overwrite the agent's (or this cycle's) note
+	}
+	if s.pendingSkillCompactionSnapshot() != nil {
+		return // an operation already owns this compaction cycle — its response is recorded
 	}
 	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
 		return // no compaction imminent — nothing to capture yet
@@ -41,6 +52,10 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 		return // nothing will be folded yet — nothing to capture
 	}
 	foldable := history[:cutoff]
+
+	// Capture the note generation before the actual elicitor call, so the
+	// acceptance can reject a response that raced a note change.
+	_, capturedNoteGen := s.pinnedNoteSnapshot()
 
 	inventory := s.skillInventorySnapshot()
 	var raw string
@@ -57,16 +72,18 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 		s.emit(events.EventWarning, events.WarningData{Message: "note elicitation failed: " + err.Error()})
 		return
 	}
-	// Split the selection block from the free-text note. An invalid selection
-	// preserves the note verbatim; only a concrete (non-absent) selection is
-	// recorded, so an earlier explicit selection for this cycle is never
-	// clobbered by an elicitation that made none.
+	// Split the selection block from the free-text note and accept both as one
+	// generation-owned automatic operation. An invalid selection preserves the
+	// note verbatim; a rejected acceptance (stale generation, or an operation
+	// that appeared mid-elicitation) records nothing, so a losing attempt
+	// writes no metadata. A whitespace-only elicited note pins nothing — the
+	// same visible note behavior the pre-persistence elicitor had.
 	note, selection := parseSkillReloadElicitation(raw, inventory)
-	if selection.State != "absent" {
-		s.setPendingSkillReloadSelection(selection)
+	if strings.TrimSpace(note) == "" {
+		note = ""
 	}
-	if strings.TrimSpace(note) != "" {
-		s.setPinnedNote(note)
+	if _, err := s.acceptAutomaticSkillCompaction(ctx, capturedNoteGen, note, selection); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: "persisting the elicited compaction intent failed: " + err.Error()})
 	}
 }
 
@@ -179,9 +196,12 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	return true
 }
 
-// requestForceCompact records that the compact tool asked for a compaction at the
-// round tail. One per round: a second request before takeForceRequest consumes the
-// first is an error so distinct intents are never silently clobbered.
+// requestForceCompact records that a compaction was requested for the round
+// tail. One per round: a second request before the transient is consumed is an
+// error so distinct per-round intents are never silently clobbered. This is
+// the transient trigger primitive; the compact tool's durable intent is the
+// generation-owned operation requestSkillCompaction persists, and a restored
+// forced operation re-arms this same transient at resume.
 func (s *Session) requestForceCompact(instructions string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,12 +214,30 @@ func (s *Session) requestForceCompact(instructions string) error {
 }
 
 // applyPendingForceCompact runs an agent-requested compaction at the tool-round
-// tail. It mirrors Session.Compact but threads the agent's instructions and runs
-// only when a request is pending. The pinned note is re-stamped inside the
-// compaction via runPreCompactHook, so no post-call append is needed.
+// tail. The transient round request is only the per-round trigger: it is cleared
+// here, but the instructions come from the pending forced operation's owner
+// snapshot (retained until publication or terminal cancellation) when one
+// exists — never consumed from the transient — so a crash between the tool call
+// and this tail cannot lose the steering. A bare transient without an
+// operation (the requestForceCompact primitive) keeps its own instructions.
+//
+// The persisted operation itself stays PENDING on BOTH fold success and
+// failure: consuming, claiming, or cancelling it from a fold result belongs to
+// the generation-matched publication claim inside the fold transaction, not
+// here. On conflict the caller's compaction_instructions are still intent, not
+// pressure, and losing them without a trace hides real steering loss.
 func (s *Session) applyPendingForceCompact(ctx context.Context) {
-	instructions, ok := s.takeForceRequest()
-	if !ok || s.contextMgr == nil {
+	s.mu.Lock()
+	requested := s.forceRequested
+	instructions := s.pendingInstructions
+	s.forceRequested = false
+	s.pendingInstructions = ""
+	if op := s.skillLifecycle.PendingCompaction; op != nil && op.Origin == skillCompactionOriginForced && op.Phase == skillCompactionPhasePending {
+		// The persisted owner snapshot wins over the transient copy.
+		instructions = op.Instructions
+	}
+	s.mu.Unlock()
+	if !requested || s.contextMgr == nil {
 		return
 	}
 

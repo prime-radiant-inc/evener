@@ -73,6 +73,23 @@ type SkillInventorySummary struct {
 	HasPreload   bool
 }
 
+// SkillCompactionOperation is one generation-owned compaction intent: the
+// note, steering instructions, and reload selection a compaction cycle must
+// honor, recorded as operation metadata (never skill bodies). Generation comes
+// from the lifecycle's NextOperationGen counter and is never reused across a
+// restart. The slot holds at most one operation; it clears only on terminal
+// cancellation or completed delivery, so a fold can claim exactly the
+// generation it captured.
+type SkillCompactionOperation struct {
+	Generation     uint64               `json:"generation"`
+	Origin         string               `json:"origin"` // forced or automatic
+	Instructions   string               `json:"instructions"`
+	NoteGeneration uint64               `json:"note_generation"`
+	Selection      SkillReloadSelection `json:"selection"`
+	Phase          string               `json:"phase"` // pending or published
+	PublicationID  string               `json:"publication_id,omitempty"`
+}
+
 type SkillLifecycleSnapshot struct {
 	Revision         uint64                         `json:"revision"`
 	Inventory        map[string]SkillInventoryEntry `json:"inventory"`
@@ -83,6 +100,10 @@ type SkillLifecycleSnapshot struct {
 	// the next successfully published compaction; absent means no selection
 	// was made (or a previous one was consumed).
 	PendingSelection *SkillReloadSelection `json:"pending_selection,omitempty"`
+	// PendingCompaction is the compaction operation owning the current cycle:
+	// awaiting publication (phase "pending") or delivery (phase "published").
+	// Nil means no compaction intent is outstanding.
+	PendingCompaction *SkillCompactionOperation `json:"pending_compaction,omitempty"`
 }
 
 type SkillInputRecord struct {
@@ -137,6 +158,11 @@ func (s SkillLifecycleSnapshot) Clone() SkillLifecycleSnapshot {
 		selection := *s.PendingSelection
 		selection.Names = slices.Clone(selection.Names)
 		out.PendingSelection = &selection
+	}
+	if s.PendingCompaction != nil {
+		operation := *s.PendingCompaction
+		operation.Selection.Names = slices.Clone(operation.Selection.Names)
+		out.PendingCompaction = &operation
 	}
 	return out
 }

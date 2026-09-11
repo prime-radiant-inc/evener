@@ -208,6 +208,28 @@ the plain clear-note behavior. An invalid selection in an accepted request
 never discards that request's valid note. A selection belongs to one
 compaction cycle and is consumed only by a compaction that actually publishes.
 
+Accepted requests are generation-owned, persisted compaction operations, not
+per-round flags. Each operation mints a generation from the session's
+lifecycle counter, records its origin (`forced` from `compact_context`,
+`automatic` from note elicitation), the note generation it owns, its steering
+instructions, and its selection; it stays pending until the fold publication
+claims it (moving it to the published phase for delivery) or a terminal
+cancellation retires it. The metadata save happens before the tool reports
+success, so an intent is never durable-by-assertion: a failed save returns a
+typed, retryable failure and retires the unsaved operation. Restart is not
+cancellation: a resumed session re-arms an unpublished forced operation's
+round-tail trigger from the persisted record, an automatic operation restores
+its elicitation latch, and a published operation resumes for delivery only.
+Clearing or replacing a note cancels only the automatic operation associated
+with that note; a forced operation survives a note clear, and a second forced
+request while one is pending is rejected without touching the first. While
+any pending or published-but-undelivered operation owns the cycle, note
+elicitation is latched — which is also the first-wins rule: a later
+elicitation can never overwrite the concrete selection the cycle already
+recorded, not even with an invalid one. Sessions persisted before this
+lifecycle metadata existed resume with fresh compaction state; nothing is
+reconstructed from old tool calls or transcript prose.
+
 The context-pressure nudge lists the loaded skills either way: with
 `compact_context` available it asks for the selection through `reload_skills`;
 without the tool it lists the skills for awareness and keeps its existing

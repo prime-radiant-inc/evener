@@ -56,7 +56,6 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: defCompact(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			_ = env
 			note, _ := args["note_to_self"].(string)
 			instructions, _ := args["compaction_instructions"].(string)
@@ -73,21 +72,17 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 			}
 			selection := parseSkillReloadSelection(selRaw, deps.skillInventory())
 
-			// Clearing a note (empty note, no instructions, no selection) does
-			// not force a compaction. A present selection — even an explicit
-			// empty array — requests one.
-			if note == "" && instructions == "" && selection.State == "absent" {
-				deps.setPinnedNote("")
-				return tool.StateResult{Output: "Note cleared. No compaction requested."}, nil
-			}
-			if err := deps.requestForceCompact(instructions); err != nil {
-				// Reject without mutating state — a rejected double-call must not
-				// silently clobber the note or selection set by the accepted
-				// first call.
+			// The request is atomic and generation-owned: an empty note with
+			// no instructions and an absent selection clears without
+			// compaction; a present selection — even an explicit empty array —
+			// requests one. A rejected double-call mutates nothing, and a
+			// failed save reports a typed error instead of success.
+			if _, err := deps.requestSkillCompaction(ctx, note, instructions, selection); err != nil {
 				return nil, fmt.Errorf("compact: %w", err)
 			}
-			deps.setPinnedNote(note)
-			deps.setPendingSkillReloadSelection(selection)
+			if note == "" && instructions == "" && selection.State == "absent" {
+				return tool.StateResult{Output: "Note cleared. No compaction requested."}, nil
+			}
 			// Compaction runs at the round tail, AFTER this returns — the message is a
 			// prediction from current pressure, never past-tense.
 			out := predictionMessage(note == "", deps.pressure())
