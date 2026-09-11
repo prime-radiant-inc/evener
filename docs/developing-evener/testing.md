@@ -312,6 +312,19 @@ the evidence that produced the failure remains available. Standard reusable
 caches outside the owned roots are audited separately rather than claimed as
 temporary cleanup.
 
+Before the root wave runs anything, the runner enumerates the root module's
+packages with `go list ./...`, and that step is bounded because it can block
+forever when the configured Go caches sit on a stalled volume. The bound is a
+tripwire on a stall, not a budget for the work: `EVENER_ROOT_PACKAGE_LIST_TIMEOUT`
+seconds per attempt (default 60) over `EVENER_ROOT_PACKAGE_LIST_ATTEMPTS`
+attempts (default 3, one second apart), so a run that never lists its packages
+fails in about three minutes rather than hanging. Only a timed-out attempt is
+retried; a `go list` that exits non-zero has decided something about the
+package list itself and is reported at once. The timeout diagnostic names the
+effective GOCACHE and GOMODCACHE, the retained stderr log covering every
+attempt, the cache-repair command, and the per-attempt knob — a host merely
+slower than the budget needs the last of those, not the cache repair.
+
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
 browser-specific gate in its web job.

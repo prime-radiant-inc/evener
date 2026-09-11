@@ -19,10 +19,16 @@
 # coverage for ~6s rather than ~40s. Set WEB=0 to skip it.
 #
 # Usage:
-#   scripts/run-module-tests.sh <go-test-flags...>
-#     scripts/run-module-tests.sh -short -count=1
-#     scripts/run-module-tests.sh -race -short -count=1
-#     WEB=0 scripts/run-module-tests.sh -short -count=1   # Go modules only
+#   scripts/gate/run-module-tests.sh <go-test-flags...>
+#     scripts/gate/run-module-tests.sh -short -count=1
+#     scripts/gate/run-module-tests.sh -race -short -count=1
+#     WEB=0 scripts/gate/run-module-tests.sh -short -count=1   # Go modules only
+#
+# The root module's `go list ./...` is bounded: EVENER_ROOT_PACKAGE_LIST_TIMEOUT
+# seconds per attempt (default 60) over EVENER_ROOT_PACKAGE_LIST_ATTEMPTS
+# attempts (default 3), a timed-out attempt being the only one retried. Raise
+# the per-attempt budget on a host slower than that; the failure diagnostic
+# names both knobs.
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
@@ -109,13 +115,26 @@ ROOT_P=${ROOT_P-6}
 AGENT_PARALLEL=${AGENT_PARALLEL-6}
 AGENT_P=${AGENT_P-4}
 
-# Root discovery is normally quick, but it can block forever when the configured
-# Go caches live on a stalled volume. Keep that failure bounded without changing
-# cache configuration: the operator gets the configured cache paths and an exact
-# repair/retry command instead. This must be a positive integer in seconds.
-ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-30}
+# Root discovery is normally quick, and two different things make it slow: the
+# configured Go caches can live on a stalled volume, where it blocks forever,
+# and a cold, loaded CI runner can simply take longer than a tight budget. One
+# 30s attempt could not tell those apart, so a merely slow runner failed the
+# whole gate before a test ran and was told to clean its caches (GitHub run
+# 34639098143). Each attempt now gets its own budget and a timed-out attempt is
+# retried — the killed attempt still warmed GOCACHE/GOMODCACHE for the next one
+# — while a run that never completes fails exactly as before, with the
+# configured cache paths, the retained stderr log, and a repair command.
+#
+# Both must be positive integers; the worst case is ATTEMPTS x TIMEOUT seconds
+# plus a second of backoff between attempts, so 3 x 60s is a ~182s ceiling.
+ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-60}
 if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	exit 2
+fi
+ROOT_PACKAGE_LIST_ATTEMPTS=${EVENER_ROOT_PACKAGE_LIST_ATTEMPTS:-3}
+if [[ ! "$ROOT_PACKAGE_LIST_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_ATTEMPTS must be a positive integer (got %q)\n' "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
 	exit 2
 fi
 
@@ -236,6 +255,13 @@ scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()
 
+# A retried root package list has to outlive the wave subshell that saw it: its
+# stderr goes to the module log, which a green run deletes, so a run that only
+# passed because of the retry would report a clean PASS and say nothing about
+# the host that needed it. Each retry appends its line here and the report
+# replays them after the waves.
+root_package_list_retry_log="$logdir/root.packages.retries"
+
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
@@ -244,37 +270,64 @@ root_package_list_timeout_diagnostic() {
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	printf 'run-module-tests.sh: go list ./... timed out after %ss.\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	printf 'run-module-tests.sh: go list ./... timed out after %ss on each of %s attempts.\n' \
+		"$ROOT_PACKAGE_LIST_TIMEOUT" "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
 	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
 	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
+	printf 'run-module-tests.sh: a stalled cache volume is one cause; a host slower than the per-attempt budget is the other.\n' >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
 	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
+	printf 'run-module-tests.sh: or give a slow host more room per attempt:\n' >&2
+	printf '  EVENER_ROOT_PACKAGE_LIST_TIMEOUT=%s scripts/gate/run-module-tests.sh -short -count=1\n' \
+		"$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
 run_root_package_list() {
-	local package_list="$1" package_list_stderr list_pid started_at list_status
+	local package_list="$1" package_list_stderr attempt list_pid started_at list_status
 	package_list_stderr="${package_list}.stderr"
-	( go list ./... >"$package_list" 2>"$package_list_stderr" ) &
-	list_pid="$!"
-	started_at=$SECONDS
-	while kill -0 "$list_pid" 2>/dev/null; do
-		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
-			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic "$package_list_stderr"
-			return 1
+	# Every attempt appends under its own heading, so the diagnostic still names
+	# one retained log and whoever reads it sees what each attempt said.
+	: >"$package_list_stderr"
+	attempt=1
+	while :; do
+		printf '=== go list ./... attempt %s of %s ===\n' "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" >>"$package_list_stderr"
+		( go list ./... >"$package_list" 2>>"$package_list_stderr" ) &
+		list_pid="$!"
+		started_at=$SECONDS
+		while kill -0 "$list_pid" 2>/dev/null; do
+			if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
+				stop_process_tree "$list_pid"
+				if [ "$attempt" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
+					root_package_list_timeout_diagnostic "$package_list_stderr"
+					return 1
+				fi
+				printf 'go list ./... attempt %s of %s timed out after %ss; retrying.\n' \
+					"$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" "$ROOT_PACKAGE_LIST_TIMEOUT" \
+					| tee -a "$root_package_list_retry_log" >&2
+				sleep 1
+				attempt=$((attempt + 1))
+				continue 2
+			fi
+			sleep 0.1
+		done
+		# The status has to be read inside the else branch: after the `if`
+		# compound closes, $? is the `if`'s own status, which is 0 when an
+		# else-less condition fails.
+		if wait "$list_pid"; then
+			return 0
+		else
+			list_status=$?
+			# Only the timeout is retried. A `go list` that exits non-zero has
+			# decided something about the package list itself — an unparseable
+			# source, a missing module — and repeating it just repeats the
+			# answer.
+			cat "$package_list_stderr" >&2
+			return "$list_status"
 		fi
-		sleep 0.1
 	done
-	if wait "$list_pid"; then
-		return 0
-	else
-		list_status=$?
-		cat "$package_list_stderr" >&2
-		return "$list_status"
-	fi
 }
 
 run_module() {
@@ -417,6 +470,12 @@ run_wave $WAVE1
 run_wave $WAVE2
 
 [ -n "$web_pid" ] && finish_stream web "$web_pid"
+
+if [ -s "$root_package_list_retry_log" ]; then
+	while IFS= read -r retry_line; do
+		printf 'run-module-tests.sh: %s\n' "$retry_line"
+	done <"$root_package_list_retry_log"
+fi
 
 # A -run pattern that matches no test name is not an error to `go test`: every
 # package reports "[no tests to run]" and exits 0, so every module reports PASS
