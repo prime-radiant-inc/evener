@@ -47,14 +47,12 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 		if !alwaysOn {
 			return
 		}
-		wire = llm.ClampReasoningEffort("medium", caps.EffortValues)
+		wire = "medium"
 	}
-	// A field that spells the level (reasoning_effort, reasoning.effort,
-	// thinking) is written only for a level the row's ladder vouches for. A
-	// row with no ladder — an uncatalogued model — gets no level rather than
-	// one a provider may reject. The dialects' non-level enable objects below
-	// still fire unconditionally, so a mandatory-thinking row keeps thinking
-	// on without being told a level it cannot accept.
+	// VouchedEffort clamps within the row's ladder and refuses a level the
+	// ladder does not list, so a row with no ladder writes no effort name.
+	// The non-level enable objects below still fire, keeping a
+	// mandatory-thinking row on without a level it cannot accept.
 	level := llm.VouchedEffort(wire, caps.EffortValues)
 	switch format {
 	case "", "openai":
@@ -62,10 +60,9 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 			body["reasoning_effort"] = level
 		}
 	case "openrouter":
-		switch {
-		case explicit && level != "":
+		if explicit && level != "" {
 			body["reasoning"] = map[string]any{"effort": level}
-		case alwaysOn:
+		} else if alwaysOn {
 			body["reasoning"] = map[string]any{"enabled": true}
 		}
 	case "zai":

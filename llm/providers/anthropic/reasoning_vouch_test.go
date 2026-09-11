@@ -12,8 +12,12 @@ import (
 // level is dropped rather than forced.
 func TestApplyThinkingShape_AdaptiveEmptyLadderDropsEffortName(t *testing.T) {
 	high := "high"
+	res := protoRes(func(c *registry.Caps) {
+		c.EffortValues = nil
+		c.ThinkingShape = new("adaptive")
+		c.ThinkingAlwaysOn = new(true)
+	})
 	body := map[string]any{}
-	res := registry.Resolved{Caps: registry.Caps{ThinkingShape: new("adaptive"), ThinkingAlwaysOn: new(true)}}
 	applyThinkingShape(body, llm.Request{ReasoningEffort: &high}, res, false)
 	if _, has := body["output_config"]; has {
 		t.Fatalf("empty-ladder adaptive row wrote output_config: %v", body)
@@ -26,11 +30,12 @@ func TestApplyThinkingShape_AdaptiveEmptyLadderDropsEffortName(t *testing.T) {
 // A vouched adaptive effort is still written, clamped into the ladder.
 func TestApplyThinkingShape_AdaptiveVouchedEffortClamps(t *testing.T) {
 	xhigh := "xhigh"
+	res := protoRes(func(c *registry.Caps) {
+		c.EffortValues = []string{"low", "high"}
+		c.ThinkingShape = new("adaptive")
+		c.ThinkingAlwaysOn = new(true)
+	})
 	body := map[string]any{}
-	res := registry.Resolved{Caps: registry.Caps{
-		ThinkingShape: new("adaptive"), ThinkingAlwaysOn: new(true),
-		EffortValues: []string{"low", "high"},
-	}}
 	applyThinkingShape(body, llm.Request{ReasoningEffort: &xhigh}, res, false)
 	cfg, _ := body["output_config"].(map[string]any)
 	if cfg == nil || cfg["effort"] != "high" {
@@ -42,8 +47,11 @@ func TestApplyThinkingShape_AdaptiveVouchedEffortClamps(t *testing.T) {
 // writes the effort name when the row vouches for it.
 func TestApplyThinkingShape_BudgetPlusEffortEmptyLadderKeepsBudget(t *testing.T) {
 	high := "high"
+	res := protoRes(func(c *registry.Caps) {
+		c.EffortValues = nil
+		c.ThinkingShape = new("budget+effort")
+	})
 	body := map[string]any{}
-	res := registry.Resolved{Caps: registry.Caps{ThinkingShape: new("budget+effort")}}
 	applyThinkingShape(body, llm.Request{ReasoningEffort: &high}, res, false)
 	if _, has := body["output_config"]; has {
 		t.Fatalf("empty-ladder budget+effort row wrote an effort name: %v", body)

@@ -112,7 +112,9 @@ func applyThinkingShape(body map[string]any, req llm.Request, res registry.Resol
 	if req.ReasoningEffort != nil {
 		effort = *req.ReasoningEffort
 	}
-	switch registry.StringValue(caps.ThinkingShape) {
+	shape := registry.StringValue(caps.ThinkingShape)
+	vouched := llm.VouchedEffort(effort, caps.EffortValues)
+	switch shape {
 	case "adaptive":
 		if !registry.BoolValue(caps.ThinkingAlwaysOn) && effort == "" {
 			return
@@ -122,8 +124,8 @@ func applyThinkingShape(body map[string]any, req llm.Request, res registry.Resol
 			thinking["display"] = display
 		}
 		body["thinking"] = thinking
-		if v := llm.VouchedEffort(effort, caps.EffortValues); v != "" {
-			body["output_config"] = map[string]any{"effort": v}
+		if vouched != "" {
+			body["output_config"] = map[string]any{"effort": vouched}
 		}
 	case "budget", "budget+effort":
 		if effort == "" {
@@ -136,10 +138,8 @@ func applyThinkingShape(body map[string]any, req llm.Request, res registry.Resol
 		if budget > 0 {
 			body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 		}
-		if registry.StringValue(caps.ThinkingShape) == "budget+effort" {
-			if v := llm.VouchedEffort(effort, caps.EffortValues); v != "" {
-				body["output_config"] = map[string]any{"effort": v}
-			}
+		if shape == "budget+effort" && vouched != "" {
+			body["output_config"] = map[string]any{"effort": vouched}
 		}
 	}
 }

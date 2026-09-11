@@ -756,9 +756,6 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 // use this: such a row legitimately states no effort ladder and still needs
 // the requested effort to size its budget.
 func VouchedEffort(requested string, levels []string) string {
-	if len(levels) == 0 {
-		return ""
-	}
 	v := ClampReasoningEffort(requested, levels)
 	if v == "" || v == ReasoningEffortNone {
 		return ""
