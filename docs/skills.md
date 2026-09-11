@@ -135,6 +135,45 @@ no expansion on them: no shell execution, no file inclusion, no argument
 substitution. Template-like syntax and context-delimiter text in the body are
 delivered verbatim as instruction data.
 
+### Complete delivery at dispatch
+
+Every tracked route delivers the same complete rendered document: `use_skill`
+returns it as tool content, a leading slash or structured selection supplies
+it as separately identifiable typed context next to your preserved original
+text and arguments, and a role preload carries it in the permanent prompt.
+The activation event (`SKILL_ACTIVATED`) fires only after the complete body
+is admitted into an actual outgoing model request, not at resolution or tool
+execution time.
+
+Delivery is complete-or-fail. `use_skill` has no default output truncation: a
+skill body is never silently shortened. A configured `use_skill` output limit
+produces an explicit complete-delivery failure instead of partial
+instructions, and the failure is recorded with the machine-readable
+`output_limit` code. Admission budgets through the existing token estimator,
+model context window, and output reservation, with mandatory prompt content
+and the current request admitted before any reload content. If the final
+request still cannot fit, the dispatch fails visibly with a context-budget
+error — it never truncates a protected body, claims success, or starts
+another compact/reload cycle. If a skill is that large, move conditional
+detail into reference files under the skill directory; the body should hold
+the core instructions and point at collateral the model reads lazily with
+`read_file` only when the task needs it.
+
+The session inventory (loaded previously) is tracked separately from complete
+content currently present, and only the latter permits deduplication. A repeat
+`use_skill` for identical content returns a provisional already-present notice
+and keeps a pending delivery obligation. That obligation is revalidated
+against the final outgoing request: if compaction or projection removed the
+earlier carrier, the same recorded source is reloaded under the invocation's
+policy and re-admitted through a typed activation notification linked to the
+original invocation. Changed disk content produces an explicit change notice
+with the complete current instructions; a deleted or unreadable source
+produces a typed failure. Neither is ever reported as a false delivery.
+Obligations persist across transport retries and restart, and restored
+sessions reconcile receipts so a retained complete body is proven, not
+redelivered or double-reported. A failed reinvocation never erases an earlier
+successful record.
+
 ## Evener-wide slash commands
 
 A evener-wide slash command is a markdown file — frontmatter optional — in one
