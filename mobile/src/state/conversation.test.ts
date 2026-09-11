@@ -12402,6 +12402,38 @@ describe("ConversationStore", () => {
         truncatedOutput,
       );
     });
+
+    it("unfreezes a later clustered member the reread returns short", async () => {
+      const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
+      const { store, service } = await openProjectedWithItems([
+        toolItem("wire-a", "key-a", "call-a", "first"),
+        toolItem("wire-b", "key-b", "call-b", oversized),
+      ]);
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+
+      // The reread is authoritative: it carries short content for the member,
+      // so the member unfreezes exactly as a top-level row would.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                toolItem("wire-a", "key-a", "call-a", "first"),
+                toolItem("wire-b", "key-b", "call-b", "short"),
+              ],
+            }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(false);
+      toolOutputDelta(store, "wire-b", "call-b", " MORE");
+      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
+        "short MORE",
+      );
+    });
   });
 
   describe("Task 2A-Cluster: paging dedupe spans every incoming identity", () => {

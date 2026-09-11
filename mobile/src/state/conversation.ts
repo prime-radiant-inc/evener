@@ -1963,9 +1963,13 @@ export function createConversationStore() {
           // freeze for already-frozen current-only items (live tail / page
           // items not in the reread — already truncated, text ≤ limit). Reread
           // IDs are authoritative: short content unfreezes, oversized freezes.
+          // The reread set is member-inclusive: a clustered member's freeze is
+          // as answerable to an authoritative short version as a top-level
+          // row's, and a top-level-only set would carry every member freeze
+          // forward for good.
           const rehydratePriorFrozen = new Set<string>();
           for (const id of truncatedItemIds) {
-            if (!rereadKeys.has(id)) rehydratePriorFrozen.add(id);
+            if (!rereadIdentities.has(id)) rehydratePriorFrozen.add(id);
           }
           const supersededFrozen = new Set<string>();
           for (const id of supersededIds) {
