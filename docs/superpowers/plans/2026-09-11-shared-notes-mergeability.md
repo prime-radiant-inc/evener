@@ -73,8 +73,8 @@ This callback only runs for unseen mutation IDs. Completed records still replay,
 
 - [x] Investigator runs unchanged 127-test smoke, adds actual UI/store regressions: unsupported palette availability/invocation, desktop/menu/mobile/standalone blank panel; supported live/ended/closed/notLoaded read/edit controls.
 - [x] Parent inspects complete test diff and independently reruns it: five failures, 140 passes. Ended read access is valid and must remain.
-- [ ] Add tests for unhydrated capability, rail false/unknown/true hydration transition, and imperative opener gating before implementation. Unhydrated rail rows have no capability in navigation summaries. Use the existing reactive thread store, not a new wire field, live-status inference, or fetch per rail row. Opening the session loads its authoritative model; its Notes menu then becomes available when supported.
-- [ ] Implement the shared read predicate:
+- [x] Add tests for unhydrated capability, rail false/unknown/true hydration transition, and imperative opener gating before implementation. Unhydrated rail rows have no capability in navigation summaries. Use the existing reactive thread store, not a new wire field, live-status inference, or fetch per rail row. Opening the session loads its authoritative model; its Notes menu then becomes available when supported.
+- [x] Implement the shared read predicate:
 
 ```typescript
 import type { ThreadModel } from "./model";
@@ -85,8 +85,22 @@ export function canReadSharedNotes(model: Pick<ThreadModel, "capabilities"> | un
 
 Pass it through both shared-menu adapters. Omit only the Notes row when false. Guard direct chrome/standalone imperative opening as well as visible affordances. Set `capability: "sharedNotes"` on the notes command, guard direct invocation with the current model, and make unresolved Notes capability unavailable without changing other commands' unhydrated policy. Reuse the predicate in NotesPanelBody. Preserve read-only controls, current pane lifetimes and all editor state.
 
-- [ ] Run the original four-suite command plus new rail/menu tests; all original and new assertions must pass. Run touched-file Biome and canonical `GOMAXPROCS=4 make test-web`.
-- [ ] Independently review, commit named paths only, then parent safely integrates under exact branch/ref/ancestry checks.
+- [x] Run the original four-suite command plus new rail/menu tests; all original and new assertions must pass. Run touched-file Biome and canonical `GOMAXPROCS=4 make test-web`.
+- [x] Independently review, commit named paths only, then parent safely integrates under exact branch/ref/ancestry checks.
+
+Delivered capability commit `7af4c92602490f98197cb73d09b8826f9f19c154` and rail capture `f6227a4701274d2e431f31efe24676953be27c19` integrated as `1a0061abd9a64dfded65b24bc481c5e353ed830e`. All thirteen integrated files match the independently reviewed artifact. Accepted implementation detail: the helper accepts `ThreadModel | undefined`; every caller already supplies that type. Canonical exit zero does not establish pristine diagnostics because its wrapper discards successful raw test logs; the separately discovered output boundary follows.
+
+## Task 4: Repair frontend test diagnostics
+
+**Constraint:** Test-environment and fixture boundaries only. Preserve all assertions, event ordering and application behavior. Do not suppress unexpected output, enable global Vitest APIs, change timeouts, or disable checks.
+
+- [x] Capture and assert the exact expected rail, dialog and external QR-module errors at their individual React roots. Preserve every original UI assertion. Independent review approved both diagnostic commits; parent integrated the second as `112938c04e47ac29214c8f6d6d055c00017ba7eb` and ran all seventeen tests with pristine output.
+- [x] Reproduce missing React act-environment setup with a real Composer durability scenario. Add a pass-through zero-console-error assertion; observe its failure before explicit test-only setup. Independently review and verify the setup plus regression, preserving imported hooks and manual cleanup. Commit `396e8d533659e9f59c5048ac8287098e5afcbdb3`.
+- [x] Run and retain the entire frontend output with explicit setup. All 440 files/10,014 Vitest tests and 64 Node tests pass, but 3,560 missing-act warnings across 39 files and 38 environment warnings across two files remain. This is a substantially wider fixture boundary than the initial reproduction; no pristine full-gate claim.
+- [x] Resolve the repair-scope decision before expanding fixture changes. Jesse selected a separate main-based prerequisite PR. Preserve the global diagnostic configuration, real regression guard and every observed diagnostic; do not narrow setup to hide the wider fixture work.
+- [ ] Repair the approved fixture/async ownership boundaries, independently review, and rerun raw full frontend output alongside the canonical gate before final acceptance.
+
+The prerequisite carries only test configuration, diagnostic assertions and fixture async-ownership repairs. Keep shared-notes production changes in PR #1070. Publish and verify the prerequisite separately, then integrate its reviewed work into the notes branch and rerun that branch's full gates. Neither PR is authorized for automatic merge; strict-main checks and human approval remain required.
 
 ## Final acceptance and delivery
 
