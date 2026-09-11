@@ -448,7 +448,19 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread) bool
 		return true
 	}
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
-	if err != nil || ref.SourceID != "local" || cfg.ResumeLocks == nil {
+	if err != nil || ref.SourceID != "local" {
+		return false
+	}
+	// A daemon's recovery flags reach the hub only through the roster: the local
+	// source builds its listed threads from roster entries that carry no status
+	// flags, and a live thread/read is answered by the daemon itself, whose
+	// response has never carried them either. Asking the roster is what keeps
+	// this projection and fork admission on one answer, since admission decides
+	// the same signal with the same predicate.
+	if hubForkLiveStatusFenced(cfg, ref.ThreadID) {
+		return true
+	}
+	if cfg.ResumeLocks == nil {
 		return false
 	}
 	state := cfg.ResumeLocks.RecoveryState(ref.ThreadID)

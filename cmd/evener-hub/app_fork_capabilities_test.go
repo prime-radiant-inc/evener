@@ -1070,3 +1070,73 @@ func TestHubForkValidatesParamsBeforeOwnershipDiscovery(t *testing.T) {
 		})
 	}
 }
+
+// The recovery flags a daemon reports reach the hub only through the roster:
+// the local source's list projection builds its threads from roster entries
+// that carry no flags, and a live thread/read is answered by the daemon itself,
+// whose response has never carried them either. So the capability projection
+// asks the roster the same question fork admission asks it, and both read and
+// list stop advertising a fork the RPC would refuse.
+func TestHubForkCapabilityHonoursDaemonReportedRecoveryFlags(t *testing.T) {
+	const sessionID = "hub-fork-active-flags"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "flags-test-token"})
+	daemon.SetAppIdentity("local", sessionID)
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "flags-test-token",
+	})
+	for _, tc := range []struct {
+		name     string
+		flags    []string
+		wantFork bool
+	}{
+		{name: "no flags", wantFork: true},
+		{name: "resume required", flags: []string{"resumeRequired"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roster := hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: sessionID, flags: tc.flags})
+			roster.Refresh()
+			owner, ok := roster.Find(sessionID)
+			if !ok || !slices.Equal(owner.ActiveFlags, tc.flags) {
+				t.Fatalf("roster owner=%+v ok=%v, want the daemon's reported flags %v", owner, ok, tc.flags)
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir: runDir, Roster: roster, StateDir: runDir, Past: hubcore.NewPastIndex(""),
+			})
+			t.Cleanup(hub.Close)
+			client := dialHubRPC(t, hub)
+			t.Cleanup(func() { _ = client.Close() })
+			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed := false
+			for _, thread := range list.Data {
+				if thread.Evener.Ref != ref {
+					continue
+				}
+				listed = true
+				if got := thread.Evener.Capabilities.ForkFromTurn; got != tc.wantFork {
+					t.Errorf("listed forkFromTurn=%v, want %v", got, tc.wantFork)
+				}
+			}
+			if !listed {
+				t.Fatalf("the live thread is not in the list: %+v", list.Data)
+			}
+			read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := read.Thread.Evener.Capabilities.ForkFromTurn; got != tc.wantFork {
+				t.Errorf("read forkFromTurn=%v, want %v", got, tc.wantFork)
+			}
+		})
+	}
+}
