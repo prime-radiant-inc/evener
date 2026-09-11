@@ -1146,7 +1146,9 @@ func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.
 	if err != nil {
 		return true
 	}
-	defer process.Close() //nolint:errcheck // liveness probe cleanup; a close failure does not change the answer
+	// The daemon answered, which is the whole question here; the probe handle
+	// is released immediately and a close failure does not change that answer.
+	_ = process.Close()
 	return true
 }
 
