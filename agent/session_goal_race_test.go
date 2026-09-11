@@ -79,7 +79,11 @@ func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
 	var hammer sync.WaitGroup
 	for _, fn := range []func(){
 		func() { _, _ = sess.SetGoal(context.Background(), "race objective") },
-		func() { sess.ClearGoal() },
+		func() {
+			if err := sess.ClearGoal(); err != nil {
+				t.Error(err)
+			}
+		},
 	} {
 
 		hammer.Go(func() {

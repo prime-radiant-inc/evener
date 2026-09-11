@@ -77,7 +77,7 @@ type serveServer interface {
 	SetModelFunc(func(string) error)
 	SetVisionModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
-	SetNameFunc(func(string))
+	SetNameFunc(func(string) error)
 	SetReasoningEffortFunc(func(string) error)
 	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
 	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
@@ -937,8 +937,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		if strings.TrimSpace(objective) == "" {
-			getSession().ClearGoal()
-			return false, nil
+			return false, getSession().ClearGoal()
 		}
 		return getSession().SetGoal(ctx, objective)
 	})
@@ -999,7 +998,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
 		return nil
 	})
-	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
+	srv.SetNameFunc(func(name string) error { return getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) error { return getSession().SetReasoningEffort(effort) })
 	// Resolve the session per call like the model/effort hooks above: binding one
 	// session's method value here would pin the hook to the pre-thread/clear session.

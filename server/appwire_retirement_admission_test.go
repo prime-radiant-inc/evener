@@ -131,11 +131,14 @@ type retirementRouteTicker struct{ *time.Ticker }
 
 func (t retirementRouteTicker) C() <-chan time.Time { return t.Ticker.C }
 
-func retirementEngineServer(t *testing.T) (*Server, *agent.Session, *agent.RetirementController) {
+func retirementEngineServer(t *testing.T, adapters ...llm.ProviderAdapter) (*Server, *agent.Session, *agent.RetirementController) {
 	t.Helper()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&blockingServerAdapter{name: "openai", started: make(chan struct{}), done: make(chan error, 1)})
+	for _, adapter := range adapters {
+		client.Register(adapter)
+	}
 	root, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -157,8 +160,7 @@ func retirementEngineServer(t *testing.T) (*Server, *agent.Session, *agent.Retir
 	s.SetNameFunc(root.Rename)
 	s.SetGoalFunc(func(objective string) (bool, error) {
 		if objective == "" {
-			root.ClearGoal()
-			return false, nil
+			return false, root.ClearGoal()
 		}
 		return root.SetGoal(context.Background(), objective)
 	})
@@ -168,11 +170,80 @@ func retirementEngineServer(t *testing.T) (*Server, *agent.Session, *agent.Retir
 	return s, root, c
 }
 
-func TestRetirementRoutedEngineEffectsRefused(t *testing.T) {
+func TestRetirementDirectSetterCallbackErrorsReachRoute(t *testing.T) {
 	s, root, c := retirementEngineServer(t)
-	root.Rename("opaque-original")
+	if err := root.Rename("original-name"); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v, %v", state, err)
+	}
+	defer func() {
+		if err := c.Abort(claim, ""); err != nil {
+			t.Error(err)
+		}
+	}()
+	// No outer route admission: this proves the actual callback error, not the
+	// already-covered router fence, reaches the caller.
+	for _, tc := range []struct {
+		method string
+		params any
+	}{
+		{appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Name: "refused-name"}},
+		{appwire.MethodGoalSet, appwire.GoalSetParams{Objective: ""}},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			raw, err := json.Marshal(tc.params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.AppServer().Router().Dispatch(context.Background(), appwire.Request{Method: tc.method, Params: raw})
+			if !errors.Is(err, agent.ErrRetirementUnavailable) {
+				t.Fatalf("direct callback lifecycle error lost: %v", err)
+			}
+		})
+	}
+	if got := root.Meta().Name; got != "original-name" {
+		t.Fatalf("refused route changed name: %q", got)
+	}
+}
+
+type retirementGoalSettlementAdapter struct {
+	step int
+}
+
+func (*retirementGoalSettlementAdapter) Name() string { return "openai" }
+func (*retirementGoalSettlementAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+func (a *retirementGoalSettlementAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	var call llm.ToolCallData
+	switch a.step {
+	case 0:
+		call = llm.ToolCallData{ID: "original-goal-completion", Name: "update_goal", Type: "function", Arguments: []byte(`{"status":"complete","intent":"completing seeded goal"}`)}
+	case 1:
+		call = llm.ToolCallData{ID: "original-goal-report", Name: "communicate", Type: "function", Arguments: []byte(`{"message":"settled","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`)}
+	default:
+		return llm.Response{}, errors.New("unexpected provider call after goal settlement")
+	}
+	a.step++
+	return llm.Response{Provider: "openai", Model: req.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, nil
+}
+
+func TestRetirementRoutedEngineEffectsRefused(t *testing.T) {
+	s, root, c := retirementEngineServer(t, &retirementGoalSettlementAdapter{})
+	if err := root.Rename("opaque-original"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := root.SetGoal(context.Background(), "opaque-goal"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := root.ProcessInput(context.Background(), "settle", nil); err != nil {
+		t.Fatal(err)
+	}
+	if g := root.Meta().Goal; g == nil || g.Objective != "opaque-goal" || g.Status != "complete" {
+		t.Fatalf("original goal did not settle: %+v", g)
 	}
 	before := root.Meta()
 	s.SetRetirementAdmission(func(_ context.Context, kind string) (func(), error) {

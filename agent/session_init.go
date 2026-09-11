@@ -354,6 +354,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.clock = s.clock
 	jm.now = s.clock.Now
 	jm.delegateController = s.delegateController
+	jm.retirementOwner = s
 	s.jobManager = jm
 
 	// Capture the launch origin from the environment before initSessionState
@@ -970,6 +971,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.clock = s.clock
 	jm.now = s.clock.Now
 	jm.delegateController = s.delegateController
+	jm.retirementOwner = s
 	s.jobManager = jm
 	// Restore daemon steering before restore side effects can enqueue a
 	// restart-owned notification. Loading it later would overwrite that new

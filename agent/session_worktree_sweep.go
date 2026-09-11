@@ -48,6 +48,11 @@ func (s *Session) armLaneResidueSweepTimer() {
 // bails (and close has nothing to wait for). No re-lock, ever — the pass only
 // touches already-unlocked lanes.
 func (s *Session) fireOpenLaneResidueSweep() {
+	work, ok := s.beginEnvWork("lane-residue-sweep")
+	if !ok {
+		return
+	}
+	defer s.endEnvWork(work)
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()

@@ -127,34 +127,53 @@ func (s *Session) releaseAPILogRoute() {
 // followed by an Add outside the lock would reopen the race (spec §P1, rev-9.1
 // finding O5). A true return MUST be paired with a (deferred) endDispose().
 func (s *Session) beginDispose() bool {
+	release, err := s.beginRetirementMutation("environment")
+	if err != nil {
+		return false
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closing {
+		s.mu.Unlock()
+		release()
 		return false
 	}
 	s.disposeWG.Add(1)
+	s.disposeRetirement = append(s.disposeRetirement, release)
+	s.mu.Unlock()
 	return true
 }
 
 // endDispose releases a dispose admission obtained from beginDispose().
 func (s *Session) endDispose() {
+	s.mu.Lock()
+	last := len(s.disposeRetirement) - 1
+	release := s.disposeRetirement[last]
+	s.disposeRetirement[last] = nil
+	s.disposeRetirement = s.disposeRetirement[:last]
+	s.mu.Unlock()
 	s.disposeWG.Done()
+	release()
 }
 
 // envWorkID handles one admission on envWorkWG, so its label can be dropped
 // again when the work returns.
 type envWorkID uint64
 
+type envWorkRecord struct {
+	label   string
+	release func()
+}
+
 // registerEnvWorkLocked records an admission described by label and returns its
 // handle. The caller holds s.mu and has already established that the session is
 // not closing — that pairing is the whole point (see beginEnvWork).
-func (s *Session) registerEnvWorkLocked(label string) envWorkID {
+func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID {
 	s.envWorkSeq++
 	id := envWorkID(s.envWorkSeq)
 	if s.envWork == nil {
-		s.envWork = make(map[envWorkID]string)
+		s.envWork = make(map[envWorkID]envWorkRecord)
 	}
-	s.envWork[id] = label
+	s.envWork[id] = envWorkRecord{label: label, release: release}
 	s.envWorkWG.Add(1)
 	return id
 }
@@ -193,12 +212,19 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 //     so skipping it would leave the residue the rollback exists to prevent.
 //     Better unfenced cleanup than none.
 func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closing {
+	release, err := s.beginRetirementMutation("environment")
+	if err != nil {
 		return 0, false
 	}
-	return s.registerEnvWorkLocked(label), true
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		release()
+		return 0, false
+	}
+	id := s.registerEnvWorkLocked(label, release)
+	s.mu.Unlock()
+	return id, true
 }
 
 // relabelEnvWork renames a live admission. An operation's admission is taken
@@ -209,17 +235,22 @@ func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
 func (s *Session) relabelEnvWork(id envWorkID, label string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, live := s.envWork[id]; live {
-		s.envWork[id] = label
+	if work, live := s.envWork[id]; live {
+		work.label = label
+		s.envWork[id] = work
 	}
 }
 
 // endEnvWork releases an admission obtained from beginEnvWork().
 func (s *Session) endEnvWork(id envWorkID) {
 	s.mu.Lock()
+	work := s.envWork[id]
 	delete(s.envWork, id)
 	s.mu.Unlock()
 	s.envWorkWG.Done()
+	if work.release != nil {
+		work.release()
+	}
 }
 
 // outstandingEnvWork lists the labels of every admission still in flight,
@@ -228,8 +259,8 @@ func (s *Session) outstandingEnvWork() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	labels := make([]string, 0, len(s.envWork))
-	for _, label := range s.envWork {
-		labels = append(labels, label)
+	for _, work := range s.envWork {
+		labels = append(labels, work.label)
 	}
 	sort.Strings(labels)
 	return labels
@@ -357,6 +388,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		if s.cancelFunc != nil {
 			s.cancelFunc()
 		}
+		// Escalations can use a context independent of the turn. Deny their
+		// human-decision waits before joining the retained environment work;
+		// closing already prevents any new escalation from registering.
+		s.cancelAllEscalations()
 		// A delegate result is acknowledged only after its enclosing tool-result
 		// turn is durable. Closing refuses that turn, so release any receipts that
 		// can no longer reach their commit point before stopping the tree.
@@ -432,11 +467,6 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		subs := s.subagents.drainForClose()
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
-		// Deny every in-flight sandbox escalation so a tool-exec goroutine blocked on
-		// a human decision unblocks (typed denial) rather than leaking. Safe after
-		// the unlock: closing was set above under the lock, so escalateOnSandboxDenial
-		// refuses to register any new escalation past this point.
-		s.cancelAllEscalations()
 		// Flush the just-accumulated work time and usage now, before any
 		// teardown below (Decision 4/L3): Close is the terminal event for a
 		// turn that died mid-flight above, and also for a turn that was

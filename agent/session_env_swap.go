@@ -63,6 +63,10 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // with s.mu held: it may only assign session fields, and must neither block
 // nor take s.mu itself.
 func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, record func()) error {
+	release, err := s.beginRetirementMutation("environment")
+	if err != nil {
+		return err
+	}
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
 	// it: the git snapshot and the pre-warm below spawn through next, and a
 	// command is what mints a scratch on an environment that owns none. Adopting
@@ -92,10 +96,11 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	shared := s.parentSharedEnv
 	var admission envWorkID
 	if !closing {
-		admission = s.registerEnvWorkLocked("environment swap to " + next.WorkingDirectory())
+		admission = s.registerEnvWorkLocked("environment swap to "+next.WorkingDirectory(), release)
 	}
 	s.mu.Unlock()
 	if closing {
+		release()
 		return errSwapWhileClosing
 	}
 	defer s.endEnvWork(admission)

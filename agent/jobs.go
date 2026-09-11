@@ -63,9 +63,12 @@ func (e *terminalRecordPersistError) Unwrap() error {
 }
 
 type jobManager struct {
-	mu             sync.Mutex
-	watchNotifyMu  sync.Mutex
-	watchPersistMu sync.Mutex
+	// retirementOwner is installed before publication and never rebound. Unlike
+	// stable-parent routing, process admission follows the Session's atomic pointer.
+	retirementOwner *Session
+	mu              sync.Mutex
+	watchNotifyMu   sync.Mutex
+	watchPersistMu  sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
 	// and wait only after releasing that mutex.
@@ -893,7 +896,19 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	run.closeDoneAbandoned()
 }
 
+func (jm *jobManager) beginRetirementMutation(category string) (func(), error) {
+	if jm.retirementOwner != nil {
+		return jm.retirementOwner.beginRetirementMutation(category)
+	}
+	return func() {}, nil
+}
+
 func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {
+	release, err := jm.beginRetirementMutation("job")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	startedAt := jm.now()
 	jobID, outputPath, output, err := jm.createJobOutput()
 	if err != nil {

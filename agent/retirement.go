@@ -266,7 +266,7 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation, tree: c.root.delegateController}
 	claim := c.claim
 	c.mu.Unlock()
-	blockers := claim.root.retirementInputBlockers()
+	var blockers []RetirementBlocker
 	var evidenceErr error
 	if claim.tree != nil {
 		evidenceErr = claim.tree.setRetirementFence(claim)
@@ -275,6 +275,8 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 			treeBlockers, _, evidenceErr = claim.tree.retirementEvidence()
 			blockers = append(blockers, treeBlockers...)
 		}
+	} else {
+		blockers, evidenceErr = claim.root.retirementEvidence()
 	}
 	if evidenceErr != nil || len(blockers) != 0 {
 		if claim.tree != nil {

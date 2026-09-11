@@ -593,6 +593,11 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 }
 
 func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureHooks) (watchResult, error) {
+	release, err := jm.beginRetirementMutation("watch")
+	if err != nil {
+		return watchResult{}, err
+	}
+	defer release()
 	if a.Target == "" {
 		return watchResult{}, errors.New("invalid_request: target is required")
 	}
@@ -3395,6 +3400,13 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 }
 
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
+	release, err := jm.beginRetirementMutation("watch")
+	if err != nil {
+		// Refusal must not consume the firing or end its registration. If a
+		// tentative claim aborts, the existing ticker retries normally.
+		return true
+	}
+	defer release()
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 

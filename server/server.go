@@ -388,7 +388,7 @@ type Server struct {
 	clearJournalErr                 error
 	modelFunc                       func(string) error
 	visionModelFunc                 func(string) error
-	nameFunc                        func(string)
+	nameFunc                        func(string) error
 	reasoningEffortFunc             func(string) error
 	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
 	tasksFn                         func() any
@@ -716,7 +716,7 @@ func (s *Server) SetVisionModelFunc(fn func(string) error) {
 }
 
 // SetNameFunc sets the function called by the rename appwire method.
-func (s *Server) SetNameFunc(fn func(string)) {
+func (s *Server) SetNameFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.nameFunc = fn
 	s.mu.Unlock()

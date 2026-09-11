@@ -192,7 +192,9 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 
 		t.Run("rename and metadata defensive branches", func(t *testing.T) {
 			s := &Session{profile: NewOpenAIProfile("gpt-5")}
-			s.Rename("   ")
+			if err := s.Rename("   "); err != nil {
+				t.Error(err)
+			}
 			s.applyModelRequestMetadata(nil)
 		})
 

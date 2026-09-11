@@ -236,7 +236,7 @@ func exerciseAppWireResiduals() {
 	_, _ = s.handleAppThreadModelSet(ctx, appwire.ThreadModelSetParams{Model: "m"})
 	_, _ = s.handleAppThreadNameSet(ctx, appwire.ThreadNameSetParams{})
 	_, _ = s.handleAppThreadNameSet(ctx, appwire.ThreadNameSetParams{Name: "name"})
-	s.SetNameFunc(func(string) {})
+	s.SetNameFunc(func(string) error { return nil })
 	_, _ = s.handleAppThreadNameSet(ctx, appwire.ThreadNameSetParams{Name: "name"})
 	_, _ = s.handleAppTasksList(ctx, appwire.TaskListParams{})
 	_, _ = s.handleAppModelList(ctx, appwire.ModelListParams{})

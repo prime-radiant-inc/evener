@@ -771,6 +771,25 @@ func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
 	return out
 }
 
+// beginAttentionCallback retains local ownership even when the process
+// controller is attached after this callback starts. Source receipt consumption
+// and retry-generation resets do not settle an outstanding unlocked callback.
+func (s *Session) beginAttentionCallback() (func(), error) {
+	release, err := s.beginRetirementMutation("notification")
+	if err != nil {
+		return nil, err
+	}
+	s.attentionMu.Lock()
+	s.attentionCallbacks++
+	s.attentionMu.Unlock()
+	return func() {
+		s.attentionMu.Lock()
+		s.attentionCallbacks--
+		s.attentionMu.Unlock()
+		release()
+	}, nil
+}
+
 func (s *Session) scheduleRootAttentionRetryLocked() {
 	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
 		return
@@ -783,6 +802,11 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	generation := s.rootAttentionRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		release, err := s.beginAttentionCallback()
+		if err != nil {
+			return
+		}
+		defer release()
 		s.attentionMu.Lock()
 		if s.rootAttentionRetry.generation != generation {
 			s.attentionMu.Unlock()

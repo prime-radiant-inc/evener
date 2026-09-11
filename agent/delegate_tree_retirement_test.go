@@ -1279,6 +1279,57 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	defer c.Abort(claim, "")
 }
 
+// The eligibility direction of the same owner: while the original attention
+// source is pending the tree must deny a claim, and only the real owner's
+// settlement of that exact source restores eligibility.
+func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	const attentionID = "attention-pending-sentinel"
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-pending-content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
+	tree.mu.Lock()
+	_, pending := tree.attentionWakeIDs[d.DelegateID][attentionID]
+	tree.mu.Unlock()
+	if !pending {
+		t.Fatal("original attention source was not populated")
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		if abortErr := c.Abort(claim, ""); abortErr != nil {
+			t.Fatal(abortErr)
+		}
+	}
+	if claim != nil || err != nil {
+		t.Fatalf("pending attention escaped: %+v %v", state, err)
+	}
+	if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
+		return b.Category == "delegate" && b.DelegateID == d.DelegateID
+	}) {
+		t.Fatalf("pending attention lost its original owner: %+v", state)
+	}
+	if !root.driveStableDelegateAttention(sub) {
+		t.Fatal("real attention owner did not accept original source")
+	}
+	retirementSettleDelegate(t, root, d)
+	path := transcriptPath(root.stateDir, d.ChildSessionID)
+	fold, err := readDelegateAttentionFold(path, d.ChildSessionID)
+	if err != nil || slices.Contains(fold.pendingIDs(), attentionID) {
+		t.Fatalf("original attention was not settled: %v", err)
+	}
+	claim, state, err = c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("settled attention blocks: %+v %v", state, err)
+	}
+	defer c.Abort(claim, "")
+}
+
 func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
@@ -1406,11 +1457,23 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 	// Do not consume root input while settling the caller: establish that the
 	// root's retained input, independently of the completed tree, still blocks.
 	blockers, _, err := tree.retirementEvidence()
-	if err != nil || len(blockers) != 0 {
-		t.Fatalf("caller did not settle independently: %+v %v", blockers, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(root.retirementInputBlockers()) == 0 {
-		t.Fatal("original root input lost handoff ownership")
+	// The whole-tree collector now includes the root's own evidence by design
+	// (task-4 brief: resident/root narrow projections replaced with
+	// Session-local retirementEvidence). "Settled independently" means no
+	// delegate-category blocker remains for the settled caller; the retained
+	// root input must still surface, root-owned, in the same pass.
+	if slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
+		return b.Category == "delegate" || b.DelegateID != ""
+	}) {
+		t.Fatalf("caller did not settle independently: %+v", blockers)
+	}
+	if !slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
+		return b.Category == "input" && b.SessionID == root.ID() && b.DelegateID == ""
+	}) || len(root.retirementInputBlockers()) == 0 {
+		t.Fatalf("original root input lost handoff ownership: %+v", blockers)
 	}
 	claim, state, err = c.TryClaim(true)
 	if err != nil || claim != nil {

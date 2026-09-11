@@ -44,7 +44,7 @@ type residualServeServer struct {
 	meta           func() schema.SessionMeta
 	model          func(string) error
 	visionModel    func(string) error
-	name           func(string)
+	name           func(string) error
 	effort         func(string) error
 	tasks          func() any
 	jobs           func(appwire.JobsListParams) (any, error)
@@ -87,7 +87,7 @@ func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeS
 func (s *residualServeServer) RefreshThreadEnvelope()                      {}
 func (s *residualServeServer) SetModelFunc(f func(string) error)           { s.model = f }
 func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.visionModel = f }
-func (s *residualServeServer) SetNameFunc(f func(string))                  { s.name = f }
+func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
 func (s *residualServeServer) SetTasksFunc(f func() any)                   { s.tasks = f }
 func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
@@ -114,7 +114,9 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	}
 	_ = s.queue("queued")
 	_ = s.queueImages("queued", nil)
-	_, _ = s.goal(" ")
+	if _, err := s.goal(" "); err != nil {
+		t.Error(err)
+	}
 	_, _ = s.goal("objective")
 	_ = s.drain()
 	_ = s.drainInput("x", nil)
@@ -135,7 +137,9 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_ = s.envelopeSource.SessionMeta()
 	_ = s.model("test2")
 	_ = s.visionModel("off")
-	s.name("renamed")
+	if err := s.name("renamed"); err != nil {
+		t.Error(err)
+	}
 	if err := s.effort("low"); err != nil {
 		t.Fatal(err)
 	}

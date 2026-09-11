@@ -2046,8 +2046,7 @@ func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.Thread
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("rename not available")
 	}
-	fn(name)
-	return appwire.EmptyResponse{}, nil
+	return appwire.EmptyResponse{}, fn(name)
 }
 
 func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {

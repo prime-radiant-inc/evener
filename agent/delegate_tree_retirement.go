@@ -160,18 +160,33 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 				blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 				continue
 			}
+			if meta.Goal != nil && meta.Goal.Status == "active" {
+				blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: d.ChildSessionID, DelegateID: id})
+			}
 			fold, err := readExistingDelegateAttentionFold(path, sessionID)
 			if err != nil || len(fold.pendingIDs()) != 0 {
 				blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 			}
+			local, err := retirementColdEvidence(c.stateDir, d.ChildSessionID, id)
+			blockers = append(blockers, local...)
+			if err != nil {
+				return blockers, nil, err
+			}
 		}
 	}
 	for _, s := range sessions {
-		blockers = append(blockers, s.retirementInputBlockers()...)
-		blockers = append(blockers, s.retirementDelegateBlockers()...)
+		local, err := s.retirementEvidence()
+		blockers = append(blockers, local...)
+		if err != nil {
+			return blockers, nil, err
+		}
 	}
 	if c.rootRuntime != nil {
-		blockers = append(blockers, c.rootRuntime.retirementDelegateBlockers()...)
+		local, err := c.rootRuntime.retirementEvidence()
+		blockers = append(blockers, local...)
+		if err != nil {
+			return blockers, nil, err
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

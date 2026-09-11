@@ -110,7 +110,11 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 		func() { sess.SetReasoningEffort("high") },
 		func() { _ = sess.DetailedStatus() },
 		func() { _, _ = sess.SetGoal(context.Background(), "do the thing") },
-		func() { sess.ClearGoal() },
+		func() {
+			if err := sess.ClearGoal(); err != nil {
+				t.Error(err)
+			}
+		},
 		func() { _ = sess.State() },
 		func() { _ = sess.Meta() },
 	}

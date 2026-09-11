@@ -644,7 +644,9 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 		defer cancel()
 		_, _ = sess.SetGoal(ctx, op.Text)
 	case opClearGoal:
-		sess.ClearGoal()
+		if err := sess.ClearGoal(); err != nil {
+			panic(err) // runOpSafely records this as a lifecycle failure.
+		}
 	case opAdvanceClock:
 		// Advance virtual time so any armed single-session timer (the job
 		// notification retry, etc.) fires. No timers are required to be parked,
