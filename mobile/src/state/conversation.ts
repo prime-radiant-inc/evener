@@ -1866,11 +1866,12 @@ export function createConversationStore() {
               if (item.kind === "activity") {
                 const replacement = mergeLiveActivityMembers(item, currentConvForMerge.items, liveOwnedRevs, entryLiveRev);
                 if (replacement) {
-                  // Supersession is per member, like truncation and freezing:
-                  // the live delta that won a later member owns that member's
-                  // identity, and recording only the cluster's top-level one
-                  // loses the member's freeze at reconciliation.
-                  supersededIds.add(identity);
+                  // Supersession is per member, like truncation and freezing.
+                  // Only the members the live side won are named: a cluster's
+                  // top-level identity IS its first member's, so adding it
+                  // whenever any member was won would freeze that first member
+                  // against an authoritative short reread. An unclustered item
+                  // is its own member, so it names itself here.
                   for (const member of replacement.supersededIdentities) {
                     supersededIds.add(member);
                   }

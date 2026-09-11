@@ -12559,6 +12559,54 @@ describe("ConversationStore", () => {
       );
     });
 
+    it("leaves a member the live side did not win answerable to the reread", async () => {
+      const oversizedA = "a".repeat(MAX_ITEM_BYTES + 100);
+      const { store, service } = await openProjectedWithItems([
+        toolItem("wire-a", "key-a", "call-a", oversizedA),
+        toolItem("wire-b", "key-b", "call-b", "second"),
+      ]);
+      expect(store.getState().getTruncatedItemIds().has("key-a")).toBe(true);
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => {
+        release = resolve;
+      });
+      const rehydrating = store.getState().rehydrate(service, createFakeSink());
+
+      // The live side wins only the second member.
+      toolOutputDelta(
+        store,
+        "wire-b",
+        "call-b",
+        "b".repeat(MAX_ITEM_BYTES + 100),
+      );
+
+      // The reread is authoritative for the first member, and says it is short
+      // now — winning its neighbour must not make it superseded too.
+      release(
+        makeReadProjectionResult(
+          makeThread({
+            turns: [
+              makeTurn({
+                id: "t0",
+                items: [
+                  toolItem("wire-a", "key-a", "call-a", "short"),
+                  toolItem("wire-b", "key-b", "call-b", "second"),
+                ],
+              }),
+            ],
+          }),
+        ),
+      );
+      await rehydrating;
+
+      expect(store.getState().getTruncatedItemIds().has("key-a")).toBe(false);
+      expect(store.getState().getTruncatedItemIds().has("key-b")).toBe(true);
+      toolOutputDelta(store, "wire-a", "call-a", " MORE");
+      expect(clusterMembers(store, "wire-a")[0]?.detail.output).toBe(
+        "short MORE",
+      );
+    });
+
     it("unfreezes a later clustered member the reread returns short", async () => {
       const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
       const { store, service } = await openProjectedWithItems([
