@@ -1,7 +1,7 @@
 # Final delivery report: provider connection flow (Option A)
 
 Branch: `wip/provider-connection-a` (isolated worktree, kept in place; no merge, no push).
-Base: `404437f5199f04477a97410a51e4c4577cae6d9d`. Head: `6bb2334f5`.
+Base: `404437f5199f04477a97410a51e4c4577cae6d9d`. Head: `1349e9891` (all gates ran at `6bb2334f5`; the two later commits are a comment-only nit fix `a3e02be0e` and these records).
 Plan: `docs/superpowers/plans/2026-09-11-provider-connection-a.md` (approved Option A, separate worktree).
 
 ## What shipped
