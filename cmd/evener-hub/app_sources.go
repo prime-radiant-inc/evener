@@ -253,7 +253,8 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 		appwire.MethodThreadReasoningEffortSet, appwire.MethodThreadCompactStart,
 		appwire.MethodThreadClear, appwire.MethodThreadShutdown, appwire.MethodGoalSet,
 		appwire.MethodTurnQueue, appwire.MethodTurnDrainAsSteer,
-		appwire.MethodTurnPromoteQueuedAsSteer, appwire.MethodTurnCancelQueued:
+		appwire.MethodTurnPromoteQueuedAsSteer, appwire.MethodTurnCancelQueued,
+		appwire.MethodNotesHumanSet, appwire.MethodUrlsRemove:
 		var params struct {
 			Ref string `json:"ref"`
 		}
