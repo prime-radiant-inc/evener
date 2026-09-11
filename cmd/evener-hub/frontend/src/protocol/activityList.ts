@@ -144,6 +144,10 @@ export class ActivityList {
           if (current && tree.revision < current.revision)
             throw new Error("Activity response is older than the displayed activity");
           this.publish({
+            // Queued pages run back to back inside one load, which clears the
+            // error only once on entry; a page that succeeds after an earlier
+            // one failed has to clear it itself.
+            error: null,
             tree: current
               ? branch
                 ? graftContinuationTree(current, branch.id, tree)

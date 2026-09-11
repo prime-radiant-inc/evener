@@ -233,3 +233,25 @@ test.each([
   await list.loadMore("delegate:delegate", "old-page");
   expect(requests).toBe(kind === "transient" ? 2 : 1);
 });
+
+test("a queued page that succeeds clears the error left by an earlier failed page", async () => {
+  const current = activityTree([delegateEntry("first", "page-1", 1), delegateEntry("second", "page-2", 1)]);
+  const page = activityTree([delegateEntry("second", undefined, 2)], 2);
+  const boundary = boundaryClient();
+  const list = new ActivityList(boundary.client, "local:session", "session", current);
+  list.start();
+  await boundary.waitForRequest(0);
+
+  // Both pages are requested while the opening refresh is in flight, so they
+  // run back to back inside one load: the first fails, the second succeeds.
+  const first = list.loadMore("delegate:first", "page-1");
+  const second = list.loadMore("delegate:second", "page-2");
+  boundary.resolveFirst(current);
+  await boundary.waitForRequest(1);
+  boundary.resolve(1, {} as unknown as ActivityTree);
+  await boundary.waitForRequest(2);
+  boundary.resolve(2, page);
+  await Promise.all([first, second]);
+
+  expect(list.getSnapshot().error).toBeNull();
+});
