@@ -29,7 +29,10 @@ export interface ActivityPanelEntry {
   continuationLoadingID?: string;
   continuationFailures: Record<string, string | undefined>;
   requestID: number;
-  pending?: { kind: "root" } | { kind: "continuation"; nodeID: string; summaryRequestID: number };
+  // summaryRequestID is absent when no summary entry existed as the page
+  // began: there is no generation to fence freshness against, and 0 would be
+  // a sentinel that a freshly mounted entry could match by accident.
+  pending?: { kind: "root" } | { kind: "continuation"; nodeID: string; summaryRequestID?: number };
   expandedFoldIDs: string[];
 }
 
@@ -128,7 +131,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       const current = entryFor(state.entries, ref);
       requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
-      const summaryRequestID = activitySummaryStore.getState().entries.get(ref)?.requestID ?? 0;
+      const summaryRequestID = activitySummaryStore.getState().entries.get(ref)?.requestID;
       const next: ActivityPanelEntry = continuation
         ? {
             ...current,
@@ -177,8 +180,9 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
 
       if (pending.kind === "continuation") {
         settledContinuation = true;
-        if (result.kind !== "ready")
-          activitySummaryStore.getState().publishContinuationFailure(ref, pending.summaryRequestID);
+        const summaryRequestID = pending.summaryRequestID;
+        if (result.kind !== "ready" && summaryRequestID !== undefined)
+          activitySummaryStore.getState().publishContinuationFailure(ref, summaryRequestID);
         if (result.kind === "continuation-failed") {
           next = {
             ...current,
@@ -190,11 +194,8 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
           const previousTree = retainedTree(current.load);
           if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
-            const summary = activitySummaryStore.getState().entries.get(ref);
-            if (summary)
-              activitySummaryStore
-                .getState()
-                .publishContinuationCounts(ref, pending.summaryRequestID, tree.root.counts);
+            if (summaryRequestID !== undefined)
+              activitySummaryStore.getState().publishContinuationCounts(ref, summaryRequestID, tree.root.counts);
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];
