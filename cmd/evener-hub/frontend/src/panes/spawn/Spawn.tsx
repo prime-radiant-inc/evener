@@ -382,6 +382,7 @@ function SpawnForm({
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
   const [advancedOverrides, setAdvancedOverrides] = useDraftField(draft, "advancedOverrides");
   const [advancedValues, setAdvancedValues] = useDraftField(draft, "advancedValues");
+  const [advancedErrors, setAdvancedErrors] = useDraftField(draft, "advancedErrors");
   const readAdvancedValues = useCallback(() => draft.fields.getState().advancedValues, [draft]);
   const [pluginSelection, setPluginSelection] = useDraftField(draft, "pluginSelection");
   const [knownSelectionIssues, setKnownSelectionIssues] = useDraftField(draft, "knownSelectionIssues");
@@ -1851,6 +1852,8 @@ function SpawnForm({
           onOverridesChange={setAdvancedOverrides}
           values={advancedValues}
           onValuesChange={setAdvancedValues}
+          errors={advancedErrors}
+          onErrorsChange={setAdvancedErrors}
           readValues={readAdvancedValues}
           draftId={draft}
           validatePath={validatePath}

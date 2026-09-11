@@ -13,7 +13,7 @@
 // remember and type exactly. Every browsable path-valued field (the path and
 // pathList kinds) renders the shared PathField the same way, for the same
 // reason.
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
 import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -51,6 +51,12 @@ export interface AdvancedOptionsProps {
   onValuesChange?: (values: AdvancedValues) => void;
   /** Reads the originating draft after an asynchronous validation or remount. */
   readValues?: () => AdvancedValues;
+  /** Optional draft-owned path-validation messages, keyed by wireField and
+   * mirroring `values`/`onValuesChange`. A draft that owns them keeps its error
+   * visible across an inactive spell or a remount; callers without a durable
+   * draft fall back to component-local state. */
+  errors?: Record<string, string>;
+  onErrorsChange?: Dispatch<SetStateAction<Record<string, string>>>;
   /** Stable identity of the draft these values belong to. Async validation and
    * resolve results are dropped when it changes, but a same-draft remount -
    * which recreates readValues' own identity - must NOT drop them. Defaults to
@@ -86,6 +92,8 @@ export function AdvancedOptions({
   values: draftValues,
   onValuesChange,
   readValues,
+  errors: draftErrors,
+  onErrorsChange,
   draftId,
   validatePath,
   createDirectory,
@@ -109,7 +117,14 @@ export function AdvancedOptions({
   const ownerKey = draftId !== undefined ? draftId : readValues;
   const activeOwner = useRef(ownerKey);
   activeOwner.current = ownerKey;
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  // Validation messages are transient feedback for a caller that has no durable
+  // draft to attach them to. When the draft owns them (Spawn passes a map), the
+  // async result below writes to the ORIGINATING draft even while a different
+  // draft is active - exactly as the `invalid` flag it explains already does.
+  const [localErrors, setLocalErrors] = useState<Record<string, string>>({});
+  const errors = draftErrors ?? localErrors;
+  const setErrors = onErrorsChange ?? setLocalErrors;
+  const draftOwnedErrors = onErrorsChange !== undefined;
   const [resolved, setResolved] = useState<string | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
   // useState(ownerKey) would treat a function ownerKey (readValues) as a lazy
@@ -119,7 +134,9 @@ export function AdvancedOptions({
   // before rendering children; keep the disclosure and picker controls mounted.
   if (owner.key !== ownerKey) {
     setOwner({ key: ownerKey });
-    setErrors({});
+    // Only component-local feedback resets on a draft change: a draft-owned
+    // error map travels with its draft, so the newly active draft shows its own.
+    setLocalErrors({});
     setResolved(null);
     setResolveError(null);
   }
@@ -145,7 +162,7 @@ export function AdvancedOptions({
           // A later edit owns this field now, even if it returned to the same
           // text. Other fields may have changed too: update merges live state.
           if (currentValues()[opt.wireField] !== field) return;
-          if (activeOwner.current === ownerKey) {
+          if (draftOwnedErrors || activeOwner.current === ownerKey) {
             setErrors((prev) => ({ ...prev, [opt.wireField]: result.valid ? "" : (result.error ?? "invalid path") }));
           }
           // Re-mark the stored value invalid so collect drops it (floor §1.11).
@@ -153,7 +170,7 @@ export function AdvancedOptions({
         },
         () => {
           // A failing validator never blocks (fail-open), matching preflight.
-          if (currentValues()[opt.wireField] === field && activeOwner.current === ownerKey) {
+          if (currentValues()[opt.wireField] === field && (draftOwnedErrors || activeOwner.current === ownerKey)) {
             setErrors((prev) => ({ ...prev, [opt.wireField]: "" }));
           }
         },

@@ -5050,3 +5050,99 @@ test("a draft re-entered after another keeps its late path-validation error", as
   await act(async () => validation.resolve({ path: "review-agent", valid: false, error: "reentry-a-invalid" }));
   expect(await screen.findByText("reentry-a-invalid")).toBeTruthy();
 });
+
+// RoboRev PR1131 finding: the validation MESSAGE lived only in component-local
+// `errors` while the `invalid` flag is draft-persisted in advancedValues. The
+// sibling regression above only covers a validation that settles AFTER its
+// draft is active again; a result that lands while the draft is INACTIVE still
+// writes the flag (so collectAdvancedOverrides keeps dropping the field) but has
+// no error to show when the draft is revisited. The field must not be silently
+// excluded with no message.
+test("a path-validation error that settles while its draft is inactive appears when the draft is revisited", async () => {
+  const user = userEvent.setup();
+  const validation = deferred<{ path: string; valid: boolean; error: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => (path === "review-agent" ? validation.promise : { path, valid: true }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/inactive-validation-a");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
+
+  // Leave A before the validator settles, so its rejection lands while B is active.
+  await visitSpawnURL("/new?dir=/tmp/inactive-validation-b");
+  await act(async () => validation.resolve({ path: "review-agent", valid: false, error: "inactive-a-invalid" }));
+
+  // Returning to A finds the value and its draft-persisted invalid flag intact:
+  // the field is still excluded from A's launch overrides...
+  await visitSpawnURL("/new?dir=/tmp/inactive-validation-a");
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
+  expect(completionDraft("/tmp/inactive-validation-a").fields.getState().advancedOverrides).toEqual({});
+  // ...so the message explaining the exclusion must be available again.
+  expect(await screen.findByText("inactive-a-invalid")).toBeTruthy();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const startParams = fake.calls.find((call) => call.method === "thread/start")?.params as
+    | ThreadStartParams
+    | undefined;
+  expect(startParams?.cwd).toBe("/tmp/inactive-validation-a");
+  // startThread omits an empty layer entirely, so accept either encoding: the
+  // point is that the invalid field never reaches the server.
+  expect(startParams?.launchOverrides ?? {}).toEqual({});
+});
+
+// The same loss through the other door the finding names: a pane remount
+// recreates the component, so local `errors` starts empty even though the
+// draft still holds the invalid field.
+test("a remounted draft still shows the path-validation error stored with its invalid field", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) =>
+      path === "review-agent" ? { path, valid: false, error: "remount-a-invalid" } : { path, valid: true },
+    );
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remount-validation-a");
+  const mounted = renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+  expect(await screen.findByText("remount-a-invalid")).toBeTruthy();
+
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
+  expect(completionDraft("/tmp/remount-validation-a").fields.getState().advancedOverrides).toEqual({});
+  expect(await screen.findByText("remount-a-invalid")).toBeTruthy();
+});

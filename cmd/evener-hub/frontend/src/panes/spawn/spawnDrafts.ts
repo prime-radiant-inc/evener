@@ -23,6 +23,11 @@ interface DraftFields {
   advancedValues: AdvancedValues;
   pluginSelection: PluginSelectionState;
   knownSelectionIssues: PluginSelectionError[];
+  /** Path-validation messages for advancedValues, keyed by wireField. Owned by
+   * the draft alongside the `invalid` flag it explains: a validation that
+   * settles while the draft is inactive (or a pane remount) must still be able
+   * to show why the field is excluded from launchOverrides when it returns. */
+  advancedErrors: Record<string, string>;
   busy: boolean;
   busyStartedAt: number | null;
   createDialogPath: string | null;
@@ -44,6 +49,7 @@ function createDraft(cwd: string) {
       advancedValues: {},
       pluginSelection: { mode: "default" },
       knownSelectionIssues: [],
+      advancedErrors: {},
       busy: false,
       busyStartedAt: null,
       createDialogPath: null,
