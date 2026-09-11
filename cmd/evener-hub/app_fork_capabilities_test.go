@@ -1905,3 +1905,125 @@ func TestHubForkIgnoresACrashRetainedClaimOnTheAlias(t *testing.T) {
 		t.Fatalf("fork branched %q, want the alias's own saved session %q", meta.ParentSessionID, aliasID)
 	}
 }
+
+// A client holding a daemon's stable workspace ref is asking about whichever
+// session that daemon is running now, and that is the transcript a fork would
+// branch. hubThreadFork fences both identities; the capability has to answer for
+// both too, or a stable-ref client is offered a fork of a session the RPC will
+// refuse. The alias itself is clear in every fenced row, so only the resolved
+// session's state can be hiding the action.
+func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fence func(t *testing.T, locks *hubcore.ResumeLocks, sessionID string)
+	}{
+		{name: "both identities clear"},
+		{
+			name: "resolved session needs an explicit resume",
+			fence: func(t *testing.T, locks *hubcore.ResumeLocks, sessionID string) {
+				finish := locks.BeginForceStop([]string{sessionID})
+				if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+					t.Fatal(err)
+				}
+				finish(true)
+			},
+		},
+		{
+			name: "resolved session is stopping",
+			fence: func(t *testing.T, locks *hubcore.ResumeLocks, sessionID string) {
+				finish := locks.BeginForceStop([]string{sessionID})
+				t.Cleanup(func() { finish(false) })
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			aliasID := buildRPCParentSession(t, stateDir)
+			currentID, err := identifier.NewSessionID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
+			ref := "local:" + aliasID
+			daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "resolved-fence-token"})
+			daemon.SetAppIdentity("local", aliasID)
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+			t.Cleanup(daemonHTTP.Close)
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+				ThreadID: currentID, SessionID: currentID, WorkspaceRef: ref, InstanceID: currentID,
+				StateDir: stateDir, HubToken: "resolved-fence-token", StartedAt: time.Now().UTC(),
+			})
+			roster := hubcore.NewRoster(runDir, nil)
+			roster.Refresh()
+			locks := hubcore.NewResumeLocks()
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, ResumeLocks: locks}
+			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
+				t.Fatalf("the alias resolves to %q, want the daemon's current session %q", got, currentID)
+			}
+			if tc.fence != nil {
+				tc.fence(t, locks, currentID)
+				if state := locks.RecoveryState(aliasID); state.ResumeRequired || state.Stopping != 0 {
+					t.Fatalf("the alias itself is fenced (%+v); this row would not isolate the resolved session", state)
+				}
+			}
+			wantFork := tc.fence == nil
+
+			thread := appwire.Thread{ID: currentID, SessionID: currentID, Evener: appwire.EvenerThread{
+				Ref: ref, Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true},
+			}}
+			if got := applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn; got != wantFork {
+				t.Errorf("projected forkFromTurn=%v, want %v", got, wantFork)
+			}
+			hub := newHubRPCTestServer(t, cfg)
+			t.Cleanup(hub.Close)
+			client := dialHubRPC(t, hub)
+			t.Cleanup(func() { _ = client.Close() })
+			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			list, err := client.ThreadList(t.Context(), appwire.ThreadListParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed := false
+			for _, item := range list.Data {
+				if item.Evener.Ref != ref {
+					continue
+				}
+				listed = true
+				if got := item.Evener.Capabilities.ForkFromTurn; got != wantFork {
+					t.Errorf("listed forkFromTurn=%v, want %v", got, wantFork)
+				}
+			}
+			if !listed {
+				t.Fatalf("the live thread is not in the list: %+v", list.Data)
+			}
+			read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := read.Thread.Evener.Capabilities.ForkFromTurn; got != wantFork {
+				t.Errorf("read forkFromTurn=%v, want %v", got, wantFork)
+			}
+
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: ref, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if wantFork {
+				if err != nil {
+					t.Fatalf("advertised fork was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("fork of a fenced resolved session succeeded")
+			}
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeUnavailable {
+				t.Fatalf("fork error=%v, want structured unavailable", err)
+			}
+		})
+	}
+}

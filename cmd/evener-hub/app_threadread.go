@@ -499,9 +499,38 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 			storageAvailable = strings.TrimSpace(entry.StateDir) != ""
 		}
 	}
+	// A fork touches two identities: the alias the client is holding and the
+	// session it currently names. hubThreadFork fences both, so the capability
+	// answers for both — otherwise a stable-ref client is offered a fork of a
+	// session the RPC will refuse. One resolution serves every fence below.
+	sessionID := forkTargetSessionID(cfg, ref.ThreadID)
 	thread.Evener.Capabilities.ForkFromTurn = storageAvailable && hubCanForkThread(cfg, thread) &&
-		!hubForkRecoveryFencedNow(cfg, thread) && !hubForkDeletionFenced(cfg, thread.Evener.Ref, ref.ThreadID)
+		!hubForkRecoveryFencedNow(cfg, thread) &&
+		!hubForkDeletionFenced(cfg, thread.Evener.Ref, ref.ThreadID, sessionID) &&
+		!hubForkResolvedSessionFenced(cfg, ref.ThreadID, sessionID)
 	return thread
+}
+
+// hubForkResolvedSessionFenced answers for the second identity: when a stable
+// workspace ref resolves to a different current session, that session is the
+// transcript a fork would branch and hubThreadFork fences it as a live
+// delegate, as a daemon announcing recovery in its status, and against the
+// hub's recovery locks. The alias's own copies of those checks are
+// hubCanForkThread's and hubForkRecoveryFencedNow's; this covers the session
+// neither of them sees. Deletion is the same question for the same pair and is
+// hubForkDeletionFenced's, which takes the same resolution.
+func hubForkResolvedSessionFenced(cfg hubcore.WebConfig, threadID, sessionID string) bool {
+	if sessionID == "" || sessionID == threadID {
+		return false
+	}
+	if hubForkLiveDelegateFenced(cfg, sessionID) || hubForkLiveStatusFenced(cfg, sessionID) {
+		return true
+	}
+	if cfg.ResumeLocks == nil {
+		return false
+	}
+	state := cfg.ResumeLocks.RecoveryState(sessionID)
+	return state.ResumeRequired || state.Stopping > 0
 }
 
 // hubForkDeletionFenced reports whether the thread a client is holding, or the
@@ -510,19 +539,18 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 // everything else, so the capability cannot offer an action that refusal is
 // already waiting for.
 //
-// The resolved session is consulted second and only when the requested ref is
-// clear: resolving costs a roster lookup, and a client holding a stable
-// workspace ref whose daemon has moved on would otherwise be told it can fork a
-// session that is on its way out.
-func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID string) bool {
+// The resolved session is consulted second: a client holding a stable workspace
+// ref whose daemon has moved on would otherwise be told it can fork a session
+// that is on its way out. sessionID is the caller's single resolution, shared
+// with the other fences rather than repeated here.
+func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID string) bool {
 	if cfg.DeletionStore == nil {
 		return false
 	}
 	if deletionFenceError(cfg, ref, threadID, "") != nil {
 		return true
 	}
-	sessionID := forkTargetSessionID(cfg, threadID)
-	return sessionID != threadID && deletionFenceError(cfg, "", sessionID, "") != nil
+	return sessionID != "" && sessionID != threadID && deletionFenceError(cfg, "", sessionID, "") != nil
 }
 
 // pastThreadCapabilities is what the hub can carry out for a thread with no
