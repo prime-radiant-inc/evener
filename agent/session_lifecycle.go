@@ -953,18 +953,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 		return "", errors.New("session is closed")
 	}
-	// Fail closed on a transcript that has stopped accepting records. Every
-	// turn from here would run in memory and be lost on the next restart, with
-	// only a warning per dropped record to show for it; recordTurn's
-	// warn-and-continue is right for a transient write failure and wrong for a
-	// writer that will refuse everything. Refusing admission stops the session
-	// until it is restarted against the records the file still holds, which is
-	// the same visible failure the environment path already produces when a
-	// block is due.
-	if s.transcript.Poisoned() {
-		s.mu.Unlock()
-		return "", fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
-	}
 	// Entry gate (spec §5.3): while a question is pending, an autonomous wake —
 	// EntryNotification or EntryContinuation — is refused here,
 	// before the Processing transition below (processOneInput's
@@ -1024,6 +1012,21 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// cannot run a stale continuation.
 	var haveDeferredCont bool
 	for {
+		// Fail closed on a transcript that has stopped accepting records, before
+		// every turn rather than once at admission. A turn from here would run
+		// in memory and be lost on the next restart, with only a warning per
+		// dropped record to show for it; recordTurn's warn-and-continue is right
+		// for a write that failed once and wrong for a writer that will refuse
+		// everything. The check belongs here rather than at admission because a
+		// turn's own buffered record can poison the writer while it runs, and
+		// this loop then carries straight on into the follow-up or drained
+		// message behind it. The writer's own lock is taken outside s.mu (an
+		// append holds it across a write and an fsync), and poisoned is never
+		// cleared, so a stale read costs one turn that then meets the writer's
+		// own refusal.
+		if s.attachedTranscript().Poisoned() {
+			return strings.Join(outputs, "\n"), fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
+		}
 		// Capture the kind actually being processed this iteration before the
 		// follow-up reset below; the goal gate needs it to know whether the turn
 		// that just ran was a goal continuation (which accrues toward the

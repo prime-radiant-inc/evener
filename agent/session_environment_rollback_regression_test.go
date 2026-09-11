@@ -27,6 +27,7 @@ type environmentSyncFailureFS struct {
 	rollbackFailure            error
 	seekFailure                error
 	writeFailure               error
+	writesBeforeFailure        int
 	transferBeforeWriteFailure int
 	onFailure                  func()
 }
@@ -77,7 +78,14 @@ func (file *environmentSyncFailureFile) Truncate(size int64) error {
 func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
 	file.fs.mu.Lock()
 	failure := file.fs.writeFailure
-	file.fs.writeFailure = nil
+	if failure != nil && file.fs.writesBeforeFailure > 0 {
+		// Let this one through: the caller is aiming the fault at a later door
+		// than the next one.
+		file.fs.writesBeforeFailure--
+		failure = nil
+	} else {
+		file.fs.writeFailure = nil
+	}
 	transfer := min(file.fs.transferBeforeWriteFailure, len(p))
 	file.fs.mu.Unlock()
 	if failure == nil {
@@ -696,6 +704,36 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 	}
 }
 
+// countingFinalResponses scripts n turn-ending responses that count the model
+// requests they answer, so a test can say how many turns actually ran.
+func countingFinalResponses(requests *atomic.Int32, n int) []func(llm.Request) llm.Response {
+	steps := make([]func(llm.Request) llm.Response, n)
+	for i := range steps {
+		steps[i] = func(llm.Request) llm.Response {
+			requests.Add(1)
+			return finalResponse("ok")
+		}
+	}
+	return steps
+}
+
+// armEnvironmentPartialWrite makes the next transcript write stop partway
+// through its line, which is what poisons the writer through the buffered door
+// recordTurn uses.
+func armEnvironmentPartialWrite(fs *environmentSyncFailureFS) {
+	armEnvironmentPartialWriteAfter(fs, 0)
+}
+
+// armEnvironmentPartialWriteAfter aims the partial write at a door further down
+// the turn: skip lets that many writes through first.
+func armEnvironmentPartialWriteAfter(fs *environmentSyncFailureFS, skip int) {
+	fs.mu.Lock()
+	fs.writeFailure = errors.New("injected transcript write failure")
+	fs.writesBeforeFailure = skip
+	fs.transferBeforeWriteFailure = 12
+	fs.mu.Unlock()
+}
+
 // TestPoisonedWriterRefusesTheNextInput: a poisoned writer has stopped
 // accepting records for the rest of the session, so a turn that runs against it
 // cannot be persisted at all — every record it makes is lost on the next
@@ -707,14 +745,9 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 // file still holds, which is the failure that can be seen.
 func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	var requests atomic.Int32
-	steps := make([]func(llm.Request) llm.Response, 4)
-	for i := range steps {
-		steps[i] = func(llm.Request) llm.Response {
-			requests.Add(1)
-			return finalResponse("ok")
-		}
-	}
-	sess := newTestSessionForEnvctx(t, withSteps(steps...))
+	// Two scripted responses: the turn that emits the environment, and the one
+	// the refused input must never make.
+	sess := newTestSessionForEnvctx(t, withSteps(countingFinalResponses(&requests, 2)...))
 	sendOneUserInput(t, sess, "first")
 	if requests.Load() != 1 {
 		t.Fatalf("model requests after the first turn = %d, want 1", requests.Load())
@@ -723,10 +756,7 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	// Poison the writer through the buffered door recordTurn itself uses: a
 	// write that stops partway with no rollback behind it.
 	fs := attachEnvironmentFailureFS(t, sess)
-	fs.mu.Lock()
-	fs.writeFailure = errors.New("injected transcript write failure")
-	fs.transferBeforeWriteFailure = 12
-	fs.mu.Unlock()
+	armEnvironmentPartialWrite(fs)
 	if err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
 		t.Fatal("partial transcript write reported success")
 	}
@@ -741,5 +771,45 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	}
 	if after := len(sessionHistoryText(sess)); after != before {
 		t.Fatal("the refused input changed model history")
+	}
+}
+
+// TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn: admission is not the
+// only door a turn comes through. A turn's own records can poison the writer
+// while it runs — the buffered door warns and lets the turn finish — and the
+// drain loop then runs whatever stands behind it as a full turn, model request
+// and all, with every record it makes already lost. The refusal has to stand in
+// front of every turn, not only the first.
+//
+// A follow-up is the shape that reaches the model: its user turn is recorded
+// through the buffered door (session_lifecycle.go's appendTurn), which warns and
+// continues. A drained queue message is claimed durably first ("append claimed
+// user input"), so that path already refuses ahead of the model on its own.
+func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
+	var requests atomic.Int32
+	// Three: the turn that emits the environment, the turn whose own record
+	// poisons the writer, and the follow-up that must never run.
+	steps := countingFinalResponses(&requests, 3)
+	sess := newTestSessionForEnvctx(t, withSteps(steps...))
+	sendOneUserInput(t, sess, "first")
+
+	fs := attachEnvironmentFailureFS(t, sess)
+	steps[1] = func(llm.Request) llm.Response {
+		requests.Add(1)
+		// The assistant record this response produces is durable and would abort
+		// the turn; aim past it at the buffered tool-results record, whose
+		// failure warns and lets the turn finish — which is how a writer ends up
+		// poisoned with the drain loop still running.
+		armEnvironmentPartialWriteAfter(fs, 1)
+		return finalResponse("ok")
+	}
+	sess.FollowUp("runs behind the poisoning")
+
+	_, err := sess.ProcessInput(t.Context(), "poisons mid-turn", nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("turn behind the poisoning = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("model requests = %d, want the follow-up never to have run", got)
 	}
 }
