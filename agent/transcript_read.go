@@ -191,7 +191,9 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 // so concurrent inventory additions absent from that selection survive.
 // Handoffs coalesce by publication identity, preserving each winning
 // publication's final handoff (the summary phase that followed its
-// checkpoint phase), with the final publication's handoff last.
+// checkpoint phase), with the final publication's handoff last. After the
+// receipt pass, a slot still in the published phase is the live
+// claim→delivery-flip window artifact (R19) and completes unconditionally.
 func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *schema.SkillLifecycleSnapshot, sessionID string) {
 	if snapshot == nil {
 		return
@@ -209,6 +211,26 @@ func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *sche
 			continue // the snapshot already covers this receipt's lifecycle revision
 		}
 		applySkillCompactionReceipt(snapshot, receipt)
+	}
+	// R19 slot-level completion: a persisted slot still in the published
+	// phase can ONLY be the live claim→delivery-flip window artifact — the
+	// live transaction always clears the slot before its own save, but a
+	// concurrent metadata save inside that window persists the slot at the
+	// receipt's OWN revision, so the revision-gated pass above can never
+	// repair it and a crash there would wedge the cycle forever. Complete
+	// it unconditionally, mirroring the live delivery flip: the slot and
+	// its selection clear, and the publication's coalesced handoff
+	// advances to delivered. Generation-safe by construction (the slot
+	// carries its own publication identity); no transcript scan, no new
+	// lock or transaction.
+	if op := snapshot.PendingCompaction; op != nil && op.Phase == skillCompactionPhasePublished {
+		snapshot.PendingCompaction = nil
+		snapshot.PendingSelection = nil
+		for i := range snapshot.PendingHandoffs {
+			if snapshot.PendingHandoffs[i].Operation.PublicationID == op.PublicationID {
+				snapshot.PendingHandoffs[i].Phase = skillCompactionReceiptDelivered
+			}
+		}
 	}
 }
 

@@ -101,11 +101,15 @@ func TestSkillCompactionRestore_AutomaticLatchRestoredWithoutForceFold(t *testin
 	}
 }
 
-// TestSkillCompactionRestore_PublishedOperationIsDeliveryOnly: a persisted
-// operation already in the published phase is delivery-only — restart neither
-// cancels it nor re-arms a fold — while it still latches elicitation until its
-// delivery completes.
-func TestSkillCompactionRestore_PublishedOperationIsDeliveryOnly(t *testing.T) {
+// TestSkillCompactionRestore_PublishedOperationCompletesAtRestore: a slot
+// persisted in the published phase can only be the live claim→delivery-flip
+// window artifact (R19) — the live transaction clears the slot before its
+// own save; only a concurrent save inside that window can persist it. So
+// restore COMPLETES the delivery instead of resuming it: the slot and its
+// selection clear, the publication's handoff advances to delivered, the
+// fold is never re-armed, the elicitation latch is gone, and the cycle
+// reopens for a fresh generation.
+func TestSkillCompactionRestore_PublishedOperationCompletesAtRestore(t *testing.T) {
 	meta := schema.SessionMeta{
 		ID:        "resume-published-compaction",
 		ProfileID: "openai",
@@ -123,6 +127,13 @@ func TestSkillCompactionRestore_PublishedOperationIsDeliveryOnly(t *testing.T) {
 				Phase:          "published",
 				PublicationID:  "pub-opaque-1",
 			},
+			PendingSelection: &schema.SkillReloadSelection{State: "valid", Names: []string{}},
+			PendingHandoffs: []schema.SkillCompactionReceipt{{
+				Revision:  9,
+				SessionID: "resume-published-compaction",
+				Operation: schema.SkillCompactionOperation{Generation: 7, Origin: "forced", Phase: "published", PublicationID: "pub-opaque-1"},
+				Phase:     skillCompactionReceiptPublished,
+			}},
 		},
 	}
 	c := llm.NewClient()
@@ -134,23 +145,44 @@ func TestSkillCompactionRestore_PublishedOperationIsDeliveryOnly(t *testing.T) {
 	t.Cleanup(func() { restored.Close() })
 
 	if _, armed := restored.takeForceRequest(); armed {
-		t.Fatal("a published operation is delivery-only: restart must not re-arm a fold")
+		t.Fatal("a completed delivery is never re-armed: restart must not arm a fold")
 	}
-	op := restored.pendingSkillCompactionSnapshot()
-	if op == nil || op.Phase != "published" || op.PublicationID != "pub-opaque-1" {
-		t.Fatalf("restart is not cancellation: published operation = %+v", op)
+	if op := restored.pendingSkillCompactionSnapshot(); op != nil {
+		t.Fatalf("restore must complete the window artifact's delivery, still holding %+v", op)
 	}
-
-	called := false
-	restored.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
-		called = true
-		return "ELICITED — MUST NOT FIRE", nil
+	if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
+		t.Fatalf("the completed delivery must have consumed the selection, got %+v", sel)
 	}
-	seedSessionHistory(t, restored, 10)
-	forcePressureAbove(t, restored, restored.contextMgr.CheckpointThreshold)
-	restored.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, restored), 0)
-	if called {
-		t.Fatal("an undelivered published operation must still latch elicitation")
+	handoffs := pendingHandoffsSnapshot(restored)
+	if len(handoffs) != 1 || handoffs[0].Operation.Generation != 7 ||
+		handoffs[0].Operation.PublicationID != "pub-opaque-1" {
+		t.Fatalf("restored handoffs = %+v, want the window artifact's handoff preserved", handoffs)
+	}
+	if handoffs[0].Phase != skillCompactionReceiptDelivered {
+		t.Fatalf("restore must advance the window artifact's handoff to delivered, got %+v", handoffs[0])
+	}
+	restored.mu.Lock()
+	noteGen := restored.pinnedNoteGen
+	restored.mu.Unlock()
+	accepted, err := restored.acceptAutomaticSkillCompaction(context.Background(), noteGen, "post-restore note",
+		schema.SkillReloadSelection{State: "absent"})
+	if err != nil {
+		t.Fatalf("acceptAutomaticSkillCompaction: %v", err)
+	}
+	if !accepted {
+		t.Fatal("the completed delivery must unlatch note elicitation")
+	}
+	if _, err := restored.requestSkillCompaction(context.Background(), "", "",
+		schema.SkillReloadSelection{State: "absent"}); err != nil {
+		t.Fatalf("clearing the post-restore note: %v", err)
+	}
+	next, err := restored.requestSkillCompaction(context.Background(), "reopened", "",
+		schema.SkillReloadSelection{State: "absent"})
+	if err != nil {
+		t.Fatalf("the cycle must reopen after restore completes the delivery: %v", err)
+	}
+	if next <= 7 {
+		t.Fatalf("the reopened cycle must mint a generation beyond 7, got %d", next)
 	}
 }
 

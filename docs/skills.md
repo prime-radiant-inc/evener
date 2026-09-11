@@ -265,7 +265,11 @@ transaction would — the slot clears, the selection is consumed, and the
 publication's handoff advances to delivered, never re-armed — while a
 delivered operation stays consumed and a cancelled one stays retired. A
 receipt only ever advances its own generation, and a stale snapshot can
-never resurrect or repeat a claimed cycle. Publication identities are minted
+never resurrect or repeat a claimed cycle. A persisted slot still in the
+published phase is completed the same way at restore: it can only be a
+concurrent save's snapshot of the delivery window (the live transaction
+clears the slot before its own save), so restore finishes the delivery
+rather than resuming it. Publication identities are minted
 from the persisted lifecycle revision stamped at the claim, so a restored
 session's later publications never collide with a restored handoff.
 

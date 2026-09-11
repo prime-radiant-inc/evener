@@ -1224,3 +1224,107 @@ func TestSkillCompaction_RestartHandoffIdentity(t *testing.T) {
 		t.Fatalf("both handoffs must be delivered, got %+v", handoffs)
 	}
 }
+
+// TestSkillCompaction_IntermediateSaveWindowRestore pins the R1 recovery: a
+// routine metadata save landing inside the winning claim's delivery window
+// (between the publish transaction and its delivery flip) persists the
+// published slot at the receipt's OWN revision — a state the revision-gated
+// receipt pass can never repair — and a crash there must still restore the
+// COMPLETED delivery.
+func TestSkillCompaction_IntermediateSaveWindowRestore(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "intermediate-save-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSUMMARY_4b7c\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}))
+	id := s.Meta().ID
+	disableSessionNaming(s)
+	metaPath := filepath.Join(stateDir, sessionsSubdir, id+".meta.json")
+	var windowBytes []byte
+	var windowSaves atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldSideEffectsFlush = func() {
+			if windowSaves.Add(1) != 1 {
+				return
+			}
+			// A concurrent metadata save (job bookkeeping, goal, namer — any
+			// of the routine paths) lands inside the delivery window and
+			// persists the just-claimed published slot at revision N.
+			if err := s.saveMeta(); err != nil {
+				t.Errorf("window saveMeta: %v", err)
+			}
+			b, err := os.ReadFile(metaPath)
+			if err != nil {
+				t.Errorf("read window metadata: %v", err)
+			}
+			windowBytes = b
+		}
+	})
+	seedNumberedSessionHistory(t, s, 20)
+	forced, err := s.requestSkillCompaction(context.Background(), "window-note", "window-instructions",
+		schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}})
+	if err != nil {
+		t.Fatalf("requestSkillCompaction: %v", err)
+	}
+	s.applyPendingForceCompact(context.Background())
+	if n := windowSaves.Load(); n != 1 {
+		t.Fatalf("test setup: the window save must have fired exactly once, got %d", n)
+	}
+	s.Close()
+	// Crash exactly between the window save and the delivery flip: the
+	// persisted metadata is the window save's bytes.
+	if err := os.WriteFile(metaPath, windowBytes, 0o600); err != nil {
+		t.Fatalf("rewind metadata to the window save: %v", err)
+	}
+
+	restored := restoreForPublication(t, stateDir, id, "intermediate-save-cheap", func(llm.Request) llm.Response {
+		t.Error("a recovered publication must not fold again")
+		return llm.Response{}
+	})
+	// The completed delivery: the window artifact's published slot is
+	// completed at restore (R19), not resumed delivery-only.
+	op := restored.pendingSkillCompactionSnapshot()
+	if op != nil {
+		t.Fatalf("restore must complete the interrupted delivery from the window save, still holding %+v", op)
+	}
+	restored.mu.Lock()
+	armed := restored.forceRequested
+	noteGen := restored.pinnedNoteGen
+	restored.mu.Unlock()
+	if armed {
+		t.Fatal("a completed delivery is never re-armed: restart must not arm a fold")
+	}
+	if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
+		t.Fatalf("the completed delivery must have consumed the window selection, got %+v", sel)
+	}
+	handoffs := pendingHandoffsSnapshot(restored)
+	if len(handoffs) != 1 || handoffs[0].Operation.Generation != forced ||
+		handoffs[0].Operation.PublicationID == "" || handoffs[0].SessionID != id {
+		t.Fatalf("restored handoffs = %+v, want the recovered handoff for generation %d", handoffs, forced)
+	}
+	if handoffs[0].Phase != skillCompactionReceiptDelivered {
+		t.Fatalf("restore must advance the window artifact's handoff to delivered, got %+v", handoffs[0])
+	}
+	// The cycle reopened: the elicitation latch is gone and a fresh forced
+	// request mints a generation beyond the recovered one.
+	accepted, err := restored.acceptAutomaticSkillCompaction(context.Background(), noteGen, "recovery-note",
+		schema.SkillReloadSelection{State: "absent"})
+	if err != nil {
+		t.Fatalf("acceptAutomaticSkillCompaction: %v", err)
+	}
+	if !accepted {
+		t.Fatal("a completed delivery must unlatch note elicitation for a fresh automatic acceptance")
+	}
+	if _, err := restored.requestSkillCompaction(context.Background(), "", "",
+		schema.SkillReloadSelection{State: "absent"}); err != nil {
+		t.Fatalf("clearing the recovery note: %v", err)
+	}
+	next, err := restored.requestSkillCompaction(context.Background(), "after-window-recovery", "",
+		schema.SkillReloadSelection{State: "absent"})
+	if err != nil {
+		t.Fatalf("the cycle must reopen after the window recovery: %v", err)
+	}
+	if next <= forced {
+		t.Fatalf("the reopened cycle must mint a generation beyond %d, got %d", forced, next)
+	}
+}
