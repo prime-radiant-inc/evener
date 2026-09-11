@@ -799,27 +799,52 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
-	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, ref.ThreadID)
-	unlockDeletionTarget := lockDeletionTarget(cfg, params.Ref, ref.ThreadID)
-	defer unlockDeletionTarget()
-	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
-		return appwire.ThreadForkResponse{}, err
-	}
-	if err := sessionActionRecoveryError(ctx, cfg, params.Ref, ref.ThreadID, epoch); err != nil {
-		return appwire.ThreadForkResponse{}, err
-	}
-	// One roster refresh serves every ownership fence below, and it has to land
-	// before them: a live-delegate fence read off the previous scan admits a
-	// delegate the parent daemon picked up since, and the incompatible-daemon
-	// check that used to carry this refresh runs after that fence has already
-	// answered.
+	// One roster refresh serves every fence below, and it has to land before
+	// them: a live-delegate fence read off the previous scan admits a delegate
+	// the parent daemon picked up since, and this is also the scan that resolves
+	// the session the branch will actually read — which the recovery and
+	// deletion fences have to reserve alongside the alias the client asked
+	// about, and cannot if they run first.
 	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
 		return appwire.ThreadForkResponse{}, err
+	}
+	sessionID := forkTargetSessionID(cfg, ref.ThreadID)
+	refFor := func(id string) string {
+		if id == ref.ThreadID {
+			return params.Ref
+		}
+		return ""
+	}
+	// Sample every epoch, then take every lock, then check: an epoch read after
+	// its own lock cannot see a recovery that began while this request waited
+	// for that lock, and acquiring in sorted order is the convention
+	// resumeThread and forceStopThread already follow, so two requests holding
+	// these per-session locks cannot deadlock against each other.
+	targets := forkFenceTargets(ref.ThreadID, sessionID)
+	epochs := make(map[string]uint64, len(targets))
+	for _, id := range targets {
+		epochs[id] = sessionRequestRecoveryEpoch(ctx, cfg, refFor(id), id)
+	}
+	var unlockTargets []func()
+	defer func() {
+		for _, unlock := range slices.Backward(unlockTargets) {
+			unlock()
+		}
+	}()
+	for _, id := range targets {
+		unlockTargets = append(unlockTargets, lockDeletionTarget(cfg, refFor(id), id))
+	}
+	for _, id := range targets {
+		if err := deletionFenceError(cfg, refFor(id), id, ""); err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
+		if err := sessionActionRecoveryError(ctx, cfg, refFor(id), id, epochs[id]); err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
 	}
 	if hubForkLiveStatusFenced(cfg, ref.ThreadID) {
 		return appwire.ThreadForkResponse{}, sessionResumeRequiredError()
 	}
-	sessionID := forkTargetSessionID(cfg, ref.ThreadID)
 	entry, ok, entryErr := ownershipEntry(ctx, cfg, sessionID)
 	if entryErr != nil {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable(entryErr.Error())
@@ -930,6 +955,19 @@ func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
 	return hubForkRecoveryFenced(appwire.Thread{
 		Status: appwire.ThreadStatus{Type: owner.Status, ActiveFlags: owner.ActiveFlags},
 	})
+}
+
+// forkFenceTargets is every identity one fork has to reserve: the alias the
+// client asked about, and the session the branch actually reads when the two
+// differ. Sorted and deduplicated so the per-session locks are always taken in
+// one order.
+func forkFenceTargets(requestedID, sessionID string) []string {
+	targets := []string{requestedID}
+	if sessionID != "" && sessionID != requestedID {
+		targets = append(targets, sessionID)
+	}
+	slices.Sort(targets)
+	return targets
 }
 
 // forkTargetSessionID resolves the transcript a fork request names. A daemon

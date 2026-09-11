@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
@@ -1162,5 +1163,93 @@ func TestHubForkCapabilityHonoursDaemonReportedRecoveryFlags(t *testing.T) {
 				t.Errorf("read forkFromTurn=%v, want %v", got, tc.wantFork)
 			}
 		})
+	}
+}
+
+// A stable workspace ref and the session it currently names are two identities
+// for one fork, and both carry fences the hub must honour: the request reserves
+// the alias the client asked about, and the branch reads the resolved session's
+// transcript. Fencing only the alias lets a fork of a resume-required or
+// deleted current session through, which is the mirror of the dual
+// live-delegate check the same admission already performs.
+func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fence func(t *testing.T, cfg *hubcore.WebConfig, fencedID string)
+	}{
+		{
+			name: "resolved session needs an explicit resume",
+			fence: func(t *testing.T, cfg *hubcore.WebConfig, fencedID string) {
+				finish := cfg.ResumeLocks.BeginForceStop([]string{fencedID})
+				if err := cfg.ResumeLocks.PersistForceStop([]string{fencedID}, fencedID); err != nil {
+					t.Fatal(err)
+				}
+				finish(true)
+			},
+		},
+		{
+			name: "resolved session is deleted",
+			fence: func(t *testing.T, cfg *hubcore.WebConfig, fencedID string) {
+				store, err := hubcore.NewDeletionStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+					Ref: localAppRef(fencedID), ThreadID: fencedID,
+				}}); err != nil {
+					t.Fatal(err)
+				}
+				cfg.DeletionStore = store
+			},
+		},
+	} {
+		for _, fenceCurrent := range []bool{false, true} {
+			name := tc.name + map[bool]string{false: " (control: the retired alias is fenced instead)", true: ""}[fenceCurrent]
+			t.Run(name, func(t *testing.T) {
+				stateDir := t.TempDir()
+				retiredID := buildRPCParentSession(t, stateDir)
+				replacementID, err := identifier.NewSessionID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				currentID := buildRPCSessionWithWorkingDir(t, stateDir, replacementID, t.TempDir())
+				runDir := t.TempDir()
+				writeRendezvous(t, runDir, rendezvous.Entry{
+					PID: os.Getpid(), SourceID: "local", ThreadID: currentID, SessionID: currentID, InstanceID: currentID,
+					WorkspaceRef: "local:" + retiredID, StateDir: stateDir,
+					Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
+				})
+				roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
+				roster.Refresh()
+				cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, ResumeLocks: hubcore.NewResumeLocks()}
+				fencedID := retiredID
+				if fenceCurrent {
+					fencedID = currentID
+				}
+				tc.fence(t, &cfg, fencedID)
+
+				before, listErr := schema.ListSessionMetas(stateDir)
+				if listErr != nil {
+					t.Fatal(listErr)
+				}
+				_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+					Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				})
+				if err == nil {
+					t.Fatalf("fork by the stable ref succeeded while %s was fenced", fencedID)
+				}
+				wire, ok := errors.AsType[appwire.WireError](err)
+				if !ok || wire.Code != appwire.CodeUnavailable {
+					t.Fatalf("fork error=%v, want structured unavailable", err)
+				}
+				after, err := schema.ListSessionMetas(stateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(after) != len(before) {
+					t.Fatalf("refused fork still branched a child: %d metadata records became %d", len(before), len(after))
+				}
+			})
+		}
 	}
 }
