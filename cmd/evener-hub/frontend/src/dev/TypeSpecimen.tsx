@@ -15,6 +15,9 @@ const CLASS = {
   sizeCaption: requireClass(styles.sizeCaption, MODULE, "sizeCaption"),
   sizeUi: requireClass(styles.sizeUi, MODULE, "sizeUi"),
   sizeBody: requireClass(styles.sizeBody, MODULE, "sizeBody"),
+  sizeProse: requireClass(styles.sizeProse, MODULE, "sizeProse"),
+  sans: requireClass(styles.sans, MODULE, "sans"),
+  mono: requireClass(styles.mono, MODULE, "mono"),
   sizePaneTitle: requireClass(styles.sizePaneTitle, MODULE, "sizePaneTitle"),
   sizePageTitle: requireClass(styles.sizePageTitle, MODULE, "sizePageTitle"),
   sizeDisplay: requireClass(styles.sizeDisplay, MODULE, "sizeDisplay"),
@@ -48,6 +51,7 @@ const RAMP: { label: string; sizeClass: string }[] = [
   { label: "caption 12", sizeClass: CLASS.sizeCaption },
   { label: "ui 13", sizeClass: CLASS.sizeUi },
   { label: "body 15", sizeClass: CLASS.sizeBody },
+  { label: "prose 18", sizeClass: CLASS.sizeProse },
   { label: "pane-title 18", sizeClass: CLASS.sizePaneTitle },
   { label: "page-title 22", sizeClass: CLASS.sizePageTitle },
   { label: "display 28", sizeClass: CLASS.sizeDisplay },
@@ -91,6 +95,24 @@ const MEASURES: { name: string; value: string; widthClass: string }[] = [
 function Specimen() {
   return (
     <>
+      <section className={CLASS.section}>
+        <h2 className={CLASS.sectionTitle}>Faces</h2>
+        <div className={CLASS.rampRow}>
+          <p className={CLASS.rowLabel}>Inter Variable</p>
+          <p className={CLASS.sans}>Controls and operations · Model · 12,345 tokens · 01:24</p>
+        </div>
+        <div className={CLASS.rampRow}>
+          <p className={CLASS.rowLabel}>Source Serif 4 Variable</p>
+          <p className={CLASS.prose}>
+            A conversation worth reading. <em>Intent before action</em>, and <strong>evidence before certainty.</strong>
+          </p>
+        </div>
+        <div className={CLASS.rampRow}>
+          <p className={CLASS.rowLabel}>JetBrains Mono Variable</p>
+          <code className={CLASS.mono}>src/styles/tokens.css · git diff --stat</code>
+        </div>
+      </section>
+
       <section className={CLASS.section}>
         <h2 className={CLASS.sectionTitle}>Ramp</h2>
         <p className={CLASS.note}>
@@ -140,7 +162,7 @@ function Specimen() {
       <section className={CLASS.section}>
         <h2 className={CLASS.sectionTitle}>Measure</h2>
         <p className={CLASS.note}>
-          The same 600-character paragraph at body size and --line-height-body, at both measures.
+          The same 600-character paragraph at --font-size-prose and --line-height-body, at both measures.
         </p>
         <div className={CLASS.measures}>
           {MEASURES.map(({ name, value, widthClass }) => (

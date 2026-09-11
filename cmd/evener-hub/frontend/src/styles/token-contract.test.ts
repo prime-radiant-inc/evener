@@ -798,7 +798,9 @@ test("tokens.css dark and light blocks declare the same color token names", () =
 test("the canonical dark token block directly scopes nested dark wrappers", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*,\s*\[data-theme="dark"\]\s*\{/);
   expect(darkBlock).toContain("color-scheme: dark;");
-  expect(darkBlock).toContain("--surface-1: #232427;");
+  // Approved 2026-09-09 editorial-instrument spec replaces the neutral palette;
+  // this still pins direct nested-theme scoping, not a second palette block.
+  expect(darkBlock).toContain("--surface-1: #232320;");
 });
 
 // --- (f) the -ink text companions clear AA in both themes ---------------

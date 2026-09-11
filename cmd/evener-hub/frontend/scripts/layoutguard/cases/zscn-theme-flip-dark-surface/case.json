@@ -8,8 +8,8 @@
   ],
   "mutation": {
     "declaration": "styles/tokens.css: :root, [data-theme=\"dark\"] { ... } (reverted the selector to :root only, dropping nested-dark-pane scoping from 8b06eb411)",
-    "verified": "2026-08-17",
+    "verified": "2026-09-09",
     "expect": "fail",
-    "note": "Re-verified after the case picked up styles/global.css (kata e4sh) - its measurement came back byte-identical, but the field attests to a rendering configuration, and that configuration changed. Still fails: the dark pane's --surface-1 resolves to #FFFFFF instead of #232427."
+    "note": "Re-verified against the approved 2026-09-09 editorial-instrument palette (docs/superpowers/specs/2026-09-09-tufte-webui-design.md). In an isolated frontend copy, baseline passed; removing only the nested dark selector failed all three dark probes: --surface-1 resolved to #FCFBF8 instead of #232320, pane background to rgb(250, 249, 246) instead of rgb(25, 25, 24), and surface probe to rgb(252, 251, 248) instead of rgb(35, 35, 32). Restoring the selector passed. Light custom-property and painted-surface probes remain unchanged in scope and strength."
   }
 }
