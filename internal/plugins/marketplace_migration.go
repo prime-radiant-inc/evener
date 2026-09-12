@@ -233,7 +233,7 @@ func (m *Manager) recoverMarkedRename() error {
 	}
 	registryAsFound := reg
 	owners := registryKeyOwners(reg, mk)
-	itsOwn, owner, err := m.marketplaceDirsAreItsOwn(mk, marker.From)
+	itsOwn, owner, err := m.marketplaceDirsAreItsOwn(mk, reg, marker.From)
 	if err != nil {
 		return fail(err)
 	}
@@ -928,7 +928,7 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, r
 // (movePluginCachesToNewName).
 func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]string, reg Registry, name, newName string) (Registry, error) {
 	ref, registryAsFound := mk[name], reg
-	itsOwn, owner, err := m.marketplaceDirsAreItsOwn(mk, name)
+	itsOwn, owner, err := m.marketplaceDirsAreItsOwn(mk, reg, name)
 	if err != nil {
 		return registryAsFound, err
 	}
@@ -1180,7 +1180,7 @@ func anotherKeyInstallsUnder(reg Registry, own, dir string) bool {
 // they are not its own, the marketplace that owns them is named too; a name
 // whose own directories fall outside the store is nobody's, so that name is
 // then empty.
-func (m *Manager) marketplaceDirsAreItsOwn(mk Marketplaces, name string) (bool, string, error) {
+func (m *Manager) marketplaceDirsAreItsOwn(mk Marketplaces, reg Registry, name string) (bool, string, error) {
 	inStore, err := m.marketplaceDirsInStore(name)
 	if err != nil || !inStore {
 		return false, "", err
@@ -1211,12 +1211,51 @@ func (m *Manager) marketplaceDirsAreItsOwn(mk Marketplaces, name string) (bool, 
 			// A name whose own directory resolves outside the store — a
 			// clone that is a symlink out — owns nothing here, whatever
 			// that directory contains.
-			if dirInStore(resolvedDir, othersDir) && pathWithinDir(othersDir, derived) {
+			if !dirInStore(resolvedDir, othersDir) || !pathWithinDir(othersDir, derived) {
+				continue
+			}
+			held, err := m.otherHoldsDir(other, mk[other], reg, mk, dir, othersDir)
+			if err != nil {
+				return false, "", err
+			}
+			if held {
 				return false, other, nil
 			}
 		}
 	}
 	return true, "", nil
+}
+
+// otherHoldsDir reports whether the store holds anything of the marketplace
+// recorded as other at dir: under the marketplaces directory, the clone the
+// record points at; under the cache, an install of a key that names it. A name
+// nothing has fetched holds nothing there — its record points at no clone and
+// none of its keys has an install — so it owns nothing, however its name sits
+// around another marketplace's directories.
+//
+// That distinction is what keeps a nested name's directories: a fetch clears and
+// refills the directory it clones into, so a clone left beneath an unfetched
+// parent is destroyed by the parent's first fetch.
+func (m *Manager) otherHoldsDir(other string, ref MarketplaceRef, reg Registry, mk Marketplaces, dir, othersDir string) (bool, error) {
+	if dir == m.marketplacesDir() {
+		if ref.InstallLocation == "" {
+			return false, nil
+		}
+		resolved, err := resolveForContainment(ref.InstallLocation)
+		if err != nil {
+			return false, err
+		}
+		return pathWithinDir(resolved, othersDir), nil
+	}
+	for key, entries := range reg.Plugins {
+		if owner, ok := registryKeyOwner(key, mk); !ok || owner != other {
+			continue
+		}
+		if installedUnder(othersDir, entries) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // marketplaceDirsInStore reports whether both directories a recorded name

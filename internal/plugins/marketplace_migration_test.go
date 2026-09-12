@@ -3826,3 +3826,52 @@ func TestPluginCacheMoves_SkipsAKeyWhosePluginIsNotAComponent(t *testing.T) {
 		t.Fatalf("moves = %+v, want none: a plugin that is not one component names no cache to move", moves)
 	}
 }
+
+// A marketplace nothing has fetched holds no directory to own. Treating it as
+// the owner of a nested name's directories leaves that clone beneath the parent,
+// and the fetch that clones the parent clears and refills the directory it
+// clones into: the nested marketplace's clone is destroyed with it.
+func TestMarketplaceNameMigration_AnUnfetchedParentOwnsNoDirectory(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	planted := time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC)
+	if err := m.saveMarketplaces(Marketplaces{
+		"a": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/a.git"}, LastUpdated: planted},
+		"a/b": {
+			Source:          Source{Kind: SourceURL, URL: "https://example.invalid/b.git"},
+			InstallLocation: m.marketplaceDir("a/b"),
+			LastUpdated:     planted,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The refused name really has a clone and a cache, beneath the parent's name.
+	plantCatalog(t, m.marketplaceDir("a/b"))
+	install := m.pluginCacheDir("a/b", "widget", "sha1")
+	writePlugin(t, install, "widget", nil)
+	if err := m.saveRegistry(Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		registryKey("widget", "a/b"): {{
+			InstallPath: install, Version: "1.0.0", Enabled: true,
+			Source: Source{Kind: SourceGitHub, Repo: "o/widget"},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk["a-b"]
+	if !ok {
+		t.Fatalf("marketplaces = %v, want the refused name migrated to a-b", mk)
+	}
+	if want := m.marketplaceDir("a-b"); ref.InstallLocation != want {
+		t.Fatalf("InstallLocation = %q, want its clone moved to %q", ref.InstallLocation, want)
+	}
+	mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
+	mustNotExist(t, m.marketplaceDir("a/b"))
+}
