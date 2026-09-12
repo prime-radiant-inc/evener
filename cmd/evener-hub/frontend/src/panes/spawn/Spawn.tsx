@@ -567,8 +567,14 @@ function SpawnForm({
   const providerRequired = usesEvenerModels && providerSetup.status === "missing";
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
-  // below for how noDefaultModel is set.
-  const modelRequired = model === "" && noDefaultModel;
+  // below for how noDefaultModel is set. The onboarding scope is a second
+  // required case: entering onboarding suppresses the uncredentialed-default
+  // fallback (that same effect) in favor of the user's explicit choice from
+  // the provider they just connected, so an untouched Model there has no
+  // honest fallback - the resolved default may name a provider with no
+  // credentials, and submitting it is a certain thread/start failure. A valid
+  // /model invocation still bootstraps past this (slashModelBootstrap below).
+  const modelRequired = model === "" && (noDefaultModel || providerChoiceScope.current === `${harness}\0${cwd}`);
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
@@ -1680,7 +1686,9 @@ function SpawnForm({
             control it names rather than in a form row that no longer exists. */}
         {modelRequired && (
           <p className={CLASS.modelNote} role="alert">
-            This hub has no default model configured — choose one to start.
+            {noDefaultModel
+              ? "This hub has no default model configured — choose one to start."
+              : "Choose one of the connected provider's models to start."}
           </p>
         )}
 

@@ -389,6 +389,11 @@ connectionStore.subscribe((state, previous) => {
     credentialsStore.setState({ loading: false });
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
+    // A marker belongs to the connection its mutation was issued on: the echo
+    // cannot arrive on a different one, so a marker left over from a replaced
+    // or reconnected client is pure suppression risk for whatever
+    // same-provider notification comes next on the new connection.
+    localAuthMutations.clear();
   }
   attachNotifications(state.client);
   // Once a view has requested credentials, reconnects must restore its list

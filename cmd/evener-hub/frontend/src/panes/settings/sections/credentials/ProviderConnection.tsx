@@ -175,7 +175,7 @@ export function ProviderConnection(props: ProviderConnectionProps) {
                 ? `${row.id} ${row.name ?? ""} ${HELP[row.id]?.label ?? ""}`
                     .toLowerCase()
                     .includes(search.toLowerCase())
-                : row.id in HELP,
+                : Object.hasOwn(HELP, row.id),
             )
             .map((row) => (
               <Button
@@ -274,7 +274,10 @@ function SelectedConnection({
   const storedMode = json || modes.includes("apiKey");
   const required = !!row?.credentialRequired && !host;
   const busy = phase === "saving" || phase === "refreshing" || phase === "checking";
-  const help = HELP[effectiveProvider.id];
+  // Own-key: a schema-legal id like "constructor" would otherwise resolve to
+  // Object.prototype.constructor here and render a destinationless
+  // "Get an API key" anchor for a provider with no help metadata.
+  const help = Object.hasOwn(HELP, effectiveProvider.id) ? HELP[effectiveProvider.id] : undefined;
   const unavailable = connection !== "ready" || store.loading;
 
   const setPhase = useCallback((next: Phase) => {

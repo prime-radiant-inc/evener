@@ -82,6 +82,24 @@ test("popular Gemini uses the real google identity, independently of provider na
   expect(await screen.findByRole("button", { name: "Gemini" })).toBeTruthy();
 });
 
+test("a provider named like an Object.prototype member is not popular and gets no help link", async () => {
+  const custom = provider("constructor", "Custom endpoint");
+  const { user } = setup({ instances: [], availableProviders: [custom] });
+  await screen.findByRole("button", { name: "All providers" });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+  // Popular membership must be an own-key check: "constructor" in HELP is
+  // true through the prototype chain, which would promote this custom
+  // provider to the popular grid and then render
+  // Object.prototype.constructor as its help entry - a "Get an API key"
+  // anchor with no destination for a provider that has no help metadata.
+  expect(screen.queryByRole("button", { name: "Custom endpoint" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "All providers" }));
+  await user.click(screen.getByRole("button", { name: "Custom endpoint" }));
+  expect(screen.queryByText("Get an API key")).toBeNull();
+});
+
 test("device authorization survives its own delayed listing refresh and proceeds to a real check", async () => {
   const { user, client, connected } = setup();
   await choose(user, "ChatGPT / Codex");

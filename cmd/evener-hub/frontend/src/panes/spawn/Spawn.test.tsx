@@ -1379,6 +1379,92 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
 });
 
+test("closing the handoff without choosing requires an explicit model before Start", async () => {
+  const user = userEvent.setup();
+  let saved = false;
+  const setup = {
+    name: "openai",
+    providerId: "openai",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: true,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    authModes: ["apiKey"],
+    baseUrl: "https://provider.example/v1",
+  };
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => {
+      const row = { ...setup, activeSource: saved ? "store" : "none", hasStoredFile: saved };
+      return {
+        instances: saved ? [row] : [],
+        availableProviders: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            protocol: row.protocol,
+            auth: row.auth,
+            implicit: true,
+            authModes: ["apiKey"],
+            setup: row,
+          },
+        ],
+      };
+    });
+    fake.on("model/list", () => ({
+      data: saved ? [{ provider: "openai", model: "from-server", displayName: "Server choice" }] : [],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return {
+        provider,
+        supported: true,
+        signedIn: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+      };
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      // A NON-empty default whose provider has no credentials: the exact case
+      // the uncredentialed-default fallback exists for - and onboarding
+      // suppresses that fallback in favor of the explicit choice.
+      effective: { model: "missing/old-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "guided-draft");
+  await setWorkingDir(user, "/tmp/guided-required");
+  await user.click(screen.getByRole("button", { name: "Connect provider" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+  await user.click(await screen.findByRole("button", { name: "OpenAI" }));
+  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await screen.findByRole("option", { name: /Server choice/ });
+  await user.keyboard("{Escape}");
+  // The resolved default is non-empty, so the noDefaultModel gate alone would
+  // leave Start enabled - submitting into a certain thread/start failure on
+  // the uncredentialed default. Onboarding suppressed the fallback, so the
+  // explicit pick is required.
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /Server choice/ }));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect(client.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    model: "openai/from-server",
+  });
+});
+
 test("retrying missing provider setup discovers a local server started afterward", async () => {
   const user = userEvent.setup();
   let available = false;

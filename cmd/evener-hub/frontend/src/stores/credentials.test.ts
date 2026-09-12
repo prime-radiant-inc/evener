@@ -718,6 +718,32 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("a marker from a replaced connection cannot suppress a later notification", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    first.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The client is replaced before the mutation's echo can arrive: whatever
+    // same-provider notification comes on the NEW connection is not that lost
+    // echo, so a surviving marker must not swallow it.
+    const second = connectFakeClient();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    second.on("evener/instance/list", listSpy);
+    // Let the reconnect's own restore fetch settle before counting.
+    await vi.advanceTimersByTimeAsync(0);
+    const before = listSpy.mock.calls.length;
+    second.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy.mock.calls.length).toBe(before + 1);
+  });
+
   test("a background refetch race with no client connected is swallowed, not an unhandled rejection", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
