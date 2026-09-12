@@ -191,6 +191,31 @@ func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) 
 	if !ok || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
 		t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
 	}
+	if !strings.Contains(cfgErr.Message, "not found or your project does not have access") {
+		t.Fatalf("the remedy must keep the provider's own detail visible: %q", cfgErr.Message)
+	}
+}
+
+// A regional publisher-model 404 for a model the registry does not know to be
+// global-only is ambiguous: Vertex uses the same body for "not found" and for
+// "your project does not have access to it". Rewriting it as a global-endpoint
+// remedy would hide a genuine permissions failure, so it stays the provider's
+// own error.
+func TestProtocolRegionalNonGlobalOnly404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := protoLive(srv)
+	res.WireID = "gemini-2.5-flash"
+	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": "us-central1", "GOOGLE_VERTEX_PROJECT": "p"}
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a model the registry does not know to be global-only must not claim a regional remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
 }
 
 // The same 404 against the global endpoint already names the endpoint that

@@ -41,7 +41,7 @@ func reclassifyGemini(res registry.Resolved) func(status int, body []byte, err e
 		}
 		out := llm.RewriteErrorProvider(classifyGeminiError(status, body, retryAfter, err), res.Instance)
 		if remedy, ok := regionalVertexGlobalOnlyRemedy(res, status, body); ok {
-			return &llm.ConfigurationError{Message: remedy, Cause: out}
+			return &llm.ConfigurationError{Message: fmt.Sprintf("%s; provider said: %s", remedy, out.Error()), Cause: out}
 		}
 		return out
 	}
@@ -53,13 +53,19 @@ func reclassifyGemini(res registry.Resolved) func(status int, body []byte, err e
 // models (Gemini 3 and later, recent Claude ids) only from its global
 // endpoint; the raw 404 says to check the region but not which one works.
 // Only a regional location gets a remedy — a request already addressed to
-// global/us/eu is not helped by moving endpoints.
+// global/us/eu is not helped by moving endpoints — and only for a model the
+// registry knows is global-only: Vertex returns this same 404 when the
+// project simply lacks access to a model that is valid there, and rewriting
+// that as an endpoint change would hide the real failure.
 func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []byte) (string, bool) {
 	if status != http.StatusNotFound || !strings.Contains(string(body), "Publisher model") {
 		return "", false
 	}
 	loc := res.Transport.Vars["GOOGLE_VERTEX_LOCATION"]
 	if loc == "" || loc == "global" || loc == "us" || loc == "eu" {
+		return "", false
+	}
+	if !registry.IsVertexGlobalOnly(res.WireID) {
 		return "", false
 	}
 	return fmt.Sprintf("instance %q: Vertex location %q does not serve model %q; use global, us, or eu (set GOOGLE_VERTEX_LOCATION)", res.Instance, loc, res.WireID), true

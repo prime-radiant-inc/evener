@@ -32,6 +32,7 @@ export function mergeCatalogEntry(
     "inputCostPerMillion",
     "outputCostPerMillion",
     "reasoningEffortLevels",
+    "warnings",
   ] as const;
   for (const field of optionalFields) {
     const value = incoming[field];

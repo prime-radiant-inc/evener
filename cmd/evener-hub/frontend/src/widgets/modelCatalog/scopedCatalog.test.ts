@@ -33,6 +33,18 @@ describe("catalog snapshot merging", () => {
     expect(mergeCatalogEntry(existing, richer)).toEqual(richer);
   });
 
+  test("a later response supplies warnings the visible entry lacked", () => {
+    const existing = { provider: "vertex", model: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" };
+    const richer = {
+      ...existing,
+      warnings: [
+        'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash',
+      ],
+    };
+
+    expect(mergeCatalogEntry(existing, richer).warnings).toEqual(richer.warnings);
+  });
+
   test("does not merge entries with different providers or models", () => {
     const existing = {
       provider: "openai",

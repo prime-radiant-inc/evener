@@ -54,6 +54,26 @@ type vertexGlobalOnlyFamily struct {
 	patterns []string
 }
 
+// vertexGlobalOnlyDetail returns the regional limitation for wireID when it
+// names a family Vertex serves only from the global and us/eu endpoints.
+func vertexGlobalOnlyDetail(wireID string) (string, bool) {
+	for _, family := range vertexGlobalOnly {
+		if slices.ContainsFunc(family.patterns, func(p string) bool { return strings.Contains(wireID, p) }) {
+			return family.detail, true
+		}
+	}
+	return "", false
+}
+
+// IsVertexGlobalOnly reports whether wireID names a model Vertex serves only
+// from its global and us/eu endpoints — the same knowledge resolve uses for
+// its regional warning, exported for callers that must tell a regional
+// "not served here" apart from a genuine access failure.
+func IsVertexGlobalOnly(wireID string) bool {
+	_, ok := vertexGlobalOnlyDetail(wireID)
+	return ok
+}
+
 var datedSuffixRe = regexp.MustCompile(`(-\d{8}(-v\d+(:\d+)?)?|@\d{8})$`)
 
 // StripDatedSuffix removes a provider's dated-snapshot suffix from a model id
@@ -473,11 +493,8 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		// The location the URL was actually built with (buildTransport's
 		// Vars), whichever mapping supplied it.
 		if loc, ok := transport.Vars["GOOGLE_VERTEX_LOCATION"]; ok && loc != "global" && loc != "us" && loc != "eu" {
-			for _, family := range vertexGlobalOnly {
-				if slices.ContainsFunc(family.patterns, func(p string) bool { return strings.Contains(hit.wireID, p) }) {
-					warnings = append(warnings, fmt.Sprintf("regional Vertex location %q %s; use global, us, or eu for %s", loc, family.detail, hit.wireID))
-					break
-				}
+			if detail, ok := vertexGlobalOnlyDetail(hit.wireID); ok {
+				warnings = append(warnings, fmt.Sprintf("regional Vertex location %q %s; use global, us, or eu for %s", loc, detail, hit.wireID))
 			}
 		}
 	}

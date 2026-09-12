@@ -125,6 +125,34 @@ func TestProtocolBuildBody_DropsGeminiSchemaMetaKeys(t *testing.T) {
 	}
 }
 
+// A property *name* is data, not a schema keyword. A tool may legitimately
+// declare an argument named "$id" or "$comment", and the sanitizer must keep
+// it while still stripping a keyword of the same name at a schema position
+// (otherwise the schema loses a parameter that "required" still names).
+func TestProtocolBuildBody_KeepsPropertyNamesThatLookLikeMetaKeys(t *testing.T) {
+	req := protoReq("")
+	req.Tools = []llm.ToolDefinition{{
+		Name: "t",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"$id":      map[string]any{"type": "string"},
+				"$comment": map[string]any{"type": "string"},
+				"ok":       map[string]any{"type": "string"},
+			},
+			"required": []any{"$id", "ok"},
+		},
+	}}
+
+	params := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any)[0]["functionDeclarations"].([]map[string]any)[0]["parameters"].(map[string]any)
+	props := params["properties"].(map[string]any)
+	for _, name := range []string{"$id", "$comment", "ok"} {
+		if _, ok := props[name]; !ok {
+			t.Fatalf("property %q must survive sanitizing: %#v", name, props)
+		}
+	}
+}
+
 func TestProtocolBuildBody_NullableSchemasOnGeminiWire(t *testing.T) {
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{

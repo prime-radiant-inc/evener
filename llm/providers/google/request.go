@@ -174,6 +174,13 @@ func sanitizeGeminiSchema(v any) any {
 			if k == "additionalProperties" || geminiSchemaMetaKeys[k] {
 				continue
 			}
+			// A schema's "properties" maps property *names* to schemas, and a
+			// name is data: a tool may declare an argument called "$id". Only
+			// the schemas on the right are sanitized, never the names.
+			if k == "properties" {
+				out[k] = sanitizeGeminiNamedSchemas(vv)
+				continue
+			}
 			if k == "type" {
 				if typ, nullable, ok := geminiNullableType(vv); ok {
 					out[k] = typ
@@ -199,6 +206,22 @@ func sanitizeGeminiSchema(v any) any {
 	default:
 		return v
 	}
+}
+
+// sanitizeGeminiNamedSchemas sanitizes a map whose keys are names rather than
+// schema keywords (the value of a schema's "properties"): each value is
+// sanitized as a schema, but no key is filtered, so a property legitimately
+// named "$schema" or "additionalProperties" survives.
+func sanitizeGeminiNamedSchemas(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return sanitizeGeminiSchema(v)
+	}
+	out := make(map[string]any, len(m))
+	for name, schema := range m {
+		out[name] = sanitizeGeminiSchema(schema)
+	}
+	return out
 }
 
 func geminiEnumWithoutNull(v any) any {
