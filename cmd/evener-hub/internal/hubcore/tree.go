@@ -915,6 +915,14 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				liveRefMap[le.SessionID] = ref.String()
 			}
 		}
+		// A crash-retained record keeps the child list its daemon reported
+		// before the process died (Roster.Refresh copies the last snapshot onto
+		// it), and List hands it over unfiltered. That daemon runs nothing, so
+		// its children are not in-process anywhere — the same rule
+		// Roster.SubagentState applies for the read and workspace projections.
+		if le.Crashed {
+			continue
+		}
 		for _, childID := range le.RunningSubagentIDs {
 			if childID != "" {
 				runningSubagentIDs[childID] = true

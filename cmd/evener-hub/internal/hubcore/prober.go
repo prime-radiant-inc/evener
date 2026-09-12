@@ -138,6 +138,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	return ProbeResult{
 		SessionID:             rootID,
 		Status:                root.Status.Type,
+		ActiveFlags:           append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:            root.Evener.AskPending,
 		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
 		RunningSubagentIDs:    runningSubagentIDs,
