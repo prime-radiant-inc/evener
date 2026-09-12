@@ -381,6 +381,31 @@ func TestVertexGlobalOnlyMatchesAtAnIDBoundary(t *testing.T) {
 	}
 }
 
+// The rule makes the authority, so a {GOOGLE_VERTEX_HOST} the template reads
+// anywhere else — a path or query segment — derives nothing: the request goes
+// where the template's own authority sends it.
+func TestResolve_HostPlaceholderOutsideTheAuthorityDoesNotWarn(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.pathhost]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://gateway.example/{GOOGLE_VERTEX_HOST}/v1\"\n")
+	res := mustResolve(t, r, "pathhost/claude-opus-5")
+	if hasWarning(res, "regional") || res.HostDerivedByRule {
+		t.Fatalf("a host placeholder in the path is not a derived authority: %+v", res)
+	}
+}
+
+// A location the rule refuses derives nothing: the resolver says what is wrong
+// with the location instead of claiming a regional endpoint was reached.
+func TestResolve_InvalidLocationDoesNotWarnRegionally(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe_west1"}, "")
+	res := mustResolve(t, r, "google-vertex-anthropic/claude-opus-5")
+	if !hasWarning(res, "invalid GOOGLE_VERTEX_LOCATION") {
+		t.Fatalf("an invalid location must be reported as such: %+v", res.Warnings)
+	}
+	if hasWarning(res, "regional") || res.HostDerivedByRule {
+		t.Fatalf("a refused location derives no endpoint: %+v", res)
+	}
+}
+
 func TestResolve_HeadersAndCredential(t *testing.T) {
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "sk", "OPENAI_ORG_ID": "org-1"}, "")
 	res := mustResolve(t, r, "openai/gpt-5.5")

@@ -729,15 +729,15 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	// A host the vertex-location rule derived from the location used the
 	// location as surely as a path placeholder would have, so it is exposed
 	// too (and the regional warning reads it). A host supplied directly used
-	// no location. Only the base URL template can make the rule the author of
-	// the authority — the request URL is that base plus an endpoint path, so a
-	// {GOOGLE_VERTEX_HOST} read anywhere else derives nothing — and only when
-	// that placeholder resolved from the location rather than a supplied value.
+	// no location. Only a {GOOGLE_VERTEX_HOST} in the base URL's authority —
+	// the part of the request URL that names the endpoint — makes the rule its
+	// author, and only when the rule would accept the location: a location it
+	// refuses leaves the placeholder unresolved and derives no endpoint.
 	var hostDerived bool
-	if t.HostRule == HostRuleVertexLocation && slices.Contains(templatePlaceholders(baseURLTemplate), "GOOGLE_VERTEX_HOST") {
+	if t.HostRule == HostRuleVertexLocation && authorityVars(baseURLTemplate)["GOOGLE_VERTEX_HOST"] {
 		_, supplied := lookup("GOOGLE_VERTEX_HOST")
 		loc, located := lookup("GOOGLE_VERTEX_LOCATION")
-		hostDerived = !supplied && located
+		hostDerived = !supplied && located && validVertexLocation(loc)
 		if hostDerived {
 			resolved["GOOGLE_VERTEX_LOCATION"] = loc
 		}
