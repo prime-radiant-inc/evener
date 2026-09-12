@@ -461,6 +461,19 @@ package_list_group_survivors() {
 		awk -v pgid="$pgid" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
 }
 
+# package_list_group_survivor_report PGID — what is left of PGID, as a phrase a
+# diagnostic can print. "Nothing was there" and "nobody could look" are
+# different answers, and collapsing the second into the first tells the reader
+# the group was confirmed empty when in fact the process listing would not run.
+package_list_group_survivor_report() {
+	local report
+	if ! report="$(package_list_group_survivors "$1")"; then
+		printf '<unknown: the process listing would not run>'
+		return 0
+	fi
+	printf '%s' "${report:-<none at the final probe>}"
+}
+
 # stop_package_list_group PGID — stop one package-list attempt and prove
 # nothing of it is still running. Returns 0 when the group is confirmed empty,
 # 1 when it still has a live member after the escalation, and 2 when liveness
@@ -629,9 +642,9 @@ run_bounded_package_list() {
 						printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: the process listing that answers "is process group %s empty" would not run. Not retrying, because a retry that cannot see the previous attempt would race it.\n' \
 							"$attempt" "$list_pid" >&2
 					else
-						survivors="$(package_list_group_survivors "$list_pid")" || survivors=""
+						survivors="$(package_list_group_survivor_report "$list_pid")"
 						printf 'run-module-tests.sh: attempt %s would not stop: process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and not waiting on it.\n' \
-							"$attempt" "$list_pid" "${survivors:-<none at the final probe>}" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
+							"$attempt" "$list_pid" "$survivors" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
 					fi
 					# The record goes too. This group has already had SIGTERM and
 					# SIGKILL with a full grace each and the diagnostic above names
