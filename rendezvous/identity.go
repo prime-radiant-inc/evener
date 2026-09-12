@@ -8,8 +8,11 @@ import (
 )
 
 // OwnershipFingerprint returns the opaque, non-secret fingerprint of exact
-// daemon ownership, shared by the daemon identity check and the Hub roster.
-// It hashes the canonical identity fields — PID, address/endpoint, protocol,
+// daemon ownership. It is defined here for two consumers that land in later
+// tasks — the daemon-side identity revalidation check and the Hub roster's
+// daemonIdentity — and is not wired into either yet; do not read this comment
+// as evidence the wiring exists. It hashes the canonical identity fields —
+// PID, address/endpoint, protocol,
 // source/thread/session/instance IDs, workspace/state/working-directory
 // identity, and the exact start instant (UTC, RFC3339Nano) — so any ownership
 // change yields a different fingerprint. HubToken, provenance (SpawnedBy) and

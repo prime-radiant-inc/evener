@@ -71,7 +71,8 @@ func (s *Server) handleAppDaemonRetire(ctx context.Context, params appwire.Daemo
 	resp, err := retire(ctx, params)
 	if err != nil && errors.Is(err, agent.ErrRetirementUnavailable) && status != nil {
 		// A lifecycle race (already preparing/retiring) is typed so the caller
-		// can retry automatically; it was not durably accepted.
+		// can retry automatically; its mutation outcome is unknown, not a
+		// rejection — a lost response is not proof the claim was refused.
 		return appwire.DaemonRetireResponse{}, appwire.LifecycleUnavailable(status().Phase)
 	}
 	return resp, err

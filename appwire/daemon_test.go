@@ -192,6 +192,16 @@ func TestDaemonWireShapes(t *testing.T) {
 // TestLifecycleErrorDataWireShape pins the typed error a peer decodes when a
 // lifecycle transition races: it composes the existing mutation error data
 // (never overwriting it) with lifecycleReason and retryable.
+//
+// mutationOutcome is pinned to "unknown", not "notAccepted": the admission
+// fence refuses read/mutation requests before the handler's replay lookup
+// (internal/appserver/router.go admission-before-handler; replay lookup inside
+// the handler at agent/session_client_mutation.go), so the refusing path
+// cannot know whether a retried ClientMutationID was already durably
+// accepted. Plan line 918 (docs/superpowers/plans/2026-09-10-daemon-idle-retirement.md)
+// forbids reporting a possibly-accepted mutation as rejected solely because
+// its reply was lost; "unknown" is the truthful epistemic state
+// (appwire/errors.go MutationOutcomeUnknown).
 func TestLifecycleErrorDataWireShape(t *testing.T) {
 	werr := LifecycleUnavailable("preparing")
 	if werr.Code != CodeUnavailable {
@@ -206,7 +216,7 @@ func TestLifecycleErrorDataWireShape(t *testing.T) {
 	}
 	requireDaemonJSONEq(t, `{
 		"evenerErrorInfo": "actionUnavailable",
-		"mutationOutcome": "notAccepted",
+		"mutationOutcome": "unknown",
 		"retryDisposition": "automatic",
 		"lifecycleReason": "preparing",
 		"retryable": true

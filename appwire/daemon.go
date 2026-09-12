@@ -66,7 +66,9 @@ type DaemonStatusResponse struct {
 
 // LifecycleErrorData composes the existing mutation error data with the
 // lifecycle race detail instead of overwriting it: a raced request was not
-// durably accepted and an automatic retry is safe once the phase settles.
+// known to be durably accepted or rejected (the admission fence refuses
+// before the handler's replay lookup), and an automatic retry with the same
+// ClientMutationID is safe once the phase settles.
 type LifecycleErrorData struct {
 	ErrorData
 	LifecycleReason string `json:"lifecycleReason"`
@@ -77,6 +79,11 @@ type LifecycleErrorData struct {
 // request loses the race with a lifecycle transition (preparing/retiring). The
 // phase is the reason; the caller must not treat a lost response as proof of
 // exit — evener/daemon/status remains the lifecycle authority.
+//
+// MutationOutcome is MutationOutcomeUnknown, never MutationOutcomeNotAccepted:
+// the refusing admission fence runs before the mutation replay lookup, so it
+// cannot know whether a retried ClientMutationID was already durably
+// accepted, and a lost reply is not proof of rejection.
 func LifecycleUnavailable(phase string) WireError {
 	return WireError{
 		Code:    CodeUnavailable,
@@ -84,7 +91,7 @@ func LifecycleUnavailable(phase string) WireError {
 		Data: LifecycleErrorData{
 			ErrorData: ErrorData{
 				EvenerErrorInfo:  ErrorActionUnavailable,
-				MutationOutcome:  MutationOutcomeNotAccepted,
+				MutationOutcome:  MutationOutcomeUnknown,
 				RetryDisposition: RetryDispositionAutomatic,
 			},
 			LifecycleReason: phase,

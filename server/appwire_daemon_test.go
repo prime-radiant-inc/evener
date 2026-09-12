@@ -71,8 +71,13 @@ func assertLifecycleUnavailable(t *testing.T, err error, phase string) {
 	if !data.Retryable {
 		t.Fatal("lifecycle race must be retryable")
 	}
-	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted {
-		t.Fatalf("mutationOutcome=%q, want notAccepted", data.MutationOutcome)
+	// mutationOutcome is pinned to unknown, not notAccepted: the admission
+	// fence runs before the handler's mutation replay lookup, so the
+	// refusing path cannot know whether a retried ClientMutationID was
+	// already durably accepted. Plan line 918 forbids claiming
+	// notAccepted for a mutation whose reply may have been lost.
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+		t.Fatalf("mutationOutcome=%q, want unknown", data.MutationOutcome)
 	}
 }
 
