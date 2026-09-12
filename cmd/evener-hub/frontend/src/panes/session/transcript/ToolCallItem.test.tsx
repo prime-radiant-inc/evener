@@ -612,7 +612,7 @@ test("a body-less descriptor still becomes an expandable details when the call e
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
-test("an expanded shell row drops the one-line summary - the body's pretty-printed block is the single copy", () => {
+test("an expanded shell row swaps the one-line command for a placeholder - the body's block stays the single copy", () => {
   // A nonzero exit auto-expands the row on settle (descriptor.autoExpand).
   render(
     <ToolCallItem
@@ -627,15 +627,16 @@ test("an expanded shell row drops the one-line summary - the body's pretty-print
   );
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(true);
-  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  // The summary line stays (it is the line the disclosure chevron rides), but
+  // its text no longer duplicates the body's pretty-printed command.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
   // The command still appears exactly once: the body's pretty-printed block.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
-  // The row stays toggleable: with no intent and no summary, the chevron
-  // still renders.
+  // The row stays toggleable: the chevron rides the summary line.
   expect(screen.getByTestId("tool-row-chevron")).toBeTruthy();
 });
 
-test("a collapsed shell row keeps the one-line summary; opening the row drops it", () => {
+test("a collapsed shell row keeps the one-line command summary; opening the row swaps it for the placeholder", () => {
   // At activity level the body auto-expands; use tools level to test the
   // collapsed→expanded transition.
   renderTools(
@@ -651,10 +652,14 @@ test("a collapsed shell row keeps the one-line summary; opening the row drops it
   );
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
   expandRow();
-  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  // Collapsing the body again restores the real summary - the swap is a
+  // display state, not a one-way replacement.
+  expandRow();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
 });
 
-test("an expanded row of a descriptor WITHOUT summaryHiddenWhenExpanded keeps its summary", () => {
+test("an expanded row of a descriptor WITHOUT summaryWhenExpanded keeps its summary", () => {
   registerToolRenderer({
     match: "tci_keep_summary",
     summary: () => "did a thing",
@@ -1333,12 +1338,12 @@ test("an intent-less row at the chat level forces summaryOpen=true (summary visi
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
 });
 
-test("a shell row with summaryHiddenWhenExpanded hides the summary when the body opens (tools level)", () => {
+test("a shell row swaps the summary for the placeholder when the body opens (tools level)", () => {
   const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   renderWithConfig(
     toolsConfig,
     item({
-      id: "summary_shell_hidden",
+      id: "summary_shell_swap",
       toolName: "shell",
       description: "Running a command",
       argumentsJSON: JSON.stringify({ command: "echo hi" }),
@@ -1349,12 +1354,17 @@ test("a shell row with summaryHiddenWhenExpanded hides the summary when the body
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
 
   // Expand the body via the body trigger (the .bodyTrigger chevron).
-  // With summaryHiddenWhenExpanded, the summary disappears.
+  // The summary line stays, its text swapped for the placeholder - the body
+  // chevron keeps riding the summary line instead of lifting onto the
+  // intent line.
   const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
   fireEvent.click(bodyTrigger);
-  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
   // The intent line stays.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");
+  // data-body-trigger-intent marks the intent-line chevron placement; the
+  // summary line has the chevron, so the row must not carry it.
+  expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe(null);
 });
 
 test("defaults apply at each level; an explicit summary choice persists across level changes", () => {

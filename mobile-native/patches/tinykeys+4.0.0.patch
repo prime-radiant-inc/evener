@@ -1,0 +1,56 @@
+diff --git a/node_modules/tinykeys/dist/tinykeys.cjs b/node_modules/tinykeys/dist/tinykeys.cjs
+index 08c98b6..915652b 100644
+--- a/node_modules/tinykeys/dist/tinykeys.cjs
++++ b/node_modules/tinykeys/dist/tinykeys.cjs
+@@ -1,3 +1,14 @@
++const rewritePattern = require('regexpu-core');
++
++// Compile UnicodeSets patterns for the native JavaScript engine.
++function compileKeyPattern(source) {
++  let flags = 'iv';
++  const pattern = rewritePattern(source, flags, {
++    unicodeSetsFlag: 'transform',
++    onNewFlags(value) { flags = value; },
++  });
++  return new RegExp(pattern, flags);
++}
+ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+ //#region src/tinykeys.ts
+ /**
+@@ -79,7 +90,7 @@ function parseKeybinding(str) {
+ 		let parts = press.split(/(?<=\w|\])\+/);
+ 		let last = parts.pop();
+ 		let regex = last.match(/^\((.+)\)$/);
+-		let key = regex ? new RegExp(`^(?:${regex[1]})$`, "iv") : last;
++		let key = regex ? compileKeyPattern(`^(?:${regex[1]})$`) : last;
+ 		let requiredModifiers = [];
+ 		let optionalModifiers = [];
+ 		for (const part of parts) {
+diff --git a/node_modules/tinykeys/dist/tinykeys.mjs b/node_modules/tinykeys/dist/tinykeys.mjs
+index c289972..7e223c5 100644
+--- a/node_modules/tinykeys/dist/tinykeys.mjs
++++ b/node_modules/tinykeys/dist/tinykeys.mjs
+@@ -1,3 +1,14 @@
++import rewritePattern from 'regexpu-core';
++
++// Compile UnicodeSets patterns for the native JavaScript engine.
++function compileKeyPattern(source) {
++  let flags = 'iv';
++  const pattern = rewritePattern(source, flags, {
++    unicodeSetsFlag: 'transform',
++    onNewFlags(value) { flags = value; },
++  });
++  return new RegExp(pattern, flags);
++}
+ //#region src/tinykeys.ts
+ /**
+ * These are the modifier keys that change the meaning of keybindings.
+@@ -78,7 +89,7 @@ function parseKeybinding(str) {
+ 		let parts = press.split(/(?<=\w|\])\+/);
+ 		let last = parts.pop();
+ 		let regex = last.match(/^\((.+)\)$/);
+-		let key = regex ? new RegExp(`^(?:${regex[1]})$`, "iv") : last;
++		let key = regex ? compileKeyPattern(`^(?:${regex[1]})$`) : last;
+ 		let requiredModifiers = [];
+ 		let optionalModifiers = [];
+ 		for (const part of parts) {

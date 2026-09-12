@@ -79,24 +79,28 @@ func TestApplyThinkingFormat_ExplicitOffNeverSwitchesThinkingOn(t *testing.T) {
 	}
 }
 
-// The mandatory-thinking backstop on the "openai" dialect still fires for a
-// request that reaches the adapter with no effort at all: the format emits its
-// medium default. When the row takes no effort control the backstop has no
-// field to ride and the body stays empty — a known gap pinned here so it
-// cannot change silently.
-func TestApplyThinkingFormat_MandatoryBackstopNeedsAnEffortField(t *testing.T) {
-	alwaysOn := func(controls ...string) registry.Resolved {
+// The mandatory-thinking backstop on the "openai" dialect fires for a request
+// that reaches the adapter with no effort at all, but only when the row's
+// ladder vouches for the default: evener never forces a level the row cannot
+// accept. A row that takes no effort control has no field to ride either, so
+// its body stays empty.
+func TestApplyThinkingFormat_MandatoryBackstopNeedsAVouchedEffort(t *testing.T) {
+	alwaysOn := func(controls []string, ladder []string) registry.Resolved {
 		return resolved(func(c *registry.Caps) {
 			c.Reasoning = new(true)
 			c.ReasoningControls = controls
+			c.EffortValues = ladder
 			c.ThinkingAlwaysOn = new(true)
 			c.ThinkingFormat = new("openai")
 		})
 	}
-	if body := build(t, userReq("hi"), alwaysOn("effort")); body["reasoning_effort"] != "medium" {
+	if body := build(t, userReq("hi"), alwaysOn([]string{"effort"}, []string{"low", "medium", "high"})); body["reasoning_effort"] != "medium" {
 		t.Fatalf("body = %#v, want the medium backstop on the openai dialect", body)
 	}
-	if got := reasoningKeys(build(t, userReq("hi"), alwaysOn("toggle"))); len(got) != 0 {
+	if body := build(t, userReq("hi"), alwaysOn([]string{"effort"}, nil)); body["reasoning_effort"] != nil {
+		t.Fatalf("an empty-ladder always-on row must not have a level forced on it: %#v", body)
+	}
+	if got := reasoningKeys(build(t, userReq("hi"), alwaysOn([]string{"toggle"}, nil))); len(got) != 0 {
 		t.Fatalf("a row that takes no effort has no field for the backstop to ride, got %s", jsonOf(t, got))
 	}
 }

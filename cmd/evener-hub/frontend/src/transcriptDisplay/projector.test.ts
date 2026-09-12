@@ -215,7 +215,7 @@ describe("transcript projector", () => {
     },
   );
 
-  test("uses the neutral action summary for a blank tool intent without dropping the action", () => {
+  test("keeps a blank-intent tool call visible without dropping the action", () => {
     const model = threadWith(item("blank-tool", "commandExecution", { toolName: "shell", description: "   " }));
 
     expect(entriesFor(model, preset("intent"))).toEqual([
@@ -233,10 +233,10 @@ describe("transcript projector", () => {
         rationale: "Action summary unavailable",
       }),
     ]);
+    // At tool-call levels the row is now an ordinary item; its renderer derives
+    // the summary from the call's own arguments instead of the neutral text.
     for (const level of ["tools", "activity", "full"] as const) {
-      expect(entriesFor(model, preset(level))).toEqual([
-        expect.objectContaining({ kind: "critical", id: "blank-tool", summary: "Action summary unavailable" }),
-      ]);
+      expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "item", id: "blank-tool" })]);
     }
   });
 
@@ -358,6 +358,67 @@ describe("transcript projector", () => {
     expect(entriesFor(turnStillOpening, preset("chat"))).toEqual([
       expect.objectContaining({ kind: "intent", id: "intent:status-only-active", failed: false }),
     ]);
+  });
+
+  test("replaces a live current thought with a content-free placeholder when reasoning is off", () => {
+    const liveTurn = turn([item("think", "reasoning", { status: "inProgress", text: "in-flight thought" })], {
+      status: "inProgress",
+    });
+    const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
+
+    const placeholder = [expect.objectContaining({ kind: "thinking", id: "think" })];
+    expect(entriesFor(model, preset("chat"))).toEqual(placeholder);
+    expect(entriesFor(model, preset("tools"))).toEqual(placeholder);
+    expect(
+      entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false })),
+    ).toEqual(placeholder);
+    // A content-free placeholder is not openable, so it contributes no
+    // disclosure id the Full-view baseline would have to reach.
+    expect(projectThread(model, preset("tools")).eligibleDisclosureIds).toEqual([]);
+
+    // With reasoning on, the same live item is ordinary (streaming) content.
+    expect(entriesFor(model, preset("full")).map((entry) => entry.id)).toEqual(["think"]);
+    expect(entriesFor(model, preset("full")).map((entry) => entry.kind)).toEqual(["item"]);
+  });
+
+  test("hides an in-progress reasoning item that is no longer the turn's current thought when reasoning is off", () => {
+    const liveTurn = turn(
+      [
+        item("think", "reasoning", { status: "inProgress", text: "superseded thought" }),
+        item("agent", "agentMessage", { text: "answer" }),
+      ],
+      { status: "inProgress" },
+    );
+    const model = { ...threadWith(), turns: [liveTurn] } as ThreadModel;
+
+    expect(entriesFor(model, preset("tools")).map((entry) => entry.id)).toEqual(["agent"]);
+  });
+
+  test("does not show the content-free placeholder on a completed turn with a stale in-progress item", () => {
+    const completed = turn([item("think", "reasoning", { status: "inProgress", text: "stale" })], {
+      status: "completed",
+    });
+    const model = { ...threadWith(), turns: [completed] } as ThreadModel;
+
+    expect(entriesFor(model, preset("tools"))).toEqual([]);
+  });
+
+  test("never shows the content-free placeholder on a terminal turn", () => {
+    const interrupted = turn([item("think", "reasoning", { status: "inProgress", text: "cut short" })], {
+      status: "interrupted",
+    });
+    const model = { ...threadWith(), turns: [interrupted] } as ThreadModel;
+
+    const entries = entriesFor(model, preset("tools"));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "critical",
+      id: "think",
+      redacted: true,
+      // The summary must never be the thought's own text.
+      summary: "Thought not shown",
+    });
+    expect(entries[0]).not.toMatchObject({ summary: "cut short" });
   });
 
   test("keeps the typed failure marker for failed and interrupted turns", () => {

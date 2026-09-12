@@ -8,8 +8,11 @@ import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
+  InstanceListResponse,
+  LaunchConfigResolved,
   LaunchOption,
   ModelDescriptor,
+  ModelListParams,
   ModelListResponse,
   PluginPreviewResponse,
   Thread,
@@ -18,6 +21,7 @@ import type {
   ThreadStartResponse,
 } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
+import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
@@ -28,6 +32,7 @@ import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
+import { resetSpawnDraftsForTests, spawnDraftsStore } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -135,6 +140,10 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   return fake;
 }
 
+function modelListRequests(fake: FakeClient): ModelListParams[] {
+  return fake.calls.filter((call) => call.method === "model/list").map((call) => call.params as ModelListParams);
+}
+
 function renderSpawn(client: FakeClient) {
   return render(
     <ClientProvider client={client}>
@@ -233,12 +242,972 @@ async function settled(): Promise<void> {
   await screen.findByRole("button", { name: "Advanced options" });
 }
 
+async function visitSpawnURL(url: string): Promise<void> {
+  await act(async () => {
+    window.history.pushState({}, "", url);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+}
+
+test("draft survives unmount and bare /new return before any successful start", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const client = readyClient();
+  const mounted = renderSpawn(client);
+  await settled();
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-a-sentinel");
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  mounted.unmount();
+  await visitSpawnURL("/settings");
+  await visitSpawnURL("/new");
+  renderSpawn(client);
+  await settled();
+  expectWorkingDir("/tmp/draft-a");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
+});
+
+test("project navigation isolates drafts and ignores non-new URL prefill", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  renderSpawn(readyClient());
+  await settled();
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-a-sentinel");
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  await visitSpawnURL("/settings?dir=/tmp/foreign&prompt=foreign");
+  expectWorkingDir("/tmp/draft-a");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("");
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-b-sentinel");
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+});
+
+test("re-entering the same /new URL after leaving /new re-applies its explicit prefill", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/reentry-a");
+  const client = readyClient();
+  const mounted = renderSpawn(client);
+  await settled();
+  await user.type(promptField(), "sentinel-a");
+  // The picker switches drafts without touching the URL, so the prefill
+  // marker still names this same URL.
+  await setWorkingDir(user, "/tmp/reentry-b");
+  await user.type(promptField(), "sentinel-b");
+  expectWorkingDir("/tmp/reentry-b");
+  expect(window.location.search).toBe("?dir=/tmp/reentry-a");
+  // Leaving /new can unmount the pane (mobile StackHost mounts only the
+  // active route). Returning to the identical explicit URL is a fresh
+  // request: it selects draft A again, and B's draft persists in the map.
+  mounted.unmount();
+  await visitSpawnURL("/settings");
+  await visitSpawnURL("/new?dir=/tmp/reentry-a");
+  renderSpawn(client);
+  await settled();
+  expectWorkingDir("/tmp/reentry-a");
+  expect(promptField().value).toBe("sentinel-a");
+  expect(completionDraft("/tmp/reentry-b").fields.getState().prompt).toBe("sentinel-b");
+});
+
+test("remounting the same /new URL without leaving /new keeps the picker-selected draft", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/reentry-a");
+  const client = readyClient();
+  const mounted = renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/reentry-b");
+  await user.type(promptField(), "sentinel-b");
+  expectWorkingDir("/tmp/reentry-b");
+  // A remount with no intervening departure must not clobber the current
+  // draft back to the URL's prefill directory.
+  mounted.unmount();
+  renderSpawn(client);
+  await settled();
+  expectWorkingDir("/tmp/reentry-b");
+  expect(promptField().value).toBe("sentinel-b");
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function completionDraft(cwd: string) {
+  const draft = spawnDraftsStore.getState().drafts.get(cwd);
+  if (!draft) throw new Error(`missing draft ${cwd}`);
+  return draft;
+}
+
+async function completionNavigate(url: string): Promise<void> {
+  await act(async () => navigate(url));
+}
+
+// Removing the launch's view-ownership check must break these, even when
+// picker changes leave the URL unchanged or the user returns to the same view.
+test.each(["unchanged", "picker", "picker return", "away", "route return", "remount", "focus return"])(
+  "completion ownership: %s while thread/start is pending",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    const started = deferred<ThreadStartResponse>();
+    const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+    const mounted = renderSpawn(fake);
+    await user.type(promptField(), "submitted-a");
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+    const origin = completionDraft("/tmp/completion-a");
+    if (scenario.startsWith("picker")) {
+      await setWorkingDir(user, "/tmp/completion-b");
+      await user.type(promptField(), "unsent-b");
+      expect(window.location.search).toBe("?dir=/tmp/completion-a");
+      if (scenario === "picker return") await setWorkingDir(user, "/tmp/completion-a");
+    } else if (scenario === "away" || scenario === "route return") {
+      await completionNavigate("/settings");
+      if (scenario === "route return") await completionNavigate("/new?dir=/tmp/completion-a");
+    } else if (scenario === "remount") {
+      mounted.unmount();
+      await completionNavigate("/settings");
+      await completionNavigate("/new?dir=/tmp/completion-a");
+      renderSpawn(fake);
+    } else if (scenario === "focus return") {
+      for (const focused of [false, true]) {
+        mounted.rerender(
+          <ClientProvider client={fake}>
+            <Spawn params={{}} paneId="spawn-1" focused={focused} />
+            <Toast />
+          </ClientProvider>,
+        );
+      }
+    }
+    await act(async () => started.resolve(startResponse("local:completion-a")));
+    await waitFor(() => expect(origin.fields.getState().busy).toBe(false));
+    expect(origin.fields.getState().prompt).toBe("");
+    expect(origin.fields.getState().busyStartedAt).toBeNull();
+    expect(origin.busyRef.current).toBe(false);
+    if (scenario.startsWith("picker"))
+      expect(completionDraft("/tmp/completion-b").fields.getState().prompt).toBe("unsent-b");
+    expect(window.location.pathname).toBe(
+      scenario === "unchanged" ? "/s/local%3Acompletion-a" : scenario === "away" ? "/settings" : "/new",
+    );
+  },
+);
+
+test.each(["A first", "B first"])("completion ownership: concurrent launches finish %s", async (order) => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const startA = deferred<ThreadStartResponse>();
+  const startB = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) =>
+    f.on("thread/start", ({ cwd }) => (cwd === "/tmp/completion-a" ? startA.promise : startB.promise)),
+  );
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-a");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  await setWorkingDir(user, "/tmp/completion-b");
+  await user.type(promptField(), "submitted-b");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(2));
+  expect(fake.calls.filter((call) => call.method === "thread/start").map((call) => call.params)).toMatchObject([
+    { cwd: "/tmp/completion-a", input: [{ type: "text", text: "submitted-a" }] },
+    { cwd: "/tmp/completion-b", input: [{ type: "text", text: "submitted-b" }] },
+  ]);
+  if (order === "A first") {
+    await act(async () => startA.resolve(startResponse("local:completion-a")));
+    expect(window.location.pathname).toBe("/new");
+    expect(promptField().value).toBe("submitted-b");
+    await act(async () => startB.resolve(startResponse("local:completion-b")));
+  } else {
+    await act(async () => startB.resolve(startResponse("local:completion-b")));
+    expect(window.location.pathname).toBe("/s/local%3Acompletion-b");
+    await act(async () => startA.resolve(startResponse("local:completion-a")));
+  }
+  expect(window.location.pathname).toBe("/s/local%3Acompletion-b");
+  for (const cwd of ["/tmp/completion-a", "/tmp/completion-b"]) {
+    expect(completionDraft(cwd).fields.getState()).toMatchObject({ prompt: "", busy: false, busyStartedAt: null });
+  }
+});
+
+// Stamping only in doSpawn would incorrectly regain authority after these awaits.
+test.each(["preflight", "create confirmation"])(
+  "completion ownership: departure during %s cannot reacquire navigation on return",
+  async (boundary) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    const validation = deferred<{ path: string; valid: boolean }>();
+    const creation = deferred<{ path: string; created: boolean }>();
+    const fake = readyClient((f) => {
+      f.on("evener/path/validate", () =>
+        boundary === "preflight" ? validation.promise : { path: "/tmp/completion-a", valid: false },
+      );
+      f.on("evener/dirs/create", () => creation.promise);
+    });
+    renderSpawn(fake);
+    await user.type(promptField(), "submitted-a");
+    await user.click(screen.getByTestId("spawn-submit"));
+    if (boundary === "create confirmation")
+      await user.click(await screen.findByRole("button", { name: "Create & start" }));
+    await waitFor(() =>
+      expect(
+        fake.calls.some(
+          (call) => call.method === (boundary === "preflight" ? "evener/path/validate" : "evener/dirs/create"),
+        ),
+      ).toBe(true),
+    );
+    await completionNavigate("/settings");
+    await completionNavigate("/new?dir=/tmp/completion-a");
+    await act(async () => {
+      if (boundary === "preflight") validation.resolve({ path: "/tmp/completion-a", valid: true });
+      else creation.resolve({ path: "/tmp/completion-a", created: true });
+    });
+    await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+    expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+      cwd: "/tmp/completion-a",
+      input: [{ type: "text", text: "submitted-a" }],
+    });
+    expect(promptField().value).toBe("");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(window.location.pathname).toBe("/new");
+  },
+);
+
+test("completion ownership: late missing-directory preflight cannot open a dialog over settings", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const validation = deferred<{ path: string; valid: boolean }>();
+  const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-a");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
+  await completionNavigate("/settings");
+  await act(async () => validation.resolve({ path: "/tmp/completion-a", valid: false }));
+  expect(completionDraft("/tmp/completion-a").fields.getState()).toMatchObject({
+    busy: false,
+    createDialogPath: "/tmp/completion-a",
+    prompt: "submitted-a",
+  });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(window.location.pathname).toBe("/settings");
+  await completionNavigate("/new");
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+});
+
+test("completion ownership: a query-only navigation retires a pending launch's claim to the view", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-a");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  // Same draft, same pathname: only the query changes. The user's newest
+  // navigation still wins over the older in-flight launch.
+  await completionNavigate("/new?dir=/tmp/completion-a&prompt=updated");
+  await act(async () => started.resolve(startResponse("local:completion-a")));
+  await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+  expect(window.location.pathname).toBe("/new");
+  expect(window.location.search).toBe("?dir=/tmp/completion-a&prompt=updated");
+});
+
+test("completion menu ownership: a remounted prompt's cleared snapshot retires its menu", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => started.promise);
+    f.on("evener/spawn/slashCatalog", () => ({ commands: [{ name: "review", description: "Review" }], skills: [] }));
+  });
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "/re");
+  await screen.findByTestId("composer-slash-menu");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  mounted.unmount();
+  renderSpawn(fake);
+  await screen.findByTestId("composer-slash-menu");
+  await act(async () => started.resolve(startResponse("local:completion-a")));
+  expect(promptField().value).toBe("");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect(window.location.pathname).toBe("/new");
+});
+
+test.each(["unchanged", "newer prompt", "other draft"])("completion menu ownership: %s", async (scenario) => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => started.promise);
+    f.on("evener/spawn/slashCatalog", () => ({ commands: [{ name: "review", description: "Review" }], skills: [] }));
+  });
+  renderSpawn(fake);
+  await user.type(promptField(), "/re");
+  await screen.findByTestId("composer-slash-menu");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  if (scenario === "other draft") await setWorkingDir(user, "/tmp/completion-b");
+  if (scenario !== "unchanged") {
+    await user.clear(promptField());
+    await user.type(promptField(), "/rev");
+    await screen.findByTestId("composer-slash-menu");
+  }
+  await act(async () => started.resolve(startResponse("local:completion-a")));
+  await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+  expect(promptField().value).toBe(scenario === "unchanged" ? "" : "/rev");
+  if (scenario === "unchanged") expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  else {
+    expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+    expect(document.activeElement).toBe(promptField());
+    expect(slashOptions().map((option) => option.textContent)).toContainEqual(expect.stringContaining("/review"));
+  }
+});
+
+test("entering an in-memory draft validates its model after another draft swept its saved default", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ model: "openai/gpt-5" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-b", JSON.stringify({ model: "openai/retired-b" }));
+  const catalog = deferred<ModelListResponse>();
+  renderSpawn(readyClient((f) => f.on("model/list", () => catalog.promise)));
+  await settled();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).toBe("openai/retired-b");
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/lifecycle-b")).toBeNull();
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).not.toContain("retired-b");
+  expect(screen.getByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+test("entering a new draft validates defaults saved after the global sweep", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  const catalog = deferred<ModelListResponse>();
+  renderSpawn(readyClient((f) => f.on("model/list", () => catalog.promise)));
+  await settled();
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-b", JSON.stringify({ model: "openai/retired-b" }));
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).not.toContain("retired-b");
+  expect(screen.getByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+});
+
+test.each(["unknown", "empty", "error"])("global cleanup fails open for an %s catalog", async (kind) => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  const saved = JSON.stringify({ model: "openai/retained" });
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", saved);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/retained");
+  const catalog = deferred<ModelListResponse>();
+  renderSpawn(readyClient((f) => f.on("model/list", () => catalog.promise)));
+  await settled();
+  await act(async () => {
+    if (kind === "error") catalog.reject(new Error("catalog unavailable"));
+    else catalog.resolve({ data: kind === "unknown" ? [{ provider: "private", model: "other" }] : [] });
+  });
+  expect(modelValue().textContent).toBe("openai/retained");
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/lifecycle-a")).toBe(saved);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/retained");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+test("a draft's discard notice survives another draft selecting a model and clears on its own selection", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ model: "openai/retired-a" }));
+  renderSpawn(readyClient());
+  expect(await screen.findByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  expect(screen.getByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+test("two draft discard notices coexist across provider refresh and pane remount", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ model: "openai/retired-a" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-b", JSON.stringify({ model: "openai/retired-b" }));
+  let refreshed = false;
+  const fake = readyClient((f) =>
+    f.on("model/list", () => ({
+      data: [
+        { provider: "openai", model: "gpt-5" },
+        ...(refreshed ? [] : [{ provider: "openai", model: "retired-b" }]),
+      ],
+    })),
+  );
+  connectionStore.getState().connect(fake);
+  const mounted = renderSpawn(fake);
+  expect(await screen.findByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(modelValue().textContent).toBe("openai/retired-b");
+  refreshed = true;
+  await act(async () => credentialsStore.getState().fetch());
+  expect(await screen.findByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-a");
+  expect(screen.getByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expect(screen.getByText(/discarded last-used model openai\/retired-a/i)).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/lifecycle-b");
+  expect(screen.getByText(/discarded last-used model openai\/retired-b/i)).toBeTruthy();
+});
+
+test.each(["evener", "external"])("%s scoped catalogs cannot sweep unrelated Evener defaults", async (harness) => {
+  window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ harness }));
+  const valid = JSON.stringify({ model: "openai/gpt-5", access_mode: "plan" });
+  const unknown = JSON.stringify({ model: "private/secret", reasoning_effort: "high" });
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/unrelated", valid);
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/unknown", unknown);
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/stale",
+    JSON.stringify({ model: "openai/retired", access_mode: "plan" }),
+  );
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/malformed", JSON.stringify({ model: "unqualified" }));
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5");
+  const fake = readyClient((f) =>
+    f.on("model/list", (params) => ({
+      data:
+        params.harness === "evener" && params.cwd === undefined
+          ? [{ provider: "openai", model: "gpt-5" }]
+          : [{ provider: "openai", model: "scoped-only" }],
+    })),
+  );
+  renderSpawn(fake);
+  await settled();
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/unrelated")).toBe(valid);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/unknown")).toBe(unknown);
+  expect(JSON.parse(localStorage.getItem("evener-hub.spawn-defaults./tmp/stale") ?? "null")).toEqual({
+    access_mode: "plan",
+  });
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/malformed")).toBeNull();
+  expect(modelListRequests(fake).some((params) => params.harness === "evener" && params.cwd === undefined)).toBe(true);
+});
+
+test.each(["native-model", "openai/native-model"])(
+  "Evener cleanup preserves an external draft's live %s model",
+  async (model) => {
+    window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
+    localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ harness: "external", model }));
+    renderSpawn(readyClient((f) => f.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5" }] }))));
+    await settled();
+    expect(modelValue().textContent).toBe(model);
+    expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  },
+);
+
+test.each([false, true])("project navigation isolates stale-model notices (late catalog: %s)", async (late) => {
+  window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-a", JSON.stringify({ model: "openai/retired" }));
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
+    ),
+  );
+  renderSpawn(fake);
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
+  if (late) await visitSpawnURL("/new?dir=/tmp/review-b");
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  if (!late) {
+    expect(await screen.findByText(/discarded last-used model openai\/retired/i)).toBeTruthy();
+    await visitSpawnURL("/new?dir=/tmp/review-b");
+  }
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  expect(modelValue().textContent).not.toContain("retired");
+});
+
+test.each([false, true])("stale-model sweep retires its originating draft (navigate: %s)", async (navigate) => {
+  window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-a", JSON.stringify({ model: "openai/retired" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-b", JSON.stringify({ model: "openai/gpt-5" }));
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined ? catalog.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
+    ),
+  );
+  renderSpawn(fake);
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
+  expect(modelValue().textContent).toBe("openai/retired");
+  if (navigate) await visitSpawnURL("/new?dir=/tmp/review-b");
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  if (navigate) {
+    expect(modelValue().textContent).toBe("openai/gpt-5");
+    expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+    await visitSpawnURL("/new?dir=/tmp/review-a");
+  }
+  expect(modelValue().textContent).not.toContain("retired");
+  expect(screen.getByText(/discarded last-used model openai\/retired/i)).toBeTruthy();
+});
+
+test("stale-model sweep preserves a newer user selection in its originating draft and isolates B", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-a", JSON.stringify({ model: "openai/retired" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-b", JSON.stringify({ model: "openai/gpt-5" }));
+  const catalog = deferred<ModelListResponse>();
+  let refreshing = false;
+  let refreshRequested = false;
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) => {
+      if (refreshing && harness === "evener" && cwd === undefined) {
+        refreshRequested = true;
+        return catalog.promise;
+      }
+      return {
+        data: [
+          { provider: "openai", model: "retired" },
+          { provider: "openai", model: "gpt-5" },
+        ],
+      };
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  refreshing = true;
+  await act(async () => credentialsStore.getState().fetch());
+  await waitFor(() => expect(refreshRequested).toBe(true));
+  await user.click(modelTrigger());
+  await user.clear(await screen.findByRole("combobox", { name: "Model" }));
+  await user.click(await screen.findByRole("option", { name: /gpt-5/ }));
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  await visitSpawnURL("/new?dir=/tmp/review-b");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/review-a");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+test("stale-model sweep snapshots the current draft on provider refresh after navigation", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-a", JSON.stringify({ model: "openai/gpt-5" }));
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/review-b", JSON.stringify({ model: "openai/retired" }));
+  const catalog = deferred<ModelListResponse>();
+  let refreshing = false;
+  let refreshRequested = false;
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) => {
+      if (refreshing && harness === "evener" && cwd === undefined) {
+        refreshRequested = true;
+        return catalog.promise;
+      }
+      return {
+        data: [
+          { provider: "openai", model: "retired" },
+          { provider: "openai", model: "gpt-5" },
+        ],
+      };
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
+  await visitSpawnURL("/new?dir=/tmp/review-b");
+  expect(modelValue().textContent).toBe("openai/retired");
+  refreshing = true;
+  await act(async () => credentialsStore.getState().fetch());
+  await waitFor(() => expect(refreshRequested).toBe(true));
+  await visitSpawnURL("/new?dir=/tmp/review-a");
+  await act(async () => catalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/review-b");
+  expect(modelValue().textContent).not.toContain("retired");
+  expect(screen.getByText(/discarded last-used model openai\/retired/i)).toBeTruthy();
+});
+
+test("project navigation clears the old default-model gate while the new resolve is pending", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+  const next = deferred<LaunchConfigResolved>();
+  const fake = readyClient((f) =>
+    f.on("evener/launch/resolve", ({ cwd }) =>
+      cwd === "/tmp/review-a" ? { effective: {}, layers: {}, provenance: {} } : next.promise,
+    ),
+  );
+  renderSpawn(fake);
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await visitSpawnURL("/new?dir=/tmp/review-b");
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (c) => c.method === "evener/launch/resolve" && (c.params as { cwd?: string }).cwd === "/tmp/review-b",
+      ),
+    ).toBe(true),
+  );
+  expect(modelValue().textContent).not.toBe("Choose a model");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await act(async () =>
+    next.resolve({ effective: { model: "anthropic/claude-sonnet-4-5" }, layers: {}, provenance: {} }),
+  );
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
+test.each(["settled error", "late error"])(
+  "project navigation isolates advanced path validation: %s",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+    const validation = deferred<{ path: string; valid: boolean; error: string }>();
+    const fake = readyClient((f) => {
+      f.on("evener/launch/schema", () => ({
+        options: [
+          {
+            field: "agent",
+            wireField: "agent",
+            label: "Agent",
+            kind: "text",
+            group: "general",
+            pathKind: "command",
+            perLaunch: true,
+          },
+        ],
+      }));
+      f.on("evener/path/validate", ({ path }) =>
+        path === "review-agent" ? validation.promise : { path, valid: true },
+      );
+    });
+    renderSpawn(fake);
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+    const finish = async () =>
+      act(async () => validation.resolve({ path: "review-agent", valid: false, error: "review-a-invalid" }));
+    if (scenario === "settled error") {
+      await finish();
+      expect(screen.getByText("review-a-invalid")).toBeTruthy();
+    }
+    await visitSpawnURL("/new?dir=/tmp/review-b");
+    if (scenario === "late error") await finish();
+    expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("");
+    expect(screen.queryByText("review-a-invalid")).toBeNull();
+    // Navigation must not collapse the intentionally mounted advanced controls.
+    expect(screen.getByRole("button", { name: "Show resolved config" })).toBeTruthy();
+  },
+);
+
+test.each(["settled success", "settled error", "late success", "late error"])(
+  "project navigation isolates advanced config preview: %s",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+    const preview = deferred<LaunchConfigResolved>();
+    let previewRequested = false;
+    const fake = readyClient((f) =>
+      f.on("evener/launch/resolve", ({ cwd }) =>
+        previewRequested && cwd === "/tmp/review-a"
+          ? preview.promise
+          : { effective: { model: "anthropic/claude-sonnet-4-5" }, layers: {}, provenance: {} },
+      ),
+    );
+    renderSpawn(fake);
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    previewRequested = true;
+    await user.click(screen.getByRole("button", { name: "Show resolved config" }));
+    const finish = async () =>
+      act(async () => {
+        if (scenario.endsWith("error")) preview.reject(new Error("review-a-resolve-error"));
+        else preview.resolve({ effective: { model: "review-a-resolved-model" }, layers: {}, provenance: {} });
+      });
+    if (scenario.startsWith("settled")) {
+      await finish();
+      if (scenario.endsWith("error")) expect(screen.getByText(/review-a-resolve-error/)).toBeTruthy();
+      else
+        expect(screen.getByRole("group", { name: "Resolved config" }).textContent).toContain("review-a-resolved-model");
+    }
+    await visitSpawnURL("/new?dir=/tmp/review-b");
+    if (scenario.startsWith("late")) await finish();
+    expect(screen.queryByRole("group", { name: "Resolved config" })).toBeNull();
+    expect(screen.queryByText(/review-a-resolve-error/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Show resolved config" }));
+    expect((await screen.findByRole("group", { name: "Resolved config" })).textContent).toContain(
+      "anthropic/claude-sonnet-4-5",
+    );
+  },
+);
+
+test.each(["%20/tmp/review-a%20", "%20%20"])(
+  "URL directory normalization preserves draft and launch identity: %s",
+  async (dir) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+    const fake = readyClient();
+    renderSpawn(fake);
+    await user.type(promptField(), "normalized-draft");
+    await visitSpawnURL(`/new?dir=${dir}`);
+    expect(promptField().value).toBe("normalized-draft");
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+    expect(fake.calls.find((c) => c.method === "thread/start")?.params).toMatchObject({
+      cwd: "/tmp/review-a",
+      input: [{ type: "text", text: "normalized-draft" }],
+    });
+  },
+);
+
+test("directory picker assigns the unscoped draft and restores each project's launch settings", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  const fake = readyClient();
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "unscoped-sentinel");
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  mounted.unmount();
+  renderSpawn(fake);
+  expect(promptField().value).toBe("unscoped-sentinel");
+  await setWorkingDir(user, "/tmp/draft-a");
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
+  await user.selectOptions(screen.getByLabelText("Harness"), "evener");
+  await setWorkingDir(user, "/tmp/draft-b");
+  expect(promptField().value).toBe("");
+  expect((effortControl() as HTMLSelectElement).value).toBe("");
+  await user.type(promptField(), "draft-b-sentinel");
+  await setWorkingDir(user, "/tmp/draft-a");
+  expect(promptField().value).toBe("unscoped-sentinel");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("read-only");
+  expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("evener");
+  await setWorkingDir(user, "/tmp/draft-b");
+  expect(promptField().value).toBe("draft-b-sentinel");
+});
+
+test("URL prefill is applied to its project but not replayed over edits on remount", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a&prompt=seed");
+  const fake = readyClient();
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "-edited");
+  mounted.unmount();
+  renderSpawn(fake);
+  expect(promptField().value).toBe("seed-edited");
+  await visitSpawnURL("/new?dir=/tmp/draft-b&prompt=other-seed");
+  expect(promptField().value).toBe("other-seed");
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect(promptField().value).toBe("seed-edited");
+  await visitSpawnURL("/new?prompt=replacement");
+  expect(promptField().value).toBe("replacement");
+});
+
+test("unchanged URL directory prefill does not replace a picker-selected draft on remount", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+  const fake = readyClient();
+  const mounted = renderSpawn(fake);
+  await setWorkingDir(user, "/tmp/review-b");
+  await user.type(promptField(), "picker-draft");
+  mounted.unmount();
+  renderSpawn(fake);
+  expectWorkingDir("/tmp/review-b");
+  expect(promptField().value).toBe("picker-draft");
+  await visitSpawnURL("/new?dir=/tmp/review-a");
+  expectWorkingDir("/tmp/review-a");
+  expect(promptField().value).toBe("");
+});
+
+test.each(["unrelated field", "newer same field", "other project"])(
+  "late advanced path validation preserves %s edits after remount",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/review-a");
+    const validation = deferred<{ path: string; valid: boolean }>();
+    const fake = readyClient((f) => {
+      f.on("evener/launch/schema", () => ({
+        options: [
+          {
+            field: "agent",
+            wireField: "agent",
+            label: "Agent",
+            kind: "text",
+            group: "general",
+            pathKind: "command",
+            perLaunch: true,
+          },
+          {
+            field: "maxRounds",
+            wireField: "maxRounds",
+            label: "Max rounds",
+            kind: "integer",
+            group: "general",
+            perLaunch: true,
+          },
+        ],
+      }));
+      f.on("evener/path/validate", ({ path }) =>
+        path === "review-agent" ? validation.promise : { path, valid: true },
+      );
+    });
+    const mounted = renderSpawn(fake);
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+    mounted.unmount();
+    renderSpawn(fake);
+    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    fireEvent.change(screen.getByLabelText("Max rounds"), { target: { value: "7" } });
+    if (scenario === "newer same field") {
+      fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-new" } });
+    }
+    if (scenario === "other project") {
+      await visitSpawnURL("/new?dir=/tmp/review-b");
+      fireEvent.change(screen.getByLabelText("Max rounds"), { target: { value: "9" } });
+    }
+    await act(async () => validation.resolve({ path: "review-agent", valid: scenario !== "newer same field" }));
+    if (scenario === "other project") {
+      expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("9");
+      expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("");
+      await visitSpawnURL("/new?dir=/tmp/review-a");
+    }
+    expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("7");
+    const agent = scenario === "newer same field" ? "review-new" : "review-agent";
+    expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe(agent);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+    expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+      cwd: "/tmp/review-a",
+      launchOverrides: { agent, maxRounds: 7 },
+    });
+  },
+);
+
+test("successful creation preserves edits made while directory preflight was pending", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const validation = deferred<{ path: string; valid: boolean }>();
+  const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "submitted-sentinel");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
+  await user.type(promptField(), "-newer");
+  await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: true }));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    input: [{ type: "text", text: "submitted-sentinel" }],
+  });
+  expect(promptField().value).toBe("submitted-sentinel-newer");
+});
+
+test("late missing-directory preflight keeps Create and start with its originating draft", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const validation = deferred<{ path: string; valid: boolean }>();
+  const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
+  renderSpawn(fake);
+  await user.type(promptField(), "draft-a-sentinel");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  await user.type(promptField(), "draft-b-sentinel");
+  await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: false }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.find((call) => call.method === "evener/dirs/create")?.params).toEqual({ path: "/tmp/draft-a" });
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    cwd: "/tmp/draft-a",
+    input: [{ type: "text", text: "draft-a-sentinel" }],
+  });
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  expect(promptField().value).toBe("draft-b-sentinel");
+});
+
+test("late successful creation clears only the originating draft across remount and project navigation", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "submitted-sentinel");
+  act(() => pastePngInto(promptField(), "submitted.png"));
+  await screen.findByRole("button", { name: "View submitted.png" });
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  mounted.unmount();
+  renderSpawn(fake);
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  await user.type(promptField(), "other-project-sentinel");
+  act(() => pastePngInto(promptField(), "other.png"));
+  await screen.findByRole("button", { name: "View other.png" });
+  await act(async () => started.resolve(startResponse("local:abc123")));
+  expect(promptField().value).toBe("other-project-sentinel[image 1]");
+  expect(screen.getByRole("button", { name: "View other.png" })).toBeTruthy();
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect(promptField().value).toBe("");
+  expect(screen.queryByTestId("attachment-tile")).toBeNull();
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBe("/tmp/draft-a");
+});
+
+test("restoring a project's effort never clamps it against the previous project's catalog", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const fake = readyClient((f) => {
+    f.on("model/list", ({ cwd }) => ({
+      data: [
+        {
+          provider: "anthropic",
+          model: "claude-sonnet-4-5",
+          displayName: "anthropic/claude-sonnet-4-5",
+          reasoningEffortLevels: cwd === "/tmp/draft-b" ? ["low"] : ["high"],
+        },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "high", "none"]));
+  await user.selectOptions(effortControl(), "high");
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "none"]));
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "high", "none"]));
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+});
+
 beforeAll(() => {
   globalThis.localStorage = new MemoryStorage() as unknown as Storage;
 });
 
 beforeEach(() => {
   localStorage.clear();
+  resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
   modelListOverride = null;
 });
@@ -256,7 +1225,7 @@ test("missing credentials surface setup in the composer without opening a dialog
   await setWorkingDir(user, "/tmp/my-project");
   expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => {
-    await user.click(connect);
+    fireEvent.click(connect);
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
@@ -403,7 +1372,10 @@ afterEach(() => {
   resetExtensionsStoreForTests();
   resetThreadsStoreForTests();
   vi.unstubAllGlobals();
-  window.history.pushState({}, "", "/");
+  // The shell mounts the Spawn pane only at /new (shell/routing.ts), so a test
+  // that sets no route of its own exercises the real mounted state: the active
+  // New Session view.
+  window.history.pushState({}, "", "/new");
   resetToastStoreForTests();
 });
 
@@ -808,6 +1780,260 @@ async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setu
   await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
   const disclosure = screen.getByTestId("spawn-plugin-disclosure") as HTMLDetailsElement;
   if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
+}
+
+// A known issue belongs to the selected plugin in this draft, not the mounted
+// form, current URL prefill revision, or whichever request finishes last.
+test.each(["bare return", "picker return", "remount", "unchanged"])(
+  "completion issue ownership: known-invalid selection survives %s and failed previews",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    let previewMode: "invalid" | "error" | "valid" = "invalid";
+    const fake = readyClient((f) => {
+      f.on("evener/plugin/preview", ({ cwd, launchOverrides }) => {
+        if (previewMode === "error") throw new Error("preview unavailable");
+        if (cwd === "/tmp/completion-a" && previewMode === "invalid" && launchOverrides?.enabledPlugins) {
+          return { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] };
+        }
+        return SPAWN_PLUGIN_PREVIEW;
+      });
+    });
+    let mounted = renderSpawn(fake);
+    await user.type(promptField(), "unsent-a");
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findByRole("button", { name: "Remove alpha" });
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    // An unrelated selection edit cannot forgive alpha when its refresh fails.
+    previewMode = "error";
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findAllByText("Couldn't inspect plugins");
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    if (scenario === "bare return") {
+      await completionNavigate("/settings");
+      await completionNavigate("/new");
+    } else if (scenario === "picker return") {
+      await setWorkingDir(user, "/tmp/completion-b");
+      await screen.findAllByText("Couldn't inspect plugins");
+      expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+      await setWorkingDir(user, "/tmp/completion-a");
+    } else if (scenario === "remount") {
+      mounted.unmount();
+      await completionNavigate("/settings");
+      await completionNavigate("/new");
+      mounted = renderSpawn(fake);
+    }
+    await screen.findAllByText("Couldn't inspect plugins");
+    expect(promptField().value).toBe("unsent-a");
+    expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual({
+      mode: "explicit",
+      names: ["alpha", "beta"],
+    });
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    await user.click(promptField());
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
+    // A genuinely valid preview of the SAME selection is authoritative.
+    previewMode = "valid";
+    await user.click(within(screen.getByTestId("spawn-plugin-summary")).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+    expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+      cwd: "/tmp/completion-a",
+      launchOverrides: { enabledPlugins: ["alpha", "beta"] },
+    });
+  },
+);
+
+test.each(["failed", "loading then failed", "ready invalid", "newer origin selection"])(
+  "completion issue ownership: late A preserves B's %s preview gate",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    const started = deferred<ThreadStartResponse>();
+    const refresh = deferred<PluginPreviewResponse>();
+    let refreshRequested = false;
+    const fake = readyClient((f) => {
+      f.on("thread/start", () => started.promise);
+      f.on("evener/plugin/preview", ({ cwd, launchOverrides }) => {
+        const names = launchOverrides?.enabledPlugins;
+        if (cwd === "/tmp/completion-b" && names?.length === 1) {
+          return { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] };
+        }
+        if (cwd === "/tmp/completion-b" && names?.length === 2) {
+          refreshRequested = true;
+          return refresh.promise;
+        }
+        return SPAWN_PLUGIN_PREVIEW;
+      });
+    });
+    renderSpawn(fake);
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+    await user.type(promptField(), "submitted-a");
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+    if (scenario === "newer origin selection") await user.click(screen.getByRole("button", { name: "None" }));
+    await setWorkingDir(user, "/tmp/completion-b");
+    await user.type(promptField(), "unsent-b");
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findByRole("button", { name: "Remove alpha" });
+    if (scenario !== "ready invalid") {
+      await user.click(screen.getByRole("switch", { name: "beta" }));
+      await waitFor(() => expect(refreshRequested).toBe(true));
+      if (scenario !== "loading then failed") {
+        await act(async () => refresh.reject(new Error("preview unavailable")));
+        await screen.findAllByText("Couldn't inspect plugins");
+      }
+    }
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => started.resolve(startResponse("local:completion-a")));
+    await waitFor(() => expect(completionDraft("/tmp/completion-a").fields.getState().busy).toBe(false));
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    if (scenario === "loading then failed") {
+      await act(async () => refresh.reject(new Error("preview unavailable")));
+      await screen.findAllByText("Couldn't inspect plugins");
+    }
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+    expect(promptField().value).toBe("unsent-b");
+    expect(window.location.pathname).toBe("/new");
+    expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual(
+      scenario === "newer origin selection" ? { mode: "explicit", names: [] } : { mode: "default" },
+    );
+    await user.click(promptField());
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+  },
+);
+
+test.each(["remove plugin", "unsupported harness"])(
+  "completion issue ownership: %s retires known issues",
+  async (scenario) => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
+    let failPreview = false;
+    const fake = readyClient((f) =>
+      f.on("evener/plugin/preview", ({ launchOverrides }) => {
+        if (failPreview) throw new Error("preview unavailable");
+        return launchOverrides?.enabledPlugins
+          ? { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] }
+          : SPAWN_PLUGIN_PREVIEW;
+      }),
+    );
+    renderSpawn(fake);
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("switch", { name: "beta" }));
+    await screen.findByRole("button", { name: "Remove alpha" });
+    failPreview = true;
+    if (scenario === "remove plugin") {
+      await user.click(screen.getByRole("button", { name: "Remove alpha" }));
+      await screen.findAllByText("Couldn't inspect plugins");
+    } else {
+      await user.click(screen.getByRole("button", { name: "Advanced options" }));
+      await user.selectOptions(screen.getByLabelText("Harness"), "external");
+    }
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+    const call = fake.calls.find((call) => call.method === "thread/start");
+    if (!call) throw new Error("start was not issued");
+    if (scenario === "remove plugin") expect(call.params).toMatchObject({ launchOverrides: { enabledPlugins: [] } });
+    else expect((call.params as ThreadStartParams).launchOverrides?.enabledPlugins).toBeUndefined();
+  },
+);
+
+for (const navigation of ["picker", "URL"] as const) {
+  const projectA = "/tmp/plugin-project-a";
+  const projectB = "/tmp/plugin-project-b";
+  const plugin = SPAWN_PLUGIN_PREVIEW.plugins[0];
+  if (!plugin) throw new Error("plugin preview fixture is empty");
+  const previewA: PluginPreviewResponse = {
+    plugins: [{ ...plugin, name: "a-only" }],
+  };
+  const previewB: PluginPreviewResponse = {
+    plugins: [{ ...plugin, name: "b-only" }],
+  };
+  const navigate = async (user: ReturnType<typeof userEvent.setup>, cwd: string) => {
+    if (navigation === "picker") await setWorkingDir(user, cwd);
+    else await visitSpawnURL(`/new?dir=${cwd}`);
+  };
+
+  test(`${navigation}: a ready preview from A cannot invalidate B's restored selection after B's preview fails`, async () => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", `/new?dir=${projectB}`);
+    let returningToB = false;
+    let rejectB: ((error: Error) => void) | undefined;
+    const fake = readyClient((f) => {
+      f.on("evener/plugin/preview", ({ cwd }) => {
+        if (cwd === projectA) return previewA;
+        if (returningToB) return new Promise<PluginPreviewResponse>((_, reject) => (rejectB = reject));
+        return previewB;
+      });
+    });
+    renderSpawn(fake);
+    await openDesktopPluginSelection(user);
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+        cwd: projectB,
+        launchOverrides: { enabledPlugins: ["b-only"] },
+      }),
+    );
+    await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+    await navigate(user, projectA);
+    await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("a-only"));
+    returningToB = true;
+    await navigate(user, projectB);
+    await waitFor(() => expect(rejectB).toBeTypeOf("function"));
+    await act(async () => {
+      if (!rejectB) throw new Error("B preview was not requested");
+      rejectB(new Error("B preview unavailable"));
+    });
+    await screen.findAllByText("Couldn't inspect plugins");
+
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() =>
+      expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+        cwd: projectB,
+        launchOverrides: { enabledPlugins: ["b-only"] },
+      }),
+    );
+  });
+
+  test(`${navigation}: a ready preview from A cannot block default B while B's preview is pending`, async () => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", `/new?dir=${projectA}`);
+    const fake = readyClient((f) => {
+      f.on("evener/plugin/preview", ({ cwd }) =>
+        cwd === projectA
+          ? { ...previewA, selectionErrors: [{ name: "a-gone", reason: "unavailable" }] }
+          : new Promise<PluginPreviewResponse>(() => {}),
+      );
+    });
+    renderSpawn(fake);
+    await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("a-only"));
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+    await navigate(user, projectB);
+    await waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toEqual({
+        cwd: projectB,
+      }),
+    );
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+    // The directory picker moved focus; the submit shortcut belongs to the prompt.
+    await user.click(screen.getByRole("textbox", { name: "Prompt" }));
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    await waitFor(() =>
+      expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({ cwd: projectB }),
+    );
+  });
 }
 
 test("explicit plugin selection reaches Preview, resolve, and Thread Start", async () => {
@@ -1489,6 +2715,10 @@ test("aborts with the validator message for a non-fixable working dir, then a co
 // readyClient()'s validate stub, which (unlike the real daemon) answers
 // "valid" for any path including "".
 test("kata xkp2: Spawn with the working directory left at its placeholder aborts visibly, not silently", async () => {
+  // This test's pathname assertion below names the suite's original default
+  // route literally, so the test keeps that starting state explicitly; a
+  // validation abort never reaches navigation on any route.
+  window.history.pushState({}, "", "/");
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     // path: "" is the real wire shape too - ValidateLaunchPath's early
@@ -1901,6 +3131,51 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
   expect(modelTrigger().textContent).not.toContain("claude-opus-4");
 });
 
+test("auth notification retires global cleanup before the instance refresh completes", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/auth-generation");
+  const saved = JSON.stringify({ model: "openai/newly-visible" });
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/auth-generation", saved);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/newly-visible");
+  const oldCatalog = deferred<ModelListResponse>();
+  const instanceRefresh = deferred<InstanceListResponse>();
+  const refreshStarted = deferred<void>();
+  let notified = false;
+  const client = readyClient((fake) => {
+    fake.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined && !notified
+        ? oldCatalog.promise
+        : { data: [{ provider: "openai", model: "newly-visible" }] },
+    );
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await act(async () => credentialsStore.getState().fetch());
+  const refreshedInstances = { instances: credentialsStore.getState().instances, availableProviders: [] };
+  client.on("evener/instance/list", () => {
+    refreshStarted.resolve();
+    return instanceRefresh.promise;
+  });
+  expect(modelValue().textContent).toBe("openai/newly-visible");
+  notified = true;
+  await act(async () => client.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await act(async () => refreshStarted.promise);
+  try {
+    await act(async () => oldCatalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+    // Assert before releasing instance/list: its completion cannot repair
+    // anything an obsolete global catalog has already removed.
+    expect({
+      model: modelValue().textContent,
+      saved: localStorage.getItem("evener-hub.spawn-defaults./tmp/auth-generation"),
+      global: localStorage.getItem("evener-hub.spawn-defaults.global.model"),
+    }).toEqual({ model: "openai/newly-visible", saved, global: "openai/newly-visible" });
+    expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  } finally {
+    await act(async () => instanceRefresh.resolve(refreshedInstances));
+  }
+  expect(modelValue().textContent).toBe("openai/newly-visible");
+});
+
 test("a model response from before a credential refresh cannot discard the saved selection", async () => {
   const saved = JSON.stringify({ model: "openai/gpt-5" });
   localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/p");
@@ -2127,12 +3402,12 @@ test("the Effort select and picker share one scoped model/list response", async 
   const user = userEvent.setup();
   let resolve: ((response: ModelListResponse) => void) | undefined;
   const fake = readyClient((f) => {
-    f.on(
-      "model/list",
-      () =>
-        new Promise<ModelListResponse>((done) => {
-          resolve = done;
-        }),
+    f.on("model/list", ({ harness }) =>
+      harness === "evener"
+        ? { data: [] }
+        : new Promise<ModelListResponse>((done) => {
+            resolve = done;
+          }),
     );
   });
   renderSpawn(fake);
@@ -2143,7 +3418,7 @@ test("the Effort select and picker share one scoped model/list response", async 
   const resolveModelList = resolve;
   await user.click(modelTrigger());
   expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
+  expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(1);
 
   await act(async () => {
     resolveModelList({
@@ -2159,11 +3434,14 @@ test("the Effort select and picker share one scoped model/list response", async 
     });
   });
 
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(1);
   await user.click(await screen.findByText("openai/gpt-5"));
   await waitFor(() =>
     expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
   );
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
+  expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(1);
 });
 
 // A credential change can make models discoverable (a stored Vertex credential
@@ -2175,14 +3453,20 @@ test("evener/auth/updated drops the pane's model/list cache so the catalog and p
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1));
+  await waitFor(() => expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(1));
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(1);
 
   modelListOverride = [
     { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
     { provider: "google-vertex", model: "gemini-3.8-flash", displayName: "google-vertex/gemini-3.8-flash" },
   ];
   act(() => fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } }));
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2));
+  await waitFor(() => expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(2));
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(2);
 
   await user.click(modelTrigger());
   const combo = await screen.findByRole("combobox", { name: "Model" });
@@ -2190,7 +3474,10 @@ test("evener/auth/updated drops the pane's model/list cache so the catalog and p
   await user.type(combo, "gemini");
   await screen.findByText("google-vertex/gemini-3.8-flash");
   // The picker shares the reloaded promise rather than issuing a third call.
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2);
+  expect(modelListRequests(fake).filter((params) => params.harness === undefined)).toHaveLength(2);
+  expect(
+    modelListRequests(fake).filter((params) => params.harness === "evener" && params.cwd === undefined),
+  ).toHaveLength(2);
 });
 
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
@@ -2241,6 +3528,162 @@ function installCanvasStubs(): void {
   URL.createObjectURL = () => "blob:fake";
   URL.revokeObjectURL = () => {};
 }
+
+test("failed creation retains images and advanced/plugin settings through remount", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "maxRounds",
+          wireField: "maxRounds",
+          label: "Max rounds",
+          group: "general",
+          kind: "integer",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+    f.on("thread/start", () => {
+      throw new WireError("draft-start-failure", -32000);
+    });
+  });
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "retained-sentinel");
+  act(() => pastePngInto(promptField(), "retained.png"));
+  await screen.findByRole("button", { name: "View retained.png" });
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "7");
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+  await screen.findByText(/draft-start-failure/);
+  mounted.unmount();
+  renderSpawn(fake);
+  expect(promptField().value).toBe("retained-sentinel[image 1]");
+  expect(screen.getByRole("button", { name: "View retained.png" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("7");
+  await openDesktopPluginSelection(user);
+  expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false");
+  // In-memory retention must not serialize the image or prompt into defaults.
+  const stored = Array.from({ length: localStorage.length }, (_, index) =>
+    localStorage.getItem(localStorage.key(index) ?? ""),
+  );
+  expect(stored.join("\n")).not.toContain("retained-sentinel");
+  expect(stored.join("\n")).not.toContain(btoa(String.fromCharCode(9, 9, 9)));
+  fake.on("thread/start", () => startResponse("local:abc123"));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const submissions = fake.calls.filter((call) => call.method === "thread/start");
+  expect(submissions).toHaveLength(2);
+  expect(submissions[1]?.params).toEqual(submissions[0]?.params);
+  expect(submissions[1]?.params).toMatchObject({ launchOverrides: { maxRounds: 7, enabledPlugins: ["alpha"] } });
+});
+
+test("successful submitted snapshot clears only its images and preserves newer edits after remount", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  const mounted = renderSpawn(fake);
+  await user.type(promptField(), "submitted-sentinel");
+  act(() => pastePngInto(promptField(), "submitted.png"));
+  await screen.findByRole("button", { name: "View submitted.png" });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  mounted.unmount();
+  renderSpawn(fake);
+  await user.type(promptField(), "-newer");
+  act(() => pastePngInto(promptField(), "newer.png"));
+  await screen.findByRole("button", { name: "View newer.png" });
+  fireEvent.change(effortControl(), { target: { value: "high" } });
+  await act(async () => started.resolve(startResponse("local:abc123")));
+  expect(promptField().value).toBe("submitted-sentinel-newer[image 2]");
+  expect(screen.queryByRole("button", { name: "View submitted.png" })).toBeNull();
+  expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
+  expect((effortControl() as HTMLSelectElement).value).toBe("high");
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  expect(screen.queryByTestId("attachment-tile")).toBeNull();
+  await visitSpawnURL("/new?dir=/tmp/draft-a");
+  expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
+});
+
+test.each([
+  { outcome: "success", remount: false },
+  { outcome: "failure", remount: false },
+  { outcome: "success", remount: true },
+  { outcome: "failure", remount: true },
+])(
+  "pending image encode $outcome stays with its project across navigation (remount: $remount)",
+  async ({ outcome, remount }) => {
+    installCanvasStubs();
+    const images: { onload: (() => void) | null; onerror: (() => void) | null }[] = [];
+    vi.stubGlobal(
+      "Image",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        width = 4;
+        height = 4;
+        set src(_value: string) {
+          images.push(this);
+        }
+      },
+    );
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+    const fake = readyClient();
+    const mounted = renderSpawn(fake);
+    await user.type(promptField(), "draft-a-sentinel");
+    act(() => pastePngInto(promptField(), "a.png"));
+    expect(screen.getByRole("img", { name: "a.png (still processing)" })).toBeTruthy();
+    if (remount) {
+      mounted.unmount();
+      renderSpawn(fake);
+    }
+    expect(screen.getByRole("img", { name: "a.png (still processing)" })).toBeTruthy();
+    await user.click(screen.getByTestId("spawn-submit"));
+    expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+    await user.type(promptField(), "-newer");
+    await visitSpawnURL("/new?dir=/tmp/draft-b");
+    await user.type(promptField(), "draft-b-sentinel");
+    act(() => pastePngInto(promptField(), "b.png"));
+    expect(images).toHaveLength(2);
+    promptField().setSelectionRange(promptField().value.length, promptField().value.length);
+    await act(async () => {
+      if (outcome === "success") images[0]?.onload?.();
+      else images[0]?.onerror?.();
+    });
+    expect(promptField().value).toBe("draft-b-sentinel[image 1]");
+    expect(screen.getByRole("img", { name: "b.png (still processing)" })).toBeTruthy();
+    if (outcome === "failure") {
+      act(() => pastePngInto(promptField(), "b2.png"));
+      expect(promptField().value).toBe("draft-b-sentinel[image 1][image 2]");
+    }
+    await visitSpawnURL("/new?dir=/tmp/draft-a");
+    if (outcome === "success") {
+      await screen.findByRole("button", { name: "View a.png" });
+      expect(promptField().value).toBe("draft-a-sentinel[image 1]-newer");
+    } else {
+      expect(screen.queryByTestId("attachment-tile")).toBeNull();
+      expect(promptField().value).toBe("draft-a-sentinel-newer");
+    }
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => images[1]?.onload?.());
+    if (outcome === "failure") await act(async () => images[2]?.onload?.());
+    await visitSpawnURL("/new?dir=/tmp/draft-b");
+    await screen.findByRole("button", { name: "View b.png" });
+  },
+);
 
 test("resets the prompt and attachments after a successful spawn, but keeps sticky defaults (floor §1.14 L186)", async () => {
   installCanvasStubs();
@@ -2661,6 +4104,8 @@ test("typing a working directory reloads the model catalog only after confirmati
   await settled();
   await waitFor(() => expect(fake.calls.some((call) => call.method === "model/list")).toBe(true));
 
+  // Global cleanup can run before the initial directory-scoped catalog load.
+  await waitFor(() => expect(modelListRequests(fake).some((params) => Object.hasOwn(params, "cwd"))).toBe(true));
   const baseline = fake.calls.filter((call) => call.method === "model/list").length;
   await user.click(workingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
@@ -3519,4 +4964,186 @@ test("a bare /reasoning-effort toasts, starts nothing, applies nothing, and leav
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
   expect(button.textContent).toBe("Start");
+});
+
+// RoboRev PR1131 finding 3: model/list can serialize an empty Go slice as
+// `data: null` (appwire's ModelListResponse.Data carries no omitempty); the
+// sweep and validation callbacks passed r.data straight into helpers that
+// iterate it, so a null payload rejected the callback and skipped its work.
+test("a null model/list payload does not reject the defaults sweep", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/null-catalog-sweep");
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/null-catalog-sweep",
+    JSON.stringify({ model: "openai/gpt-5", access_mode: "plan" }),
+  );
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({ data: null }) as unknown as ModelListResponse);
+  });
+  renderSpawn(fake);
+  await settled();
+  // The sweep ran to completion instead of throwing: an unenumerated provider's
+  // model is left alone (verdict "unknown"), so the blob is untouched.
+  const raw = localStorage.getItem("evener-hub.spawn-defaults./tmp/null-catalog-sweep");
+  expect(raw).not.toBeNull();
+  expect(JSON.parse(raw as string)).toEqual({ model: "openai/gpt-5", access_mode: "plan" });
+});
+
+// RoboRev PR1131 finding 8: `branch` stayed component-local while SpawnForm
+// persists across draft switches, so project B showed project A's branch until
+// B's evener/git/head completed - and indefinitely whenever it failed.
+test("the branch readout never shows the previous project's branch after a draft switch", async () => {
+  const headA = deferred<{ head: string }>();
+  const headB = deferred<{ head: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/git/head", ({ cwd }) => (cwd === "/tmp/branch-project-a" ? headA.promise : headB.promise));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/branch-project-a");
+  renderSpawn(fake);
+  await settled();
+  await act(async () => headA.resolve({ head: "feature-a" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("feature-a"));
+
+  await visitSpawnURL("/new?dir=/tmp/branch-project-b");
+  // B's HEAD is still in flight: A's branch must not linger under B.
+  expect(screen.queryByTestId("spawn-branch")).toBeNull();
+
+  await act(async () => headB.resolve({ head: "feature-b" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("feature-b"));
+});
+
+// RoboRev PR1131 finding 5: draft ownership was keyed on the readValues callback
+// identity, which Spawn recreates via useCallback(..., [draft]) on every draft
+// change. Returning to a draft after visiting another (A -> B -> A) yields a NEW
+// callback identity for the SAME draft, so an in-flight path validation's error
+// was dropped even though its field value still lives in A's own draft (the
+// validation still wrote its `invalid` flag, silently hiding the message).
+test("a draft re-entered after another keeps its late path-validation error", async () => {
+  const user = userEvent.setup();
+  const validation = deferred<{ path: string; valid: boolean; error: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => (path === "review-agent" ? validation.promise : { path, valid: true }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/reentry-validation-a");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+
+  // Visit another draft and come back: A's draft is the SAME object, but Spawn's
+  // readValues useCallback produces a new identity for it.
+  await visitSpawnURL("/new?dir=/tmp/reentry-validation-b");
+  await visitSpawnURL("/new?dir=/tmp/reentry-validation-a");
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
+
+  await act(async () => validation.resolve({ path: "review-agent", valid: false, error: "reentry-a-invalid" }));
+  expect(await screen.findByText("reentry-a-invalid")).toBeTruthy();
+});
+
+// RoboRev PR1131 finding: the validation MESSAGE lived only in component-local
+// `errors` while the `invalid` flag is draft-persisted in advancedValues. The
+// sibling regression above only covers a validation that settles AFTER its
+// draft is active again; a result that lands while the draft is INACTIVE still
+// writes the flag (so collectAdvancedOverrides keeps dropping the field) but has
+// no error to show when the draft is revisited. The field must not be silently
+// excluded with no message.
+test("a path-validation error that settles while its draft is inactive appears when the draft is revisited", async () => {
+  const user = userEvent.setup();
+  const validation = deferred<{ path: string; valid: boolean; error: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => (path === "review-agent" ? validation.promise : { path, valid: true }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/inactive-validation-a");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
+
+  // Leave A before the validator settles, so its rejection lands while B is active.
+  await visitSpawnURL("/new?dir=/tmp/inactive-validation-b");
+  await act(async () => validation.resolve({ path: "review-agent", valid: false, error: "inactive-a-invalid" }));
+
+  // Returning to A finds the value and its draft-persisted invalid flag intact:
+  // the field is still excluded from A's launch overrides...
+  await visitSpawnURL("/new?dir=/tmp/inactive-validation-a");
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
+  expect(completionDraft("/tmp/inactive-validation-a").fields.getState().advancedOverrides).toEqual({});
+  // ...so the message explaining the exclusion must be available again.
+  expect(await screen.findByText("inactive-a-invalid")).toBeTruthy();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const startParams = fake.calls.find((call) => call.method === "thread/start")?.params as
+    | ThreadStartParams
+    | undefined;
+  expect(startParams?.cwd).toBe("/tmp/inactive-validation-a");
+  // startThread omits an empty layer entirely, so accept either encoding: the
+  // point is that the invalid field never reaches the server.
+  expect(startParams?.launchOverrides ?? {}).toEqual({});
+});
+
+// The same loss through the other door the finding names: a pane remount
+// recreates the component, so local `errors` starts empty even though the
+// draft still holds the invalid field.
+test("a remounted draft still shows the path-validation error stored with its invalid field", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) =>
+      path === "review-agent" ? { path, valid: false, error: "remount-a-invalid" } : { path, valid: true },
+    );
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remount-validation-a");
+  const mounted = renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+  expect(await screen.findByText("remount-a-invalid")).toBeTruthy();
+
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
+  expect(completionDraft("/tmp/remount-validation-a").fields.getState().advancedOverrides).toEqual({});
+  expect(await screen.findByText("remount-a-invalid")).toBeTruthy();
 });

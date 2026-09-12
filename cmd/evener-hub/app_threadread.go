@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -91,6 +92,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
+			thread = applyHubForkCapability(cfg, thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
 	}
@@ -414,6 +416,219 @@ func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread
 	return thread
 }
 
+// hubCanForkThread fences the alias the client is holding against a live
+// delegate. Its counterpart for the session that alias resolves to is
+// hubForkResolvedSessionFenced: a fence added here is owed there too, or a
+// stable-ref client is advertised a fork the RPC refuses.
+func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != "local" {
+		return false
+	}
+	return !hubForkLiveDelegateFenced(cfg, ref.ThreadID)
+}
+
+// hubForkLiveDelegateFenced reports whether a live parent daemon is currently
+// running this session as an in-process child. Such a delegate remains
+// daemon-owned and read-only. Once its daemon has stopped, the persisted
+// delegate is hub-owned like any other saved local session and may be forked.
+//
+// The capability projection and the fork RPC both decide on this one signal:
+// the persisted IsSubagent flag and the projected wire kind each describe only
+// part of the live alias population, so either alone lets the advertised
+// capability and the RPC's answer diverge.
+func hubForkLiveDelegateFenced(cfg hubcore.WebConfig, threadID string) bool {
+	return cfg.Roster != nil && cfg.Roster.IsSubagentActive(threadID)
+}
+
+// resumeRequiredActiveFlag is the ThreadStatus.ActiveFlags entry that says a
+// session's own daemon is holding it behind recovery.
+//
+// NOTHING IN THE TREE EMITS IT. The daemon's status egress builds
+// appwire.ThreadStatus with a Type and no flags (server/appwire_runtime.go's
+// appCapabilities path, internal/appprojector's threadStatus), and appwire
+// defines no constant for it, so this spelling has one side. It is named here
+// rather than left as a literal so the hub's own uses cannot be spelled apart,
+// and so a producer added later has one name to match.
+//
+// The hub-side recovery signal this complements — the one that does have a
+// producer — is cfg.ResumeLocks.RecoveryState, which hubForkRecoveryFencedNow
+// consults beside this predicate.
+const resumeRequiredActiveFlag = "resumeRequired"
+
+func hubForkRecoveryFenced(thread appwire.Thread) bool {
+	return thread.Evener.ResumeRequired ||
+		thread.Status.Type == appwire.ThreadStatusRestartRequired ||
+		slices.Contains(thread.Status.ActiveFlags, resumeRequiredActiveFlag)
+}
+
+// hubForkRecoveryFencedNow fences the alias the client is holding against
+// recovery. Its counterpart for the session that alias resolves to is
+// hubForkResolvedSessionFenced: a fence added here is owed there too, or a
+// stable-ref client is advertised a fork the RPC refuses.
+// The owner is the caller's — one projection resolves the roster once and hands
+// the same answer to every fence that needs it.
+func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owner forkThreadOwner) bool {
+	if hubForkRecoveryFenced(thread) {
+		return true
+	}
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != "local" {
+		return false
+	}
+	// A daemon's recovery flags reach the hub only through the roster: the local
+	// source builds its listed threads from roster entries that carry no status
+	// flags, and a live thread/read is answered by the daemon itself, whose
+	// response has never carried them either. Asking the roster is what keeps
+	// this projection and fork admission on one answer, since admission decides
+	// the same signal with the same predicate.
+	if owner.statusFenced() {
+		return true
+	}
+	if cfg.ResumeLocks == nil {
+		return false
+	}
+	state := cfg.ResumeLocks.RecoveryState(ref.ThreadID)
+	return state.ResumeRequired || state.Stopping > 0
+}
+
+// applyHubForkCapability projects the hub's fork authority after the common
+// recovery fence has been applied. A daemon's capability set is not an
+// authority grant for persisted local forks, and a session needing recovery
+// cannot accept a fork until that fence clears.
+//
+// Three gaps are deliberate, and in every one the fork RPC is the stricter
+// side, so what they cost is an offered action that is then refused — never a
+// fork that should not have happened.
+//
+// It stops short of the ownership resolution hubThreadFork performs, so a
+// session whose metadata is missing, unreadable, or claimed by two project
+// directories is advertised as forkable here and refused by the fork RPC with a
+// structured unavailable. Resolving it would put ownershipEntry's scan of every
+// project directory on the read path, which runs this projection once per
+// thread on every thread/list and once per relayed status notification; the
+// fork RPC stays the authority for a mutation this rare error path blocks.
+//
+// And it answers for a session, not for a connection. The relay stamps one
+// answer onto a notification and broadcasts it to every subscriber
+// (app_relay.go's publishTarget), while sessionConnectionRecoveryError refuses
+// a mutation per connection: a connection established before a recovery
+// completed keeps being refused until it reconnects, even once the recovery has
+// cleared and this projection says the session is forkable again. Projecting
+// per connection would mean per-connection state on a shared broadcast, which
+// is a larger design question than this fence. The refusal that connection meets
+// is sessionConnectionRecoveryError's stale branch — "session recovery requires
+// Resume on a fresh connection before submitting another action", which
+// sessionActionRecoveryError reaches before any session-level fence — and it is
+// retryable and names the action that clears it: the window closes on
+// reconnect.
+//
+// And it never opens a process. The fork RPC verifies the daemon behind a
+// rendezvous claim before resolving through it (forkClaimIsLiveOwner) and
+// refuses when it cannot; this projection reads the roster, which asks only
+// whether the PID exists. On a host where process handles cannot be opened at
+// all — a permission or sandbox problem — every thread with a live claim is
+// advertised as forkable and every fork of one is refused as unverifiable. The
+// refusal is retryable and carries the reason, and the hub logs the claim it
+// could not verify.
+func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != "local" {
+		if err != nil {
+			// An invalid ref cannot establish hub ownership. Never preserve a
+			// source-provided action for an identity the hub cannot parse.
+			thread.Evener.Capabilities.ForkFromTurn = false
+		}
+		return thread
+	}
+	if cfg.Roster != nil && (cfg.Roster.OwnershipError() != nil || unconfirmedDaemonForThread(cfg.Roster, ref.ThreadID)) {
+		thread.Evener.Capabilities.ForkFromTurn = false
+		return thread
+	}
+	storageAvailable := strings.TrimSpace(cfg.StateDir) != ""
+	if !storageAvailable && cfg.Past != nil {
+		if entry, ok := cfg.Past.Find(ref.ThreadID); ok {
+			storageAvailable = strings.TrimSpace(entry.StateDir) != ""
+		}
+	}
+	// The fences that read the thread in hand first: storage, the live-delegate
+	// check (a scan of the roster's byPID map, no snapshot) and the recovery
+	// signals the thread already carries. They are cheap next to what follows
+	// and they settle most threads on their own.
+	if !storageAvailable || !hubCanForkThread(cfg, thread) || hubForkRecoveryFenced(thread) {
+		thread.Evener.Capabilities.ForkFromTurn = false
+		return thread
+	}
+	// One roster resolution for this whole projection. Both the recovery fence
+	// and the target resolution below need the same answer, and asking twice
+	// means two full roster snapshot clone-and-sorts for every saved session in
+	// a list response. Nothing above it pays that, so a thread already fenced
+	// never reaches it.
+	owner := forkThreadOwnerFor(cfg, ref.ThreadID)
+	if hubForkRecoveryFencedNow(cfg, thread, owner) {
+		thread.Evener.Capabilities.ForkFromTurn = false
+		return thread
+	}
+	// A fork touches two identities: the alias the client is holding and the
+	// session it currently names. hubThreadFork fences both, so the capability
+	// answers for both — otherwise a stable-ref client is offered a fork of a
+	// session the RPC will refuse.
+	//
+	// Resolving costs a roster lookup that falls through to a full snapshot scan
+	// whenever the thread is not itself a live daemon's current session, and
+	// this runs once per thread on every thread/list and once per relayed status
+	// notification. So it happens once, after the fences above have already
+	// rejected everything they can, and the one result serves both fences below.
+	sessionID := forkTargetSessionIDFor(cfg, ref.ThreadID, owner)
+	thread.Evener.Capabilities.ForkFromTurn =
+		!hubForkDeletionFenced(cfg, thread.Evener.Ref, ref.ThreadID, sessionID) &&
+			!hubForkResolvedSessionFenced(cfg, ref.ThreadID, sessionID)
+	return thread
+}
+
+// hubForkResolvedSessionFenced answers for the second identity: when a stable
+// workspace ref resolves to a different current session, that session is the
+// transcript a fork would branch and hubThreadFork fences it as a live
+// delegate, as a daemon announcing recovery in its status, and against the
+// hub's recovery locks — the RPC over forkFenceTargets, this over the one
+// resolution the projection already made. The alias's own copies of those checks are
+// hubCanForkThread's and hubForkRecoveryFencedNow's; this covers the session
+// neither of them sees. Deletion is the same question for the same pair and is
+// hubForkDeletionFenced's, which takes the same resolution.
+func hubForkResolvedSessionFenced(cfg hubcore.WebConfig, threadID, sessionID string) bool {
+	if sessionID == "" || sessionID == threadID {
+		return false
+	}
+	if hubForkLiveDelegateFenced(cfg, sessionID) || hubForkLiveStatusFenced(cfg, sessionID) {
+		return true
+	}
+	if cfg.ResumeLocks == nil {
+		return false
+	}
+	state := cfg.ResumeLocks.RecoveryState(sessionID)
+	return state.ResumeRequired || state.Stopping > 0
+}
+
+// hubForkDeletionFenced reports whether the thread a client is holding, or the
+// session a fork of it would actually branch, is durably fenced for deletion.
+// It is the same unlocked deletion read hubThreadFork performs ahead of
+// everything else, so the capability cannot offer an action that refusal is
+// already waiting for.
+//
+// The resolved session is consulted second: a client holding a stable workspace
+// ref whose daemon has moved on would otherwise be told it can fork a session
+// that is on its way out. sessionID is the caller's single resolution, shared
+// with the other fences rather than repeated here.
+func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID string) bool {
+	if cfg.DeletionStore == nil {
+		return false
+	}
+	if deletionFenceError(cfg, ref, threadID, "") != nil {
+		return true
+	}
+	return sessionID != "" && sessionID != threadID && deletionFenceError(cfg, "", sessionID, "") != nil
+}
+
 // pastThreadCapabilities is what the hub can carry out for a thread with no
 // daemon behind it: the resume-and-retry session mutations (compact, clear,
 // change model, shutdown) plus the always-available ones (send, fork, goal,
@@ -546,6 +761,8 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	} else if required {
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+	} else {
+		thread = applyHubForkCapability(cfg, thread)
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	return thread, nil

@@ -63,29 +63,37 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 	if model == "" {
 		return sessionNameResult{}, errors.New("session namer: model is empty")
 	}
-	maxTokens := 80
 	// #834: gate temperature on the resolved cheap-model row. A Bedrock-style
 	// wire id with no catalog row resolves synthesized; the protocol baseline
 	// marks temperature send-by-default, so nothing prunes it and the provider
 	// 400s — one dead request per session. Naming is deterministic decoration,
 	// so omitting the parameter on doubt costs nothing.
 	temp := sessionNamerTemperature(client, profile, model)
+	// Ask the model not to reason. Reasoning models spend an output-token cap
+	// on chain-of-thought before emitting the JSON title; under a small cap
+	// they emit no content at all and the parse fails. The adapters send an
+	// explicit off only for rows that list an off level and omit it otherwise,
+	// so this is safe on every provider. The title budget itself is left
+	// uncapped for the same reason: a model that cannot disable reasoning must
+	// still be able to finish thinking and answer. The system prompt and the
+	// schema's maxLength bound the title; nothing else needs a token cap.
+	reasoningOff := llm.ReasoningEffortNone
 	// Naming is best-effort decoration with its own short deadline. It opts out
 	// of the turn retry wall budget so a naming storm does not add load while a
 	// real turn waits on the same provider bucket.
 	namerPolicy := llm.DefaultRetryPolicy()
 	namerPolicy.RateLimitWallBudget = 0
 	opts := llm.GenerateObjectOptions{
-		Client:      client,
-		Provider:    profile.CheapProvider(),
-		Model:       model,
-		System:      new(sessionNamerSystemPrompt),
-		Prompt:      new(sessionNamerUserPrompt(source, text, currentTitle)),
-		Temperature: temp,
-		MaxTokens:   &maxTokens,
-		Sleep:       sleep,
-		RetryPolicy: &namerPolicy,
-		Schema:      sessionNameSchema(),
+		Client:          client,
+		Provider:        profile.CheapProvider(),
+		Model:           model,
+		System:          new(sessionNamerSystemPrompt),
+		Prompt:          new(sessionNamerUserPrompt(source, text, currentTitle)),
+		Temperature:     temp,
+		ReasoningEffort: &reasoningOff,
+		Sleep:           sleep,
+		RetryPolicy:     &namerPolicy,
+		Schema:          sessionNameSchema(),
 	}
 	if len(timeout) > 0 {
 		opts.AdapterTimeout = timeout[0]
