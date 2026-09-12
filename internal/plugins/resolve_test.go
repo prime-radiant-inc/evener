@@ -95,25 +95,79 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 			},
 		},
 		{
-			name: "disabled and broken registry entries",
+			name: "enabled-by-default, disabled-by-default, and broken registry entries",
 			check: func(t *testing.T, root string, m *Manager) {
 				good := filepath.Join(root, "good")
+				optional := filepath.Join(root, "optional")
 				broken := filepath.Join(root, "broken")
 				writePlugin(t, good, "good", nil)
+				writePlugin(t, optional, "optional", nil)
 				os.MkdirAll(broken, 0o755)
 				saveTestRegistry(t, m, map[string][]InstallEntry{
-					"disabled@m": {{InstallPath: filepath.Join(root, "disabled"), Enabled: false}},
-					"broken@m":   {{InstallPath: broken, Version: "4", Enabled: true}},
 					"good@m":     {{InstallPath: good, Version: "2", Enabled: true}},
+					"optional@m": {{InstallPath: optional, Version: "3", Enabled: false}},
+					"broken@m":   {{InstallPath: broken, Version: "4", Enabled: true}},
+				})
+
+				// Omitted selection takes the defaults: the on-by-default
+				// plugin is selected, the off-by-default one is listed but
+				// unselected, and a broken entry stays a diagnostic.
+				got, err := m.ResolveForLaunch(context.Background(), nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertCandidateNames(t, got, []string{"good", "optional"})
+				assertStrings(t, got.SelectedDirs, []string{good})
+				if !got.Candidates[0].Selected {
+					t.Errorf("enabled-by-default candidate not selected: %+v", got.Candidates[0])
+				}
+				if got.Candidates[1].Selected {
+					t.Errorf("disabled-by-default candidate selected: %+v", got.Candidates[1])
+				}
+				if len(got.Diagnostics) != 1 || got.Diagnostics[0].Name != "broken" || got.Diagnostics[0].Source != LaunchPluginSourceInstalled {
+					t.Fatalf("broken diagnostic = %+v", got.Diagnostics)
+				}
+
+				// A session allow-list can turn on a plugin whose default is
+				// off, without changing the registry.
+				names := []string{"optional"}
+				on, err := m.ResolveForLaunch(context.Background(), nil, &names)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := on.ValidateSelection(); err != nil {
+					t.Fatalf("disabled-by-default plugin not selectable: %v", err)
+				}
+				assertStrings(t, on.SelectedDirs, []string{optional})
+			},
+		},
+		{
+			name: "an off-by-default plugin cannot shadow an on-by-default one",
+			check: func(t *testing.T, root string, m *Manager) {
+				// The off-by-default entry sorts first by plugin name and
+				// shares the manifest name of the on-by-default one. The
+				// on-by-default copy must stay the winner, the way it was when
+				// only enabled entries were candidates.
+				optional := filepath.Join(root, "aaa-optional")
+				enabled := filepath.Join(root, "zzz-enabled")
+				writePlugin(t, optional, "shared", nil)
+				writePlugin(t, enabled, "shared", nil)
+				saveTestRegistry(t, m, map[string][]InstallEntry{
+					"aaa-optional@m": {{InstallPath: optional, Version: "1", Enabled: false}},
+					"zzz-enabled@m":  {{InstallPath: enabled, Version: "2", Enabled: true}},
 				})
 
 				got, err := m.ResolveForLaunch(context.Background(), nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				assertCandidateNames(t, got, []string{"good"})
-				if len(got.Diagnostics) != 1 || got.Diagnostics[0].Name != "broken" || got.Diagnostics[0].Source != LaunchPluginSourceInstalled {
-					t.Fatalf("broken diagnostic = %+v", got.Diagnostics)
+				assertCandidateNames(t, got, []string{"shared"})
+				if got.Candidates[0].Path != enabled || !got.Candidates[0].Selected {
+					t.Fatalf("candidate = %+v, want the on-by-default copy %s", got.Candidates[0], enabled)
+				}
+				assertStrings(t, got.SelectedDirs, []string{enabled})
+				if len(got.Diagnostics) != 1 || got.Diagnostics[0].Name != "shared" || !strings.Contains(got.Diagnostics[0].Message, "duplicate") {
+					t.Fatalf("diagnostics = %+v, want one duplicate diagnostic for the off-by-default loser", got.Diagnostics)
 				}
 			},
 		},

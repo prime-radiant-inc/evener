@@ -264,7 +264,7 @@ variables:
 |---|---|
 | `--model <provider/model>` | LLM model identifier (required unless resuming an existing session) |
 | `--dir <path>` | Working directory (default: current directory) |
-| `--enabled-plugins <name,...>` | Load exactly these otherwise-loadable plugins for this new session; an empty value loads none |
+| `--enabled-plugins <name,...>` | Load exactly these installed plugins for this new session, including ones whose default is off; an empty value loads none |
 | `--output-schema <json>` | Inline JSON Schema replacing the default `communicate.output` schema |
 | `--verbose` | Emit NDJSON events to stderr (replaces human-readable output) |
 | `--resume <id>` | Resume a previous session by ID |
@@ -274,7 +274,7 @@ variables:
 
 ### Per-session plugin selection
 
-Inspect the effective plugins available to a new direct-CLI session with:
+Inspect the plugins a new direct-CLI session loads by default with:
 
 ```bash
 evener plugin list --effective --json
@@ -288,15 +288,16 @@ evener --enabled-plugins=alpha,beta "task"
 evener --enabled-plugins= "task"
 ```
 
-Omitting `--enabled-plugins` uses the current defaults: every otherwise-loadable
-plugin, including globally enabled installed plugins and explicit plugin
-directories. The flag is new-session-only and cannot replace the plugin set of
-an existing resumed session. It selects manifest names from that otherwise-
-loadable set; globally disabled plugins remain unavailable. The selected set is
-stored with the new session, so resumes, forks, and delegates inherit it.
+Omitting `--enabled-plugins` uses the current defaults: explicit plugin
+directories plus installed plugins marked enabled by default. The flag is
+new-session-only and cannot replace the plugin set of an existing resumed
+session. It selects manifest names from every installed plugin, so naming one
+whose default is off turns it on for that session. The selected set is stored
+with the new session, so resumes, forks, and delegates inherit it.
 
 This does not change persistent plugin state. `evener plugin enable` and
-`evener plugin disable` remain the global controls for future default sessions.
+`evener plugin disable` set whether an installed plugin loads by default in
+future sessions.
 
 ### Structured output
 
