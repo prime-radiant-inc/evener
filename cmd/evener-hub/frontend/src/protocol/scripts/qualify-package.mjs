@@ -109,7 +109,6 @@ async function qualify() {
     "DocFileError",
     "docFileRawURL",
     "docImageURL",
-    "readDocFile",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.

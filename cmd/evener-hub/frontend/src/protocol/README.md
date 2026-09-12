@@ -6,7 +6,7 @@ generated protocol types, wire errors and their session classifiers, the pure
 question formatter, the thread view model and its notification reducer, the
 activity tree parser, merge and disclosure rules, the job log tail parser, the
 send/queue availability table, the stable delegate status rule, and the
-doc-pane URL builders and raw-file reader.
+doc-pane URL builders.
 
 Build and qualify from this directory with `npm run qualification`. The runner
 packs the package, installs that tarball into a temporary consumer, checks ESM
