@@ -150,8 +150,7 @@ func TestGCPADCATransientTokenFailureKeepsItsRetryableMeaning(t *testing.T) {
 	if got := llm.Classify(err); got != llm.ErrorClassRetryable {
 		t.Fatalf("Classify = %v, want retryable: a token endpoint that is briefly unavailable is worth retrying", got)
 	}
-	var cfg *llm.ConfigurationError
-	if errors.As(err, &cfg) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		t.Fatalf("a transient token failure was reported as configuration: %v", err)
 	}
 }
