@@ -13,11 +13,11 @@ import type {
   EvenerDelegateInfo,
   EvenerDiagnostics,
   EvenerJobInfo,
-  EvenerUsage,
   TaskAggregate,
   Thread,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { MobileCapabilities, MobileUsage } from "../conversation/model";
+import { projectUsage } from "../conversation/project";
 
 // --- view model types --------------------------------------------------------
 
@@ -69,18 +69,10 @@ export interface WorkEntry {
   readonly diagnostics?: RedactedDiagnostic;
 }
 
-export interface UsageSummary {
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  readonly cacheReadTokens?: number;
-  readonly totalTokens?: number;
-  readonly cost?: string;
-  readonly contextUsed?: number;
-  readonly contextWindow?: number;
-  readonly contextRemaining?: number;
-  readonly contextPressure?: number;
-  readonly durationMs?: number;
-}
+// UsageSummary is MobileUsage plus the work duration the activity sheet shows.
+// The token/cost/context fields are the same ones projectUsage produces, so they
+// are inherited rather than restated.
+export type UsageSummary = Readonly<MobileUsage> & { readonly durationMs?: number };
 
 export interface ActivityView {
   readonly tasks: TaskGroup[];
@@ -434,20 +426,8 @@ export function deriveOpenTaskCount(counts: {
 
 // --- usage projection --------------------------------------------------------
 
-function projectUsage(evener: Thread["evener"]): UsageSummary {
-  const usage: EvenerUsage | undefined = evener.usage;
-  return {
-    inputTokens: usage?.inputTokens,
-    outputTokens: usage?.outputTokens,
-    cacheReadTokens: usage?.cacheReadTokens,
-    totalTokens: usage?.totalTokens,
-    cost: evener.cost,
-    contextUsed: evener.contextUsed,
-    contextWindow: evener.contextWindow,
-    contextRemaining: evener.contextRemaining,
-    contextPressure: evener.contextPressure,
-    durationMs: evener.workMillis,
-  };
+function projectUsageSummary(evener: Thread["evener"]): UsageSummary {
+  return { ...projectUsage(evener), durationMs: evener.workMillis };
 }
 
 // --- capabilities projection -------------------------------------------------
@@ -467,7 +447,7 @@ export function createActivityService(): ActivityService {
       return {
         tasks: projectTasks(evener.tasks),
         work: projectWork(evener.diagnostics),
-        usage: projectUsage(evener),
+        usage: projectUsageSummary(evener),
         capabilities: projectCapabilities(evener.capabilities),
         reasoningEffort: evener.reasoningEffort,
         reasoningEffortLevels: evener.reasoningEffortLevels,
