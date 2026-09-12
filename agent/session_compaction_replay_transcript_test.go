@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -428,15 +427,18 @@ func TestCompactionReplay_FoldHookCompletionCarriesTheFoldsOwner(t *testing.T) {
 	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir, PluginDirs: []string{writePluginHooks(t, "fold-hook-owner-plugin", hooks)}}))
 	seedNumberedSessionHistory(t, s, 12)
 
-	var mu sync.Mutex
-	var emitted []events.HookEndData
+	// The live hook end crosses a channel and a consumer goroutine, so
+	// Compact's return says nothing about whether it has arrived. Receiving it
+	// below is the synchronization; the buffer is wider than the one hook this
+	// fixture runs so the consumer never parks.
+	preCompactEnds := make(chan events.HookEndData, 8)
 	go func() {
 		for event := range s.Events() {
-			if data, ok := event.Data.(events.HookEndData); ok && event.Kind == events.EventHookEnd {
-				mu.Lock()
-				emitted = append(emitted, data)
-				mu.Unlock()
+			data, ok := event.Data.(events.HookEndData)
+			if !ok || event.Kind != events.EventHookEnd || data.Event != "PreCompact" {
+				continue
 			}
+			preCompactEnds <- data
 		}
 	}()
 
@@ -459,34 +461,30 @@ func TestCompactionReplay_FoldHookCompletionCarriesTheFoldsOwner(t *testing.T) {
 	if foldOwner == "" {
 		t.Fatal("test setup: the fold wrote no owned marker to compare against")
 	}
-	hooks_ := 0
+	preCompactEntries := 0
 	for _, entry := range data.Entries {
 		if entry.Turn.Kind != schema.TurnHookCompleted || entry.Turn.Hook == nil || entry.Turn.Hook.Event != "PreCompact" {
 			continue
 		}
-		hooks_++
+		preCompactEntries++
 		if entry.Turn.OwningTurnID != foldOwner {
 			t.Fatalf("the fold's PreCompact hook entry is owned by %q, want the fold's own owner %q; unowned, it closes the fold's group on reload", entry.Turn.OwningTurnID, foldOwner)
 		}
 	}
-	if hooks_ == 0 {
+	if preCompactEntries == 0 {
 		t.Fatal("test setup: the fold ran no PreCompact hook")
 	}
-	mu.Lock()
-	live := append([]events.HookEndData(nil), emitted...)
-	mu.Unlock()
-	seen := 0
-	for _, end := range live {
-		if end.Event != "PreCompact" {
-			continue
-		}
-		seen++
-		if end.OwningTurnID != foldOwner {
-			t.Fatalf("the live PreCompact hook end is owned by %q, want %q", end.OwningTurnID, foldOwner)
-		}
+	var live events.HookEndData
+	select {
+	case live = <-preCompactEnds:
+	// TRIPWIRE: the entry above proves the hook completed, and the event is
+	// published by the same call; 10s only fires if it never reaches the
+	// stream at all.
+	case <-time.After(10 * time.Second):
+		t.Fatal("no PreCompact hook end reached the live stream")
 	}
-	if seen == 0 {
-		t.Fatal("test setup: no PreCompact hook end reached the live stream")
+	if live.OwningTurnID != foldOwner {
+		t.Fatalf("the live PreCompact hook end is owned by %q, want %q", live.OwningTurnID, foldOwner)
 	}
 }
 
