@@ -1243,3 +1243,31 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
 }
+
+// TestRejectedInputDoesNotPersistItsProvisionalTurn: acceptUserInput counts the
+// turn before it appends the environment context, and takes the count back when
+// that append fails. An append whose entry reconciliation proves durable
+// checkpoints metadata on its way out, while that provisional count is still
+// standing, and then reports the failure that rejects the input -- so the
+// rollback behind it owes a checkpoint of its own. processOneInput's deferred
+// save is that checkpoint, and this pins it: without one, the restart loads a
+// turn no user ever spent and charges it against MaxTurns for the life of the
+// session.
+func TestRejectedInputDoesNotPersistItsProvisionalTurn(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	syncFailure := errors.New("environment transcript durability failure")
+	rollbackFailure := errors.New("environment transcript rollback failure")
+	attachEnvironmentAmbiguousWrite(t, sess, syncFailure, rollbackFailure)
+
+	if _, err := sess.ProcessInput(t.Context(), "rejected by its environment append", nil); !errors.Is(err, syncFailure) {
+		t.Fatalf("rejected input error = %v, want the environment durability failure", err)
+	}
+	if got := loadMetaForTest(t, sess).AcceptedInputTurns; got != 0 {
+		t.Fatalf("persisted accepted input turns after the rejected input = %d, want the none it accepted", got)
+	}
+	restored := restoreQueuePersistTestSession(t, sess.stateDir, sess.ID())
+	defer restored.Close()
+	if got := restored.turns; got != 0 {
+		t.Fatalf("restarted session accepted input turns = %d, want the none the rejected input accepted", got)
+	}
+}
