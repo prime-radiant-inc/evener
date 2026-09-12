@@ -7,6 +7,7 @@ import {
 } from "../../../protocol/activityData";
 import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import {
   activitySummaryStore,
@@ -23,6 +24,8 @@ export interface ActivityPanelProps {
   sessionRef: string;
   model: ThreadModel;
   now: number;
+  // The session's live watches, absent-able: an old daemon omits the list.
+  watches?: NavigationWatchSummary[];
   hideTrigger?: boolean;
   // SessionChrome's desktop replacement button hides this panel's own
   // trigger, but still needs the trigger-owned background summary refresh.
@@ -33,6 +36,9 @@ export interface ActivityPanelProps {
 export interface ActivityPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  watches?: NavigationWatchSummary[];
+  // The panel's ticking clock, used by the watch durations and timeline.
+  now?: number;
 }
 
 export interface ActivityPanelHandle {
@@ -83,7 +89,7 @@ function refreshRoot(
 }
 
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
-export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
+export function ActivityPanelBody({ sessionRef, model, watches, now }: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const treeRef = useRef<ActivityTreeHandle>(null);
   const mountedRef = useRef(false);
@@ -243,7 +249,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         {currentTree && !currentTree.root.counts.complete && (
           <p className={CLASS.state}>Activity coverage is incomplete.</p>
         )}
-        {currentTree && currentTree.root.entries.length === 0 ? (
+        {currentTree && currentTree.root.entries.length === 0 && (watches?.length ?? 0) === 0 ? (
           emptyPageIsPartial(currentTree) ? (
             // A page can come back with no rows and still have more behind it:
             // the agent drops an entry it cannot encode, says so on the root
@@ -283,6 +289,8 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             <ActivityTree
               ref={treeRef}
               tree={currentTree}
+              watches={watches}
+              now={now}
               expandedFoldIDs={entry.expandedFoldIDs}
               onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
               continuationFailures={entry.continuationFailures}
@@ -300,7 +308,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
 }
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
-  { sessionRef, model, now: _now, hideTrigger = false, refreshWhenHidden = false },
+  { sessionRef, model, now, watches, hideTrigger = false, refreshWhenHidden = false },
   ref,
 ) {
   const [open, setOpen] = useState(false);
@@ -359,7 +367,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
-        {open ? <ActivityPanelBody sessionRef={sessionRef} model={model} /> : null}
+        {open ? <ActivityPanelBody sessionRef={sessionRef} model={model} now={now} watches={watches} /> : null}
       </Sheet>
     </>
   );

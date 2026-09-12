@@ -337,7 +337,14 @@ function watchOverflowId(parentRowID: string): string {
  * row as well as on the subagent's own - one watch, several counts. A receiver
  * watch belongs to the session whose summary carries it. */
 export function activeWatchCount(node: RailSession): number {
-  return (node.watches ?? []).filter((watch) => watch.active).length;
+  return armedWatchCount(node.watches);
+}
+
+/** The same count read straight off the wire list, so the activity panel's
+ * Watches header and the rail row's count cannot drift apart: both numbers are
+ * one predicate, not two copies of one. */
+export function armedWatchCount(watches: readonly NavigationWatchSummary[] | undefined): number {
+  return (watches ?? []).filter((watch) => watch.active).length;
 }
 
 function subagentIsCurrent(child: RailSession): boolean {
