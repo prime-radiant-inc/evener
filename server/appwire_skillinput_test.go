@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -111,6 +113,93 @@ func TestTurnMutationsConsumeSkillInputWhenWired(t *testing.T) {
 	})
 	if caps := partial.appCapabilities("idle", false); caps.SkillInput {
 		t.Fatal("advertised ThreadCapabilities.SkillInput is true with only part of the input surface wired")
+	}
+}
+
+// TestSkillInputValidationMatchesAdvertisedCapability pins the per-endpoint
+// truth the literal-true gate broke: every input-bearing turn mutation
+// validates skill selections against its OWN seam's wiring, so no endpoint
+// ever accepts a selection it cannot consume. A partially wired server must
+// not advertise the capability (the conjunction stays false) — its wired
+// endpoint still consumes selections at the claim, while its unwired
+// endpoints refuse them at validation with the typed unsupported-input error
+// instead of the bare Unavailable a pass-through gate used to leave. The
+// fully wired server keeps consuming selections at the claim on all four
+// (TestTurnMutationsConsumeSkillInputWhenWired above).
+func TestSkillInputValidationMatchesAdvertisedCapability(t *testing.T) {
+	partial := NewServer(ServerConfig{})
+	partial.SetAppIdentity("local", "th_3")
+	queueReached := false
+	partial.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			queueReached = true
+			return appwire.TurnQueueResponse{}, nil
+		},
+	})
+	if caps := partial.appCapabilities("idle", false); caps.SkillInput {
+		t.Fatal("advertised ThreadCapabilities.SkillInput is true with only part of the input surface wired")
+	}
+	skillSelection := []appwire.InputItem{{Type: "skill", Name: "pkg:probe"}}
+
+	// The WIRED endpoint keeps consuming selections at the claim even while
+	// the thread-level capability is unadvertised: per-endpoint truth, not
+	// the literal true that also spoke for the unwired siblings.
+	_, err := partial.handleAppTurnQueue(context.Background(), appwire.TurnQueueParams{
+		Ref:                "local:th_3",
+		ClientMutationID:   "skill-queue-partial",
+		ExpectedInstanceID: "th_3",
+		Input:              skillSelection,
+	})
+	if err != nil {
+		t.Fatalf("turn/queue skill input error = %T %v, want the wired seam to consume it", err, err)
+	}
+	if !queueReached {
+		t.Fatal("turn/queue seam never ran for a skill-only selection on the wired endpoint")
+	}
+
+	// An UNWIRED endpoint answers the typed unsupported-input error at the
+	// gate, instead of passing the selection through to a bare Unavailable
+	// that would conflate "endpoint not wired" with "input unsupported" —
+	// and worse, before the fix, the literal true asserted support the
+	// endpoint never had.
+	_, err = partial.handleAppTurnStart(context.Background(), appwire.TurnStartParams{
+		Ref:                "local:th_3",
+		ClientMutationID:   "skill-start-partial",
+		ExpectedInstanceID: "th_3",
+		Input:              skillSelection,
+	})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("turn/start skill input error = %T %v, want InvalidParams, not the unwired seam's Unavailable", err, err)
+	}
+	if !strings.Contains(wire.Message, "skill input is unsupported") {
+		t.Fatalf("turn/start skill input error message = %q, want the unsupported-input explanation", wire.Message)
+	}
+
+	// The gate only rejects SKILL items: an unwired endpoint keeps its bare
+	// Unavailable for ordinary text, and a wired one consumes it.
+	_, err = partial.handleAppTurnStart(context.Background(), appwire.TurnStartParams{
+		Ref:                "local:th_3",
+		ClientMutationID:   "text-start-partial",
+		ExpectedInstanceID: "th_3",
+		Input:              []appwire.InputItem{{Type: "text", Text: "plain text"}},
+	})
+	var unavailable appwire.WireError
+	if !errors.As(err, &unavailable) || unavailable.Code != appwire.CodeUnavailable {
+		t.Fatalf("turn/start text input error = %T %v, want the endpoint's own Unavailable", err, err)
+	}
+	queueReached = false
+	_, err = partial.handleAppTurnQueue(context.Background(), appwire.TurnQueueParams{
+		Ref:                "local:th_3",
+		ClientMutationID:   "text-queue-partial",
+		ExpectedInstanceID: "th_3",
+		Input:              []appwire.InputItem{{Type: "text", Text: "plain text"}},
+	})
+	if err != nil {
+		t.Fatalf("turn/queue text input error = %v, want the wired seam to consume it", err)
+	}
+	if !queueReached {
+		t.Fatal("turn/queue seam never ran for ordinary text input")
 	}
 }
 
