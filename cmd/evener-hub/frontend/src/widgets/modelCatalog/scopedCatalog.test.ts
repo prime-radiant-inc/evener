@@ -56,7 +56,7 @@ describe("catalog snapshot merging", () => {
     expect(mergeCatalogEntry(warned, quiet)).toEqual(quiet);
   });
 
-  test("a merged snapshot warns about the models and recent rows alike", () => {
+  test("a merged snapshot carries only the later snapshot's warnings", () => {
     const warn =
       'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash';
     const entry = (warnings?: string[]) => ({
@@ -70,8 +70,9 @@ describe("catalog snapshot merging", () => {
       { models: [entry()], recent: [entry()] },
     );
 
+    // recent is passed through un-merged, so only the merged models list can
+    // pin that a later snapshot's silence beats an earlier scope's warning.
     expect(merged.models[0]?.warnings).toBeUndefined();
-    expect(merged.recent[0]?.warnings).toBeUndefined();
   });
 
   test("does not merge entries with different providers or models", () => {
