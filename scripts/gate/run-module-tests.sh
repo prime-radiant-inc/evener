@@ -32,7 +32,32 @@ set -uo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
-. "$script_dir/../lib/load-aware-workers.sh"
+
+# The load-aware budgets below degrade to their historical fixed values when
+# the helper is unreadable or answers with nothing. An unguarded source would
+# abort this script outright, and an unguarded call would leave a budget empty,
+# which the -p guards read as "pass no flag" and widen to go's GOMAXPROCS.
+have_load_aware=0
+load_aware_helper="$script_dir/../lib/load-aware-workers.sh"
+if [ -r "$load_aware_helper" ]; then
+	. "$load_aware_helper"
+	have_load_aware=1
+fi
+
+# gate_budget CAP DEFAULT — the load-aware worker count for CAP, or DEFAULT
+# when the helper is absent or its answer is not a positive integer.
+gate_budget() {
+	_gb_cap=$1
+	_gb_default=$2
+	_gb_value=
+	if [ "$have_load_aware" -eq 1 ]; then
+		_gb_value="$(load_aware_workers "$_gb_cap" 2>/dev/null)" || _gb_value=
+	fi
+	case "$_gb_value" in
+	''|*[!0-9]*) _gb_value=$_gb_default ;;
+	esac
+	printf '%s' "$_gb_value"
+}
 
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
@@ -115,15 +140,15 @@ export AGENT_SHARD_COUNT=${AGENT_SHARD_COUNT:-8}
 # sessions, CI, and a hand-run `make test` all reach here, and a fixed budget
 # let each of them claim the whole machine. An explicit environment override
 # still wins, so test-race's AGENT_PARALLEL=6 is honored as written.
-ROOT_P=${ROOT_P-$(load_aware_workers 6)}
-AGENT_PARALLEL=${AGENT_PARALLEL-$(load_aware_workers 6)}
-AGENT_P=${AGENT_P-$(load_aware_workers 4)}
+ROOT_P=${ROOT_P-$(gate_budget 6 6)}
+AGENT_PARALLEL=${AGENT_PARALLEL-$(gate_budget 6 6)}
+AGENT_P=${AGENT_P-$(gate_budget 4 4)}
 # The agent-shards runner does the agent module's real work and reads its own
 # parallelism from the environment; AGENT_PARALLEL never reaches it. Without
 # these the dominant agent workload stayed at a fixed width under load. The
 # caps are the runner's own defaults, and a set value still wins.
-export AGENT_SHARD_PARALLEL=${AGENT_SHARD_PARALLEL-$(load_aware_workers 3)}
-export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(load_aware_workers 6)}
+export AGENT_SHARD_PARALLEL=${AGENT_SHARD_PARALLEL-$(gate_budget 3 3)}
+export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}
 # Modules with no explicit -p are deliberately left alone. Go's default -p is
 # GOMAXPROCS, which is cgroup-quota aware; an explicit -p derived from the
 # host's online CPUs would oversubscribe a CPU-limited container and override a

@@ -3,7 +3,7 @@
 # capacity instead of to its core count.
 #
 # Sourced, never executed, and POSIX sh so both a bash gate script and a dash
-# `sh -c` npm script can source it. Sourcing defines three functions and runs
+# `sh -c` npm script can source it. Sourcing only defines functions and runs
 # nothing: no scratch, no locks, no output. Internals carry a _law_ prefix so
 # sourcing cannot clobber a caller's variables.
 #
@@ -125,7 +125,7 @@ load_aware_cgroup_relpath() {
 	awk -F: '$1 == "0" && $2 == "" { print $3; exit }' "$_law_file" 2>/dev/null
 }
 
-# load_aware_cgroup_mount FILE VERSION — print "MOUNTPOINT ROOT" for the mount
+# load_aware_cgroup_mount FILE VERSION — print the mount point of the mount
 # that owns this process's CPU accounting.
 load_aware_cgroup_mount() {
 	_law_file=${1-/proc/self/mountinfo}
@@ -140,7 +140,7 @@ load_aware_cgroup_mount() {
 				for (j = sep + 3; j <= NF; j++) {
 					n = split($j, controllers, ",")
 					for (k = 1; k <= n; k++) {
-						if (controllers[k] == "cpu") { print $5, $4; exit }
+						if (controllers[k] == "cpu") { print $5; exit }
 					}
 				}
 			}' "$_law_file" 2>/dev/null
@@ -150,7 +150,7 @@ load_aware_cgroup_mount() {
 		{
 			sep = 0
 			for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } }
-			if (sep != 0 && $(sep + 1) == "cgroup2") { print $5, $4; exit }
+			if (sep != 0 && $(sep + 1) == "cgroup2") { print $5; exit }
 		}' "$_law_file" 2>/dev/null
 }
 
@@ -263,6 +263,12 @@ load_aware_load1() {
 	case "$_law_load" in
 	''|*[!0-9.]*) _law_load= ;;
 	esac
+	# A value with no digit is not a load average, and neither is a lone "."
+	# or a two-dot string; unknown load must not look like an idle machine.
+	case "$_law_load" in
+	*[0-9]*) ;;
+	*) _law_load= ;;
+	esac
 	printf '%s' "$_law_load"
 }
 
@@ -293,6 +299,10 @@ load_aware_workers() {
 	if [ "$_law_cores" -lt 1 ]; then
 		_law_cores=1
 	fi
+	case "$_law_load" in
+	*[0-9]*) ;;
+	*) _law_load= ;;
+	esac
 	case "$_law_load" in
 	''|*[!0-9.]*|*.*.*)
 		if [ "$_law_cap" -gt 0 ]; then
