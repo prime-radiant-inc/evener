@@ -23,8 +23,8 @@
 // CSS module throughout rather than forcing a widget that cannot express
 // them.
 import { useEffect, useId, useRef } from "react";
+import type { AskResolution } from "../../../../protocol/askAnswers";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import type { AskResolution } from "./askCompose";
 import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
 import type { AskQuestionRef } from "./deriveAskQuestions";
@@ -51,9 +51,15 @@ export interface AskQuestionCardProps {
   question: AskQuestionRef;
   // Global posting order (1-based) across the WHOLE pending batch this
   // question belongs to, not just its own ask_user call - matches the
-  // [answers] reply's own numbering (askCompose.ts).
+  // [answers] reply's own numbering (protocol/askAnswers.ts).
   number: number;
   answer: AskAnswerState;
+  // True while the batch's send is in flight (AskBatch.sending): the
+  // successful send removes the batch, so an edit made mid-flight would be
+  // silently discarded - every editing control disables until the send
+  // settles (roborev PR #884 round 10). askDockStore's setAnswer/setNote
+  // refuse the same writes at the store boundary.
+  disabled: boolean;
   onResolutionChange(resolution: AskResolution | null): void;
   onNoteChange(note: string): void;
 }
@@ -73,7 +79,14 @@ function orderedOptions(options: AskQuestionRef["options"]) {
     .map(({ opt }) => opt);
 }
 
-export function AskQuestionCard({ question, number, answer, onResolutionChange, onNoteChange }: AskQuestionCardProps) {
+export function AskQuestionCard({
+  question,
+  number,
+  answer,
+  disabled,
+  onResolutionChange,
+  onNoteChange,
+}: AskQuestionCardProps) {
   const id = useId();
   const headerId = `${id}-header`;
   const textId = `${id}-text`;
@@ -82,7 +95,13 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
   const noteLabelId = `${id}-note-label`;
 
   const noteInputRef = useRef<HTMLInputElement>(null);
-  const prevKindRef = useRef<AskResolution["kind"] | null>(null);
+  // Initialized with the MOUNT-time kind, not null: the dock is a
+  // virtualized transcript row, so scrolling away unmounts this card and
+  // scrolling back remounts it. A remount with an already-active free
+  // answer is not the transition this effect exists for - starting at null
+  // would read it as one and steal focus to the answer input (roborev PR
+  // #854). Mount-time focus belongs to AskDock's activation effect.
+  const prevKindRef = useRef<AskResolution["kind"] | null>(answer.resolution?.kind ?? null);
 
   // Focuses the shared text field the moment Something else becomes active
   // - edge-triggered on the kind actually changing TO free (never on every
@@ -135,6 +154,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
             type={multiSelect ? "checkbox" : "radio"}
             name={radioName}
             aria-label={opt.label}
+            disabled={disabled}
             checked={
               multiSelect
                 ? checkedLabels.has(opt.label)
@@ -160,6 +180,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
             type="radio"
             name={radioName}
             aria-label="Something else…"
+            disabled={disabled}
             checked={freeActive}
             onClick={(e) => {
               if (freeActive) {
@@ -215,6 +236,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
           ref={noteInputRef}
           type="text"
           className={CLASS.textInput}
+          disabled={disabled}
           placeholder={freeActive ? "type your answer" : "note (optional)"}
           aria-labelledby={freeActive ? `${freeLabelId} ${headerId} ${textId}` : `${headerId} ${textId} ${noteLabelId}`}
           data-ask-free-input={freeActive ? "true" : undefined}

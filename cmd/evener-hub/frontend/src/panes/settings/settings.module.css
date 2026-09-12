@@ -24,7 +24,7 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .link {
@@ -32,7 +32,7 @@
   width: 100%;
   padding: var(--space-2);
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: 0;
   background: transparent;
   color: var(--ink-hi);
   font-family: var(--font-sans);
@@ -64,6 +64,7 @@
   background: var(--accent-bg);
   color: var(--accent-ink);
   font-weight: var(--font-weight-medium);
+  border-inline-start: 2px solid var(--accent);
 }
 
 .content {
@@ -72,6 +73,9 @@
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
+  /* One reading measure, shared with the transcript: label/value hairlines
+   * that spanned 900px+ read as a spreadsheet (critique finding 8). */
+  max-width: var(--session-measure);
   overflow-y: auto;
 }
 

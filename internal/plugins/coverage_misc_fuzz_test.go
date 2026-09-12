@@ -43,10 +43,10 @@ func fuzzInstallErrors(t *testing.T) {
 	if _, err := m.Upgrade(ctx, "missing", "market"); err == nil {
 		t.Fatal("missing plugin upgraded")
 	}
-	if err := m.SetEnabled("missing", "market", true); err == nil {
+	if err := m.SetEnabled(context.Background(), "missing", "market", true); err == nil {
 		t.Fatal("missing plugin mutated")
 	}
-	if err := m.Remove("missing", "market"); err == nil {
+	if err := m.Remove(context.Background(), "missing", "market"); err == nil {
 		t.Fatal("missing plugin removed")
 	}
 
@@ -54,14 +54,14 @@ func fuzzInstallErrors(t *testing.T) {
 	if err := SaveRegistry(m.registryPath(), reg); err != nil {
 		t.Fatal(err)
 	}
-	items, err := m.List()
+	items, err := m.List(context.Background())
 	if err != nil || len(items) != 0 {
 		t.Fatalf("empty list = %#v, %v", items, err)
 	}
 	if _, err := m.UpdateAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Remove("empty", "market"); err != nil {
+	if err := m.Remove(context.Background(), "empty", "market"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,16 +88,16 @@ func fuzzInstallErrors(t *testing.T) {
 	if err := os.WriteFile(m.registryPath(), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.List(); err == nil {
+	if _, err := m.List(context.Background()); err == nil {
 		t.Fatal("corrupt registry listed")
 	}
 	if _, err := m.UpdateAll(ctx); err == nil {
 		t.Fatal("corrupt registry updated")
 	}
-	if err := m.SetAutoUpgrade("p", "m", true); err == nil {
+	if err := m.SetAutoUpgrade(context.Background(), "p", "m", true); err == nil {
 		t.Fatal("corrupt registry mutated")
 	}
-	if err := m.Remove("p", "m"); err == nil {
+	if err := m.Remove(context.Background(), "p", "m"); err == nil {
 		t.Fatal("corrupt registry removed")
 	}
 }
@@ -224,11 +224,8 @@ func fuzzRegistryEdges(t *testing.T) {
 
 	var warnings bytes.Buffer
 	m := &Manager{Root: block, Stderr: &warnings}
-	if got := listOrWarn(m); got != nil || warnings.Len() == 0 {
+	if got := listOrWarn(context.Background(), m); got != nil || warnings.Len() == 0 {
 		t.Fatalf("listOrWarn = %#v, %q", got, warnings.String())
-	}
-	if got := m.EnabledPluginDirs([]string{filepath.Join(root, "missing")}); len(got) != 0 {
-		t.Fatalf("enabled = %#v", got)
 	}
 }
 
@@ -241,10 +238,10 @@ func fuzzGCDoctorEdges(t *testing.T) {
 	if err := os.WriteFile(m.cacheDir(), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Gc(); err == nil {
+	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("gc cache file succeeded")
 	}
-	findings := m.doctorOrphanCacheDirs(nil)
+	findings := m.doctorOrphanCacheDirs()
 	if len(findings) != 1 || findings[0].Level != LevelFail {
 		t.Fatalf("orphan findings = %#v", findings)
 	}

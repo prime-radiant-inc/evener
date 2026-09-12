@@ -23,7 +23,7 @@ import (
 // home-directory glob such as ~/.claude/plugins/*:
 //
 //   - Each configured plugin DIRECTORY (cfg.PluginDirs — already resolved by
-//     internal/plugins.Manager.EnabledPluginDirs to the explicit --plugin-dir
+//     internal/plugins.Manager.ResolveForLaunch to the explicit --plugin-dir
 //     values plus every installed+enabled registry install path). A plugin's
 //     directory is the unit its hook scripts and bundled MCP servers live in, and
 //     a hook's command is an arbitrary shell string that cannot be parsed for the

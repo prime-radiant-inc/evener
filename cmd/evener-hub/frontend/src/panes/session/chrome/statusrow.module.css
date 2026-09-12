@@ -44,10 +44,12 @@
   flex: none;
 }
 
-/* Figures, identifiers and timings - the faces mono is for. Chrome labels never
- * take it. */
-.mono {
-  font-family: var(--font-mono);
+/* Figures and timings: the sans face with tabular digits, so a changing
+ * count never reflows its neighbours. Mono is reserved for machine text
+ * (code, paths, commands) - a percentage or a clock is a figure, not code. */
+.figure {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
 }
 
 .contextMeter {
@@ -198,6 +200,9 @@
   opacity: 0;
   cursor: pointer;
   font: inherit;
+  /* A real native select: it must not inherit the trigger's caption size,
+   * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
+  font-size: var(--font-size-control);
 }
 
 /* Standard visually-hidden recipe: keeps a real, focus-order-preserving

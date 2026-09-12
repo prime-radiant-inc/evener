@@ -475,10 +475,12 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 		jm.mu.Unlock()
 		t.Fatal("nil watch config crossed the delivery budget")
 	}
-	cfg.deliveries = watchDeliveryBudget - 1
-	if !jm.recordWatchDeliveryLocked(cfg) || jm.recordWatchDeliveryLocked(cfg) {
+	cfg.conditionFires = watchDeliveryBudget
+	crossed := jm.recordWatchDeliveryLocked(cfg)
+	cfg.conditionFires++
+	if !crossed || jm.recordWatchDeliveryLocked(cfg) {
 		jm.mu.Unlock()
-		t.Fatal("watch delivery budget crossing is not latched to one increment")
+		t.Fatal("watch delivery budget crossing is not latched to one condition fire")
 	}
 	pruned := jm.pruneWatchedTargetWatchesLocked(key.Target, "finished", frozenTestTime)
 	jm.mu.Unlock()

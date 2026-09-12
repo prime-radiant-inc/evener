@@ -151,11 +151,11 @@ func TestAdapterTimeout_Defaults(t *testing.T) {
 	if at.Connect != 10*time.Second {
 		t.Fatalf("Connect = %v, want 10s", at.Connect)
 	}
-	if at.Request != 120*time.Second {
-		t.Fatalf("Request = %v, want 120s", at.Request)
+	if at.Request != 0 {
+		t.Fatalf("Request = %v, want disabled", at.Request)
 	}
-	if at.StreamRead != 30*time.Second {
-		t.Fatalf("StreamRead = %v, want 30s", at.StreamRead)
+	if at.StreamRead != 10*time.Minute {
+		t.Fatalf("StreamRead = %v, want 10m", at.StreamRead)
 	}
 }
 

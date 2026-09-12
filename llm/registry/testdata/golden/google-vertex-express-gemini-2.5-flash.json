@@ -1,0 +1,87 @@
+{
+  "instance": "google-vertex-express",
+  "provider_id": "google-vertex-express",
+  "protocol": "google",
+  "surface": "google",
+  "transport": {
+    "preset": "vertex-gemini",
+    "auth": "header",
+    "auth_header": "x-goog-api-key",
+    "base_url": "https://aiplatform.googleapis.com/v1",
+    "endpoint": "/publishers/google/models/{model}:generateContent",
+    "stream_endpoint": "/publishers/google/models/{model}:streamGenerateContent?alt=sse",
+    "models_endpoint": "-",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "BASE_URL": "https://aiplatform.googleapis.com/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "GOOGLE_VERTEX_EXPRESS_BASE_URL"
+    }
+  },
+  "model_id": "gemini-2.5-flash",
+  "wire_id": "gemini-2.5-flash",
+  "model": {
+    "id": "gemini-2.5-flash",
+    "wire_id": "gemini-2.5-flash",
+    "family": "gemini-flash",
+    "surface": "google",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 1048576,
+    "max_output_tokens": 65536,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "toggle",
+      "budget_tokens"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "audio",
+      "video",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2025-01",
+    "cost": {
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.03
+    },
+    "fields": {
+      "cachedContent": false,
+      "generationConfig.stopSequences": true,
+      "generationConfig.temperature": true,
+      "generationConfig.topP": true,
+      "labels": false,
+      "safetySettings": true,
+      "toolConfig": true
+    },
+    "web_search": true
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "snapshot/row",
+    "Tools": "snapshot/row",
+    "WebSearch": "overlay/provider",
+    "model": "row:gemini-2.5-flash"
+  },
+  "default_model": "gemini-3.8-flash",
+  "cheap_model": "gemini-2.5-flash-lite",
+  "credential_source": "env:GOOGLE_VERTEX_API_KEY",
+  "pruned_fields": [
+    "cachedContent",
+    "labels"
+  ]
+}

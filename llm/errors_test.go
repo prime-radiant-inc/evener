@@ -388,6 +388,27 @@ func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
 	}
 }
 
+func TestNewAuthenticationError_IsNotRetryable(t *testing.T) {
+	refused := errors.New(`oauth2: "invalid_grant" "Token has been expired or revoked."`)
+	err := NewAuthenticationError("vertex", `instance "vertex": application-default credentials were refused (invalid_grant)`, refused)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if Kind(err) != KindAuthentication {
+		t.Fatalf("Kind() = %v, want KindAuthentication", Kind(err))
+	}
+	if e.Retryable() || retryableError(err) {
+		t.Fatal("a refused credential must not be retried")
+	}
+	if e.StatusCode() != 0 || providerOf(err) != "vertex" {
+		t.Fatalf("StatusCode() = %d, provider = %q, want 0 / vertex", e.StatusCode(), providerOf(err))
+	}
+	if !errors.Is(err, refused) {
+		t.Fatal("the refusal must stay in the chain")
+	}
+}
+
 func TestResponseHeaderTimeoutError_IsRetryable(t *testing.T) {
 	err := newResponseHeaderTimeoutError("openai", "timed out awaiting response headers", context.DeadlineExceeded)
 
@@ -409,70 +430,6 @@ func TestResponseHeaderTimeoutError_IsRetryable(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want context deadline cause", err)
-	}
-}
-
-// --- BehaviorTag tests (PRI-1880) ---
-
-func TestBehaviorTag_SetAndGet(t *testing.T) {
-	err := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
-	var bs behaviorTagSetter
-	if !errors.As(err, &bs) {
-		t.Fatalf("expected behaviorTagSetter, got %T", err)
-	}
-	bs.setBehaviorTag("openai")
-
-	var le Error
-	if !errors.As(err, &le) {
-		t.Fatalf("expected llm.Error, got %T", err)
-	}
-	if le.BehaviorTag() != "openai" {
-		t.Fatalf("BehaviorTag() = %q, want %q", le.BehaviorTag(), "openai")
-	}
-}
-
-func TestBehaviorTag_DefaultEmpty(t *testing.T) {
-	err := ErrorFromHTTPStatus("openai", 500, "server error", nil, nil)
-	var le Error
-	if !errors.As(err, &le) {
-		t.Fatalf("expected llm.Error")
-	}
-	if le.BehaviorTag() != "" {
-		t.Fatalf("BehaviorTag() = %q, want empty by default", le.BehaviorTag())
-	}
-}
-
-func TestBehaviorTag_NonHTTPError(t *testing.T) {
-	err := NewStreamError("work", "stream closed", nil)
-	var bs behaviorTagSetter
-	if !errors.As(err, &bs) {
-		t.Fatalf("expected behaviorTagSetter on StreamError, got %T", err)
-	}
-	bs.setBehaviorTag("openai")
-
-	var le Error
-	if !errors.As(err, &le) {
-		t.Fatalf("expected llm.Error")
-	}
-	if le.BehaviorTag() != "openai" {
-		t.Fatalf("BehaviorTag() = %q, want %q", le.BehaviorTag(), "openai")
-	}
-}
-
-func TestBehaviorTag_EmptyNoOp(t *testing.T) {
-	// Setting empty behavior tag is allowed (matches empty-value no-op spirit).
-	err := ErrorFromHTTPStatus("openai", 500, "server error", nil, nil)
-	var bs behaviorTagSetter
-	if !errors.As(err, &bs) {
-		t.Fatalf("expected behaviorTagSetter")
-	}
-	bs.setBehaviorTag("")
-	var le Error
-	if !errors.As(err, &le) {
-		t.Fatalf("expected llm.Error")
-	}
-	if le.BehaviorTag() != "" {
-		t.Fatalf("BehaviorTag() = %q, want empty", le.BehaviorTag())
 	}
 }
 

@@ -20,7 +20,7 @@ func TestHubMobilePairingUsesExplicitSafeOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatch mobile pairing: %v", err)
 	}
-	if response.AuthURL != "http://192.168.1.20:9180/auth?token=mobile-secret" {
+	if response.AuthURL != "http://192.168.1.20:9180/auth/mobile-secret" {
 		t.Fatalf("auth URL = %q", response.AuthURL)
 	}
 }
@@ -37,7 +37,7 @@ func TestHubMobilePairingConfiguredBaseURLTakesPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatch mobile pairing: %v", err)
 	}
-	if response.AuthURL != "https://hub.example.test:9443/auth?token=mobile-secret" {
+	if response.AuthURL != "https://hub.example.test:9443/auth/mobile-secret" {
 		t.Fatalf("auth URL = %q", response.AuthURL)
 	}
 }

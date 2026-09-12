@@ -33,6 +33,48 @@ describe("catalog snapshot merging", () => {
     expect(mergeCatalogEntry(existing, richer)).toEqual(richer);
   });
 
+  test("a later response supplies warnings the visible entry lacked", () => {
+    const existing = { provider: "vertex", model: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" };
+    const richer = {
+      ...existing,
+      warnings: [
+        'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash',
+      ],
+    };
+
+    expect(mergeCatalogEntry(existing, richer).warnings).toEqual(richer.warnings);
+  });
+
+  test("a later response without warnings clears the ones an earlier scope had", () => {
+    const warn =
+      'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash';
+    const warned = { provider: "vertex", model: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash", warnings: [warn] };
+    // The same model resolved under a global location: the registry has nothing
+    // to warn about, so the descriptor carries no warnings at all.
+    const quiet = { provider: "vertex", model: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" };
+
+    expect(mergeCatalogEntry(warned, quiet)).toEqual(quiet);
+  });
+
+  test("a merged snapshot carries only the later snapshot's warnings", () => {
+    const warn =
+      'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash';
+    const entry = (warnings?: string[]) => ({
+      provider: "vertex",
+      model: "gemini-3.8-flash",
+      displayName: "Gemini 3.8 Flash",
+      warnings,
+    });
+    const merged = mergeCatalogSnapshot(
+      { models: [entry([warn])], recent: [entry([warn])] },
+      { models: [entry()], recent: [entry()] },
+    );
+
+    // recent is passed through un-merged, so only the merged models list can
+    // pin that a later snapshot's silence beats an earlier scope's warning.
+    expect(merged.models[0]?.warnings).toBeUndefined();
+  });
+
   test("does not merge entries with different providers or models", () => {
     const existing = {
       provider: "openai",
@@ -75,6 +117,7 @@ describe("catalog snapshot merging", () => {
       model: "gpt-5",
       displayName: "GPT-5",
       contextWindow: 128000,
+      maxInputTokens: 114000,
       supportsTools: true,
       supportsVision: true,
       maxOutputTokens: 16384,
@@ -89,6 +132,7 @@ describe("catalog snapshot merging", () => {
       model: "gpt-5",
       displayName: "GPT-5",
       contextWindow: 0,
+      maxInputTokens: 0,
       supportsTools: false,
       supportsVision: false,
       maxOutputTokens: 0,

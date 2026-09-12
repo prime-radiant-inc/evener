@@ -1,8 +1,6 @@
 package hub
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -59,6 +57,11 @@ var navigationBeforePublicationDrainLock = func() {}
 
 var navigationPendingCleared = func() {}
 
+// navigationReadV2MissingCaptured is a deterministic test seam after ReadV2
+// observes a missing resource and releases the service lock. Production leaves
+// it as a no-op.
+var navigationReadV2MissingCaptured = func() {}
+
 type navigationSourceRevision struct {
 	Inputs uint64
 	Remote uint64
@@ -86,9 +89,13 @@ type navigationServiceConfig struct {
 	Generation   func() (string, error)
 	Now          func() time.Time
 	NewTimer     func(time.Duration) navigationTimer
-	Cache        *navigationRepresentationCache
 	BuildTimeout time.Duration
 	RetryAfter   time.Duration
+	// historyEntries and historyBytes override the default delta-history
+	// retention. Production leaves both zero for the full default budget;
+	// tests set them to force eviction with small fixtures.
+	historyEntries int
+	historyBytes   int64
 }
 
 type navigationTimer interface {
@@ -136,12 +143,10 @@ type navigationRefreshTicket struct {
 
 type navigationServiceStats struct {
 	CoreBuilds uint64
-	Cache      navigationCacheStats
 }
 
 type NavigationServiceStats = navigationServiceStats
 type NavigationResourceKey = navigationResourceKey
-type NavigationRepresentation = navigationRepresentation
 
 // NavigationService owns the coherent, revisioned navigation generation for a
 // single hub. Its source capture and pure projection are separated so a changed
@@ -156,7 +161,7 @@ type NavigationService struct {
 	newTimer     func(time.Duration) navigationTimer
 	buildTimeout time.Duration
 	retryAfter   time.Duration
-	cache        *navigationRepresentationCache
+	history      *navigationHistory
 
 	core                *navigationCoreSnapshot
 	resources           map[navigationResourceKey]navigationResourceState // includes tombstones
@@ -175,9 +180,10 @@ type NavigationService struct {
 	pendingHint         navigationChangeHint
 	pendingInvalidation bool
 	pendingEpoch        uint64
-	// pendingRetryAt is the earliest time a failed forced refresh of the
-	// pending invalidation may be attempted again. See refreshPending.
-	pendingRetryAt time.Time
+	// nextAttemptAt is the earliest time a failed forced refresh of the
+	// pending invalidation may be attempted again; zero means the next
+	// attempt is not paced. See refreshPending.
+	nextAttemptAt time.Time
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -199,17 +205,20 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 			return realNavigationTimer{timer: time.NewTimer(delay)}
 		}
 	}
-	cache := cfg.Cache
-	if cache == nil {
-		cache = newNavigationRepresentationCache(defaultNavigationCacheEntries, defaultNavigationCacheBytes)
-	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	if cfg.BuildTimeout <= 0 {
 		cfg.BuildTimeout = defaultNavigationBuildTimeout
 	}
 	if cfg.RetryAfter <= 0 {
 		cfg.RetryAfter = defaultNavigationRetryAfter
 	}
-	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	historyEntries, historyBytes := defaultNavigationCacheEntries, defaultNavigationCacheBytes
+	if cfg.historyEntries > 0 {
+		historyEntries = cfg.historyEntries
+	}
+	if cfg.historyBytes > 0 {
+		historyBytes = cfg.historyBytes
+	}
 	return &NavigationService{
 		source:           cfg.Source,
 		generation:       id,
@@ -218,7 +227,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		newTimer:         newTimer,
 		buildTimeout:     cfg.BuildTimeout,
 		retryAfter:       cfg.RetryAfter,
-		cache:            cache,
+		history:          newNavigationHistory(historyEntries, historyBytes),
 		resources:        make(map[navigationResourceKey]navigationResourceState),
 		wake:             make(chan struct{}, 1),
 		publicationReady: make(chan struct{}, 1),
@@ -250,7 +259,7 @@ func (s *NavigationService) Invalidate(hint navigationChangeHint) {
 	// is a first try for this epoch, not a retry, and must not inherit the
 	// older failure's deadline. (Persistent failure re-arms a fresh deadline
 	// on its own next failure.)
-	s.pendingRetryAt = time.Time{}
+	s.nextAttemptAt = time.Time{}
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -266,7 +275,7 @@ func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	if s.genErr != nil {
 		return nil
 	}
-	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence}
+	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence, ReadVersions: []int{2}}
 }
 
 // EmptyMutation returns the current navigation generation with no invalidation
@@ -283,13 +292,12 @@ func (s *NavigationService) Stats() NavigationServiceStats {
 	s.mu.Lock()
 	stats := navigationServiceStats{CoreBuilds: s.coreBuilds}
 	s.mu.Unlock()
-	stats.Cache = s.cache.Stats()
 	return stats
 }
 
 // CurrentRevision is assertion-oriented. HTTP must pass a semantic, unversioned
-// key directly to Representation, which captures its version and projection in
-// one transaction; a VersionedKey then Representation sequence is racy.
+// key directly to readV2, which captures its version and projection in
+// one transaction; a VersionedKey then read sequence is racy.
 func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -298,10 +306,18 @@ func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 
 // VersionedKey atomically obtains the current semantic resource version. It is
 // paired internally with the immutable core projection selected by
-// Representation, so a new projection's bytes cannot enter an old cache key.
+// readV2, so a new projection's bytes cannot enter an old cache key.
 func (s *NavigationService) VersionedKey(ctx context.Context, key navigationResourceKey) (NavigationResourceKey, error) {
 	_, versioned, _, err := s.versionedCore(ctx, key)
 	return versioned, err
+}
+
+type navigationReadResult struct {
+	Response appwire.NavigationReadResponse
+	// DeltaFallback is set when a retained base was found but the delta
+	// representation had to be abandoned, so the response is a full snapshot
+	// and the caller should log why.
+	DeltaFallback error
 }
 
 func (s *NavigationService) versionedCore(ctx context.Context, key navigationResourceKey) (*navigationBuildFlight, navigationResourceKey, navigationProjection, error) {
@@ -316,8 +332,16 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 		return nil, navigationResourceKey{}, navigationProjection{}, errors.New("navigation core unavailable")
 	}
 	state, ok := s.resources[semantic]
-	if !ok || !state.Present {
+	if !ok {
 		return nil, navigationResourceKey{}, navigationProjection{}, navigationNotFoundError{kind: semantic.Kind}
+	}
+	if !state.Present {
+		return nil, navigationResourceKey{}, navigationProjection{}, navigationNotFoundError{
+			kind:       semantic.Kind,
+			known:      true,
+			generation: s.generation,
+			revision:   state.Revision,
+		}
 	}
 	versioned := key.canonical()
 	versioned.Generation = s.generation
@@ -327,51 +351,91 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 	return flight, versioned, s.core.projection, nil
 }
 
-// Representation captures a versioned key and its immutable core projection in
-// one service transaction, then caches bytes only under that paired version.
-func (s *NavigationService) Representation(ctx context.Context, key navigationResourceKey) (NavigationRepresentation, error) {
+// readV2 captures one authoritative projection and reconciles it against an
+// exact retained base. A history miss is deliberately a normal full snapshot;
+// it is never reported as a transport error. A delta the service cannot build
+// is served the same way, with the reason on DeltaFallback for the caller to
+// log, because the snapshot has already passed full validation.
+func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKey, base *appwire.NavigationReadBase) (navigationReadResult, error) {
 	_, versioned, projection, err := s.versionedCore(ctx, key)
 	if err != nil {
-		return navigationRepresentation{}, err
+		missing, ok := errors.AsType[navigationNotFoundError](err)
+		if !ok {
+			return navigationReadResult{}, err
+		}
+		navigationReadV2MissingCaptured()
+		if !missing.known {
+			return navigationReadResult{}, err
+		}
+		generation, revision := missing.generation, missing.revision
+		etag := navigationETag(key, generation, revision)
+		if base != nil && base.GenerationID == generation && base.Revision == revision && base.ETag == etag {
+			return navigationReadResult{Response: appwire.NavigationReadResponse{Status: "not_modified", GenerationID: generation, Revision: revision, ETag: etag}}, nil
+		}
+		return navigationReadResult{Response: appwire.NavigationReadResponse{Status: "gone", GenerationID: generation, Revision: revision, ETag: etag}}, nil
 	}
-	representation, err := s.cache.Get(ctx, versioned, func(context.Context) (navigationRepresentation, error) {
-		object, _, err := projection.Resource(versioned)
-		if err != nil {
-			return navigationRepresentation{}, err
-		}
-		encoded, err := json.Marshal(object)
-		if err != nil {
-			return navigationRepresentation{}, fmt.Errorf("encode navigation representation: %w", err)
-		}
-		compressed, err := gzipNavigation(encoded)
-		if err != nil {
-			return navigationRepresentation{}, err
-		}
-		return navigationRepresentation{
-			Object:       object,
-			JSON:         encoded,
-			Gzip:         compressed,
-			Generation:   versioned.Generation,
-			Revision:     versioned.Revision,
-			SizeEstimate: int64(len(encoded) + len(compressed)),
-		}, nil
-	})
-	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-		return navigationRepresentation{}, navigationUnavailable(err)
+	generation, revision := versioned.Generation, versioned.Revision
+	etag := navigationETag(key, generation, revision)
+	if base != nil && base.GenerationID == generation && base.Revision == revision && base.ETag == etag {
+		return navigationReadResult{Response: appwire.NavigationReadResponse{Status: "not_modified", GenerationID: generation, Revision: revision, ETag: etag}}, nil
 	}
-	return representation, err
+	object, _, err := projection.Resource(versioned)
+	if err != nil {
+		return navigationReadResult{}, err
+	}
+	view := versioned.View()
+	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: generation, Revision: revision, ETag: etag}
+	limit := navigationV2ResponseLimit(versioned.Kind)
+	snapshot, snapshotData, err := fitNavigationV2Snapshot(versioned, object, response, limit)
+	if err != nil {
+		return navigationReadResult{}, err
+	}
+	currentBase := appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}
+	var deltaFallback error
+	if base != nil {
+		if previous, ok := s.history.Lookup(view, *base); ok {
+			deltaResponse, fits, deltaErr := navigationDeltaResponse(view, *base, currentBase, previous, snapshot, response, limit)
+			switch {
+			case deltaErr != nil:
+				deltaFallback = deltaErr
+			case fits:
+				_ = s.history.Remember(view, currentBase, &snapshot)
+				return navigationReadResult{Response: deltaResponse}, nil
+			}
+		}
+	}
+	response.Representation = appwire.NavigationRepresentationSnapshot
+	response.Data = snapshotData
+	_ = s.history.Remember(view, currentBase, &snapshot)
+	return navigationReadResult{Response: response, DeltaFallback: deltaFallback}, nil
 }
 
-func gzipNavigation(input []byte) ([]byte, error) {
-	var buffer bytes.Buffer
-	writer := gzip.NewWriter(&buffer)
-	if _, err := writer.Write(input); err != nil {
-		return nil, err
+// navigationDeltaResponse builds the delta representation of snapshot against
+// a retained base. It reports fits=false when the encoded delta exceeds the
+// response budget and an error when the delta machinery rejects its own
+// output; in both cases the caller still holds a validated snapshot to serve.
+func navigationDeltaResponse(
+	view navigationResourceKey,
+	base, currentBase appwire.NavigationReadBase,
+	previous, snapshot hubapi.NavigationSnapshot,
+	response appwire.NavigationReadResponse,
+	limit int,
+) (appwire.NavigationReadResponse, bool, error) {
+	delta, err := diffNavigationSnapshots(view, base, currentBase, previous, snapshot)
+	if err != nil {
+		return appwire.NavigationReadResponse{}, false, err
 	}
-	if err := writer.Close(); err != nil {
-		return nil, err
+	response.Representation = appwire.NavigationRepresentationDelta
+	response.Base = &base
+	response.Data, err = json.Marshal(delta)
+	if err != nil {
+		return appwire.NavigationReadResponse{}, false, err
 	}
-	return buffer.Bytes(), nil
+	fits, err := navigationV2ResponseFits(response, limit)
+	if err != nil {
+		return appwire.NavigationReadResponse{}, false, err
+	}
+	return response, fits, nil
 }
 
 // Refresh always requests a new source capture, but all concurrent callers join
@@ -571,6 +635,19 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		s.mu.Lock()
 		stale := ctx.Err() != nil || s.epoch != epoch || after != expected
 		if stale {
+			// An invalidation that lands mid-build would otherwise be
+			// dropped: the retry commits fresh state as an ordinary
+			// (non-mutating) read, discarding the observed changes, and a
+			// later forced refresh finds nothing further and clears the
+			// pending hint with no publication ever reaching clients.
+			// Adopting the armed hint makes this build's commit publish
+			// the change it already observed. The hint stays armed for
+			// anything landing after this point, and a failed retry leaves
+			// the scheduler's normal pacing untouched.
+			if s.pendingInvalidation {
+				flight.hint = mergeNavigationChangeHints(flight.hint, s.pendingHint)
+				flight.mutated = true
+			}
 			s.mu.Unlock()
 			expected = after
 			continue
@@ -1082,14 +1159,10 @@ func (s *NavigationService) Start(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			if !s.waitRetryOrWake(ctx) {
+			if _, keepGoing := s.waitUntil(ctx, s.now().Add(s.retryAfter)); !keepGoing {
 				return
 			}
-			// Same pacing as the boundary path: a failed forced refresh's
-			// retry deadline governs when refreshPending may attempt again.
-			if retryWait, pacing := s.pendingRetryWait(); !pacing || retryWait == 0 {
-				s.refreshPending(ctx)
-			}
+			s.refreshPending(ctx)
 			continue
 		}
 		s.mu.Lock()
@@ -1099,38 +1172,33 @@ func (s *NavigationService) Start(ctx context.Context) {
 		}
 		s.mu.Unlock()
 		if boundary.IsZero() {
-			if !s.waitRetryOrWake(ctx) {
+			if _, keepGoing := s.waitUntil(ctx, s.now().Add(s.retryAfter)); !keepGoing {
 				return
 			}
 			continue
 		}
 		// A failed forced refresh paces its retry: park no longer than the
-		// retry deadline rather than the full snapshot boundary, so the
+		// next-attempt time rather than the full snapshot boundary, so the
 		// pending invalidation is attempted again promptly instead of
 		// spinning (immediate wake) or parking for up to 24h (boundary).
-		wait := boundary
-		if retryWait, pacing := s.pendingRetryWait(); pacing && s.hasPendingInvalidation() {
-			if retryWait == 0 || retryWait < boundary.Sub(s.now()) {
-				wait = s.now().Add(retryWait)
-			}
+		wait, retryPark := boundary, false
+		if at, pending := s.pendingAttemptAt(); pending && !at.IsZero() && at.Before(wait) {
+			wait, retryPark = at, true
 		}
-		elapsed, keepGoing := s.waitBoundaryOrWake(ctx, wait)
+		elapsed, keepGoing := s.waitUntil(ctx, wait)
 		if !keepGoing {
 			return
 		}
-		if elapsed {
+		// Only a park on the snapshot boundary that ran its deadline out is a
+		// time invalidation. A retry-deadline park elapsing retries the
+		// already-pending invalidation as-is, stamping no hint and consuming
+		// no epoch; refreshPending itself declines when nothing is pending or
+		// the next attempt is still paced into the future.
+		if elapsed && !retryPark {
 			s.Invalidate(navigationChangeHint{Time: true})
-			s.refreshPending(ctx)
-		} else if s.hasPendingInvalidation() {
-			s.refreshPending(ctx)
 		}
+		s.refreshPending(ctx)
 	}
-}
-
-func (s *NavigationService) hasPendingInvalidation() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pendingInvalidation
 }
 
 func (s *NavigationService) refreshPending(ctx context.Context) {
@@ -1144,7 +1212,7 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	// speed under a persistently failing source. Instead record the earliest
 	// retry time; the Start loop waits until it (bounded by retryAfter)
 	// before attempting the pending invalidation again.
-	if retryAt, armed := s.pendingRetryDeadline(); armed && s.now().Before(retryAt) {
+	if at, pending := s.pendingAttemptAt(); pending && s.now().Before(at) {
 		return
 	}
 	if _, err := s.Refresh(ctx, hint); err != nil {
@@ -1155,7 +1223,7 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 			// append the Projects slice onto itself (snapshotPendingHint's value
 			// copy shares the backing array), doubling it per failed retry.
 			s.pendingInvalidation = true
-			s.pendingRetryAt = s.now().Add(s.retryAfter)
+			s.nextAttemptAt = s.now().Add(s.retryAfter)
 		}
 		s.mu.Unlock()
 		return
@@ -1168,7 +1236,7 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	if s.pendingEpoch == epoch {
 		s.pendingHint = navigationChangeHint{}
 		s.pendingInvalidation = false
-		s.pendingRetryAt = time.Time{}
+		s.nextAttemptAt = time.Time{}
 		navigationPendingCleared()
 	}
 	s.mu.Unlock()
@@ -1180,47 +1248,20 @@ func (s *NavigationService) snapshotPendingHint() (navigationChangeHint, uint64,
 	return s.pendingHint, s.pendingEpoch, s.pendingInvalidation
 }
 
-// pendingRetryDeadline reports the earliest time a failed forced refresh of
-// the pending invalidation may be retried, and whether one is armed at all.
-func (s *NavigationService) pendingRetryDeadline() (time.Time, bool) {
+// pendingAttemptAt reports the earliest time the pending invalidation may be
+// attempted again (zero when the next attempt is not paced) and whether an
+// invalidation is pending at all.
+func (s *NavigationService) pendingAttemptAt() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pendingRetryAt, s.pendingInvalidation
+	return s.nextAttemptAt, s.pendingInvalidation
 }
 
-// pendingRetryWait returns how long the Start loop should park before the
-// next attempt on the pending invalidation: the retry deadline when one is
-// armed, zero when the retry is already due. ok is false when no failed
-// refresh is pacing a retry (nothing to wait for).
-func (s *NavigationService) pendingRetryWait() (time.Duration, bool) {
-	retryAt, armed := s.pendingRetryDeadline()
-	if !armed || retryAt.IsZero() {
-		return 0, false
-	}
-	delay := retryAt.Sub(s.now())
-	if delay <= 0 {
-		return 0, true
-	}
-	return delay, true
-}
-
-func (s *NavigationService) waitRetryOrWake(ctx context.Context) bool {
-	timer := s.newTimer(s.retryAfter)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-s.wake:
-		return true
-	case <-timer.C():
-		return true
-	}
-}
-
-func (s *NavigationService) waitBoundaryOrWake(ctx context.Context, boundary time.Time) (elapsed, keepGoing bool) {
-	delay := boundary.Sub(s.now())
-	delay = max(delay, 0)
-	timer := s.newTimer(delay)
+// waitUntil parks until deadline, an invalidation wake, or cancellation.
+// elapsed reports that the deadline itself passed (a wake reports false);
+// keepGoing is false only on cancellation.
+func (s *NavigationService) waitUntil(ctx context.Context, deadline time.Time) (elapsed, keepGoing bool) {
+	timer := s.newTimer(max(deadline.Sub(s.now()), 0))
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -1239,7 +1280,12 @@ func (e navigationAvailabilityError) Unwrap() error   { return e.err }
 func (e navigationAvailabilityError) StatusCode() int { return 503 }
 func navigationUnavailable(err error) error           { return navigationAvailabilityError{err: err} }
 
-type navigationNotFoundError struct{ kind navigationResourceKind }
+type navigationNotFoundError struct {
+	kind       navigationResourceKind
+	known      bool
+	generation string
+	revision   uint64
+}
 
 func (e navigationNotFoundError) Error() string   { return "navigation resource not found" }
 func (e navigationNotFoundError) StatusCode() int { return 404 }
@@ -1284,6 +1330,9 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 		return navigationSourceSnapshot{}, errors.New("navigation web source is unavailable")
 	}
 	snapshot := s.web.navigationSnapshot(ctx)
+	if err := ctx.Err(); err != nil {
+		return navigationSourceSnapshot{}, err
+	}
 	decisions := s.web.archiveDecisions()
 	// Keep the legacy adapter on the exact same seam as the established endpoint;
 	// in particular, test and compatibility fixtures replace these functions.
@@ -1306,6 +1355,15 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	pinView := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinView)
 	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), hubAttentionSummaryFromCore(attention), snapshot.live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
+	// Retained rows and saved metadata remain positive read evidence during
+	// an incomplete ownership scan. They cannot authorize local daemon writes.
+	if snapshot.ownershipErr != nil {
+		for id := range inputs.Renameable {
+			if isLocalRouteID(id) {
+				inputs.Renameable[id] = false
+			}
+		}
+	}
 	return navigationSourceSnapshot{Inputs: inputs, NextBoundary: navigationSnapshotBoundary(tree, now)}, nil
 }
 

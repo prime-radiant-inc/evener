@@ -8,9 +8,9 @@
 .type {
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  color: var(--ink-mid);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-display);
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .text {

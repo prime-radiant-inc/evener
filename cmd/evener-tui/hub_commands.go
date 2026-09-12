@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -30,7 +31,20 @@ type hubSessionMsg struct {
 	ref                  string
 	expectedState        string
 	expectedRefreshToken int
-	err                  error
+	// liveNavSeq tags a read issued by live-session cycling
+	// (switchToAdjacentLiveSession): 0 for every other read. Update drops a
+	// tagged read whose sequence a newer live-nav read has superseded.
+	liveNavSeq int
+	// liveNavRecovery marks a tagged read issued by
+	// reestablishDisplayedSubscription: it re-enters the session already
+	// displayed, so the draft/overlay guards and the pending-ref stepping
+	// semantics do not apply to it — its response refreshes the transcript
+	// and re-arms child subscriptions, then drops, never switching sessions
+	// (roborev PR #1044 round-12 medium 2).
+	liveNavRecovery       bool
+	liveNavRefresh        bool
+	liveNavRefreshReplace bool
+	err                   error
 	// beforeCut carries the frames the connection delivered ahead of this
 	// read's response, and capture holds the ones it delivered after. The
 	// response is an exact cut, so the two go on opposite sides of the
@@ -105,12 +119,6 @@ type hubForkMsg struct {
 type hubSpawnMsg struct {
 	resp hubSpawnResponse
 	err  error
-}
-
-type hubModelsMsg struct {
-	harness string
-	models  []tuipick.ModelPickerItem
-	err     error
 }
 
 type hubSessionModelsMsg struct {
@@ -207,13 +215,284 @@ func fetchHubSessionRead(feed *hubFrameFeed, client *appwire.Client, ref appwire
 	return func() tea.Msg {
 		capture := feed.BeginCapture()
 		ctx := appwire.WithRequestIDObserver(context.Background(), capture.CutOn)
-		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription})
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription, ItemLimit: hubTranscriptItemPageSize})
 		if err != nil {
 			capture.Abandon()
 			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
 		}
-		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: transcript.MessagesFromThread(resp.Thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, beforeCut: capture.BeforeCut(), capture: capture}
+		thread, err := collectHubThreadPages(ctx, client, ref.String(), resp.Thread, resp.OlderCursor)
+		if err != nil {
+			capture.Abandon()
+			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
+		}
+		return hubSessionMsg{detail: hubDetailFromThread(thread), messages: transcript.MessagesFromThread(thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, beforeCut: capture.BeforeCut(), capture: capture}
 	}
+}
+
+const hubTranscriptItemPageSize = 40
+
+// collectHubThreadPages expands the bounded v4 read into the complete view the
+// TUI expects. The initial read is the subscription cut; older pages are
+// collected while that same capture remains open so live frames cannot land
+// between a partial snapshot and its older fragments.
+func collectHubThreadPages(ctx context.Context, client *appwire.Client, ref string, thread appwire.Thread, olderCursor string) (appwire.Thread, error) {
+	seenCursors := make(map[string]struct{})
+	for olderCursor != "" {
+		if _, seen := seenCursors[olderCursor]; seen {
+			return appwire.Thread{}, errors.New("thread/turns/list cursor cycle")
+		}
+		seenCursors[olderCursor] = struct{}{}
+		page, err := client.ThreadTurnsList(ctx, appwire.ThreadTurnsListParams{Ref: ref, Cursor: olderCursor, ItemsView: "full", ItemLimit: hubTranscriptItemPageSize})
+		if err != nil {
+			return appwire.Thread{}, err
+		}
+		thread.Turns = mergeHubTurnPages(page.Data, thread.Turns)
+		if page.NextCursor == olderCursor {
+			return appwire.Thread{}, errors.New("thread/turns/list cursor cycle")
+		}
+		olderCursor = page.NextCursor
+	}
+	for index := range thread.Turns {
+		thread.Turns[index].ItemsView = appwire.TurnItemsViewFull
+		thread.Turns[index].HasEarlierItems = false
+		thread.Turns[index].HasLaterItems = false
+	}
+	return thread, nil
+}
+
+// mergeHubTurnPages receives the older page first and the newer page second.
+// A logical turn can straddle the boundary, so merge by turn ID and then by
+// stable transcript key (falling back to item ID only for malformed fixtures).
+// Older-only turns precede the newer page's order; an overlapping turn takes
+// its position from the newer page after its fragments have been merged.
+func mergeHubTurnPages(older, newer []appwire.Turn) []appwire.Turn {
+	merged := make([]appwire.Turn, 0, len(older)+len(newer))
+	olderByID := make(map[string]appwire.Turn, len(older))
+	newerIDs := make(map[string]struct{}, len(newer))
+	for _, turn := range newer {
+		if turn.ID != "" {
+			newerIDs[turn.ID] = struct{}{}
+		}
+	}
+	for _, turn := range older {
+		if turn.ID == "" {
+			merged = append(merged, turn)
+			continue
+		}
+		if _, seen := olderByID[turn.ID]; seen {
+			continue
+		}
+		olderByID[turn.ID] = turn
+		if _, overlaps := newerIDs[turn.ID]; !overlaps {
+			merged = append(merged, turn)
+		}
+	}
+	emittedNewerIDs := make(map[string]struct{}, len(newer))
+	for _, turn := range newer {
+		if turn.ID == "" {
+			merged = append(merged, turn)
+			continue
+		}
+		if _, emitted := emittedNewerIDs[turn.ID]; emitted {
+			continue
+		}
+		emittedNewerIDs[turn.ID] = struct{}{}
+		if olderTurn, overlaps := olderByID[turn.ID]; overlaps {
+			merged = append(merged, mergeHubTurnFragment(olderTurn, turn))
+			continue
+		}
+		merged = append(merged, turn)
+	}
+	allPositioned := true
+	for _, turn := range merged {
+		if _, ok := hubTurnFirstPosition(turn); !ok {
+			allPositioned = false
+			break
+		}
+	}
+	if allPositioned {
+		sort.SliceStable(merged, func(i, j int) bool {
+			left, _ := hubTurnFirstPosition(merged[i])
+			right, _ := hubTurnFirstPosition(merged[j])
+			if left.Entry != right.Entry {
+				return left.Entry < right.Entry
+			}
+			return left.Item < right.Item
+		})
+	}
+	return merged
+}
+
+func hubTurnFirstPosition(turn appwire.Turn) (appwire.ThreadItemPosition, bool) {
+	var first appwire.ThreadItemPosition
+	found := false
+	for _, item := range turn.Items {
+		if item.Position == nil {
+			continue
+		}
+		if !found || item.Position.Entry < first.Entry || (item.Position.Entry == first.Entry && item.Position.Item < first.Item) {
+			first = *item.Position
+			found = true
+		}
+	}
+	return first, found
+}
+
+func mergeHubTurnFragment(older, newer appwire.Turn) appwire.Turn {
+	if newer.ID == "" {
+		newer.ID = older.ID
+	}
+	newer.Items = mergeHubItems(older.Items, newer.Items)
+	if newer.Status == "" || tuiStatusRank(newer.Status) < tuiStatusRank(older.Status) {
+		newer.Status = older.Status
+	}
+	if newer.Error == nil {
+		newer.Error = older.Error
+	}
+	if newer.StartedAt == nil {
+		newer.StartedAt = older.StartedAt
+	}
+	if newer.CompletedAt == nil {
+		newer.CompletedAt = older.CompletedAt
+	}
+	if newer.DurationMS == nil {
+		newer.DurationMS = older.DurationMS
+	}
+	if newer.Usage == nil {
+		newer.Usage = older.Usage
+	}
+	if newer.Cost == "" {
+		newer.Cost = older.Cost
+	}
+	newer.ItemsView = appwire.TurnItemsViewFull
+	newer.HasEarlierItems = false
+	newer.HasLaterItems = false
+	return newer
+}
+
+func mergeHubItems(older, newer []appwire.ThreadItem) []appwire.ThreadItem {
+	merged := make([]appwire.ThreadItem, 0, len(older)+len(newer))
+	byKey := make(map[string]int, len(older)+len(newer))
+	key := func(item appwire.ThreadItem) string {
+		if item.TranscriptKey != "" {
+			return "key:" + item.TranscriptKey
+		}
+		if item.ID != "" {
+			return "id:" + item.ID
+		}
+		return ""
+	}
+	appendItem := func(item appwire.ThreadItem, current bool) {
+		itemKey := key(item)
+		if itemKey != "" {
+			if index, ok := byKey[itemKey]; ok {
+				if current {
+					merged[index] = mergeHubItem(merged[index], item)
+				}
+				return
+			}
+			byKey[itemKey] = len(merged)
+		}
+		merged = append(merged, item)
+	}
+	for _, item := range older {
+		appendItem(item, false)
+	}
+	for _, item := range newer {
+		appendItem(item, true)
+	}
+	return merged
+}
+
+func mergeHubItem(older, newer appwire.ThreadItem) appwire.ThreadItem {
+	merged := newer
+	if merged.Type == "" {
+		merged.Type = older.Type
+	}
+	if merged.ID == "" {
+		merged.ID = older.ID
+	}
+	if merged.TranscriptKey == "" {
+		merged.TranscriptKey = older.TranscriptKey
+	}
+	if merged.Position == nil {
+		merged.Position = older.Position
+	}
+	if merged.TurnID == "" {
+		merged.TurnID = older.TurnID
+	}
+	if merged.TranscriptEntryIndex == 0 {
+		merged.TranscriptEntryIndex = older.TranscriptEntryIndex
+	}
+	if merged.Text == "" {
+		merged.Text = older.Text
+	}
+	if merged.Delta == "" {
+		merged.Delta = older.Delta
+	}
+	if merged.Images == nil {
+		merged.Images = older.Images
+	}
+	if merged.ToolName == "" {
+		merged.ToolName = older.ToolName
+	}
+	if merged.CallID == "" {
+		merged.CallID = older.CallID
+	}
+	if merged.ArgumentsJSON == "" {
+		merged.ArgumentsJSON = older.ArgumentsJSON
+	}
+	if merged.Description == "" {
+		merged.Description = older.Description
+	}
+	if merged.Output == "" {
+		merged.Output = older.Output
+	}
+	if merged.Error == "" {
+		merged.Error = older.Error
+	}
+	if merged.OutputImages == nil {
+		merged.OutputImages = older.OutputImages
+	}
+	if merged.Status == "" || tuiStatusRank(merged.Status) < tuiStatusRank(older.Status) {
+		merged.Status = older.Status
+	}
+	merged.PrevalOnly = merged.PrevalOnly || older.PrevalOnly
+	if merged.StartedAt == nil {
+		merged.StartedAt = older.StartedAt
+	}
+	if merged.CompletedAt == nil {
+		merged.CompletedAt = older.CompletedAt
+	}
+	if merged.DurationMS == nil {
+		merged.DurationMS = older.DurationMS
+	}
+	if merged.ExitCode == nil {
+		merged.ExitCode = older.ExitCode
+	}
+	if merged.Raw == nil {
+		merged.Raw = older.Raw
+	}
+	if merged.EventKind == "" {
+		merged.EventKind = older.EventKind
+	}
+	if merged.Source == "" {
+		merged.Source = older.Source
+	}
+	if merged.SteeringKind == "" {
+		merged.SteeringKind = older.SteeringKind
+	}
+	if merged.ClientMutationID == "" {
+		merged.ClientMutationID = older.ClientMutationID
+	}
+	return merged
+}
+
+func tuiStatusRank(status string) int {
+	if appwire.IsTerminalTurnStatus(status) || appwire.IsTerminalItemStatus(status) {
+		return 1
+	}
+	return 0
 }
 
 // subscribeChildActivity subscribes (additively, no turns) to a subagent
@@ -228,7 +507,7 @@ func subscribeChildActivity(client *appwire.Client, ref string) tea.Cmd {
 
 func fetchHubStatus(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full"})
+		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String()})
 		if err != nil {
 			return hubStatusMsg{err: err}
 		}
@@ -251,11 +530,16 @@ func fetchHubTranscriptTargets(client *appwire.Client, ref appwire.Ref) tea.Cmd 
 
 func fetchHubTranscript(client *appwire.Client, target appwire.ThreadTranscriptTarget) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: target.Ref, IncludeTurns: true, ItemsView: "full"})
+		ctx := context.Background()
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: target.Ref, IncludeTurns: true, ItemsView: "full", ItemLimit: hubTranscriptItemPageSize})
 		if err != nil {
 			return hubTranscriptMsg{target: target, err: err}
 		}
-		return hubTranscriptMsg{target: target, messages: transcript.MessagesFromThread(resp.Thread)}
+		thread, err := collectHubThreadPages(ctx, client, target.Ref, resp.Thread, resp.OlderCursor)
+		if err != nil {
+			return hubTranscriptMsg{target: target, err: err}
+		}
+		return hubTranscriptMsg{target: target, messages: transcript.MessagesFromThread(thread)}
 	}
 }
 
@@ -272,18 +556,6 @@ func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 	}
 }
 
-func fetchHubModelsForHarness(client *appwire.Client, harness string, workingDir string) tea.Cmd {
-	harness = strings.TrimSpace(harness)
-	workingDir = strings.TrimSpace(workingDir)
-	return func() tea.Msg {
-		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: harness, CWD: workingDir})
-		if err != nil {
-			return hubModelsMsg{harness: harness, err: err}
-		}
-		return hubModelsMsg{harness: harness, models: modelPickerItemsFromResponse(resp, harness != "")}
-	}
-}
-
 func fetchHubSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 	workingDir = strings.TrimSpace(workingDir)
 	return func() tea.Msg {
@@ -296,8 +568,8 @@ func fetchHubSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 }
 
 // fetchHubVisionSessionModels loads the session's launchable models and filters
-// them to vision-capable ones (embedded catalog), prepending the two pseudo-
-// entries of the vision setting: current-model and off.
+// them to the vision-capable ones, prepending the two pseudo-entries of the
+// vision setting: current-model and off.
 func fetchHubVisionSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 	workingDir = strings.TrimSpace(workingDir)
 	return func() tea.Msg {
@@ -305,26 +577,31 @@ func fetchHubVisionSessionModels(client *appwire.Client, workingDir string) tea.
 		if err != nil {
 			return hubVisionModelsMsg{err: err}
 		}
-		return hubVisionModelsMsg{models: visionModelPickerItems(modelPickerItemsFromResponse(resp, false))}
+		// Recent descriptors are the same rows the picker's Recent group is
+		// built from, so both halves of the item list can be matched.
+		descriptors := append(append([]appwire.ModelDescriptor(nil), resp.Recent...), resp.Data...)
+		return hubVisionModelsMsg{models: visionModelPickerItems(descriptors, modelPickerItemsFromResponse(resp, false))}
 	}
 }
 
-func visionModelPickerItems(items []tuipick.ModelPickerItem) []tuipick.ModelPickerItem {
-	cat := llm.EmbeddedModelCatalog()
-	capable := func(id string) bool {
-		if cat == nil {
-			return false
+// visionModelPickerItems keeps the picker items whose descriptor reports vision
+// support, prepending the two pseudo-entries of the vision setting. A
+// descriptor that says nothing about vision is not vision-capable: the picker
+// only offers a model the registry vouches for.
+func visionModelPickerItems(models []appwire.ModelDescriptor, items []tuipick.ModelPickerItem) []tuipick.ModelPickerItem {
+	capable := make(map[string]bool, len(models))
+	for _, descriptor := range models {
+		if descriptor.SupportsVision == nil || !*descriptor.SupportsVision {
+			continue
 		}
-		_, model := splitProviderModel(id)
-		mi := cat.LookupModelInfo(model)
-		return mi != nil && mi.SupportsVision
+		capable[strings.TrimSpace(descriptor.Provider)+"/"+strings.TrimSpace(descriptor.Model)] = true
 	}
 	out := []tuipick.ModelPickerItem{
 		{ID: "", Display: "Current model"},
 		{ID: "off", Display: "Off"},
 	}
 	for _, item := range items {
-		if capable(item.ID) {
+		if capable[item.ID] {
 			out = append(out, item)
 		}
 	}
@@ -444,32 +721,28 @@ func formatModelContextWindow(n int) string {
 	}
 }
 
-// modelInfoMetaTail builds the model picker row's compact caps/ctx/price
-// tail from a direct llm.EmbeddedModelCatalog() lookup. Unlike the web's
-// catalogModelInfo, this has no providers.toml/behaviorTag to resolve the
-// tag-qualified fallback — the TUI process has no such config — so it only
-// tries the canonicalized bare lookup (LookupModelInfo). A nil mi (model not
-// in the embedded catalog) yields "": the uncatalogued-model rule (still
-// render name+provider+id, no badges) applies.
-func modelInfoMetaTail(mi *llm.ModelInfo) string {
-	if mi == nil {
-		return ""
-	}
+// modelInfoMetaTail builds the model picker row's compact caps/ctx/price tail
+// from the descriptor the hub delivered, whose fields come from the registry's
+// resolved row (spec §7.5). A field the row does not carry is simply left out:
+// a descriptor with no metadata at all yields "", the uncatalogued-model rule
+// (still render name+provider+id, no badges), and a priceless row renders no
+// cost rather than a fabricated "$0.00/$0.00".
+func modelInfoMetaTail(descriptor appwire.ModelDescriptor) string {
 	var parts []string
-	if mi.ContextWindow > 0 {
-		parts = append(parts, formatModelContextWindow(mi.ContextWindow)+" ctx")
+	if descriptor.ContextWindow != nil && *descriptor.ContextWindow > 0 {
+		parts = append(parts, formatModelContextWindow(*descriptor.ContextWindow)+" ctx")
 	}
-	if mi.InputCostPerMillion != nil && mi.OutputCostPerMillion != nil {
-		parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", *mi.InputCostPerMillion, *mi.OutputCostPerMillion))
+	if descriptor.InputCostPerMillion != nil && descriptor.OutputCostPerMillion != nil {
+		parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", *descriptor.InputCostPerMillion, *descriptor.OutputCostPerMillion))
 	}
 	var caps []string
-	if mi.SupportsTools {
+	if boolValue(descriptor.SupportsTools) {
 		caps = append(caps, "tools")
 	}
-	if mi.SupportsVision {
+	if boolValue(descriptor.SupportsVision) {
 		caps = append(caps, "vision")
 	}
-	if mi.SupportsReasoning {
+	if boolValue(descriptor.SupportsReasoning) {
 		caps = append(caps, "reasoning")
 	}
 	if len(caps) > 0 {
@@ -478,14 +751,17 @@ func modelInfoMetaTail(mi *llm.ModelInfo) string {
 	return strings.Join(parts, " · ")
 }
 
+// boolValue reads an optional descriptor capability: nil and false both mean
+// the model does not have it.
+func boolValue(p *bool) bool { return p != nil && *p }
+
 // buildModelPickerItems enriches raw model descriptors into picker items
-// (display name, ID, catalog meta, provider group) without reordering them.
+// (display name, ID, descriptor meta, provider group) without reordering them.
 // Callers that need the provider-grouped, dated-snapshot-last presentation
 // order should use modelPickerItems instead; callers that must preserve the
 // input order (e.g. the server's recency-ordered Recent list) should call
 // this directly.
 func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
-	cat := llm.EmbeddedModelCatalog()
 	items := make([]tuipick.ModelPickerItem, 0, len(models))
 	for _, option := range models {
 		model := strings.TrimSpace(option.Model)
@@ -498,11 +774,7 @@ func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []
 		if rawModelID {
 			id = model
 		}
-		var meta string
-		if cat != nil {
-			meta = modelInfoMetaTail(cat.LookupModelInfo(model))
-		}
-		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: meta})
+		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: modelInfoMetaTail(option), Warnings: append([]string(nil), option.Warnings...)})
 	}
 	return items
 }
@@ -672,12 +944,55 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expec
 	}
 }
 
-// reasoningEffortLevelKnown reports whether level (case-insensitively)
-// appears in the session's snapshot-cached reasoning-effort levels, so
-// /effort <level> can be rejected client-side without a wire round trip.
-func reasoningEffortLevelKnown(levels []string, level string) bool {
+// sessionEffortLevels is the ladder /effort works from: the model's own when
+// it states one, else the canonical vocabulary. A reasoning model with no
+// stated ladder still takes an effort — the session sends its default on
+// every request and the request builder passes any level through unclamped —
+// so the picker offers the tiers instead of denying they exist. Callers gate
+// on SupportsReasoning first; a model that does not reason has no ladder at
+// all, not an unstated one.
+func sessionEffortLevels(levels []string) []string {
+	if len(levels) > 0 {
+		return append([]string(nil), levels...)
+	}
+	return llm.ReasoningEffortVocabulary()
+}
+
+// effortChoices lists what /effort accepts for a reasoning session: the
+// model's ladder plus the always-settable explicit off. The session stores
+// "none" and carries it on every request; the adapters are what put an off on
+// the wire, and only for a model whose ladder lists an off level.
+func effortChoices(levels []string) []string {
 	for _, l := range levels {
-		if strings.EqualFold(l, level) {
+		if strings.EqualFold(l, string(llm.ReasoningEffortNone)) {
+			return append([]string(nil), levels...)
+		}
+	}
+	return append(append([]string(nil), levels...), llm.ReasoningEffortNone)
+}
+
+// effortDisplay labels a picker choice the way the hub surfaces do: an off
+// level says "off" only where the model's ladder can express one, and
+// "provider default" where an explicit none merely omits the field.
+func effortDisplay(level string, levels []string) string {
+	if llm.NormalizeReasoningEffort(level) != llm.ReasoningEffortNone {
+		return level
+	}
+	for _, l := range levels {
+		if strings.EqualFold(l, llm.ReasoningEffortNone) {
+			return "none (off)"
+		}
+	}
+	return "none (provider default)"
+}
+
+// reasoningEffortLevelSettable reports whether level (case-insensitively,
+// with disable aliases normalized) is one of effortChoices, so
+// /effort <level> can be rejected client-side without a wire round trip.
+func reasoningEffortLevelSettable(levels []string, level string) bool {
+	normalized := llm.NormalizeReasoningEffort(level)
+	for _, l := range effortChoices(levels) {
+		if strings.EqualFold(l, normalized) {
 			return true
 		}
 	}

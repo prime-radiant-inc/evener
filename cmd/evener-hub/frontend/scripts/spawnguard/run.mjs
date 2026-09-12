@@ -8,11 +8,20 @@
 // and it has no dependency on provider credentials or the shared dev server.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, clearViewportOverride, connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
-import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
+import {
+  applyViewport,
+  clearViewportOverride,
+  connectPage,
+  createStartupDeadline,
+  evaluate,
+  navigateTo,
+  waitForFonts,
+  waitForHttp,
+} from "../browserGuardCdp.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const WIDTHS = [390, 899, 900];
+const WIDTHS = [320, 390, 899, 900, 1440];
 // The staging cap (attachments/limits.ts MAX_ATTACHMENTS), so the row is
 // measured at the widest the product allows it to get.
 const STAGED_ATTACHMENTS = 8;
@@ -42,6 +51,14 @@ async function measureAt(cdpEndpoint, vitePort, width) {
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900 });
+    // Focus handlers require a focused document even in a background headless tab.
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    await evaluate(send, "window.settledSpawn");
+    const fieldFailures = await evaluate(send, "window.exerciseDirectoryField()");
+    if (fieldFailures.length) throw new Error(`Shared directory field at ${width}px: ${fieldFailures.join("; ")}`);
+    const directoryFailures = await evaluate(send, "window.exerciseDirectoryPicker()");
+    if (directoryFailures.length) throw new Error(`Directory picker at ${width}px: ${directoryFailures.join("; ")}`);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
     await evaluate(send, "window.settledSpawn");
     // Stage before measuring, at every width: the page is navigated fresh per
@@ -60,6 +77,14 @@ async function measureAt(cdpEndpoint, vitePort, width) {
     // before staging settles the fonts of a page that has not asked for them
     // yet and measureSpawn still runs mid-swap.
     await waitForFonts(send);
+    // Pick the harness's long-id model through the real picker before
+    // measuring: the card assertions below verify the trigger ellipsizes it
+    // inside the row instead of pushing effort/Start out.
+    try {
+      await evaluate(send, "window.selectLongSpawnModel()");
+    } catch (error) {
+      throw new Error(`selecting the long model at ${width}px failed: ${error.message}`);
+    }
     await evaluate(send, "window.openSpawnPlugins(); new Promise((resolve) => requestAnimationFrame(resolve))");
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
@@ -95,9 +120,10 @@ function assertResult(result, expectedWidth) {
     failures.push(`mobile title is not the span the ${expectedWidth}px breakpoint selects`);
   if (displayed(result.desktopTitle) === mobile)
     failures.push(`desktop title is not the span the ${expectedWidth}px breakpoint selects`);
-  if (visible(result.mobileIntro) !== mobile)
-    failures.push(`prompt orientation visibility is wrong at ${expectedWidth}px`);
-
+  // The prompt heading and subtitle show at EVERY width now (the desktop
+  // pane used to hide them behind a 12px uppercase title - critique R7), so
+  // the intro must be visible whether or not the layout is the phone's.
+  if (!visible(result.promptIntro)) failures.push(`prompt intro is not visible at ${expectedWidth}px`);
   // Issue #198: the prompt card is the composer, so its control row holds the
   // composer's controls in the composer's place - at EVERY width, which is why
   // this block is outside the mobile branch. The pane used to pass PromptCard a
@@ -130,20 +156,44 @@ function assertResult(result, expectedWidth) {
         `the attach button (${describeBox(card.attach)}) overlaps the prompt field (${describeBox(card.field)})`,
       );
     }
-    // The card's model trigger is the PHONE's Model field: desktop sets the
-    // model in the configuration row below, so an in-card trigger there would
-    // be a second control for one setting.
-    if (visible(card.modelSlot) !== mobile) {
-      failures.push(`the card's model trigger visibility is wrong at ${expectedWidth}px`);
+    // The card's model trigger and effort control are the setting surface at
+    // EVERY width now (composer unification): no breakpoint switches them, so
+    // the slot stays visible wherever the card is.
+    if (!visible(card.modelSlot)) {
+      failures.push(`the card's model slot is not visible at ${expectedWidth}px`);
     }
-    if (mobile) {
-      if (card.modelTrigger === null) {
-        failures.push("the card's model trigger is not in the measured tree at a mobile width");
-      } else if (!contains(card.card, card.modelTrigger)) {
+    if (card.modelTrigger === null) {
+      failures.push(`the card's model trigger is not in the measured tree at ${expectedWidth}px`);
+    } else if (!contains(card.card, card.modelTrigger)) {
+      failures.push(
+        `the card's model trigger (${describeBox(card.modelTrigger)}) is outside the prompt card (${describeBox(card.card)})`,
+      );
+    }
+    // Long-model case (selectLongSpawnModel above): the ~100-char qualified
+    // id must stay inside the card at every width. Where the card itself is
+    // narrower than the id (the 320/390 panes - at 899 the form goes full
+    // width so the id genuinely fits), the value must ellipsize
+    // (scrollWidth past clientWidth) rather than push effort/Start out.
+    if (card.modelValue === null) {
+      failures.push(`the card's model value is not in the measured tree at ${expectedWidth}px`);
+    } else {
+      if (!contains(card.card, card.modelValue)) {
         failures.push(
-          `the card's model trigger (${describeBox(card.modelTrigger)}) is outside the prompt card (${describeBox(card.card)})`,
+          `the card's model value (${describeBox(card.modelValue)}) is outside the prompt card (${describeBox(card.card)})`,
         );
       }
+      if (expectedWidth <= 390 && card.modelValue.scrollWidth <= card.modelValue.clientWidth + 1) {
+        failures.push(
+          `the long model id is not ellipsizing at ${expectedWidth}px (scroll ${card.modelValue.scrollWidth}px vs client ${card.modelValue.clientWidth}px) - the fixture may not have applied`,
+        );
+      }
+    }
+    if (card.effort === null) {
+      failures.push(`the card's effort control is not in the measured tree at ${expectedWidth}px`);
+    } else if (!contains(card.card, card.effort)) {
+      failures.push(
+        `the card's effort control (${describeBox(card.effort)}) is outside the prompt card (${describeBox(card.card)})`,
+      );
     }
   }
 
@@ -155,6 +205,7 @@ function assertResult(result, expectedWidth) {
     for (const [name, box] of [
       ["attach button", card.attach],
       ["Start button", card.submit],
+      ["effort control", card.effort],
     ]) {
       if (box !== null && box.height < TAP_MIN_PX - 0.5) {
         failures.push(`the ${name} is ${box.height}px tall, below the ${TAP_MIN_PX}px touch floor`);
@@ -163,27 +214,17 @@ function assertResult(result, expectedWidth) {
     if (card.attach !== null && card.attach.width < TAP_MIN_PX - 0.5) {
       failures.push(`the attach button is ${card.attach.width}px wide, below the ${TAP_MIN_PX}px touch floor`);
     }
-    // Model lives in the prompt card (issue #198); Plugins is the sixth row.
-    if (result.rows.length !== 6) failures.push(`expected 6 mobile setting rows, found ${result.rows.length}`);
-    if (result.rows.some((row) => row.label === "Model")) {
-      failures.push("the mobile setting rows still carry a Model row - the prompt card owns that setting now");
+    // Model AND effort live in the prompt card (composer unification);
+    // Plugins is the fifth row.
+    if (result.rows.length !== 5) failures.push(`expected 5 mobile setting rows, found ${result.rows.length}`);
+    if (result.rows.some((row) => row.label === "Model" || row.label === "Reasoning effort")) {
+      failures.push(
+        "the mobile setting rows still carry a Model/Reasoning effort row - the prompt card owns those now",
+      );
     }
     for (const row of result.rows) {
       if (row.minHeight !== "48px" || row.height < 48)
         failures.push(`row ${row.label} is below 48px: ${JSON.stringify(row)}`);
-    }
-    const prompt = result.accessiblePrompt;
-    if (
-      prompt.headingTag !== "h3" ||
-      prompt.headingText !== "What should the agent do?" ||
-      !prompt.headingVisible ||
-      prompt.subtitleTag !== "p" ||
-      prompt.subtitleText !== "Leave blank to start a dormant session." ||
-      !prompt.subtitleVisible ||
-      prompt.headingHiddenFromAT ||
-      prompt.subtitleHiddenFromAT
-    ) {
-      failures.push(`prompt orientation is not persistently accessible: ${JSON.stringify(prompt)}`);
     }
   }
 
@@ -193,6 +234,21 @@ function assertResult(result, expectedWidth) {
   const staged = result.attachments;
   if (staged.tiles.length !== STAGED_ATTACHMENTS) {
     failures.push(`expected ${STAGED_ATTACHMENTS} staged attachment tiles in the tree, found ${staged.tiles.length}`);
+  }
+  // Persistently accessible at every width, not only the phone's: the heading
+  // is the page's own (an h2 under the pane title), never aria-hidden.
+  const prompt = result.accessiblePrompt;
+  if (
+    prompt.headingTag !== "h2" ||
+    prompt.headingText !== "What should the agent do?" ||
+    !prompt.headingVisible ||
+    prompt.subtitleTag !== "p" ||
+    prompt.subtitleText !== "Leave blank to start a dormant session." ||
+    !prompt.subtitleVisible ||
+    prompt.headingHiddenFromAT ||
+    prompt.subtitleHiddenFromAT
+  ) {
+    failures.push(`prompt orientation is not persistently accessible: ${JSON.stringify(prompt)}`);
   }
   if (staged.row === null) {
     failures.push("staged-attachment row is not in the measured tree");
@@ -295,42 +351,25 @@ async function main() {
 
   let failed = 0;
   try {
+    const viteDeadline = createStartupDeadline();
     try {
-      await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server", guard.getViteLaunchError);
+      await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server", guard.getViteLaunchError, {
+        signal: viteDeadline.signal,
+      });
     } catch (error) {
       throw new Error(
         describeBrowserStartupFailure({ error: error, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
-    }
-    const startupDeadline = createStartupDeadline();
-    try {
-      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
-      await waitForHttp(
-        devtoolsHttpURL(cdpEndpoint, "/json/version"),
-        "chrome devtools endpoint",
-        guard.getChromeLaunchError,
-        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
-      );
-    } catch (error) {
-      throw new Error(
-        describeBrowserStartupFailure({
-          error: error,
-          subsystem: "chrome",
-          chromeBinary: guard.chromeBinary,
-          chromeArgv: guard.getChromeArgv(),
-          chromeStderr: guard.getChromeError(),
-          viteStderr: guard.getViteError(),
-        }),
-      );
     } finally {
-      startupDeadline.clear();
+      viteDeadline.clear();
     }
+    cdpEndpoint = await waitForBrowserReady(guard);
     for (const width of WIDTHS) {
       const result = await measureAt(cdpEndpoint, vitePort, width);
       const failures = assertResult(result, width);
       if (failures.length === 0) {
         console.log(
-          `${width}px ... PASS - Spawn breakpoint, in-card control row, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
+          `${width}px ... PASS - Spawn directory picker, breakpoint, in-card control row, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
         );
       } else {
         failed++;

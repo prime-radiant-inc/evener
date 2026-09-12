@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import {
@@ -19,6 +20,7 @@ import {
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   usePendingTurnEntries,
+  useRecoveryEntries,
 } from "./pendingTurnsStore";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
@@ -66,24 +68,7 @@ async function connect(overrides: Partial<Thread> = {}): Promise<FakeClient> {
   return fake;
 }
 
-// Suppress React's "not configured to support act(...)" warnings. These fire
-// because zustand store updates trigger async re-renders that settle after
-// act() returns in jsdom. The tests are correct; the warning is a known
-// limitation of the jsdom + zustand + testing-library interaction. Matched
-// on its exact, stable one-arg text rather than blanket-silenced, so any
-// *other* console.error a regression here might produce still reaches real
-// console.error and stays visible in test output.
-const ACT_ENVIRONMENT_WARNING = "The current testing environment is not configured to support act(...)";
-const realConsoleError = console.error.bind(console);
-let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
-
 beforeEach(() => {
-  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    if (args.length === 1 && args[0] === ACT_ENVIRONMENT_WARNING) {
-      return;
-    }
-    realConsoleError(...args);
-  });
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
@@ -91,7 +76,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  consoleErrorSpy.mockRestore();
   cleanup();
   vi.restoreAllMocks();
   // Every test here calls ensureThread(ref)/connect(fake) directly for
@@ -121,6 +105,136 @@ test("an action becomes pending only after its durable enqueue commits", async (
   await flushPendingTurnsProjectionForTests();
 
   expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
+});
+
+test("a committed submission releases its caller while recovery projection reads are stalled", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connect();
+  fake.on("turn/steer", () => new Promise<never>(() => undefined));
+  await flushPendingTurnsProjectionForTests();
+  const getAll = IDBObjectStore.prototype.getAll;
+  const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let firstRead: (() => void) | undefined;
+  const readStarted = new Promise<void>((resolve) => {
+    firstRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery") {
+      const hold = holdIndexedDBEvent(request, "success");
+      held.push(hold);
+      void hold.reached.then(() => firstRead?.());
+    }
+    return request;
+  });
+  let accepted = false;
+  const onFailure = vi.fn();
+  const submit = submitWithPendingTracking({ ref: "ref_a", method: "steer", text: "one send", onFailure }, () =>
+    threadsStore.getState().steer("ref_a", "one send"),
+  ).then(() => {
+    accepted = true;
+  });
+  try {
+    await readStarted;
+    expect(await storage.listOutbox()).toHaveLength(1);
+    expect(accepted).toBe(true);
+    expect(onFailure).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+    for (const hold of held) hold.release();
+    await submit;
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
+test.each([
+  [undefined, undefined],
+  [undefined, "ref_a"],
+  ["ref_a", undefined],
+  ["ref_a", "ref_a"],
+])("a failed newer refresh fences an older pending snapshot (%s then %s)", async (olderRef, ref) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "settled send" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "settled send" }] },
+  });
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let reached: () => void = () => {};
+  const reading = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(reached);
+    }
+    return request;
+  });
+  const older = refreshPendingTurnsProjection(olderRef);
+  try {
+    await reading;
+    await storage.settleApplied(record.clientMutationId);
+    spy.mockImplementationOnce(() => {
+      throw new Error("storage read failed");
+    });
+    expect(await refreshPendingTurnsProjection(ref)).toBe(false);
+    await act(async () => {
+      hold?.release();
+      await older;
+    });
+    expect(pending.result.current).toEqual([]);
+  } finally {
+    spy.mockRestore();
+    hold?.release();
+    await older;
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
+test("an older all-target projection cannot erase a newly committed send", async () => {
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const oldRead = refreshPendingTurnsProjection();
+  try {
+    await readHeld;
+    await act(async () => threadsStore.getState().send("ref_a", "keep the committed send"));
+    expect(pending.result.current).toHaveLength(1);
+    await act(async () => {
+      hold?.release();
+      await oldRead;
+    });
+    expect(pending.result.current).toHaveLength(1);
+  } finally {
+    spy.mockRestore();
+    hold?.release();
+    await flushPendingTurnsProjectionForTests();
+  }
 });
 
 test("a local commit failure reports the exact error and never creates optimistic state", async () => {
@@ -208,6 +322,61 @@ test("recovery action wrappers refresh the durable projection", async () => {
   ]);
   expect(await storage.getRecovery(records[1]!.clientMutationId)).toBeUndefined();
   expect(await storage.getRecovery(records[2]!.clientMutationId)).toBeUndefined();
+});
+
+test("a recovery resend publishes its handoff without waiting for recovery projection reads", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "retry this" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry this" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const recovery = renderHook(() => useRecoveryEntries("ref_a"));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+  expect(recovery.result.current).toHaveLength(1);
+
+  const getAll = IDBObjectStore.prototype.getAll;
+  const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery") {
+      const hold = holdIndexedDBEvent(request, "success");
+      held.push(hold);
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  let accepted = false;
+  const resend = resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "retry this", []).then(
+    (result) => {
+      accepted = result;
+    },
+  );
+  try {
+    await act(async () => {
+      await readHeld;
+      await storage.listOutbox();
+    });
+    expect(accepted).toBe(true);
+    expect(recovery.result.current).toHaveLength(0);
+    expect(pending.result.current).toHaveLength(1);
+  } finally {
+    spy.mockRestore();
+    for (const hold of held) hold.release();
+    await resend;
+    await flushPendingTurnsProjectionForTests();
+  }
 });
 
 test("authoritative pendingMutations reconstruct accepted steering without a browser registry", async () => {
@@ -327,9 +496,9 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     if (clientMutationId === mutationId) signalReceiptSettled();
     return settled;
   });
-  replayReceipt();
-  await receiptSettled;
   await act(async () => {
+    replayReceipt();
+    await receiptSettled;
     await refreshPendingTurnsProjection("ref_a");
   });
   expect(await storage.listOutbox("ref_a")).toEqual([]);
@@ -364,8 +533,8 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
       },
     });
   });
-  await identitySettled;
   await act(async () => {
+    await identitySettled;
     await refreshPendingTurnsProjection("ref_a");
   });
 

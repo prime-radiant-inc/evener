@@ -8,8 +8,9 @@ import {
   readDocFile,
 } from "../../protocol/docContent";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { Chip, Dialog, EmptyState, Markdown, PaneScaffold, Skeleton } from "../../widgets";
+import { Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { Markdown } from "../../widgets/markdown";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
 import type { DocParams } from "./openDoc";

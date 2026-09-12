@@ -52,7 +52,7 @@ with the vanilla frontend (`660376f78`).
    `Authorization: Bearer $TOKEN`.
 
 5. **Browser, live then reloaded (qualitative).** With the session open at
-   `$HUB/auth?token=$TOKEN&next=/s/local:$SID`, expand the `write_file` row
+   `$HUB/auth/$TOKEN?next=/s/local:$SID`, expand the `write_file` row
    (`[data-testid="tool-call-item"][data-tool-name="write_file"]` — see Sharp
    edges) and note the thumbnail. Hard-refresh, expand the same row again, and
    compare:
@@ -111,7 +111,8 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
   it cannot resolve (`localSessionCWD`, `doc_serve.go#localSessionCWD`). A session
   spawned with no `working_dir` cannot pass this card.
 - **`/doc/image` is LOCAL-session only** (`isLocalRouteID`, `doc_serve.go:133-135`).
-  A remote/codex ref gets no file-backed descriptor at all.
+  A source-qualified `remote:thread-id` ref gets no file-backed descriptor at
+  all.
 - **The gallery silently drops any `src` the browser refuses** (`onError` →
   `markUnloadable`, `ImageGallery.tsx:73-77,140`). Deleting `out.png` between
   the two loads therefore reads as "reload lost the image" when it is really

@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/afero"
@@ -21,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -31,8 +34,11 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	// LifetimeContext owns this session tree when supplied by a one-shot run.
-	// Nil preserves daemon/background ownership and is not persisted.
+	// LifetimeContext owns this session tree: `evener run` supplies its run
+	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
+	// context, so cancelling either ends the tree's own context immediately
+	// rather than when Close finally runs. Nil is the library/test shape --
+	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
 
@@ -61,7 +67,7 @@ type SessionConfig struct {
 	MaxCommandTimeoutMS int `json:"max_command_timeout_ms,omitempty"`
 
 	// MaxSubagentDepth limits how deeply sub-agents may spawn further
-	// sub-agents (root session is depth 0). Zero defaults to 1.
+	// sub-agents (root session is depth 0). Zero defaults to 2.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
 	// MaxConcurrentDelegateTurns bounds concurrently running delegate turns
@@ -118,6 +124,13 @@ type SessionConfig struct {
 	// NoProjectPrompts suppresses loading .evener/prompts/ from the project directory.
 	// Useful for A/B testing to match Docker container behavior (no project prompts).
 	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
+
+	// AgentsDocPath is the personal AGENTS.md loaded ahead of the project's own
+	// instruction docs. Empty resolves <userdirs.DefaultConfigRoot()>/AGENTS.md
+	// from the process environment; a hub passes its own concrete path so
+	// Settings and the sessions it spawns agree on the file even when a launch
+	// overrides XDG_CONFIG_HOME.
+	AgentsDocPath string `json:"agents_doc_path,omitempty"`
 
 	// NonInteractive indicates no human is available for questions or confirmation.
 	// The task prompt is the complete specification; the agent must make all decisions
@@ -215,6 +228,7 @@ type SessionConfig struct {
 	// may be considered. Empty and "off" disable it; "auto" is still gated by
 	// endpoint support and continuation eligibility.
 	OpenAIResponsesContinuation string `json:"openai_responses_continuation,omitempty"`
+	ProviderIdleTimeout         string `json:"provider_idle_timeout,omitempty"`
 
 	// Sandbox is the sandbox mode name (off|read-only|workspace-write|restricted)
 	// requested at session start. Empty means off — today's behavior. Carried so a
@@ -271,25 +285,15 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
-	// visionSideChannelTimeout overrides the production vision timeout only for
-	// deterministic package tests. Zero preserves the production timeout.
+	// visionSideChannelTimeout supplies an explicit owned deadline only for
+	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration
-	// beforeTerminalCommunicateAccept observes the exact production boundary
-	// after Stop hooks accept communicate and before its terminal notification
-	// cut is captured. Tests use it only to place deterministic finalize/cut
-	// ordering barriers. Nil in production.
-	beforeTerminalCommunicateAccept func()
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
 	afterCommunicateBoundary func(*Session)
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)
-	// terminalCutAfterManagerLock observes captureTerminalNotificationCut after
-	// it owns jm.mu and before it reads durable/running/queue state. It permits a
-	// concurrent finalizer to prove which side of the cut owns the notification.
-	// Nil in production.
-	terminalCutAfterManagerLock func()
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.
 	sessionInitFault func(point string) error
@@ -314,6 +318,9 @@ type testConfig struct {
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
+	// delegateAttentionFoldEntries replaces only the in-memory attention fold
+	// over restore-retained entries. Nil preserves the production fold.
+	delegateAttentionFoldEntries func([]transcript.Entry) (delegateAttentionFold, error)
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
@@ -336,6 +343,10 @@ type testConfig struct {
 	// subagentBeforeSettlement observes the final unlocked boundary before a
 	// stable generation enters controller settlement.
 	subagentBeforeSettlement func(*subagent)
+	// delegateAttentionStartCommitted observes the start hand-off: the attention
+	// generation is committed and its run goroutine does not exist yet. Tests use
+	// it to drive the child from a second goroutine at exactly that point.
+	delegateAttentionStartCommitted func(*subagent)
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
@@ -351,6 +362,32 @@ type testConfig struct {
 	// appendCompactionTurn injects transcript append failures. Nil preserves the
 	// session transcript writer.
 	appendCompactionTurn func(schema.Turn) error
+
+	// beforeHistoryRepairPublish observes the boundary immediately before an
+	// orphaned-tool-result repair publishes to s.history. Tests use it only to
+	// place deterministic concurrent history mutations in that window. Nil in
+	// production.
+	beforeHistoryRepairPublish func()
+
+	// beforeFoldSideEffectsFlush observes the boundary between a winning
+	// fold's publication (history swap, baseline correction, note claim,
+	// transcript commit) and the deferred flush of its remaining side effects
+	// (events, session naming, hook user messages). Tests use it only to
+	// place deterministic concurrent folds in that window. Nil in production.
+	beforeFoldSideEffectsFlush func()
+
+	// beforeFoldTranscriptCommit observes the boundary inside a winning
+	// fold's publication after the history swap (and its baseline/note
+	// bookkeeping) and immediately before the fold's transcript entries are
+	// committed. Tests use it only to place deterministic concurrent turn
+	// recordings in that window. Nil in production.
+	beforeFoldTranscriptCommit func()
+
+	// afterFoldSupersessionCheck observes a fold flush immediately after it
+	// has evaluated whether a newer publication supersedes it and before it
+	// runs its last-write-wins side effects. Tests use it only to place a
+	// deterministic newer publication in that window. Nil in production.
+	afterFoldSupersessionCheck func()
 
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real
@@ -469,6 +506,28 @@ type testConfig struct {
 	// turns a red/green question into a positive fact. Nil in production.
 	closeAfterDisposeSweepJoin func()
 
+	// envCleanupObserved observes every environment Close() runs Cleanup on,
+	// just before it does, so a test can assert the process-table cleanup ran
+	// exactly once and on the environment the session currently holds — never
+	// on one it parked (worktreeRestoreEnv), whose scratch is retained without
+	// it. Nil in production.
+	envCleanupObserved func(execenv.ExecutionEnvironment)
+
+	// swapEnvAfterAdopt observes the point in swapEnvAndRefresh just after the
+	// session's scratch moved onto the next environment and before the refresh
+	// and install, so a test can begin a close in that window. It receives the
+	// context the refresh's git runs under, so a test can also assert that a
+	// close cancels that work. Nil in production.
+	swapEnvAfterAdopt func(refreshCtx context.Context)
+
+	// enterWorktreeAfterSwap observes the point in enterWorktree right after
+	// the environment swap returned — the earliest point outside the swap a
+	// close can land — so a test can run one there against a session whose
+	// installed and parked environments are both already recorded. It is NOT
+	// a seam between the install and the record: those share one s.mu hold,
+	// and a seam between them would have to release it. Nil in production.
+	enterWorktreeAfterSwap func()
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta
@@ -581,6 +640,10 @@ type spawnConfig struct {
 	// subagentTask is the task description passed to delegate.
 	subagentTask string
 
+	// inheritedContext seeds a delegate's transcript once, at construction.
+	// NewSession consumes it; descendants start clean unless they also opt in.
+	inheritedContext []transcript.Entry
+
 	// depth is the sub-agent nesting depth (0 for root sessions).
 	depth int
 
@@ -635,6 +698,9 @@ type spawnConfig struct {
 }
 
 func (c *SessionConfig) applyDefaults() {
+	if strings.TrimSpace(c.ProviderIdleTimeout) == "" {
+		c.ProviderIdleTimeout = "10m"
+	}
 	// MaxToolRoundsPerInput: zero or negative means unlimited. The previous
 	// default of 200 killed long-running agentic sessions doing real work from
 	// a single prompt. Loop detection (enabled by default) still guards against
@@ -696,6 +762,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SystemPromptFile:            c.SystemPromptFile,
 		SystemPromptAppend:          c.SystemPromptAppend,
 		NoProjectPrompts:            c.NoProjectPrompts,
+		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
 		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
@@ -706,6 +773,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ModelFallbacks:              c.ModelFallbacks,
 		SystemPromptAsUser:          c.SystemPromptAsUser,
 		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
+		ProviderIdleTimeout:         c.ProviderIdleTimeout,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
 		VisionModel:                 c.VisionModel,
@@ -737,6 +805,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		SystemPromptFile:            s.SystemPromptFile,
 		SystemPromptAppend:          s.SystemPromptAppend,
 		NoProjectPrompts:            s.NoProjectPrompts,
+		AgentsDocPath:               s.AgentsDocPath,
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,
 		ContextStrategy:             s.ContextStrategy,
@@ -747,8 +816,21 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ModelFallbacks:              s.ModelFallbacks,
 		SystemPromptAsUser:          s.SystemPromptAsUser,
 		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
+		ProviderIdleTimeout:         s.ProviderIdleTimeout,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
 		VisionModel:                 s.VisionModel,
 	}
+}
+
+// ParseProviderIdleTimeout parses a positive Go duration. Empty selects ten minutes.
+func ParseProviderIdleTimeout(value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return 10 * time.Minute, nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("provider_idle_timeout must be a positive duration (for example 10m): %q", value)
+	}
+	return d, nil
 }

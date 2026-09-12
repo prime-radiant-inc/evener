@@ -1,4 +1,4 @@
-.PHONY: e2e-cover coverage-floor coverage-gaps coverage-gaps-selftest
+.PHONY: e2e-cover coverage-floor coverage-gaps
 
 # e2e-cover measures END-TO-END coverage of the real evener binary via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
@@ -16,10 +16,11 @@ e2e-cover:
 # the test track and the deterministic fuzz-replay track, plus the frontend's
 # vitest line coverage, against scripts/coverage/coverage-floors.txt. Bare
 # invocation reports; CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy +
-# local. Its contract is currently unpinned: the fake-toolchain selftest that
-# used to pin it was banned outright by docs/developing-evener/testing.md's
-# rule against faking `go` on PATH and deleted; the port that would pin it
-# honestly is tracked as issue #293.
+# local. The counting arithmetic is pinned by internal/devtool/covstmt's tests
+# plus the `evener dev covstmt` contract test in cmd/evener-dev; the script's
+# own orchestration (driving go test per module, per track) has no honest
+# automated test, because the only way to exercise it was the fake-toolchain
+# approach testing.md bans.
 ## The repo's one coverage ratchet: per module, the union of the test track
 ## and the deterministic fuzz-replay track, plus the frontend's vitest line
 ## coverage.
@@ -45,16 +46,3 @@ coverage-floor:
 ## Takes a profile: `make coverage-gaps PROFILE=path/to.cov GAP_ARGS="--by file"`.
 coverage-gaps:
 	@scripts/coverage/coverage-gaps.sh $(PROFILE) $(GAP_ARGS)
-
-## Exercise coverage-gaps.sh against a synthetic coverage profile with
-## hand-computed answers.
-## proves: The ranking arithmetic — dedup, ranking, and totals — including
-##   that the same block position hit twice is counted once.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; no go test or compilation, arithmetic
-##   only.
-## fails-when: The ranked output diverges from the fixture's hand-computed
-##   answer. Leftover files fail only under the test-dev-tooling wave, which
-##   owns that check.
-coverage-gaps-selftest:
-	@scripts/coverage/coverage-gaps-selftest.sh

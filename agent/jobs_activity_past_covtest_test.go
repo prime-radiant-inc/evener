@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -63,7 +68,7 @@ func TestValidateActivityRootRef_Empty(t *testing.T) {
 // error (line 38-39).
 func TestLoadSessionJobActivityTree_BadRef(t *testing.T) {
 	stateDir := t.TempDir()
-	_, err := LoadSessionJobActivityTree(stateDir, "sess", appwire.JobsListParams{Ref: ":::"})
+	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, "sess", appwire.JobsListParams{Ref: ":::"})
 	if err == nil {
 		t.Fatal("expected error for bad ref")
 	}
@@ -75,7 +80,7 @@ func TestLoadHistoricalActivityBase_RequiredChildMissing(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionID := "missingchild"
 	savePastActivityMeta(t, stateDir, sessionID, "Missing")
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, true)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, true, newHistoricalActivityCache(context.Background(), ""))
 	if err == nil {
 		t.Fatal("expected error for required missing child session")
 	}
@@ -101,7 +106,7 @@ func TestLoadHistoricalActivityBase_StatError(t *testing.T) {
 	if err := os.WriteFile(filepath.Dir(jobsPath), []byte("blocker"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background(), ""))
 	if err == nil {
 		// On some platforms the stat might not fail as expected. If it
 		// doesn't fail, try the ReadEvents error path instead.
@@ -123,7 +128,7 @@ func TestLoadHistoricalActivityBase_ReadEventsError(t *testing.T) {
 	if err := os.WriteFile(jobsPath, []byte("not valid jsonl\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background(), ""))
 	if err == nil {
 		t.Fatal("expected error for malformed jobs.jsonl")
 	}
@@ -145,7 +150,7 @@ func TestLoadHistoricalActivityBase_StableActivityReadError(t *testing.T) {
 	if err := os.WriteFile(dlgPath, []byte("not valid jsonl\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background(), ""))
 	if err == nil {
 		t.Fatal("expected error for malformed delegates.jsonl")
 	}
@@ -170,7 +175,7 @@ func TestLoadHistoricalActivityBase_StableActivityFoldError(t *testing.T) {
 	if err := os.WriteFile(dlgPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background(), ""))
 	if err == nil {
 		t.Fatal("expected fold error for orphan delegate event")
 	}
@@ -189,7 +194,7 @@ func TestLoadHistoricalStableActivityWithAttention_ReadError(t *testing.T) {
 	if err := os.WriteFile(dlgPath, []byte("not valid jsonl\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, rootID)
+	_, _, err := loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
 	if err == nil {
 		t.Fatal("expected error for malformed delegates.jsonl")
 	}
@@ -208,7 +213,7 @@ func TestLoadHistoricalStableActivityWithAttention_FoldError(t *testing.T) {
 	if err := os.WriteFile(dlgPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, rootID)
+	_, _, err := loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
 	if err == nil {
 		t.Fatal("expected fold error for orphan delegate event")
 	}
@@ -222,13 +227,93 @@ func TestLoadHistoricalStableActivityWithAttention_SkipNonMatching(t *testing.T)
 	otherID := "attnskipother"
 	// Create delegates owned by a different session.
 	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(otherID, "childskip", "skip me"))
-	rows, _, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, rootID)
+	rows, _, err := loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// The delegate is owned by otherID, not rootID, so it should be skipped.
 	if len(rows) != 0 {
 		t.Fatalf("expected 0 rows, got %d: %+v", len(rows), rows)
+	}
+}
+
+// TestLoadHistoricalStableActivityWithAttention_UsesBoundedScan asserts
+// loadHistoricalStableActivityWithAttention -- reachable from the hub's
+// ThreadRead RPC via LoadSessionDelegateStatus -- reads delegates.jsonl
+// through scanDelegateJournal (delegatestore.ScanEventsFrom, ctx-aware
+// and, via historicalDelegateFoldCache, incremental), never the raw,
+// context-blind ReadEventsWithDiagnostics, and reads it exactly once per
+// call.
+func TestLoadHistoricalStableActivityWithAttention_UsesBoundedScan(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "attnbounded"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childattnbounded", "task"))
+
+	var calls int32
+	original := scanDelegateJournal
+	scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		atomic.AddInt32(&calls, 1)
+		return original(ctx, path, fromOffset, limits)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	rows, _, err := loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if calls != 1 {
+		t.Fatalf("scanDelegateJournal called %d times, want 1", calls)
+	}
+}
+
+// TestLoadHistoricalStableActivityWithAttention_RespectsCancellation covers
+// the ctx half of the same finding: a canceled context must stop the scan
+// rather than being silently ignored the way the unbounded
+// context.Background()-only read was.
+func TestLoadHistoricalStableActivityWithAttention_RespectsCancellation(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "attncancel"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childattncancel", "task"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, rootID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+// TestLoadHistoricalStableActivityWithAttention_ChecksCancellationDuringAttentionLoop
+// asserts the attention-status loop that runs AFTER the delegate-journal
+// scan also checks ctx: unlike TestLoadHistoricalStableActivityWithAttention_UsesBoundedScan
+// above (which cancels before the call even starts, so it only proves the
+// delegate-journal scan itself is ctx-aware), this proves the loop can
+// read one transcript file per eligible delegate, so a root with many
+// delegates must still stop promptly on cancellation rather than working
+// through all of them. All 30 delegate-created events here land in a
+// single AppendBatch call, so they occupy one journal batch line (a
+// handful of ctx checks total to scan, regardless of delegate count) —
+// allow is set well past that fixed scan cost but far short of 30 loop
+// iterations, so cancellation is guaranteed to land inside the attention
+// loop, not the scan.
+func TestLoadHistoricalStableActivityWithAttention_ChecksCancellationDuringAttentionLoop(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "attnloopcancel"
+	const delegateCount = 30
+	descriptors := make([]delegatestore.Descriptor, delegateCount)
+	for i := range descriptors {
+		descriptors[i] = pastStableDescriptor(rootID, fmt.Sprintf("childattnloopcancel%d", i), "task")
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 10}
+
+	_, _, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, rootID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }
 
@@ -251,7 +336,7 @@ func TestLoadHistoricalStableActivityWithAttention_TornTailDiagnostic(t *testing
 	}
 	_ = f.Close()
 
-	_, diags, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, rootID)
+	_, diags, err := loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -320,7 +405,7 @@ func TestLoadSessionJobActivityTree_ContinuationError(t *testing.T) {
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 	// Call with a continuation param — buildActivityFullSnapshot will try to
 	// load the root's jobs and fail because there's no delegates.jsonl.
-	_, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{Continuation: "some/continuation"})
+	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: "some/continuation"})
 	if err == nil {
 		t.Fatalf("LoadSessionJobActivityTree with continuation: expected error, got nil")
 	}
@@ -333,7 +418,7 @@ func TestLoadSessionJobActivityTree_EmptyRootRevision(t *testing.T) {
 	rootID := "emptyrootrev"
 	savePastActivityMeta(t, stateDir, rootID, "EmptyRoot")
 	// No delegates, no jobs — the snapshot will have an empty RootID.
-	_, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,7 +443,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 	}
 	_ = f.Close()
 
-	_, diags, err := loadHistoricalStableActivity(stateDir, rootID, rootID)
+	_, _, diags, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -376,7 +461,7 @@ func TestLoadHistoricalStableActivity_NilAggregateSkipped(t *testing.T) {
 	// This is hard to construct directly, so we test the normal path
 	// with a valid delegate and verify the non-nil branch (line 118).
 	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childnilagg", "nil test"))
-	rows, _, err := loadHistoricalStableActivity(stateDir, rootID, rootID)
+	rows, _, _, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -433,7 +518,7 @@ func TestLoadHistoricalStableActivityWithAttention_AttentionTranscriptError(t *t
 	// delegateAttentionProjectionEligible checks if the delegate is closed
 	// and has a terminal packet. Without that, the attention path won't
 	// be taken, so we just verify no panic.
-	_, _, err = loadHistoricalStableActivityWithAttention(stateDir, rootID, rootID)
+	_, _, err = loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
 	if err != nil {
 		t.Logf("error (expected if attention path was taken): %v", err)
 	}

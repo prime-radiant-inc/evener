@@ -51,11 +51,10 @@ func (b *wallTimeoutStreamBody) Close() error {
 }
 
 func TestClientStream_WallCeilingCancelsBodyAndClassifiesRetryableTimeout(t *testing.T) {
-	for _, provider := range timeoutProviders() {
+	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			var body *wallTimeoutStreamBody
-			client := llm.NewClient()
-			client.Register(provider.new("https://provider.test", &http.Client{
+			client := provider.wireClient(t, "https://provider.test", &http.Client{
 				Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 					body = newWallTimeoutStreamBody(request.Context())
 					return &http.Response{
@@ -65,22 +64,16 @@ func TestClientStream_WallCeilingCancelsBodyAndClassifiesRetryableTimeout(t *tes
 						Request:    request,
 					}, nil
 				}),
-			}))
+			}, nil)
 
 			sink := &lockedAttemptSink{}
 			ctx := llm.WithAPIAttemptSink(
 				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_wall_ceiling_"+provider.name)),
 				sink,
 			)
-			stream, err := client.Stream(ctx, llm.Request{
-				Provider: provider.name,
-				Model:    "test-model",
-				Messages: []llm.Message{llm.User("hello")},
-				AdapterTimeout: &llm.AdapterTimeout{
-					Request:    25 * time.Millisecond,
-					StreamRead: time.Hour,
-				},
-			})
+			req := providerRequest(provider.name, "test-model")
+			req.AdapterTimeout = &llm.AdapterTimeout{Request: 25 * time.Millisecond, StreamRead: time.Hour}
+			stream, err := client.Stream(ctx, req)
 			if err != nil {
 				t.Fatalf("Client.Stream: %v", err)
 			}
@@ -149,11 +142,10 @@ func TestClientStream_WallCeilingCancelsBodyAndClassifiesRetryableTimeout(t *tes
 }
 
 func TestStreamGenerate_WallCeilingResetsForNextHTTPAttempt(t *testing.T) {
-	provider := timeoutProviders()[0]
+	provider := wireProviders()[0]
 	var calls atomic.Int32
 	var firstBody *wallTimeoutStreamBody
-	client := llm.NewClient()
-	client.Register(provider.new("https://provider.test", &http.Client{
+	client := provider.wireClient(t, "https://provider.test", &http.Client{
 		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			if calls.Add(1) == 1 {
 				firstBody = newWallTimeoutStreamBody(request.Context())
@@ -171,7 +163,7 @@ func TestStreamGenerate_WallCeilingResetsForNextHTTPAttempt(t *testing.T) {
 				Request:    request,
 			}, nil
 		}),
-	}))
+	}, nil)
 
 	prompt := "hello"
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -179,7 +171,7 @@ func TestStreamGenerate_WallCeilingResetsForNextHTTPAttempt(t *testing.T) {
 	result, err := llm.StreamGenerate(ctx, llm.GenerateOptions{
 		Client:         client,
 		Model:          "test-model",
-		Provider:       "openai",
+		Provider:       provider.name,
 		Prompt:         &prompt,
 		AdapterTimeout: &llm.AdapterTimeout{Request: 25 * time.Millisecond, StreamRead: time.Hour},
 		RetryPolicy: &llm.RetryPolicy{

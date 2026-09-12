@@ -7,9 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
@@ -122,35 +120,6 @@ func emptyHandler[T any](context.Context, T) (appwire.EmptyResponse, error) {
 	return appwire.EmptyResponse{}, nil
 }
 
-func fuzzScenarioCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
-	var closed atomic.Int32
-	closedSignal := make(chan struct{})
-	live := &codexLiveThread{close: func() error { closed.Add(1); close(closedSignal); return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
-	live.publish(appwire.Notification{Method: "one"})
-	live.publish(appwire.Notification{Method: "two"})
-	ctx, cancel := context.WithCancel(context.Background())
-	out := live.subscribe(ctx)
-	if (<-out).Method != "one" || (<-out).Method != "two" {
-		t.Fatal("backlog order changed")
-	}
-	cancel()
-	<-closedSignal
-	if _, ok := <-out; ok {
-		t.Fatal("subscriber remained open")
-	}
-	if closed.Load() != 1 {
-		t.Fatalf("close count = %d", closed.Load())
-	}
-	live.publish(appwire.Notification{Method: "ignored"})
-	live.finish()
-	closedOut := live.subscribe(context.Background())
-	if _, ok := <-closedOut; ok {
-		t.Fatal("closed subscription remained open")
-	}
-	live.retireIfNoSubscriber(0)
-	live.retireIfNoSubscriber(time.Hour)
-}
-
 func fuzzScenarioLocalDaemonErrorMappingRemainingBranches(t *testing.T) {
 	for _, err := range []error{errors.New("I/O TIMEOUT"), appwire.InternalError("failed to get reader"), appwire.InternalError("semantic failure")} {
 		if got := localDaemonCallError(err); got == nil {
@@ -223,124 +192,6 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 	}
 	if _, err := s.entryForRef("other:thread", ""); err == nil {
 		t.Fatal("foreign ref accepted")
-	}
-}
-
-func fuzzScenarioCodexSourceRemainingRPCSurface(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(context.Context, map[string]any) (map[string]any, error) {
-		return map[string]any{"data": []map[string]any{{"id": "turn", "status": "completed"}}, "nextCursor": "next"}, nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, emptyHandler[map[string]any])
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, emptyHandler[map[string]any])
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, emptyHandler[map[string]any])
-	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(context.Context, map[string]any) (map[string]any, error) {
-		return map[string]any{"data": []map[string]any{{"id": "fallback"}, {"id": "id", "model": "preferred"}}}, nil
-	})
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer httpServer.Close()
-	s := NewCodexSource(CodexSourceConfig{Endpoint: "ws" + strings.TrimPrefix(httpServer.URL, "http")}, httpServer.Client())
-	ctx := context.Background()
-	ref := "codex:thread"
-	turns, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: ref, Cursor: "cursor", Limit: 2, ItemsView: "full"})
-	if err != nil || len(turns.Data) != 1 || turns.NextCursor != "next" {
-		t.Fatalf("turns = %+v, %v", turns, err)
-	}
-	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref}); err == nil {
-		t.Fatal("steer without turn accepted")
-	}
-	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "hi"}}}); err == nil {
-		t.Fatal("codex steer unexpectedly supported")
-	}
-	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref}); err == nil {
-		t.Fatal("interrupt without turn accepted")
-	}
-	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref}); err == nil {
-		t.Fatal("codex interrupt unexpectedly supported")
-	}
-	if err := s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}); err != nil {
-		t.Fatal(err)
-	}
-	models, err := s.ListModels(ctx, appwire.ModelListParams{})
-	if err != nil || len(models.Data) != 2 || models.Data[0].Model != "fallback" || models.Data[1].Model != "preferred" {
-		t.Fatalf("models = %+v, %v", models, err)
-	}
-	unsupported := []error{
-		s.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{}), s.SetThreadName(ctx, appwire.ThreadNameSetParams{}),
-	}
-	for _, err := range unsupported {
-		if err == nil {
-			t.Fatal("unsupported call returned nil")
-		}
-	}
-}
-
-func fuzzScenarioCodexSourceRejectsInvalidReferencesAcrossRPCSurface(t *testing.T) {
-	s := newTestCodexSource()
-	ctx := context.Background()
-	calls := []func() error{
-		func() error { _, err := s.ReadThread(ctx, appwire.ThreadReadParams{}); return err },
-		func() error { _, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{}); return err },
-		func() error { _, err := s.ResumeThread(ctx, appwire.ThreadResumeParams{}); return err },
-		func() error { _, err := s.ForkThread(ctx, appwire.ThreadForkParams{}); return err },
-		func() error {
-			_, err := s.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
-			return err
-		},
-		func() error {
-			_, err := s.startTurnWithClient(ctx, nil, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
-			return err
-		},
-		func() error {
-			_, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation"})
-			return err
-		},
-		func() error {
-			_, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation"})
-			return err
-		},
-		func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{}) },
-		func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{}); return err },
-	}
-	for i, call := range calls {
-		if err := call(); err == nil {
-			t.Fatalf("call %d returned nil", i)
-		}
-	}
-	if _, _, err := s.connect(ctx); err == nil {
-		t.Fatal("missing endpoint accepted")
-	}
-	s.endpoint = "ws://unused"
-	s.bearerTokenFile = t.TempDir()
-	if _, _, err := s.connect(ctx); err == nil {
-		t.Fatal("unreadable token accepted")
-	}
-}
-
-func fuzzScenarioCodexLiveThreadBacklogLimitFinishAndReplacement(t *testing.T) {
-	live := &codexLiveThread{close: func() error { return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
-	for i := 0; i <= codexLiveBacklogLimit; i++ {
-		live.publish(appwire.Notification{})
-	}
-	if len(live.backlog) != codexLiveBacklogLimit {
-		t.Fatalf("backlog = %d", len(live.backlog))
-	}
-	subscriber := make(chan appwire.Notification, 1)
-	live.subscribers[subscriber] = struct{}{}
-	live.finish()
-	if _, ok := <-subscriber; ok {
-		t.Fatal("finish did not close subscriber")
-	}
-
-	s := newTestCodexSource()
-	s.setLiveThread("", live)
-	retired := false
-	old := &codexLiveThread{close: func() error { retired = true; return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
-	newer := &codexLiveThread{close: func() error { return nil }, done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}}
-	s.setLiveThread("thread", old)
-	s.setLiveThread("thread", newer)
-	if !retired {
-		t.Fatal("replaced live thread was not retired")
 	}
 }
 

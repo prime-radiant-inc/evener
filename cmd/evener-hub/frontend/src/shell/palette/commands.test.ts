@@ -210,7 +210,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   localStorage.clear();
   window.history.pushState({}, "", "/");
   pushes.length = 0;
@@ -576,7 +576,7 @@ test("splitModelId splits on the first slash so a model id with slashes survives
 
 // --- /reasoning-effort: snapshot source + set + toast ---
 
-test("/reasoning-effort source prefixes (default) and omits 'none'; run sets the effort", async () => {
+test("/reasoning-effort source prefixes (default) and offers a ladder-listed 'none' as an explicit off; run sets the effort", async () => {
   const fake = connectFake();
   fake.on("thread/reasoning-effort/set", () => ({}));
   focusSession("ref_a");
@@ -585,6 +585,7 @@ test("/reasoning-effort source prefixes (default) and omits 'none'; run sets the
   if (c.args?.kind !== "enum") throw new Error("expected enum args");
   expect(c.args.source(runContext())).toEqual([
     { id: "", label: "(default)" },
+    { id: "none", label: "none (off)" },
     { id: "low", label: "low" },
     { id: "high", label: "high" },
   ]);
@@ -681,7 +682,7 @@ test("next-needs-you is a global command", () => {
 test("next-needs-you opens the first needs-you session when nothing is focused", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([
       [
         keyID(key),
@@ -738,7 +739,7 @@ test("next-needs-you opens the first needs-you session when nothing is focused",
 test("v1 next-needs-you ignores stale legacy tree rows", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([
       [
         keyID(key),
@@ -782,7 +783,7 @@ test("v1 next-needs-you ignores stale legacy tree rows", () => {
 test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([
       [
         keyID(key),

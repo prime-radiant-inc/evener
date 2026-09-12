@@ -1,0 +1,89 @@
+{
+  "case": "openai-codex-gpt-5-6-lite-stream",
+  "ref": "openai-codex/gpt-5.6",
+  "stream": true,
+  "method": "POST",
+  "url": "https://chatgpt.com/backend-api/codex/responses",
+  "headers": {
+    "Authorization": "Bearer \u003ccredential\u003e",
+    "Chatgpt-Account-Id": "acct_golden",
+    "Content-Type": "application/json",
+    "Originator": "evener",
+    "Session-Id": "sess-golden",
+    "Thread-Id": "thread-golden",
+    "User-Agent": "evener/dev (\u003cos\u003e \u003carch\u003e)",
+    "X-Client-Request-Id": "thread-golden",
+    "X-Openai-Internal-Codex-Responses-Lite": "true"
+  },
+  "body": {
+    "client_metadata": {
+      "installation_id": "inst-golden"
+    },
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "role": "developer",
+        "tools": [
+          {
+            "description": "Current weather",
+            "name": "weather",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            },
+            "strict": true,
+            "type": "function"
+          }
+        ],
+        "type": "additional_tools"
+      },
+      {
+        "content": [
+          {
+            "text": "You are terse.",
+            "type": "input_text"
+          }
+        ],
+        "role": "developer",
+        "type": "message"
+      },
+      {
+        "content": [
+          {
+            "text": "What is the weather in Oslo?",
+            "type": "input_text"
+          }
+        ],
+        "role": "user",
+        "type": "message"
+      }
+    ],
+    "instructions": "",
+    "model": "gpt-5.6-sol",
+    "parallel_tool_calls": false,
+    "prompt_cache_key": "pck-golden",
+    "reasoning": {
+      "context": "all_turns",
+      "summary": "detailed"
+    },
+    "store": false,
+    "stream": true,
+    "text": {
+      "verbosity": "low"
+    },
+    "tool_choice": "required"
+  },
+  "pruned_fields": [
+    "max_output_tokens"
+  ]
+}

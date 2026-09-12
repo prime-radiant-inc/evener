@@ -1,0 +1,392 @@
+package google
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/registry"
+)
+
+// captureSink collects the api-log attempt records a call emits.
+type captureSink struct {
+	mu       sync.Mutex
+	attempts []apilog.APIAttemptRecord
+}
+
+func (s *captureSink) AppendAttempt(_ context.Context, r apilog.APIAttemptRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts = append(s.attempts, r)
+	return nil
+}
+
+func (s *captureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	return nil
+}
+
+// records returns a copy of the attempts appended so far. Every read goes
+// through it: the producer appends from its own goroutine, so an unguarded
+// read is only accidentally safe.
+func (s *captureSink) records() []apilog.APIAttemptRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
+}
+
+func (s *captureSink) families() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.attempts))
+	for _, a := range s.attempts {
+		out = append(out, a.Request.EndpointFamily)
+	}
+	return out
+}
+
+const generateJSON = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}`
+
+const generateSSE = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n" +
+	"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2,\"totalTokenCount\":7}}\n\n"
+
+type protoCapture struct {
+	path   string
+	header http.Header
+	body   map[string]any
+}
+
+func protoServer(t *testing.T, status int, body string) (*httptest.Server, *protoCapture) {
+	t.Helper()
+	got := &protoCapture{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got.path, got.header = r.URL.RequestURI(), r.Header.Clone()
+		_ = json.Unmarshal(raw, &got.body)
+		if strings.HasPrefix(body, "data:") {
+			w.Header().Set("Content-Type", "text/event-stream")
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, got
+}
+
+func protoLive(srv *httptest.Server) registry.Resolved {
+	res := protoRes(nil)
+	res.WireID = "gemini-2.5-flash"
+	res.Transport = registry.Transport{Auth: registry.AuthHeader, AuthHeader: "x-goog-api-key", BaseURL: srv.URL + "/v1beta", Endpoint: "/models/{model}:generateContent", StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse", ModelsEndpoint: "/models", CountTokensEndpoint: "/models/{model}:countTokens"}
+	res.Credential = registry.Credential{Value: "k-1", Source: "api_key"}
+	return res
+}
+
+// vertexAuthorityRes is a resolved Vertex publisher-model transport whose
+// authority the vertex-location host rule derived from loc: the provenance the
+// registry records (Resolved.HostDerivedByRule) when its base URL template
+// reads {GOOGLE_VERTEX_HOST}. What that derivation accepts and rejects is the
+// registry's own to prove; this fixture states the provenance the remedy reads.
+func vertexAuthorityRes(t *testing.T, srv *httptest.Server, loc string) registry.Resolved {
+	t.Helper()
+	res := protoLive(srv)
+	res.WireID = "gemini-3.8-flash"
+	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": loc, "GOOGLE_VERTEX_PROJECT": "p"}
+	res.HostDerivedByRule = true
+	return res
+}
+
+func TestProtocolCompleteUsesHeaderAuthAndModelInPath(t *testing.T) {
+	srv, got := protoServer(t, 200, generateJSON)
+	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "gemini-prod" || resp.Text() != "hello" || resp.Usage.TotalTokens != 7 {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if got.path != "/v1beta/models/gemini-2.5-flash:generateContent" || got.header.Get("x-goog-api-key") != "k-1" || strings.Contains(got.path, "key=") {
+		t.Fatalf("wire: %s %v", got.path, got.header)
+	}
+}
+
+func TestProtocolStreamUsageOnFinishChunk(t *testing.T) {
+	srv, got := protoServer(t, 200, generateSSE)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), protoLive(srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if final == nil || final.Provider != "gemini-prod" || final.Text() != "hello" || final.Usage.TotalTokens != 7 {
+		t.Fatalf("final = %+v", final)
+	}
+	if got.path != "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" {
+		t.Fatalf("path = %s", got.path)
+	}
+}
+
+func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		run  func(*Protocol, llm.Request, registry.Resolved) error
+	}{
+		{"complete", generateJSON, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			_, err := p.Complete(context.Background(), req, res)
+			return err
+		}},
+		{"stream", generateSSE, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			stream, err := p.Stream(context.Background(), req, res)
+			if err != nil {
+				return err
+			}
+			for event := range stream.Events() {
+				if event.Type == llm.StreamEventError {
+					return event.Err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, got := protoServer(t, http.StatusOK, tc.body)
+			res := protoLive(srv)
+			res.Transport.Body = map[string]any{"generationConfig.maxOutputTokens": 1000}
+			req := protoReq("")
+			req.MaxTokens = new(100)
+			if err := tc.run(&Protocol{Client: srv.Client()}, req, res); err != nil {
+				t.Fatal(err)
+			}
+			generationConfig, _ := got.body["generationConfig"].(map[string]any)
+			if generationConfig["maxOutputTokens"] != float64(100) {
+				t.Fatalf("wire maxOutputTokens = %v, want admitted 100; body = %v", generationConfig["maxOutputTokens"], got.body)
+			}
+		})
+	}
+}
+
+func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
+	srv, _ := protoServer(t, 400, `{"error":{"code":400,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`)
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
+	le, ok := errors.AsType[llm.Error](err)
+	if llm.Kind(err) != llm.KindRateLimit || !ok || le.Provider() != "gemini-prod" {
+		t.Fatalf("RESOURCE_EXHAUSTED on 400 must reclassify to a rate limit stamped with the instance: %v", err)
+	}
+}
+
+// A publisher model Vertex serves from its global endpoint only 404s on a
+// regional one. The raw message tells the user to check the region without
+// naming the remedy; the reclassifier turns it into a configuration error
+// that does (the same class the registry warns about at resolve time). The
+// match does not depend on the provider's casing: the regional body observed
+// on 2026-09-12 reads "Publisher model", and the same message with a capital M
+// takes the same path rather than dropping the guidance silently.
+func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) {
+	for _, phrase := range []string{"Publisher model", "Publisher Model"} {
+		t.Run(phrase, func(t *testing.T) {
+			body := `{"error":{"code":404,"message":"` + phrase + ` ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+			srv, _ := protoServer(t, http.StatusNotFound, body)
+			res := vertexAuthorityRes(t, srv, "us-central1")
+
+			_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+			cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
+			if !ok || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
+				t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
+			}
+			if !strings.Contains(cfgErr.Message, "not found or your project does not have access") {
+				t.Fatalf("the remedy must keep the provider's own detail visible: %q", cfgErr.Message)
+			}
+		})
+	}
+}
+
+// A regional publisher-model 404 for a model the registry does not know to be
+// global-only is ambiguous: Vertex uses the same body for "not found" and for
+// "your project does not have access to it". Rewriting it as a global-endpoint
+// remedy would hide a genuine permissions failure, so it stays the provider's
+// own error.
+func TestProtocolRegionalNonGlobalOnly404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := vertexAuthorityRes(t, srv, "us-central1")
+	res.WireID = "gemini-2.5-flash"
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a model the registry does not know to be global-only must not claim a regional remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
+}
+
+// The remedy is Vertex's: a transport whose host was not derived from a
+// Vertex location (no vertex-location host rule) is not talking to a Vertex
+// regional endpoint, whatever variables its URL templates read, so its 404
+// must not be rewritten into a Vertex location configuration error.
+func TestProtocolNonVertexTransport404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := vertexAuthorityRes(t, srv, "us-central1")
+	// A custom gateway transport that happens to read GOOGLE_VERTEX_LOCATION
+	// into its path: no vertex-location host rule.
+	res.Transport.HostRule = ""
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a transport without the vertex-location host rule must not get the Vertex remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
+}
+
+// A transport the host rule did not derive the authority for — a literal host
+// in the base URL (even one naming the location's own host with a path of its
+// own), or a GOOGLE_VERTEX_HOST supplied directly — is addressed to the route
+// the config built, so its 404 is that route's own failure and must not be
+// rewritten as a Vertex regional-location configuration error. Transport
+// resolution is where those shapes are told apart (registry's
+// TestResolve_LiteralHost* and TestResolve_DirectHost*); this covers the
+// remedy's side of the contract, and states the supplied-host shape.
+func TestProtocolUnderivedHost404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := protoLive(srv)
+	res.WireID = "gemini-3.8-flash"
+	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.Vars = map[string]string{
+		"GOOGLE_VERTEX_LOCATION": "us-central1",
+		"GOOGLE_VERTEX_PROJECT":  "p",
+		"GOOGLE_VERTEX_HOST":     "https://gw.example.test",
+	}
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("an underived authority must not get the location-derived remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
+}
+
+// The same 404 against the global endpoint already names the endpoint that
+// serves the model, so it stays the provider's own error.
+func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/global/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := vertexAuthorityRes(t, srv, "global")
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a global-endpoint 404 must not claim a regional remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("global 404 must stay the provider's 404: %v", err)
+	}
+}
+
+func TestProtocolListModelsAndCountTokens(t *testing.T) {
+	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":922000,"outputTokenLimit":128000,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
+	res := protoLive(srv)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res)
+	if err != nil || len(rows) != 1 || rows[0].ID != "gemini-2.5-flash" || rows[0].Caps.ContextWindow != nil || *rows[0].Caps.MaxInputTokens != 922000 || *rows[0].Caps.MaxOutputTokens != 128000 {
+		t.Fatalf("rows = %+v err = %v", rows, err)
+	}
+	if got.path != "/v1beta/models?pageSize=1000" || got.header.Get("x-goog-api-key") != "k-1" {
+		t.Fatalf("wire: %s %v", got.path, got.header)
+	}
+	srv2, got2 := protoServer(t, 200, `{"totalTokens":13}`)
+	n, err := (&Protocol{Client: srv2.Client()}).CountTokens(context.Background(), protoReq(""), protoLive(srv2))
+	if err != nil || n != 13 || got2.path != "/v1beta/models/gemini-2.5-flash:countTokens" {
+		t.Fatalf("count = %d err = %v path = %s", n, err, got2.path)
+	}
+	if gcr := got2.body["generateContentRequest"].(map[string]any); gcr["model"] != "models/gemini-2.5-flash" || gcr["contents"] == nil {
+		t.Fatalf("count body = %v", got2.body)
+	}
+}
+
+// TestProtocolEndpointFamilies pins the api-log endpoint_family of each
+// operation; the stream must not report the non-streaming family.
+func TestProtocolEndpointFamilies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+		run  func(p *Protocol, ctx context.Context, res registry.Resolved) error
+	}{
+		{"generate_content", generateJSON, "google_generate_content", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.Complete(ctx, protoReq(""), res)
+			return err
+		}},
+		{"stream_generate_content", generateSSE, "google_stream_generate_content", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			s, err := p.Stream(ctx, protoReq(""), res)
+			if err != nil {
+				return err
+			}
+			for ev := range s.Events() {
+				if ev.Type == llm.StreamEventError {
+					return ev.Err
+				}
+			}
+			return nil
+		}},
+		{"count_tokens", `{"totalTokens":13}`, "google_count_tokens", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.CountTokens(ctx, protoReq(""), res)
+			return err
+		}},
+		{"models", `{"models":[{"name":"models/gemini-2.5-flash","supportedGenerationMethods":["generateContent"]}]}`, "google_models", func(p *Protocol, ctx context.Context, res registry.Resolved) error {
+			_, err := p.ListModels(ctx, res)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := protoServer(t, 200, tc.body)
+			sink := &captureSink{}
+			ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_"+tc.name)), sink)
+			if err := tc.run(&Protocol{Client: srv.Client()}, ctx, protoLive(srv)); err != nil {
+				t.Fatal(err)
+			}
+			llm.WaitForPriorAPIAttempts(ctx)
+			if got := sink.families(); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("endpoint families = %v, want [%s]", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProtocolIncompleteStreamNamesTheInstance pins that a stream that ends
+// before a finishReason reports the instance, not the protocol's own name.
+func TestProtocolIncompleteStreamNamesTheInstance(t *testing.T) {
+	truncated := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"
+	srv, _ := protoServer(t, 200, truncated)
+	res := protoLive(srv)
+	st, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamErr error
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventError {
+			streamErr = ev.Err
+		}
+	}
+	if streamErr == nil || !strings.Contains(streamErr.Error(), res.Instance+" stream ended without completion") {
+		t.Fatalf("incomplete stream error = %v, want it to name %q", streamErr, res.Instance)
+	}
+}

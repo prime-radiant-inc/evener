@@ -59,10 +59,10 @@ function DisclosureView({
           if (!disabled) requestToggle();
         }}
       >
+        {summary}
         <span className={CLASS.chevron} aria-hidden="true" data-open={open ? "true" : "false"}>
           <Chevron />
         </span>
-        {summary}
       </summary>
       {open && <div className={CLASS.body}>{children}</div>}
     </details>

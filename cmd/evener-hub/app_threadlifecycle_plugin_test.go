@@ -228,3 +228,59 @@ func slicesContainOrderedFlag(args []string, flag, value string) bool {
 	}
 	return false
 }
+
+// A request the caller has already abandoned is refused whatever it selected.
+// thread/start validates plugins and then detaches from the request context to
+// finish the spawn, so a resolver error that IS the caller leaving is the one
+// error the handler must not walk past: with the default nil selection it was
+// dropped, and the hub spawned a session for a client that had gone.
+func TestThreadStartRefusesACancelledRequestWithNoPluginSelection(t *testing.T) {
+	spawner := &recordingSpawner{}
+	cfg := hubcore.WebConfig{LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(), Spawner: spawner}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := hubThreadStart(ctx, cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
+		CWD:   t.TempDir(),
+		Model: "openai/gpt-5",
+	})
+	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("ThreadStart error = %v, want the launch refused for the cancellation", err)
+	}
+	assertHubLaunchError(t, err)
+	if got := len(spawner.Spawns()); got != 0 {
+		t.Fatalf("spawn calls = %d, want 0", got)
+	}
+}
+
+// Admitting the launch is where the handler stops listening to the
+// connection: from the detach on, the outcome deliberately does not depend on
+// the caller's fate. So the last thing before it is one more look at that
+// connection — a request abandoned while its plugins were being validated must
+// not become a session nobody is waiting for.
+func TestThreadStartRefusesARequestCancelledDuringValidation(t *testing.T) {
+	spawner := &recordingSpawner{}
+	cfg := hubcore.WebConfig{LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(), Spawner: spawner}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resolve := hubResolvePlugins
+	t.Cleanup(func() { hubResolvePlugins = resolve })
+	hubResolvePlugins = func(ctx context.Context, root string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		resolution, err := resolve(ctx, root, dirs, enabled)
+		// The client goes while the inventory it asked for is being checked.
+		cancel()
+		return resolution, err
+	}
+
+	_, err := hubThreadStart(ctx, cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
+		CWD:   t.TempDir(),
+		Model: "openai/gpt-5",
+	})
+	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("ThreadStart error = %v, want the launch refused for the cancellation", err)
+	}
+	assertHubLaunchError(t, err)
+	if got := len(spawner.Spawns()); got != 0 {
+		t.Fatalf("spawn calls = %d, want 0", got)
+	}
+}

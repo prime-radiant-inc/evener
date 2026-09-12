@@ -23,6 +23,7 @@ export function mergeCatalogEntry(
 
   const optionalFields = [
     "contextWindow",
+    "maxInputTokens",
     "supportsTools",
     "supportsVision",
     "maxOutputTokens",
@@ -35,6 +36,15 @@ export function mergeCatalogEntry(
   for (const field of optionalFields) {
     const value = incoming[field];
     if (value !== undefined) Object.assign(merged, { [field]: value });
+  }
+  // Warnings are a finding about the resolution behind this snapshot, not a
+  // capability: the same model under a global location (or another project)
+  // arrives without them, and the later snapshot has its word. Keeping an
+  // earlier scope's warnings would warn about a location the pane has left.
+  if (incoming.warnings === undefined) {
+    delete merged.warnings;
+  } else {
+    merged.warnings = incoming.warnings;
   }
   if (incoming.supportsReasoning === false && incoming.reasoningEffortLevels === undefined) {
     merged.reasoningEffortLevels = [];

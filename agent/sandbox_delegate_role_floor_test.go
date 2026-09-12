@@ -24,6 +24,7 @@ func newReadOnlyRoleFloorSession(t *testing.T, lane string, facts sandbox.HostFa
 	}
 	childClient := llm.NewClient()
 	childClient.Register(childAdapter)
+	registerTestSessionNamer(childClient)
 	s := newSession(t,
 		withClient(parentClient),
 		withDir(lane),
@@ -104,7 +105,7 @@ func setWriteBlockedRestrictedParent(t *testing.T, parent *Session, facts sandbo
 	}
 	env := execenv.NewLocalExecutionEnvironment(cwd)
 	env.Sandbox = &resolved
-	parent.swapEnvAndRefresh(env)
+	parent.swapEnvAndRefresh(env, nil)
 }
 
 func TestCreateDelegate_ReadOnlyRoleSandboxRequestFloor(t *testing.T) {
@@ -174,7 +175,7 @@ func TestCreateDelegate_FilteredMutationToolUsesEffectiveCeilingFloor(t *testing
 			result := s.createDelegate(context.Background(), delegateArgs{
 				Task:                "inspect without workspace mutation",
 				AgentType:           "test:filtered-mutator",
-				DelegationAllowance: 0,
+				DelegationAllowance: new(0),
 				Sandbox:             tc.mode,
 			})
 			if !tc.allowed {

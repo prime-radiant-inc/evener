@@ -199,8 +199,7 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 
 	beforeMutation := len(recorder.snapshot())
 	arguments, _ := json.Marshal(map[string]any{
-		"action": "append",
-		"tasks": []map[string]any{{
+		"add": []map[string]any{{
 			"type": "implement", "description": "Shared follow-up", "prompt": "Do it.",
 		}},
 	})

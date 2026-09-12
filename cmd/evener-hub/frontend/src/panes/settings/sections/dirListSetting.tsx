@@ -19,7 +19,7 @@
 import { useId, useState } from "react";
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { LaunchConfigLayer } from "../../../protocol/types.gen";
-import { extensionsStore, useExtensionsStore } from "../../../stores/extensions";
+import { directoryActions, extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {
   Button,
   type CollectionAddResult,
@@ -33,6 +33,7 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import type { DirectoryActions } from "../../../widgets/pathfield";
 import styles from "./dirListSetting.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
 
@@ -58,6 +59,7 @@ export interface PathListEditorProps {
    * two directory lists browse directories, mcp.tsx's config-file list
    * browses files. */
   kind: PathFieldKind;
+  directory: DirectoryActions;
   items: readonly string[];
   onAdd: (path: string) => Promise<CollectionAddResult>;
   /** Fires only once the caller confirms the ConfirmDialog this widget
@@ -80,22 +82,14 @@ export interface PathListEditorProps {
   addPlaceholder?: string;
 }
 
-/**
- * The generic "list of paths" editor: a PathField add row (the whole field
- * browses, matching plugins.html/skills.html's own picker contract, and its
- * portaled panel sits outside CollectionEditor's add <form> so Enter inside the
- * picker picks a path rather than submitting the row - asserted by
- * dirListSetting.test.tsx's "Enter on a directory row descends without
- * submitting the add row"), a
- * ConfirmDialog-gated remove button per row, and an inline validation error
- * below the add row (CollectionEditor's own, already on token-
- * contract.test.ts's --danger allowlist as a widget). Reused by
- * DirListSetting below and by mcp.tsx's "MCP config files" list.
- */
+/** A shared path field stages a value; Add performs the domain write.
+ * Directory browsing and creation stop their submit events, so neither can
+ * submit this enclosing editor. Removal still requires confirmation. */
 export function PathListEditor({
   label,
   addLabel,
   kind,
+  directory,
   items,
   onAdd,
   onRemove,
@@ -137,6 +131,8 @@ export function PathListEditor({
               <div className={CLASS.addRow}>
                 <span className={CLASS.addField}>
                   <PathField
+                    ariaLabel={addLabel}
+                    directory={directory}
                     id={addFieldId}
                     value={value}
                     onChange={onChange}
@@ -244,6 +240,7 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
         <Skeleton />
       ) : (
         <PathListEditor
+          directory={directoryActions}
           label={label}
           addLabel="New directory"
           kind="dir"

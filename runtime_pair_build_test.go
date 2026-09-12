@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -379,9 +380,10 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 		"run lint":      false,
 	}
 	wantNodeCommands := map[string]bool{
-		"scripts/layoutguard/run.mjs":   false,
-		"scripts/overflowguard/run.mjs": false,
-		"scripts/spawnguard/run.mjs":    false,
+		"scripts/layoutguard/run.mjs":           false,
+		"scripts/overflowguard/run.mjs":         false,
+		"scripts/spawnguard/run.mjs":            false,
+		"scripts/transcriptscrollguard/run.mjs": false,
 	}
 	assertProcessState := func(tool, command string, fields []string, wantPrivateRoots bool) {
 		t.Helper()
@@ -464,7 +466,7 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 		t.Fatalf("create held Node readiness pipe: %v", err)
 	}
 	command.ExtraFiles = []*os.File{readyWriter}
-	var output bytes.Buffer
+	var output syncBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
@@ -545,7 +547,7 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish held browser fixture cleanup: %v; output = %s", err, output.String())
 	}
-	if retained := fullLogsPath(output.Bytes()); retained != browserRoot {
+	if retained := fullLogsPath([]byte(output.String())); retained != browserRoot {
 		t.Errorf("interrupted browser logs = %q, want retained process-owned root %q; output = %s", retained, browserRoot, output.String())
 	}
 	if _, err := os.Stat(browserRoot); err != nil {
@@ -632,10 +634,10 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 		t.Fatalf("make test-web-browser: %v\n%s", err, output)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("successful browser output has %d nonempty lines, want 4 verdicts; output = %q", len(lines), output)
+	if len(lines) != 5 {
+		t.Fatalf("successful browser output has %d nonempty lines, want 5 verdicts; output = %q", len(lines), output)
 	}
-	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard"} {
+	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard"} {
 		fields := strings.Fields(lines[index])
 		if len(fields) != 2 || fields[0] != "PASS" || fields[1] != "web-"+guard {
 			t.Errorf("browser verdict %d fields = %q, want PASS for %s", index, fields, guard)
@@ -683,22 +685,8 @@ func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 
 func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	retained := runFailedTestWeb(t, fixture)
 
-	command := exec.Command("make", "test-web")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "EVENER_TEST_NPM_FAIL_COMMAND=run test")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatalf("make test-web succeeded despite injected npm failure; output = %s", output)
-	}
-
-	retained := fullLogsPath(output)
-	if retained == "" {
-		t.Fatalf("make test-web did not name retained evidence; output = %s", output)
-	}
 	if !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
 		t.Fatalf("retained web root = %q, want child of inherited TMPDIR %q", retained, fixture.root)
 	}
@@ -706,6 +694,42 @@ func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(retained, relative)); statErr != nil {
 			t.Errorf("retained web evidence %s: %v", relative, statErr)
 		}
+	}
+}
+
+func TestMakeTestWebRetainsFailedProcessStateUnderSymlinkedTMPDIR(t *testing.T) {
+	// t.TempDir caches its base directory on the first call for the
+	// remainder of the test, so TMPDIR has to name the symlink before the
+	// fixture makes its first t.TempDir call; t.TempDir itself can't be
+	// used to build that symlink.
+	tempRoot, err := os.MkdirTemp("", "evener-symlinked-tmpdir")
+	if err != nil {
+		t.Fatalf("make temp root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempRoot) })
+	realTemp := filepath.Join(tempRoot, "real")
+	if err := os.Mkdir(realTemp, 0o755); err != nil {
+		t.Fatalf("mkdir real temp root: %v", err)
+	}
+	linked := filepath.Join(tempRoot, "link")
+	if err := os.Symlink(realTemp, linked); err != nil {
+		t.Fatalf("symlink temp root: %v", err)
+	}
+	t.Setenv("TMPDIR", linked)
+
+	fixture := newBuildWebFixture(t)
+
+	resolvedTemp, err := filepath.EvalSymlinks(realTemp)
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	if !strings.HasPrefix(fixture.root, resolvedTemp+string(os.PathSeparator)) {
+		t.Fatalf("fixture root = %q, want a path beneath the resolved temp root %q", fixture.root, resolvedTemp)
+	}
+
+	retained := runFailedTestWeb(t, fixture)
+	if !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
+		t.Fatalf("retained web root = %q, want child of inherited TMPDIR %q", retained, fixture.root)
 	}
 }
 
@@ -724,7 +748,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 		"EVENER_TEST_NPM_READY="+readyPath,
 		"EVENER_TEST_NPM_PID="+pidPath,
 	)
-	var output bytes.Buffer
+	var output syncBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
@@ -751,7 +775,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 		t.Fatalf("interrupted make test-web did not reap checks: %v; output = %s", err, output.String())
 	}
 
-	retained := fullLogsPath(output.Bytes())
+	retained := fullLogsPath([]byte(output.String()))
 	if retained == "" || !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
 		t.Fatalf("interrupted web logs = %q, want retained path beneath %q; output = %s", retained, fixture.root, output.String())
 	}
@@ -766,408 +790,6 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	}
 	if exec.Command("kill", "-0", heldPID).Run() == nil {
 		t.Fatalf("interrupted web check pid %s is still alive", heldPID)
-	}
-}
-
-func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	heldReady := filepath.Join(fixture.root, "held-npm.ready")
-	heldPID := filepath.Join(fixture.root, "held-npm.pid")
-	reapedPID := filepath.Join(fixture.root, "reaped-npm.pid")
-	waitedReaped := filepath.Join(fixture.root, "waited-reaped.ready")
-	waitRelease := filepath.Join(fixture.root, "wait-release")
-	killedReaped := filepath.Join(fixture.root, "killed-reaped")
-	recordingShell := filepath.Join(filepath.Dir(fixture.root), "recording-shell")
-	if err := syscall.Mkfifo(waitRelease, 0o600); err != nil {
-		t.Fatalf("make wait release FIFO: %v", err)
-	}
-	writeTestFile(t, recordingShell, []byte(`wait() {
-  command wait "$@"
-  wait_status=$?
-  tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
-  if [ "${1:-}" = "$tracked_pid" ] && [ "${reaped_gate:-0}" -eq 0 ]; then
-    reaped_gate=1
-	    exec 9<> "$EVENER_TEST_SHELL_WAIT_RELEASE"
-    : > "$EVENER_TEST_SHELL_WAITED_REAPED"
-	    read -r _ <&9
-  fi
-  return "$wait_status"
-}
-kill() {
-  tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
-  for kill_arg in "$@"; do
-    [ "$kill_arg" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_KILLED_REAPED"
-  done
-  command kill "$@"
-}
-`), 0o644)
-
-	// The wait/kill lifecycle lives inside scripts/web/test-web.sh, so the
-	// seam moved with it: BASH_ENV lands the recording functions in the
-	// script's own bash, where they shadow the builtins it calls.
-	command := exec.Command("make", "test-web")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		"BASH_ENV="+recordingShell,
-		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
-		"EVENER_TEST_NPM_READY="+heldReady,
-		"EVENER_TEST_NPM_PID="+heldPID,
-		"EVENER_TEST_NPM_TRACK_COMMAND=run typecheck",
-		"EVENER_TEST_NPM_TRACK_PID="+reapedPID,
-		"EVENER_TEST_SHELL_WAITED_REAPED="+waitedReaped,
-		"EVENER_TEST_SHELL_WAIT_RELEASE="+waitRelease,
-		"EVENER_TEST_SHELL_KILLED_REAPED="+killedReaped,
-	)
-	var output bytes.Buffer
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
-		t.Fatalf("start make test-web: %v", err)
-	}
-	// One waiter, started with the child: both readiness waits race against it,
-	// and the interrupt assertion below reads the same result.
-	run := startChild(command)
-	t.Cleanup(func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			<-run.done
-		}
-	})
-	if err := waitForPathOrExit(heldReady, run, readinessTripwire); err != nil {
-		t.Fatalf("held npm check did not become ready: %v; output = %s", err, output.String())
-	}
-	if err := waitForPathOrExit(waitedReaped, run, readinessTripwire); err != nil {
-		t.Fatalf("Make did not reap the completed typecheck before waiting on the held check: %v; output = %s", err, output.String())
-	}
-	release, err := os.OpenFile(waitRelease, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("open wait release FIFO: %v", err)
-	}
-	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
-		release.Close()
-		t.Fatalf("signal make test-web: %v", err)
-	}
-	if _, err := release.WriteString("release\n"); err != nil {
-		release.Close()
-		t.Fatalf("write wait release FIFO: %v", err)
-	}
-	if err := release.Close(); err != nil {
-		t.Fatalf("close wait release FIFO: %v", err)
-	}
-	if err := run.wait(); err == nil {
-		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
-	}
-	if _, err := os.Stat(killedReaped); !os.IsNotExist(err) {
-		t.Fatalf("interrupt signaled a PID after its npm check was reaped: stat err = %v; output = %s", err, output.String())
-	}
-}
-
-func TestMakeTestWebInterruptAtWaitHandoff(t *testing.T) {
-	for _, signal := range []string{"TERM", "INT"} {
-		t.Run(signal, func(t *testing.T) {
-			runWebWaitHandoff(t, signal, false, false)
-		})
-	}
-}
-
-func TestMakeTestWebInterruptAtWaitHandoffRejectsLostSignalMutation(t *testing.T) {
-	for _, signal := range []string{"TERM", "INT"} {
-		t.Run(signal, func(t *testing.T) {
-			runWebWaitHandoff(t, signal, true, false)
-		})
-	}
-}
-
-func TestMakeTestWebInterruptHandlesStaleRunningJobAfterWaitLosesOwnership(t *testing.T) {
-	runWebWaitHandoff(t, "TERM", false, true)
-}
-
-// runWebWaitHandoff drives the actual test-web shell at the boundary immediately
-// before its exact owned-child wait. The mutation restores the old
-// defer-signals-before-wait ordering; it must remain blocked after the parent
-// signal until the held child is independently released, proving this test is
-// mechanism RED rather than a missing production hook.
-func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob bool) {
-	t.Helper()
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	if mutate {
-		mutateWebWaitDeferral(t, fixture)
-	}
-	npmPIDPath := filepath.Join(fixture.root, "held-typecheck.pid")
-	npmReadyPath := filepath.Join(fixture.root, "held-typecheck.ready")
-	npmReleasePath := filepath.Join(fixture.root, "held-typecheck.release")
-	npmTermPath := filepath.Join(fixture.root, "held-typecheck.term")
-	waitReadyPath := filepath.Join(fixture.root, "wait.ready")
-	waitReleasePath := filepath.Join(fixture.root, "wait.release")
-	waitReapedPath := filepath.Join(fixture.root, "wait.reaped")
-	staleJobPath := filepath.Join(fixture.root, "stale-job")
-	staleJobControl := ""
-	if simulateStaleJob {
-		writeTestFile(t, staleJobPath, nil, 0o600)
-		staleJobControl = staleJobPath
-	}
-	for _, path := range []string{npmReadyPath, npmReleasePath, waitReadyPath, waitReleasePath} {
-		if err := syscall.Mkfifo(path, 0o600); err != nil {
-			t.Fatalf("make FIFO %s: %v", path, err)
-		}
-	}
-	bashEnv := filepath.Join(fixture.root, "wait-shell")
-	writeTestFile(t, bashEnv, []byte(`wait() {
-  tracked_pid=$(cat "$EVENER_TEST_NPM_PID")
-  if [ "${1:-}" = "$tracked_pid" ] && [ "${EVENER_TEST_WEB_WAIT_USED:-0}" -eq 0 ]; then
-    EVENER_TEST_WEB_WAIT_USED=1
-    printf '%s\n' "$$" > "$EVENER_TEST_WEB_WAIT_READY"
-    exec 9<> "$EVENER_TEST_WEB_WAIT_RELEASE"
-    read -r _ <&9
-  fi
-  command wait "$@"
-  wait_status=$?
-  : > "$EVENER_TEST_WEB_WAIT_REAPED"
-  if [ "${1:-}" = "$tracked_pid" ] && [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
-    return 127
-  fi
-  return "$wait_status"
-}
-jobs() {
-  if [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
-    cat "$EVENER_TEST_NPM_PID"
-    return
-  fi
-  command jobs "$@"
-}
-`), 0o644)
-
-	childRelease, err := os.OpenFile(npmReleasePath, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("open held-child release FIFO: %v", err)
-	}
-	npmReady, err := os.OpenFile(npmReadyPath, os.O_RDWR, 0)
-	if err != nil {
-		childRelease.Close()
-		t.Fatalf("open held-child readiness FIFO: %v", err)
-	}
-	waitReady, err := os.OpenFile(waitReadyPath, os.O_RDWR, 0)
-	if err != nil {
-		childRelease.Close()
-		npmReady.Close()
-		t.Fatalf("open wait readiness FIFO: %v", err)
-	}
-	waitRelease, err := os.OpenFile(waitReleasePath, os.O_RDWR, 0)
-	if err != nil {
-		childRelease.Close()
-		npmReady.Close()
-		waitReady.Close()
-		t.Fatalf("open wait release FIFO: %v", err)
-	}
-
-	command := exec.Command("make", "test-web")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		"BASH_ENV="+bashEnv,
-		"EVENER_TEST_NPM_HOLD_COMMAND=run typecheck",
-		"EVENER_TEST_NPM_PID="+npmPIDPath,
-		"EVENER_TEST_NPM_READY="+npmReadyPath,
-		"EVENER_TEST_NPM_HOLD_RELEASE="+npmReleasePath,
-		"EVENER_TEST_NPM_HOLD_TERM="+npmTermPath,
-		"EVENER_TEST_WEB_WAIT_READY="+waitReadyPath,
-		"EVENER_TEST_WEB_WAIT_RELEASE="+waitReleasePath,
-		"EVENER_TEST_WEB_WAIT_REAPED="+waitReapedPath,
-		"EVENER_TEST_WEB_STALE_JOB="+staleJobControl,
-	)
-	var output bytes.Buffer
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
-		childRelease.Close()
-		npmReady.Close()
-		waitReady.Close()
-		waitRelease.Close()
-		t.Fatalf("start make test-web: %v", err)
-	}
-	run := startChild(command)
-	t.Cleanup(func() {
-		_ = os.Remove(staleJobPath)
-		_, _ = childRelease.WriteString("cleanup\n")
-		_ = childRelease.Close()
-		_ = npmReady.Close()
-		_, _ = waitRelease.WriteString("cleanup\n")
-		_ = waitRelease.Close()
-		_ = waitReady.Close()
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			<-run.done
-		}
-	})
-
-	if _, err := readFIFORecord(npmReady, run, readinessTripwire); err != nil {
-		t.Fatalf("held child did not install its signal trap: %v; output = %s", err, output.String())
-	}
-	shellPID, err := readFIFORecord(waitReady, run, readinessTripwire)
-	if err != nil {
-		t.Fatalf("wait seam did not publish readiness: %v; output = %s", err, output.String())
-	}
-	if err := exec.Command("kill", "-"+signal, shellPID).Run(); err != nil {
-		t.Fatalf("signal test-web shell %s: %v", shellPID, err)
-	}
-	if _, err := waitRelease.WriteString("release\n"); err != nil {
-		t.Fatalf("release pre-wait seam: %v", err)
-	}
-
-	if mutate {
-		select {
-		case <-run.done:
-			t.Fatalf("lost-signal mutation exited before held child release; output = %s", output.String())
-		case <-time.After(2 * time.Second):
-		}
-		if _, err := os.Stat(npmTermPath); !os.IsNotExist(err) {
-			t.Fatalf("lost-signal mutation terminated held child; stat err = %v; output = %s", err, output.String())
-		}
-		if _, err := childRelease.WriteString("release\n"); err != nil {
-			t.Fatalf("release mutated held child: %v", err)
-		}
-		if err := waitForChildExit(run, 5*time.Second); err == nil {
-			t.Fatalf("lost-signal mutation eventually exited zero; output = %s", output.String())
-		} else if errors.Is(err, errChildExitTimeout) {
-			t.Fatalf("lost-signal mutation did not exit after held child release: %v; output = %s", err, output.String())
-		}
-		return
-	}
-
-	if err := waitForChildExit(run, 5*time.Second); err == nil {
-		t.Fatalf("external %s did not interrupt test-web; output = %s", signal, output.String())
-	} else if errors.Is(err, errChildExitTimeout) {
-		t.Fatalf("external %s did not interrupt test-web: %v; output = %s", signal, err, output.String())
-	}
-	if want := map[string]string{"TERM": "Error 143", "INT": "Error 130"}[signal]; !strings.Contains(output.String(), want) {
-		t.Fatalf("external %s status was not retained (%q); output = %s", signal, want, output.String())
-	}
-	if _, err := os.Stat(npmTermPath); err != nil {
-		t.Fatalf("held child termination evidence missing: %v; output = %s", err, output.String())
-	}
-	if _, err := os.Stat(waitReapedPath); err != nil {
-		t.Fatalf("exact wait/reap evidence missing: %v; output = %s", err, output.String())
-	}
-	if retained := fullLogsPath(output.Bytes()); retained == "" {
-		t.Fatalf("interrupted test-web did not retain evidence; output = %s", output.String())
-	}
-}
-
-func mutateWebWaitDeferral(t *testing.T, fixture runtimeBuildFixture) {
-	t.Helper()
-	path := filepath.Join(fixture.root, "scripts", "web", "test-web.sh")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read test-web mutation target: %v", err)
-	}
-	old := `	if wait "$pid"; then check_status=0; else check_status=$?; fi
-	# A completed wait removes the job from Bash's job table, which is the
-	# completion/ownership handoff and not a PID liveness guess vulnerable to
-	# reuse. Signals are not deferred here: Bash must wake this exact wait.
-	# Defer cleanup only while that result is committed to the owned PID list.
-	defer_signals=1
-	if ! owned_job_is_running "$pid"; then
-		forget_pid "$pid"
-	fi
-	defer_signals=0
-	printf '%s\n' "$check_status" >"$dir/$c.status"
-	consume_interrupt`
-	deferredWaitBlock := `	defer_signals=1
-	if wait "$pid"; then check_status=0; else check_status=$?; fi
-	if ! owned_job_is_running "$pid"; then
-		forget_pid "$pid"
-	fi
-	printf '%s\n' "$check_status" >"$dir/$c.status"
-	defer_signals=0
-	consume_interrupt`
-	if !bytes.Contains(data, []byte(old)) {
-		t.Fatal("test-web wait mutation target changed; update the mechanism RED test")
-	}
-	data = bytes.Replace(data, []byte(old), []byte(deferredWaitBlock), 1)
-	if err := os.WriteFile(path, data, 0o755); err != nil {
-		t.Fatalf("write test-web mutation: %v", err)
-	}
-}
-
-func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
-	for _, signal := range []string{"TERM", "INT"} {
-		t.Run(signal, func(t *testing.T) {
-			fixture := newBuildWebFixture(t)
-			frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-			writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-			writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-			readyPath := filepath.Join(fixture.root, "cleanup.ready")
-			releasePath := filepath.Join(fixture.root, "cleanup.release")
-			pidPath := filepath.Join(fixture.root, "cleanup.pid")
-			bashEnv := filepath.Join(fixture.root, "cleanup-shell")
-			if err := syscall.Mkfifo(releasePath, 0o600); err != nil {
-				t.Fatalf("make cleanup release FIFO: %v", err)
-			}
-			writeTestFile(t, bashEnv, []byte(`rm() {
-	case "$0" in *test-web.sh) ;; *) command rm "$@"; return ;; esac
-	printf '%s\n' "$$" > "$EVENER_TEST_WEB_CLEANUP_PID"
-	: > "$EVENER_TEST_WEB_CLEANUP_READY"
-	exec 9<> "$EVENER_TEST_WEB_CLEANUP_RELEASE"
-	while :; do read -r _ <&9 && break; done
-	command rm "$@"
-}
-`), 0o644)
-
-			command := exec.Command("make", "test-web")
-			command.Dir = fixture.root
-			command.Env = append(fixture.environment(""),
-				"BASH_ENV="+bashEnv,
-				"EVENER_TEST_WEB_CLEANUP_READY="+readyPath,
-				"EVENER_TEST_WEB_CLEANUP_RELEASE="+releasePath,
-				"EVENER_TEST_WEB_CLEANUP_PID="+pidPath,
-			)
-			var output bytes.Buffer
-			command.Stdout = &output
-			command.Stderr = &output
-			if err := command.Start(); err != nil {
-				t.Fatalf("start make test-web: %v", err)
-			}
-			run := startChild(command)
-			if err := waitForPathOrExit(readyPath, run, readinessTripwire); err != nil {
-				t.Fatalf("cleanup %s did not reach the signal point: %v; output = %s", signal, err, output.String())
-			}
-			release, err := os.OpenFile(releasePath, os.O_RDWR, 0)
-			if err != nil {
-				t.Fatalf("open cleanup release FIFO: %v", err)
-			}
-			pidData, err := os.ReadFile(pidPath)
-			if err != nil {
-				release.Close()
-				t.Fatalf("read cleanup shell pid: %v", err)
-			}
-			webPID := strings.TrimSpace(string(pidData))
-			t.Cleanup(func() {
-				_, _ = release.WriteString("cleanup\n")
-				_ = release.Close()
-				if command.ProcessState == nil {
-					_ = command.Process.Kill()
-					<-run.done
-				}
-			})
-			if err := exec.Command("kill", "-"+signal, webPID).Run(); err != nil {
-				t.Fatalf("signal cleanup shell: %v", err)
-			}
-			_, _ = release.WriteString("release\n")
-			_ = release.Close()
-			if err := run.wait(); err == nil {
-				t.Fatalf("cleanup %s exited zero; output = %s", signal, output.String())
-			} else if !strings.Contains(output.String(), "Error "+map[string]string{"TERM": "143", "INT": "130"}[signal]) {
-				t.Fatalf("cleanup %s did not preserve signal status; output = %s", signal, output.String())
-			}
-			if !strings.Contains(output.String(), "full logs: ") {
-				t.Fatalf("cleanup %s did not retain evidence after the signal: output = %s", signal, output.String())
-			}
-		})
 	}
 }
 
@@ -1260,6 +882,15 @@ func newRuntimeBuildFixture(t *testing.T) runtimeBuildFixture {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir fixture root: %v", err)
 	}
+	// The scripts under test resolve TMPDIR with `pwd -P`
+	// (scripts/lib/scratch-lib.sh) and report resolved paths back, so the
+	// fixture root has to be the resolved spelling for those paths to compare
+	// as children of it.
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve fixture root: %v", err)
+	}
+	root = resolved
 	fakeBin := filepath.Join(root, "fake-bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin: %v", err)
@@ -1432,6 +1063,33 @@ func startChild(command *exec.Cmd) *childRun {
 func (c *childRun) wait() error {
 	<-c.done
 	return c.err
+}
+
+// syncBuffer guards a live child's captured stdout/stderr with a mutex. Every
+// helper below wires one buffer as both Stdout and Stderr of a still-running
+// command and then reads it from a failure path — a readiness tripwire, a
+// lost-signal assertion — that can fire before the command's own Wait (via
+// childRun's run.done, or an inline waitDone channel) confirms the process
+// has exited. Wait does not return until the goroutine exec.Cmd runs to copy
+// the pipe into the buffer has itself finished, so a read that races ahead
+// of that signal races the copy under -race. A bare bytes.Buffer here is
+// what PR #766's race-root job caught; this type keeps every read and write
+// serialized regardless of which side gets there first.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func waitForPathOrExit(path string, run *childRun, tripwire time.Duration) error {
@@ -1657,6 +1315,29 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 	)
 }
 
+// runFailedTestWeb runs `make test-web` in fixture with the frontend test step
+// failing, and returns the retained evidence root the run named.
+func runFailedTestWeb(t *testing.T, fixture runtimeBuildFixture) string {
+	t.Helper()
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+
+	command := exec.Command("make", "test-web")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""), "EVENER_TEST_NPM_FAIL_COMMAND=run test")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("make test-web succeeded despite injected npm failure; output = %s", output)
+	}
+
+	retained := fullLogsPath(output)
+	if retained == "" {
+		t.Fatalf("make test-web did not name retained evidence; output = %s", output)
+	}
+	return retained
+}
+
 func browserEvidenceRoot(t *testing.T, fixture runtimeBuildFixture, command string) string {
 	t.Helper()
 	logData, err := os.ReadFile(fixture.logPath)
@@ -1687,6 +1368,17 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
+	// Every fixture write lands here, including the scripts/*.sh copies and
+	// the go/npm/node/git toolchain shims that make test-web and make build
+	// exec by relative path (issue #609). os.WriteFile leaves an open write
+	// fd that a concurrent fork inherits until it execs, failing that exec
+	// with ETXTBSY (golang/go#22315); holding ForkLock for reading across
+	// the write excludes such a fork, as writeExecutable (install_test.go)
+	// does for its own callers. Nothing reaching this helper runs parallel
+	// today, so taking the lock on every write forecloses the hazard by
+	// construction instead of leaning on test ordering.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, data, mode); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}

@@ -75,7 +75,7 @@ and assert what each tab converges to.
    ```
 2. **(browser-free)** Fire **two genuinely concurrent** answers as two separate clients,
    with deliberately different choices so the transcript shows unambiguously which one won.
-   Both bodies are the exact `[answers]` form the dock composes (`askCompose.ts:84-93`):
+   Both bodies are the exact `[answers]` form the dock composes (`cmd/evener-hub/frontend/src/protocol/askAnswers.ts:92-100`):
    ```bash
    out=$(mktemp -d -t evener-e2e-ask-race-XXXXX)
    answer() { jq -n --arg l "$1" '{text: ("[answers]\n1. [Deploy] → \"" + $l + "\"")}'; }
@@ -101,8 +101,8 @@ and assert what each tab converges to.
    Spawn a second asking session the same way as step 1 (call it `SID2`), wait for
    `awaiting`, then:
    ```
-   navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID2>     # tab 1
-   new_tab  $HUB/auth?token=<TOKEN>&next=/s/local:<SID2>     # tab 2
+   navigate $HUB/auth/<TOKEN>?next=/s/local:<SID2>     # tab 1
+   new_tab  $HUB/auth/<TOKEN>?next=/s/local:<SID2>     # tab 2
    ```
    Confirm both tabs render `[data-ask-response-dock]` for the same question
    (`await_element` in each).

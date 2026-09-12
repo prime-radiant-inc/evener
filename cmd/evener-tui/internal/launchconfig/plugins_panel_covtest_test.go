@@ -632,7 +632,7 @@ func TestCovRenderInstalledTabBadges(t *testing.T) {
 		{Plugin: "gamma", Marketplace: "mp", Enabled: true, AutoUpgrade: true, Version: "2.0"},
 	}}
 	v := p.renderInstalledTab()
-	for _, want := range []string{"alpha", "beta", "gamma", "BROKEN", "DISABLED", "AUTO-UPGRADE", "unknown"} {
+	for _, want := range []string{"alpha", "beta", "gamma", "BROKEN", "OFF BY DEFAULT", "AUTO-UPGRADE", "unknown"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("installed rows missing %q: %q", want, v)
 		}

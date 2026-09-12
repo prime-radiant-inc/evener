@@ -552,7 +552,21 @@ func (s *Session) InterruptClientMutation(
 		// the model anyway. The steer stays in PendingExecutions/SteeringOrder
 		// -- it never moves storage, so its causal provenance is never at risk
 		// (issue #146, Option C — park in place).
-		snapshot.SteeringHeld = true
+		//
+		// Only when there is steering to park, though. A hold armed over an
+		// empty rail catches nothing this Stop cancelled and everything the
+		// user steers afterwards: that steer is Applied, then parked behind a
+		// gate only turn/start, turn/queue, drainAsSteer or promote can clear,
+		// so it never reaches the model and never becomes a steering item in
+		// the transcript (issue #710). Nothing pending, nothing held.
+		//
+		// Assigned rather than set, so the hold is a total function of what is
+		// actually parked and cannot drift from it. No reachable path accepts
+		// a Stop with the hold already armed (a held session reads idle, and
+		// an idle session's Stop is refused), so this never clears one today;
+		// restore is where a hold persisted by the old unconditional write is
+		// released.
+		snapshot.SteeringHeld = snapshotHasPendingUserSteering(snapshot, target)
 		return nil
 	})
 	if err != nil {

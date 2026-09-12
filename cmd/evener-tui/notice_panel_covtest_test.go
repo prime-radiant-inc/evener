@@ -305,7 +305,7 @@ func TestCovNoticeSummaryForError_WireErrorNonProvider(t *testing.T) {
 
 func TestCovAddActionUnavailableNotice_WithReason(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "codex"
+	m.detail.SourceLabel = "remote"
 	m.addActionUnavailableNotice("send", "send not available", "source does not support send")
 	if len(m.notices) != 1 {
 		t.Fatalf("notice not added: %d", len(m.notices))
@@ -317,7 +317,7 @@ func TestCovAddActionUnavailableNotice_WithReason(t *testing.T) {
 
 func TestCovAddActionUnavailableNotice_AutoReasonWhenEmpty(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "codex"
+	m.detail.SourceLabel = "remote"
 	m.addActionUnavailableNotice("send", "send not available", "")
 	if len(m.notices) != 1 {
 		t.Fatalf("notice not added: %d", len(m.notices))
@@ -329,7 +329,7 @@ func TestCovAddActionUnavailableNotice_AutoReasonWhenEmpty(t *testing.T) {
 
 func TestCovAddActionUnavailableNotice_EmptyActionNoAutoReason(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "codex"
+	m.detail.SourceLabel = "remote"
 	m.addActionUnavailableNotice("", "summary", "")
 	if len(m.notices) != 1 {
 		t.Fatalf("notice not added: %d", len(m.notices))

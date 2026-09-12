@@ -12,7 +12,7 @@ import (
 
 // FuzzToolDefinitionsProgram builds every shipped tool definition, registers it
 // in the real Registry, and verifies that construction is deterministic and
-// does not share schema maps with registration-time purpose normalization. The
+// does not share schema maps with registration-time intent normalization. The
 // fuzz input varies the enum-bearing definitions (delegate, job_watch, and
 // task_list) and the custom communicate name; every generated value is encoded
 // into a valid tool identifier, so invalid-name rejection is not mistaken for a

@@ -1,26 +1,22 @@
 .card {
   display: flex;
   flex-direction: column;
-  background: var(--surface-1);
-  border-radius: var(--radius-pane);
-  /* --shadow-card embeds its own 1px ring, replacing a border. */
+  background: var(--surface-0);
+  border-radius: 0;
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 
-/* Micro-label pattern (Beautiful UI chrome pass, §2) - same header-band
- * shape as PaneScaffold's own title. */
+/* Sentence-case section label over fine-rule property rows. */
 .header {
   margin: 0;
   padding: var(--space-2) var(--space-4);
-  background: var(--surface-inset);
+  background: transparent;
   border-bottom: 1px solid var(--edge);
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
 }
 
 .body {

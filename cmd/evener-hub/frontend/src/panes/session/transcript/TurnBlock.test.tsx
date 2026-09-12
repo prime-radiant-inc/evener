@@ -73,6 +73,34 @@ test("tags the root with the turn id", () => {
   expect(container.querySelector('[data-turn-id="turn_42"]')).toBeTruthy();
 });
 
+test("wires a content-free thinking entry through TurnBlock to the placeholder (never the thought body)", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const projected = turn(
+    [item({ type: "reasoning", status: "inProgress", reasoningSummaries: [["abcdefghijklmnop"]] })],
+    {},
+    config,
+  );
+  render(withConfig(config, <TurnBlock turn={projected} />));
+  expect(screen.getByText(/Thinking…/)).toBeTruthy();
+  expect(screen.getByTestId("loader-grid")).toBeTruthy();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+});
+
+test("redacts a critical reasoning row on a terminal turn", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const projected = turn(
+    [item({ type: "reasoning", status: "failed", reasoningSummaries: [["abcdefghijklmnop"]] })],
+    { status: "interrupted" },
+    config,
+  );
+  render(withConfig(config, <TurnBlock turn={projected} />));
+  expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(document.querySelector("details")).toBeNull();
+});
+
 test("the turn root remains a centered, shrinkable reading column", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -124,114 +152,10 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   const items = [item({ id: "a", type: "commandExecution", toolName: "tb-tool-x", output: "tool output" })];
   render(<TurnBlock turn={turn(items)} />);
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
-  // A tool row starts collapsed and now mounts its body only while open, so the
-  // output is proof of dispatch only once the row is opened. The dispatch itself
-  // is what this test is about; the row above is already evidence of it, and the
-  // output confirms the descriptor's body ran rather than an empty shell.
-  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  // A tool row mounts its body only while open. At activity level
+  // (expandByDefault=true) the body auto-expands, so the output is already
+  // visible — confirming the descriptor's body ran rather than an empty shell.
   expect(screen.getByText("tool output")).toBeTruthy();
-});
-
-test("groups a settled non-final tool run behind its highest-consequence summary and keeps one row per call", () => {
-  const items = [
-    item({
-      id: "read-a",
-      type: "commandExecution",
-      toolName: "read_file",
-      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
-      status: "completed",
-    }),
-    item({
-      id: "write",
-      type: "commandExecution",
-      toolName: "write_file",
-      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
-      status: "completed",
-    }),
-    item({
-      id: "read-b",
-      type: "commandExecution",
-      toolName: "read_file",
-      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
-      status: "completed",
-    }),
-    item({ id: "reply", type: "agentMessage", text: "tests green" }),
-  ];
-  render(<TurnBlock turn={turn(items)} />);
-
-  const cluster = screen.getByTestId("tool-call-cluster");
-  expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
-  expect(screen.getAllByTestId("tool-call-cluster")).toHaveLength(1);
-  expect(screen.getAllByTestId("tool-row")).toHaveLength(1);
-  expect(cluster.textContent).toContain("3 steps");
-  expect(cluster.textContent).toContain("Wrote src/cache.go");
-  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
-
-  fireEvent.click(cluster.querySelector('[data-testid="tool-row-trigger"]')!);
-  expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
-  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
-});
-
-test("a cluster closes when the same virtualized turn and item ids switch sessions", () => {
-  const sessionAItems = [
-    item({
-      id: "shared-a",
-      type: "commandExecution",
-      toolName: "tb-session-tool",
-      argumentsJSON: JSON.stringify({ file_path: "session-a.txt" }),
-      output: "session A content",
-      status: "completed",
-    }),
-    item({
-      id: "shared-b",
-      type: "commandExecution",
-      toolName: "tb-session-tool",
-      argumentsJSON: JSON.stringify({ file_path: "session-a.txt" }),
-      output: "session A content",
-      status: "completed",
-    }),
-    item({
-      id: "shared-c",
-      type: "commandExecution",
-      toolName: "tb-session-tool",
-      argumentsJSON: JSON.stringify({ file_path: "session-a.txt" }),
-      output: "session A content",
-      status: "completed",
-    }),
-    item({ id: "shared-reply", type: "agentMessage", text: "session A reply" }),
-  ];
-  const sessionBItems = sessionAItems.map((entry) =>
-    entry.type === "commandExecution"
-      ? { ...entry, output: "session B content" }
-      : { ...entry, text: "session B reply" },
-  );
-  const sharedTurn = (items: ItemModel[]) => turn(items, { id: "shared-turn" });
-
-  const { rerender } = render(<TurnBlock turn={sharedTurn(sessionAItems)} sessionRef="session_a" />);
-  const cluster = screen.getByTestId("tool-call-cluster");
-  fireEvent.click(cluster.querySelector('[data-testid="tool-row-trigger"]')!);
-  expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
-  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
-
-  rerender(<TurnBlock turn={sharedTurn(sessionBItems)} sessionRef="session_b" />);
-
-  expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
-  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
-});
-
-test("suppressed task_list views do not create an empty cluster", () => {
-  const items = [
-    item({ id: "view-a", type: "commandExecution", toolName: "task_list", argumentsJSON: '{"action":"view"}' }),
-    item({ id: "view-b", type: "commandExecution", toolName: "task_list", argumentsJSON: '{"action":"view"}' }),
-    item({ id: "view-c", type: "commandExecution", toolName: "task_list", argumentsJSON: '{"action":"view"}' }),
-    item({ id: "view-reply", type: "agentMessage", text: "done" }),
-  ];
-
-  render(<TurnBlock turn={turn(items)} />);
-
-  expect(screen.queryByTestId("tool-call-cluster")).toBeNull();
-  expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
-  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
 });
 
 test("computes live per item from its own status, passed through to the renderer", () => {
@@ -324,26 +248,50 @@ test("with both hook toggles off, only a non-zero hook survives as a compact cri
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
 });
 
-test("a blank-purpose tool uses the projected neutral summary without a raw command summary", () => {
+test("an intent-less tool shows its own derived summary at chat and tools levels", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
-  const blankPurpose = item({
-    id: "critical-blank-purpose",
+  const blankIntent = item({
+    id: "critical-blank-intent",
     type: "commandExecution",
     toolName: "shell",
-    argumentsJSON: JSON.stringify({ command: "echo should-not-be-recomputed" }),
+    argumentsJSON: JSON.stringify({ command: "echo derived-summary" }),
     description: "  ",
     status: "completed",
   });
-  const { rerender } = render(withConfig(config, <TurnBlock turn={turn([blankPurpose], {}, config)} />));
+  const { rerender } = render(withConfig(config, <TurnBlock turn={turn([blankIntent], {}, config)} />));
 
-  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
-  expect(screen.getByText("Action summary unavailable")).toBeTruthy();
-  expect(screen.queryByText("Ran echo should-not-be-recomputed")).toBeNull();
+  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
+  // <details> children), so it is present even when the group is closed.
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
 
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
-  rerender(withConfig(tools, <TurnBlock turn={turn([blankPurpose], {}, tools)} />));
+  rerender(withConfig(tools, <TurnBlock turn={turn([blankIntent], {}, tools)} />));
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Action summary unavailable");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+});
+
+// Regression for session 034MY2rfMj2ho4Nj6J0jFB: an intent-less read_file row
+// rendered "Action summary unavailable" instead of the row's own
+// "Read <path> · lines N-M", because the projected neutral summary replaced the
+// descriptor's own summary. Every level must show the derived summary.
+test("an intent-less read_file shows the Read summary, never 'Action summary unavailable'", () => {
+  const read = item({
+    id: "read-no-intent",
+    type: "commandExecution",
+    toolName: "read_file",
+    argumentsJSON: JSON.stringify({ file_path: "src/foo.ts" }),
+    output: "line one\nline two\n",
+    description: "  ",
+    status: "completed",
+  });
+  for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
+    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
+    expect(screen.queryByText("Action summary unavailable")).toBeNull();
+    unmount();
+  }
 });
 
 test("Chat renders a closed action group that expands reasons without tool UI (catches missing Chat intent)", () => {
@@ -360,15 +308,18 @@ test("Chat renders a closed action group that expands reasons without tool UI (c
 
   const group = screen.getByTestId("intent-group");
   expect(group.hasAttribute("open")).toBe(false);
-  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
+  // <details> children), so it is present even when the group is closed.
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
 
   const summary = group.querySelector("summary");
   if (summary === null) throw new Error("Chat intent summary did not render");
   fireEvent.click(summary);
   expect(group.hasAttribute("open")).toBe(true);
   expect(screen.getByText("Run focused checks")).toBeTruthy();
+  // The body is not yet expanded, so private output is hidden.
   expect(screen.queryByText("private tool output")).toBeNull();
-  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
 });
 
 test("Intent renders an open action group without a tool row (catches closed Intent default)", () => {
@@ -386,7 +337,9 @@ test("Intent renders an open action group without a tool row (catches closed Int
   expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
   expect(screen.getByText("Read the configuration")).toBeTruthy();
   expect(screen.queryByText("private file output")).toBeNull();
-  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+  // ToolCallItem renders eagerly inside the open intent group. Its body
+  // (private output) is still collapsed.
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
 });
 
 test("named Intent opens only its action group while generic interaction and system disclosures stay closed", () => {
@@ -421,7 +374,12 @@ test("named Intent opens only its action group while generic interaction and sys
   );
 
   expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");
+  // At intent level, tool-row-trigger controls summaryOpen (not body). summaryOpenByDefault
+  // is false at intent level (toolCalls is false), so all summary triggers start collapsed.
+  const triggers = screen.getAllByTestId("tool-row-trigger");
+  for (const trigger of triggers) {
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  }
   expect(screen.getByTestId("system-notice-scaffold").hasAttribute("open")).toBe(false);
 });
 
@@ -439,10 +397,65 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   render(withConfig(config, <TurnBlock turn={turn([failedAction], { status: "completed" }, config)} />));
 
   expect(screen.getByTestId("intent-group")).toBeTruthy();
-  expect(screen.getByText("Action summary unavailable")).toBeTruthy();
   expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
-  expect(screen.queryByTestId("tool-call-item")).toBeNull();
-  expect(screen.queryByText("sensitive failure output")).toBeNull();
+  // ToolCallItem renders eagerly inside the intent group. The failed row
+  // auto-expands its body (failure earns the eye). While expanded, shell's
+  // summaryWhenExpanded placeholder is the summary line — "Action summary
+  // unavailable" is not shown either way, since the descriptor's own
+  // summary outranks the projected fallback — and the body's error output
+  // is the single representation of the command.
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  expect(screen.getByText("command failed")).toBeTruthy();
+  expect(screen.queryByText("Action summary unavailable")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+});
+
+test("intent row drills down through 3 levels: intent button -> summary, body chevron -> body", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+  const action = item({
+    id: "intent-drill-action",
+    type: "commandExecution",
+    toolName: "read_file",
+    description: "Read the configuration",
+    output: "private file output",
+    status: "completed",
+  });
+  render(withConfig(config, <TurnBlock turn={turn([action], { status: "completed" }, config)} />));
+
+  // Level 1: the intent group is open at intent level, showing the ToolCallItem.
+  expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
+  // ToolCallItem renders eagerly (jsdom does not hide <details> children).
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  // Tool icon is rendered (read_file uses the file icon kind).
+  expect(screen.getByTestId("tool-row-icon")).toBeTruthy();
+  // Intent text is visible.
+  expect(screen.getByText("Read the configuration")).toBeTruthy();
+  // The summary trigger (tool-row-trigger) controls summaryOpen, not body.
+  // At intent level summaryOpen defaults false, so the summary is hidden.
+  const summaryTrigger = screen.getByTestId("tool-row-trigger");
+  expect(summaryTrigger.getAttribute("aria-expanded")).toBe("false");
+  // The body trigger only renders once the summary is visible OR the body is
+  // expanded (ToolRow places it on the summary line or the intent line). With
+  // both collapsed it is not yet in the DOM.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+  // Private output is hidden (body not yet expanded).
+  expect(screen.queryByText("private file output")).toBeNull();
+
+  // Level 2: click the summary trigger to reveal the summary line.
+  fireEvent.click(summaryTrigger);
+  expect(summaryTrigger.getAttribute("aria-expanded")).toBe("true");
+  // The summary is now visible (read_file's summary text appears).
+  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+  // The body trigger now renders on the summary line.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByText("private file output")).toBeNull();
+
+  // Level 3: click the body trigger to reveal the body.
+  fireEvent.click(bodyTrigger);
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
+  // The private output is now visible.
+  expect(screen.getByText("private file output")).toBeTruthy();
 });
 
 test("a growing Chat group keeps its first-action identity and manually opened state (catches last-id key)", () => {
@@ -635,11 +648,14 @@ test("steering, systemMessage, and warning are run rows: they render INSIDE a ru
 });
 
 test("agentMessage and reasoning render inside a run-content wrapper", () => {
+  // At activity level reasoning=false hides reasoning items; use full level
+  // (reasoning=true) so the think-block renders.
+  const fullConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
   const items = [
     item({ id: "a", type: "agentMessage", text: "reply" }),
     item({ id: "r", type: "reasoning", reasoningSummaries: [["hmm"]], status: "completed" }),
   ];
-  render(<TurnBlock turn={turn(items)} />);
+  render(<TurnBlock turn={turn(items, {}, fullConfig)} />);
   expectInsideRunContent(screen.getByTestId("agent-message-item"));
   expectInsideRunContent(screen.getByTestId("think-block"));
 });
@@ -663,41 +679,6 @@ test("a lone commandExecution renders inside a run-content wrapper", () => {
   const items = [item({ id: "t", type: "commandExecution", toolName: "tb-tool-solo", output: "out" })];
   render(<TurnBlock turn={turn(items)} />);
   expectInsideRunContent(screen.getByTestId("tool-call-item"));
-});
-
-test("a ToolCallCluster is run content: it renders inside a run-content wrapper", () => {
-  const items = [
-    item({
-      id: "c-a",
-      type: "commandExecution",
-      toolName: "read_file",
-      argumentsJSON: JSON.stringify({ file_path: "src/x.go" }),
-      status: "completed",
-    }),
-    item({
-      id: "c-b",
-      type: "commandExecution",
-      toolName: "write_file",
-      argumentsJSON: JSON.stringify({ file_path: "src/x.go" }),
-      status: "completed",
-    }),
-    item({
-      id: "c-c",
-      type: "commandExecution",
-      toolName: "read_file",
-      argumentsJSON: JSON.stringify({ file_path: "src/x.go" }),
-      status: "completed",
-    }),
-    // A trailing agent message keeps the run non-final - toolGrouping's
-    // shouldGroup never groups the turn's last activity.
-    item({ id: "c-reply", type: "agentMessage", text: "done" }),
-  ];
-  render(<TurnBlock turn={turn(items)} />);
-  const cluster = screen.getByTestId("tool-call-cluster");
-  expectInsideRunContent(cluster);
-  // One wrapper for the cluster (keyed on the run's first item id) plus one
-  // for the trailing agent message - the three clustered calls share one.
-  expect(screen.getAllByTestId("run-content")).toHaveLength(2);
 });
 
 test("an unknown future item type defaults to run content", () => {
@@ -741,4 +722,131 @@ test("the turn column can shrink below its content's natural width", () => {
   const turn = css.match(/\.turn \{([^}]*)\}/);
   expect(turn).not.toBeNull();
   expect(turn![1]).toContain("min-width: 0");
+});
+
+// --- Folding a settled run of tool calls (critique R9) --------------------
+//
+// These render at the "tools" level - the shipped desktop default, whose
+// expandedDetails is off, so a fold actually folds. At "activity"/"full" the
+// reader has asked for everything expanded and a run opens with the rest.
+
+const TOOLS_CONFIG = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function toolItem(id: string, toolName: string, overrides: Partial<ItemModel> = {}): ItemModel {
+  return item({
+    id,
+    type: "commandExecution",
+    toolName,
+    status: "completed",
+    argumentsJSON: JSON.stringify({ file_path: `${id}.ts` }),
+    ...overrides,
+  });
+}
+
+function renderTools(items: ItemModel[], turnOverrides: Partial<TurnModel> = { status: "completed" }) {
+  render(withConfig(TOOLS_CONFIG, <TurnBlock turn={turn(items, turnOverrides, TOOLS_CONFIG)} />));
+}
+
+function openRun() {
+  const summary = screen.getByTestId("tool-run").querySelector("summary");
+  if (summary === null) throw new Error("the folded run rendered no summary to click");
+  fireEvent.click(summary);
+}
+
+test("a settled turn folds three quiet tool calls into one row that opens to them", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")]);
+  expect(screen.getAllByTestId("tool-run")).toHaveLength(1);
+  expect(screen.queryAllByTestId("tool-row")).toHaveLength(0);
+  openRun();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(3);
+});
+
+test("the folded row counts the steps and names the consequential one", () => {
+  renderTools([
+    toolItem("a", "read_file"),
+    toolItem("b", "write_file", { argumentsJSON: JSON.stringify({ file_path: "foo.py" }) }),
+    toolItem("c", "read_file"),
+  ]);
+  expect(screen.getByTestId("tool-run").textContent).toContain("3 steps · Wrote foo.py");
+});
+
+test("a folded run's anchor lists the entries it stands in for", () => {
+  // roborev on PR #947: scroll/focus restoration for the second or third call
+  // needs a way from that call's id to the one anchor the run renders.
+  render(
+    withConfig(
+      TOOLS_CONFIG,
+      <TurnBlock
+        turn={turn(
+          [toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")],
+          { status: "completed" },
+          TOOLS_CONFIG,
+        )}
+        viewAnchorIndex={0}
+      />,
+    ),
+  );
+  const anchor = document.querySelector('[data-view-anchor-id="run:a"]');
+  expect(anchor?.getAttribute("data-view-anchor-members")).toBe("a,b,c");
+});
+
+test("two calls are not a run: they keep their own rows", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file")]);
+  expect(screen.queryByTestId("tool-run")).toBeNull();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(2);
+});
+
+test("a failed call breaks the run: every row stays visible", () => {
+  renderTools([
+    toolItem("a", "read_file"),
+    toolItem("b", "read_file", { status: "failed", error: "no such file" }),
+    toolItem("c", "read_file"),
+    toolItem("d", "read_file"),
+  ]);
+  expect(screen.queryByTestId("tool-run")).toBeNull();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(4);
+});
+
+test("a live turn never folds: each call keeps its own row while the agent works", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")], {
+    status: "inProgress",
+  });
+  expect(screen.queryByTestId("tool-run")).toBeNull();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(3);
+});
+
+test("a never-fold tool splits the run around itself", () => {
+  renderTools([
+    toolItem("a", "read_file"),
+    toolItem("b", "use_skill"),
+    toolItem("c", "read_file"),
+    toolItem("d", "read_file"),
+    toolItem("e", "read_file"),
+  ]);
+  expect(screen.getAllByTestId("tool-run")).toHaveLength(1);
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(2);
+});
+
+test("a folded run takes the run-content indent, like the rows it stands in for", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")]);
+  expectInsideRunContent(screen.getByTestId("tool-run"));
+});
+
+test("a folded run keeps a view anchor so scroll coordination still has a position for it", () => {
+  render(
+    withConfig(
+      TOOLS_CONFIG,
+      <TurnBlock
+        turn={turn(
+          [toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")],
+          { status: "completed" },
+          TOOLS_CONFIG,
+        )}
+        viewAnchorIndex={7}
+      />,
+    ),
+  );
+  const anchor = document.querySelector('[data-view-anchor-id="run:a"]');
+  expect(anchor).not.toBeNull();
+  expect(anchor?.getAttribute("data-view-anchor-index")).toBe("7");
 });

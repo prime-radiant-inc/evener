@@ -1,7 +1,7 @@
 // Harness/model helpers for the spawn form. "Evener-model harness" = the one
 // whose models the model chip + sticky-default + stale-model logic apply to
-// (kind "evener"); other harnesses (kind "codex") carry the model through
-// unmanaged. Mirrors app_models.go's descriptor kinds ("evener" vs "codex").
+// (kind "evener"); other harnesses (for example, kind "external") carry the
+// model through unmanaged. The generic HarnessDescriptor kind remains opaque.
 import type { HarnessDescriptor } from "../../protocol/types.gen";
 
 export function harnessUsesEvenerModels(harnessId: string, harnesses: HarnessDescriptor[]): boolean {

@@ -199,7 +199,7 @@ func stceCompaction(t *testing.T) {
 		t.Fatal("nil context manager compact succeeded")
 	}
 	s.contextMgr = mgr
-	if records := s.runPreCompactHook(context.Background(), nil); records != nil {
+	if records, _ := s.runPreCompactHook(context.Background(), nil); records != nil {
 		t.Fatalf("nil history records = %#v", records)
 	}
 	history := []schema.Turn{}
@@ -221,7 +221,7 @@ func stceCompaction(t *testing.T) {
 	s.hookRunner = runner
 	s.runPreCompactHook(context.Background(), &history)
 
-	_, emit, flush := s.compactionEmitFunc(context.Background(), &history)
+	_, emit, flush, _ := s.compactionEmitFunc(context.Background(), &history)
 	emit(events.EventWarning, events.WarningData{Message: "unrelated"})
 	emit(events.EventContextCompaction, events.ContextCompactionData{})
 	emit(events.EventContextCompaction, events.ContextCompactionData{})

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // failureLoopExcerptRunes bounds the failure excerpt carried by the structural
@@ -21,7 +22,7 @@ func (s *Session) stuckEscalation(count int) string {
 		s.mu.Lock()
 		prev := s.cfg.ReasoningEffort
 		switch prev {
-		case "", "low", "medium":
+		case "", llm.ReasoningEffortNone, "low", "medium":
 			s.cfg.ReasoningEffort = "high"
 		case "high", "xhigh":
 			// "max" is the top of evener's effort lattice; the per-model clamp

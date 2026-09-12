@@ -274,8 +274,8 @@ func TestDocFile_UnknownSession404(t *testing.T) {
 
 func TestDocFile_NonLocalSession404(t *testing.T) {
 	web, _, _ := docServeTestServer(t)
-	// A non-local (remote/codex) ref must be skipped — local sources only.
-	rec := docRequest(t, web, "codex:th_remote", "README.md")
+	// A non-local remote ref must be skipped — local sources only.
+	rec := docRequest(t, web, "remote:th_remote", "README.md")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("non-local session should 404, got %d body=%q", rec.Code, rec.Body.String())
 	}
@@ -411,7 +411,7 @@ func TestDocFile_Raw_UnknownSession404(t *testing.T) {
 
 func TestDocFile_Raw_NonLocalSession404(t *testing.T) {
 	web, _, _ := docServeTestServer(t)
-	rec := docRawRequest(t, web, "codex:th_remote", "README.md")
+	rec := docRawRequest(t, web, "remote:th_remote", "README.md")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("non-local session should 404, got %d body=%q", rec.Code, rec.Body.String())
 	}

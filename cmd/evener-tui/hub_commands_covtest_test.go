@@ -400,7 +400,7 @@ func TestCovFetchHubStatus(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			readCalls++
-			if params.Ref != "local:01TEST" || !params.IncludeTurns || params.ItemsView != "full" {
+			if params.Ref != "local:01TEST" || params.IncludeTurns || params.ItemsView != "" || params.ItemLimit != 0 {
 				t.Errorf("thread/read params = %#v", params)
 			}
 			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
@@ -444,31 +444,6 @@ func TestCovFetchHubTranscriptTargets(t *testing.T) {
 	msg, ok := fetchHubTranscriptTargets(client, ref)().(hubTranscriptTargetsMsg)
 	if !ok || msg.err != nil || len(msg.targets) != 1 || msg.targets[0].Ref != "local:01CHILD" {
 		t.Fatalf("transcript targets result = %#v", msg)
-	}
-}
-
-// TestCovFetchHubModelsForHarness exercises model fetch for harness.
-func TestCovFetchHubModelsForHarness(t *testing.T) {
-	var calls []appwire.ModelListParams
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-			calls = append(calls, params)
-			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
-		})
-	})
-	defer cleanup()
-	msg, ok := fetchHubModelsForHarness(client, "codex", "/tmp")().(hubModelsMsg)
-	if !ok || msg.err != nil || msg.harness != "codex" || len(msg.models) != 1 || msg.models[0].ID != "gpt-5" {
-		t.Fatalf("harness model result = %#v", msg)
-	}
-
-	// Empty harness (trimmed).
-	msg, ok = fetchHubModelsForHarness(client, "  ", "/tmp")().(hubModelsMsg)
-	if !ok || msg.err != nil || msg.harness != "" || len(msg.models) != 1 || msg.models[0].ID != "openai/gpt-5" {
-		t.Fatalf("default model result = %#v", msg)
-	}
-	if len(calls) != 2 || calls[0].Harness != "codex" || calls[0].CWD != "/tmp" || calls[1].Harness != "" || calls[1].CWD != "/tmp" {
-		t.Fatalf("model/list calls = %#v", calls)
 	}
 }
 
@@ -563,16 +538,37 @@ func TestCovFetchHubSessionRead(t *testing.T) {
 // TestCovReasoningEffortLevelKnown exercises the level check.
 func TestCovReasoningEffortLevelKnown(t *testing.T) {
 	levels := []string{"low", "medium", "high"}
-	if !reasoningEffortLevelKnown(levels, "high") {
+	if !reasoningEffortLevelSettable(levels, "high") {
 		t.Fatal("should find 'high'")
 	}
-	if !reasoningEffortLevelKnown(levels, "HIGH") {
+	if !reasoningEffortLevelSettable(levels, "HIGH") {
 		t.Fatal("should find 'HIGH' (case-insensitive)")
 	}
-	if reasoningEffortLevelKnown(levels, "xhigh") {
+	if !reasoningEffortLevelSettable(levels, "none") {
+		t.Error("reasoningEffortLevelSettable(none) = false, want true (explicit off is always settable; it omits the field where the model has no off level)")
+	}
+	if !reasoningEffortLevelSettable(levels, "off") {
+		t.Error("reasoningEffortLevelSettable(off) = false, want true (disable alias)")
+	}
+	if got := effortChoices(levels); len(got) != len(levels)+1 || got[len(got)-1] != "none" {
+		t.Errorf("effortChoices(%v) = %v, want the ladder plus a trailing none", levels, got)
+	}
+	if got := effortChoices([]string{"none", "low"}); len(got) != 2 {
+		t.Errorf("effortChoices with a ladder-listed none = %v, want no duplicate", got)
+	}
+	if got := effortDisplay("none", levels); got != "none (provider default)" {
+		t.Errorf("effortDisplay(none, %v) = %q, want the provider-default label where the ladder has no off level", levels, got)
+	}
+	if got := effortDisplay("none", []string{"none", "low"}); got != "none (off)" {
+		t.Errorf("effortDisplay(none, [none low]) = %q, want the off label where the ladder lists it", got)
+	}
+	if got := effortDisplay("high", levels); got != "high" {
+		t.Errorf("effortDisplay(high) = %q, want the level itself", got)
+	}
+	if reasoningEffortLevelSettable(levels, "xhigh") {
 		t.Fatal("should not find 'xhigh'")
 	}
-	if reasoningEffortLevelKnown(nil, "high") {
+	if reasoningEffortLevelSettable(nil, "high") {
 		t.Fatal("should not find in nil levels")
 	}
 }
@@ -604,10 +600,10 @@ func TestCovIsDatedSnapshotModelID(t *testing.T) {
 	}
 }
 
-// TestCovModelInfoMetaTail exercises catalog meta tail rendering.
+// TestCovModelInfoMetaTail exercises descriptor meta tail rendering.
 func TestCovModelInfoMetaTail(t *testing.T) {
-	// Nil.
-	if got := modelInfoMetaTail(nil); got != "" {
+	// A descriptor carrying nothing but its identity.
+	if got := modelInfoMetaTail(appwire.ModelDescriptor{Provider: "p", Model: "m"}); got != "" {
 		t.Fatalf("got %q, want empty", got)
 	}
 }

@@ -8,15 +8,10 @@
  * palette. Every consumer just writes var(--name) and never branches on
  * theme.
  *
- * Visual language: adapted from Beautiful UI (https://www.beautifului.dev),
- * MIT License, Copyright (c) 2026 Shane Levine — see LICENSES/beautiful-ui.txt.
- * Adopted in full per docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
- * retheme-design.md, superseding the 2026-07-31 "Fjord"/"Ledger" palettes
- * (docs/web-ui/decisions.md). Values that deviate from Beautiful UI's are
- * commented at the declaration; each deviation exists to satisfy a contract
- * guarantee (AA text contrast, diff-marker contrast) their showcase does
- * not enforce. Type scale, space grid, and the attention-semantics thesis
- * are unchanged from the wave-2 plan.
+ * Editorial instrument (2026-09-09): warm paper/ink, reading serif and flat
+ * structural surfaces. Supersedes Beautiful UI's aesthetic mandate, not its
+ * interaction contracts or attribution: MIT, Copyright (c) 2026 Shane Levine,
+ * https://www.beautifului.dev — see LICENSES/beautiful-ui.txt.
  */
 
 :root,
@@ -24,24 +19,24 @@
   color-scheme: dark;
 
   /* --- surfaces + ink (dark, default) ----------------------------------
-   * Six-step neutral ramp replacing the old three: page, pane wells, cards,
-   * inset bands (card headers, code gutters), and the two interaction
+   * Warm neutral roles: page, pane wells, evidence, insets/code gutters
+   * and the two interaction
    * washes. Raised layers (menus, dialogs) share --surface-1's value and
    * carry their depth via --shadow-overlay instead of a lighter fill.
    */
-  --surface-0: #17181A; /* app background — page */
-  --surface-canvas: #1C1D1F; /* pane wells, rail */
-  --surface-1: #232427; /* panes, cards */
-  --surface-2: #232427; /* raised: menus, dialogs — depth comes from shadow */
-  --surface-inset: #1F2022; /* card header bands, gutters */
-  --hover-1: #2A2B2E; /* resting hover wash */
-  --hover-2: #313236; /* pressed / selected */
-  --field: #2B2C2F; /* form-control background (sunken fields) */
-  --edge: #2E3033; /* hairline borders */
-  --edge-strong: #3A3C40; /* control borders, overlay rings */
-  --ink-hi: #F2F3F4; /* primary text */
-  --ink-mid: #A5A8AD; /* secondary text */
-  --ink-low: #6C6F75; /* placeholders, disabled, timestamps */
+  --surface-0: #191918; /* app background — page */
+  --surface-canvas: #1D1D1B; /* pane wells, rail */
+  --surface-1: #232320; /* structural content */
+  --surface-2: #232320; /* raised: menus, dialogs — depth comes from shadow */
+  --surface-inset: #20201E; /* evidence insets, gutters */
+  --hover-1: #2B2B28; /* resting hover wash */
+  --hover-2: #33332F; /* pressed / selected */
+  --field: #292926; /* form-control background (sunken fields) */
+  --edge: #34342F; /* hairline borders */
+  --edge-strong: #51514A; /* control borders, overlay rings */
+  --ink-hi: #F2F1EB; /* primary text */
+  --ink-mid: #B0AFA6; /* secondary text */
+  --ink-low: #99998F; /* placeholders, disabled, timestamps — AA, token-contract */
 
   /* --- the four attention-family hues (dark) --------------------------
    * Exactly one meaning per hue, everywhere in the app. Reaching for one
@@ -118,24 +113,26 @@
   --ansi-bright-white: #FFFFFF;
 
   /* --- type -------------------------------------------------------------
-   * Inter for UI + prose, JetBrains Mono for code/tool output/paths/
-   * timings (never for chrome labels). Both variable fonts, self-hosted
+   * Inter for UI, Source Serif 4 for prose, JetBrains Mono for code/paths/
+   * timings (never for chrome labels). All variable fonts, self-hosted
    * from @fontsource-variable packages — see src/styles/global.css.
    */
   --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-prose: "Source Serif 4 Variable", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
   --tracking-display: -0.02em; /* display weight (600) titles only */
-  --tracking-micro: 0.08em; /* uppercase micro-labels (card/pane section headers) */
+  --tracking-eyebrow: 0.06em; /* THE uppercase eyebrow tracking: caption size, <=2 words, never sentences */
 
   /* The type ramp itself is declared on <body> (see the font-size preference
    * gate below), not here, so the Settings → Theme font-size choice can scale
    * the whole ramp. Only the theme-invariant line-heights stay at the root. */
-  --line-height-body: 1.5;
-  --line-height-title: 1.3;
+  --line-height-body: 1.6; /* 15px -> 24px, on the 4px grid */
+  --line-height-title: 1.25;
+  --line-height-ui: 1.4; /* dense chrome rows: rail, status row, tables */
 
   /* --- space + shape ------------------------------------------------- */
   /* 4px grid. */
@@ -149,6 +146,13 @@
   --space-8: 48px;
   --space-9: 64px;
 
+  /* Vertical rhythm, named by what sits on either side (docs/web-ui/
+   * typography-spacing-critique-2026-09-06.md R3). */
+  --rhythm-line: var(--space-1); /* 4: inside one item (intent -> call) */
+  --rhythm-item: var(--space-2); /* 8: between items in a run */
+  --rhythm-group: var(--space-4); /* 16: run -> next speaker header; above a turn footer */
+  --rhythm-exchange: var(--space-5); /* 24: above a user message */
+
   /* Transcript speaker geometry, declared once for every surface that
    * renders speaker rows (session pane's turn blocks AND focused view, the
    * read-only transcript pane, the surfaces gallery — sibling render trees
@@ -158,9 +162,9 @@
   --speaker-gap: 10px; /* deliberately off the 4px grid: measured rhythm */
   --speaker-gutter: 34px;
 
-  --radius-chip: 6px; /* chips, badges, small tags */
-  --radius-control: 8px; /* buttons, inputs */
-  --radius-pane: 10px; /* panes, cards, dialogs */
+  --radius-chip: 3px; /* chips, badges, small tags */
+  --radius-control: 4px; /* buttons, inputs */
+  --radius-pane: 4px; /* panes, cards, dialogs */
   --radius-pill: 999px; /* pill geometry: switch track */
 
   /* --- focus ring ------------------------------------------------------
@@ -192,17 +196,11 @@
   --z-toast: 1040; /* toasts top the app's own ladder */
 
   /* --- elevation -------------------------------------------------------
-   * Every shadow embeds its own 1px ring, so a shadowed element never also
-   * declares a border for the same edge. Two elevations shipped: card
-   * (panes/cards) and overlay (menus/popovers/toasts/dialogs/sheets);
-   * inset-field sinks form controls into --field. Beautiful UI's btn/
-   * raised/hairline rungs were not adopted — evener's Button has no
-   * bordered-neutral variant and nothing needed a mid float, so the
-   * tokens would be dead weight until a consumer exists. The soft-layer
-   * alphas are per-theme (declared in each block); --shadow-color feeds
-   * the sheet's edge-directed variants, which keep their own geometry.
+   * Structure is flat. Floating layers retain a ring and soft shadow;
+   * fields retain their inset and explicit border. --shadow-card remains
+   * available for API compatibility, with no structural elevation.
    */
-  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #00000033, 0 2px 6px #00000033;
+  --shadow-card: none;
   --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000057;
   --shadow-inset-field: inset 0 1px 2px #00000066;
   --shadow-color: #00000057;
@@ -221,38 +219,29 @@
   --motion-easing-standard: ease-out;
 }
 
-/* Light theme: same token names, values flipped around neutral near-white
- * surfaces. Cards (--surface-1 white) sit LIGHTER than the page — the
- * inversion of the old Ledger ordering is deliberate, it is how cards pop
- * without heavier borders. The four attention-family -ink companions each
- * clear WCAG AA (>=4.5:1) against --surface-0 and --surface-1; the BARE
- * hues here do NOT (2.8–3.9:1 — fine for glyphs/borders/washes, never for
- * text), which is exactly why -ink exists.
- *
- * Both selector forms are declared so the flip works whether data-theme
- * lands on <html> (real app) or on a nested wrapper div (gallery
- * side-by-side theme comparison).
+/* Light theme: warm paper, neutral ink. Nested wrappers support the real
+ * gallery's side-by-side comparison. Overlays retain a distinct surface;
+ * structural cards rely on spacing/rules, not elevation. Semantic -ink
+ * companions clear AA against surfaces and their own tinted backgrounds.
  */
 :root[data-theme="light"],
 [data-theme="light"] {
   color-scheme: light;
 
-  --surface-0: #FAFAFB;
-  --surface-canvas: #F1F2F3;
-  --surface-1: #FFFFFF;
-  --surface-2: #FFFFFF;
-  --surface-inset: #F7F8F9;
-  --hover-1: #F4F5F6;
-  --hover-2: #E7E9EB;
-  --field: #F2F2F3;
-  --edge: #ECEDEF;
-  --edge-strong: #E0E2E5;
-  --ink-hi: #1F2124;
-  --ink-mid: #62656B;
-  /* Beautiful UI's #9A9DA3 is too light to serve as the diff marker ink
-   * (the contract needs >=3:1 on the diff washes); darkened to the nearest
-   * neutral that clears it. */
-  --ink-low: #86898F;
+  --surface-0: #FAF9F6;
+  --surface-canvas: #F1F0EB;
+  --surface-1: #FCFBF8;
+  --surface-2: #FCFBF8;
+  --surface-inset: #F4F3EE;
+  --hover-1: #F0EFE9;
+  --hover-2: #E5E4DD;
+  --field: #F4F3EF;
+  --edge: #DDDCD4;
+  --edge-strong: #B7B6AC;
+  --ink-hi: #252521;
+  --ink-mid: #5F5F57;
+  /* Quiet text still clears AA on both page and structural surface. */
+  --ink-low: #6D6D64;
 
   /* Deviation from Beautiful UI's #EF720C: its 15%/24% -bg tints on white
    * render salmon/peach (#FFEBE0/#FFDFCD, oklch hue ~51deg), while the design
@@ -278,9 +267,9 @@
    * both light surfaces and each hue's own near-white -bg tint (the
    * strictest ground -ink text actually sits on). */
   --attention-ink: #AD5209;
-  --alive-ink: #137A3D;
-  --danger-ink: #CE1F25;
-  --accent-ink: #0069CA;
+  --alive-ink: #12763B;
+  --danger-ink: #C51D23;
+  --accent-ink: #0064C2;
 
   /* Tooltip stays inverted (near-black) in the light theme too. */
   --tooltip-bg: #25272B;
@@ -289,8 +278,8 @@
   --tooltip-border: #3A3C40;
 
   /* Diff notation remains domain-specific rather than a status signal. */
-  --diff-add-bg: #EBF7F6;
-  --diff-del-bg: #FAEEFA;
+  --diff-add-bg: #E9F4EE;
+  --diff-del-bg: #F5EAF0;
 
   /* Grayscale entries follow the new neutral inks; chromatic entries carry
    * over from the Ledger tuning (all AA-checked against warm paper, which
@@ -313,7 +302,7 @@
   --ansi-bright-cyan: #0E7490;
   --ansi-bright-white: #17181A;
 
-  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #1018280A, 0 2px 6px #10182808;
+  --shadow-card: none;
   --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000011;
   --shadow-inset-field: inset 0 1px 2px #0000001F;
   --shadow-color: #00000011;
@@ -335,11 +324,27 @@
  */
 body {
   --font-scale: 1;
-  --font-size-caption: calc(12px * var(--font-scale));
-  --font-size-ui: calc(13px * var(--font-scale));
-  --font-size-body: calc(14px * var(--font-scale));
-  --font-size-pane-title: calc(16px * var(--font-scale));
-  --font-size-page-title: calc(20px * var(--font-scale));
+  --font-size-caption: calc(12px * var(--font-scale)); /* timestamps, meta */
+  --font-size-ui: calc(13px * var(--font-scale)); /* dense chrome: rail rows, status row, tables, chips, controls */
+  --font-size-body: calc(15px * var(--font-scale)); /* composer, forms, settings values */
+  --font-size-prose: calc(18px * var(--font-scale)); /* reading text in either viewport */
+  --font-size-pane-title: calc(18px * var(--font-scale)); /* pane/sheet/dialog titles: sentence case, semibold */
+  --font-size-page-title: calc(22px * var(--font-scale)); /* section headings, the spawn heading */
+  --font-size-display: calc(28px * var(--font-scale)); /* welcome hero only */
+  /* Every editable control (input, select, textarea, and the raw ones a pane
+   * renders itself) sizes its text from this: the ui step on desktop, the
+   * 16px body step on phones, because iOS Safari zooms into any focused
+   * field under 16px and index.html no longer locks zoom to hide that. */
+  --font-size-control: var(--font-size-ui);
+  /* The conversation column and everything aligned to it (composer, cold
+   * start, the spawn form, settings content). 44rem = 704px; character count
+   * depends on the selected face and scale. Declared on body so the
+   * Settings -> Theme -> Transcript width preference below can widen it. */
+  --session-measure: 44rem;
+}
+
+body[data-transcript-measure="wide"] {
+  --session-measure: 64rem;
 }
 
 body[data-font-size="s"] { --font-scale: 0.9; }
@@ -347,17 +352,25 @@ body[data-font-size="m"] { --font-scale: 1; }
 body[data-font-size="l"] { --font-scale: 1.1; }
 body[data-font-size="xl"] { --font-scale: 1.25; }
 
-/* Phone density (≤900px only — the "phone" in phone-density). "comfortable"
+/* Phone density (≤899px, the same boundary as useIsMobile and every other
+ * phone rule — the "phone" in phone-density). "comfortable"
  * opens up vertical rhythm; "compact" (the default) holds the base grid. The
  * multiplier scales the body line-height — the app's global row-rhythm lever;
  * desktop never sees any of this, the whole gate lives inside the media query.
- * The 1.5 mirrors the :root --line-height-body base (a custom property can't
+ * The 1.6 mirrors the :root --line-height-body base (a custom property can't
  * reference its own inherited value without a cycle, so the base is repeated
  * here rather than aliased). */
-@media (max-width: 900px) {
+@media (max-width: 899px) {
   body {
     --density-scale: 1;
-    --line-height-body: calc(1.5 * var(--density-scale));
+    --line-height-body: calc(1.6 * var(--density-scale));
+    /* iOS Safari zooms into any focused field under 16px, and the body size
+     * IS the field size (widgets/textarea takes it), so the phone body is
+     * 16px and index.html no longer locks the viewport's zoom. */
+    --font-size-body: calc(16px * var(--font-scale));
+    /* A floor, not an alias: the S preference scales the phone body to
+     * 14.4px, and iOS zooms into a 14.4px field just the same. */
+    --font-size-control: max(16px, var(--font-size-body));
     /* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
      * decision 4): 44px per the platform HIG. Declared here, consumed by
      * button.module.css / iconbutton.module.css's own phone blocks as

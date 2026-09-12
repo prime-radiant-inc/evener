@@ -2,8 +2,10 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,7 +20,9 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -78,7 +82,7 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 
 func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
-	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
 	}
@@ -119,8 +123,8 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 
 func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
-	response, ok, err := pastThreadReadResponse(cfg, appwire.ThreadReadParams{
-		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 1,
+	response, ok, err := pastThreadReadResponse(context.Background(), cfg, appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 1,
 	})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadReadResponse = %v, %v", err, ok)
@@ -159,6 +163,24 @@ func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
 			t.Fatalf("plugin description = %q", description)
 		}
 	})
+}
+
+func TestPastThreadSkillCatalogIncludesAutomaticUserSkills(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	workingDir := t.TempDir()
+	writeSkillFixture(t, filepath.Join(xdg, "evener", "skills"), "cold-user-skill", "user description")
+	writeSkillFixture(t, filepath.Join(xdg, "evener", "skills"), "doctoring-evener", "user override")
+
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
+	}})
+	if description := skillDescription(got, "cold-user-skill"); description != "user description" {
+		t.Fatalf("automatic user skill description = %q, want %q", description, "user description")
+	}
+	if description := skillDescription(got, "doctoring-evener"); description != "user override" {
+		t.Fatalf("automatic user override description = %q, want %q", description, "user override")
+	}
 }
 
 func TestPastThreadSkillCatalogUsesFirstDuplicatePlugin(t *testing.T) {
@@ -251,13 +273,69 @@ func TestPastThreadReadCarriesExistingDelegateDiagnosticAlongsideSkills(t *testi
 		t.Fatal(err)
 	}
 
-	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
 	}
 	if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Delegates) != 1 ||
 		!hasSkill(thread.Evener.Diagnostics.Skills, "project-skill") {
 		t.Fatalf("diagnostics = %+v", thread.Evener.Diagnostics)
+	}
+}
+
+// TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates is the
+// wire-level test proving pastEntryThread's containment behavior actually
+// reaches API consumers: degrading a corrupt shared delegates.jsonl to zero
+// delegates plus a diagnostic string, rather than hard-failing (see agent's
+// TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing,
+// which proves the AGENT-side half of this), must still surface that
+// diagnostic on the WIRE even though there is no delegate left to attach it
+// to. This drives that exact containment case (an unterminated trailing
+// batch line, decoding to zero delegates with a delegate_journal_torn_tail
+// diagnostic -- cheaper to construct here than the oversized-line case, but
+// goes through the identical scanRootDelegateState degrade-to-diagnostic
+// path already proven above) all the way through pastThreadForRead, and
+// asserts the diagnostic lands on the actual appwire.Thread payload's
+// EvenerDiagnostics.DelegateDiagnostics field -- the wire itself, not an
+// internal agent.LoadSessionDelegateStatus return value.
+func TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	delegateDir := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID)
+	if err := os.MkdirAll(delegateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A valid, terminated version header followed by an unterminated
+	// trailing batch line (no closing bracket, no newline): delegatestore's
+	// ScanEventsFrom treats ANY unterminated final line as a torn tail
+	// (discarded whole, never decoded, regardless of its partial content),
+	// so this decodes to zero events -- zero delegates -- with a
+	// delegate_journal_torn_tail diagnostic, exactly the "corrupt shared
+	// journal, no delegates to attach a per-delegate diagnostic to" shape
+	// the oversized-line case also produces, without needing a real 128 MiB
+	// fixture line.
+	journal := []byte("{\"version\":1}\n{\"events\":[{\"seq\":1")
+	if err := os.WriteFile(filepath.Join(delegateDir, "delegates.jsonl"), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil {
+		t.Fatal("Diagnostics is nil, want it populated with a delegate-subsystem diagnostic")
+	}
+	if len(thread.Evener.Diagnostics.Delegates) != 0 {
+		t.Fatalf("Delegates = %+v, want empty (nothing survives a torn tail with no complete batch before it)", thread.Evener.Diagnostics.Delegates)
+	}
+	found := false
+	for _, d := range thread.Evener.Diagnostics.DelegateDiagnostics {
+		if strings.Contains(d, "torn_tail") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("DelegateDiagnostics = %v, want one naming the torn tail -- the wire response must carry this even though delegates is empty", thread.Evener.Diagnostics.DelegateDiagnostics)
 	}
 }
 
@@ -417,7 +495,7 @@ func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T) {
 
 func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
 	t.Helper()
-	thread, found, err := pastThreadForRead(cfg, params)
+	thread, found, err := pastThreadForRead(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadForRead: %v", err)
 	}
@@ -426,7 +504,7 @@ func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwir
 
 func requirePastThreadReadResponse(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool) {
 	t.Helper()
-	resp, found, err := pastThreadReadResponse(cfg, params)
+	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadReadResponse: %v", err)
 	}
@@ -435,25 +513,46 @@ func requirePastThreadReadResponse(t testing.TB, cfg hubcore.WebConfig, params a
 
 func requirePastThreadTurnsList(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool) {
 	t.Helper()
-	resp, found, err := pastThreadTurnsList(cfg, params)
+	resp, found, err := pastThreadTurnsList(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadTurnsList: %v", err)
 	}
 	return resp, found
 }
 
-func requirePastEntryTurns(t testing.TB, entry hubcore.PastEntry) []appwire.Turn {
+func requirePastEntryTurns(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry) []appwire.Turn {
 	t.Helper()
-	turns, err := pastEntryTurns(entry)
+	turns, err := pastEntryTurns(cfg, entry)
 	if err != nil {
 		t.Fatalf("pastEntryTurns: %v", err)
 	}
 	return turns
 }
 
+// pricingRegistry is the hermetic registry a past thread's dollar figures
+// resolve through: the curated rows for one anthropic instance, offline,
+// uncached, with no user layer and nothing from the developer's own state.
+func pricingRegistry(tb testing.TB) *hubcore.ProviderRegistry {
+	tb.Helper()
+	stateRoot := tb.TempDir()
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, err := registry.Load(append([]registry.Option{
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(stateRoot),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{"anthropic": {APIKey: "test"}}),
+		}, extra...)...)
+		return r, nil, err
+	})
+	if err := holder.Reload(); err != nil {
+		tb.Fatalf("registry: %v", err)
+	}
+	return holder
+}
+
 func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
 	t.Helper()
-	thread, err := pastEntryThread(cfg, entry, includeTurns)
+	thread, err := pastEntryThread(context.Background(), cfg, entry, includeTurns)
 	if err != nil {
 		t.Fatalf("pastEntryThread: %v", err)
 	}
@@ -723,9 +822,9 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 }
 
 // TestPastEntryTurns_StampsCostFromSessionModel verifies pastEntryTurns
-// estimates each turn's Cost from the session's own recorded Model — usage
-// alone (from the transcript) isn't enough to price a turn, since
-// appwire.EstimateCost needs a model to look up catalog rates.
+// estimates each turn's Cost from the row the session's own recorded
+// instance and model resolve to — usage alone (from the transcript) isn't
+// enough to price a turn, since the cost lives on the registry row.
 func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
@@ -756,10 +855,11 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 
 	entry := hubcore.PastEntry{
 		ID:       sessionID,
-		Meta:     schema.SessionMeta{ID: sessionID, Model: "claude-opus-4-5"},
+		Meta:     schema.SessionMeta{ID: sessionID, ProfileID: "anthropic", Model: "claude-opus-4-5"},
 		StateDir: stateDir,
 	}
-	turns := requirePastEntryTurns(t, entry)
+	cfg := hubcore.WebConfig{Registry: pricingRegistry(t)}
+	turns := requirePastEntryTurns(t, cfg, entry)
 	var found bool
 	for _, turn := range turns {
 		if turn.Usage == nil {
@@ -772,6 +872,14 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no turn with usage found: %+v", turns)
+	}
+
+	// Flag day (spec §14.1): with no registry to resolve against there is no
+	// fallback pricing table, so the same turns carry no cost at all.
+	for _, turn := range requirePastEntryTurns(t, hubcore.WebConfig{}, entry) {
+		if turn.Cost != "" {
+			t.Fatalf("turn.Cost=%q with no registry, want empty", turn.Cost)
+		}
 	}
 }
 
@@ -805,37 +913,45 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 
 // TestPastEntryThread_CarriesCostTotal proves the past-entry hydrate stamps
 // the session-level dollar total on EvenerThread from the cumulative usage at
-// the session model's price — the honest full-session figure, never a page
-// of loaded turns — and honestly omits it when there is no usage or the model
-// is uncataloged (the absent-vs-zero distinction).
+// the cost the session's own ProfileID/Model resolve to on the hub's registry
+// (spec §7.5) — the honest full-session figure, never a page of loaded turns
+// — and honestly omits it when there is no usage, no registry, or no cost on
+// the row (the absent-vs-zero distinction).
 func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
+	cfg := hubcore.WebConfig{Registry: pricingRegistry(t)}
+	usage := schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+
 	priced := hubcore.PastEntry{
-		Meta: schema.SessionMeta{
-			Model:           "claude-opus-4-5",
-			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
-		},
+		Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
-	thread := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false)
-	if want := appwire.EstimateCost("claude-opus-4-5", thread.Evener.Usage); thread.Evener.Cost != want || want == "" {
-		t.Fatalf("thread.Evener.Cost = %q, want non-empty %q", thread.Evener.Cost, want)
+	thread := requirePastEntryThread(t, cfg, priced, false)
+	want := appwire.EstimateCost(costFor(cfg.Registry, "anthropic", "claude-opus-4-5"), thread.Evener.Usage)
+	if want == "" {
+		t.Fatal("fixture registry has no cost for anthropic/claude-opus-4-5")
+	}
+	if thread.Evener.Cost != want {
+		t.Fatalf("thread.Evener.Cost = %q, want %q", thread.Evener.Cost, want)
 	}
 	if !strings.HasPrefix(thread.Evener.Cost, "~$") {
 		t.Fatalf("thread.Evener.Cost = %q, want ~$ prefix", thread.Evener.Cost)
 	}
 
-	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, noUsage, false); got.Evener.Cost != "" {
+	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5"}}
+	if got := requirePastEntryThread(t, cfg, noUsage, false); got.Evener.Cost != "" {
 		t.Fatalf("no-usage thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 
-	uncataloged := hubcore.PastEntry{
-		Meta: schema.SessionMeta{
-			Model:           "totally-unknown-model-xyz",
-			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
-		},
+	unknownInstance := hubcore.PastEntry{
+		Meta: schema.SessionMeta{ProfileID: "no-such-instance", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, uncataloged, false); got.Evener.Cost != "" {
-		t.Fatalf("uncataloged-model thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
+	if got := requirePastEntryThread(t, cfg, unknownInstance, false); got.Evener.Cost != "" {
+		t.Fatalf("unresolvable-reference thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
+	}
+
+	// Flag day (spec §14.1): a hub with no registry has nothing to price
+	// against and says so, rather than reaching for a bundled catalog.
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false); got.Evener.Cost != "" {
+		t.Fatalf("no-registry thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 }
 
@@ -930,6 +1046,9 @@ func TestPastThreadReadProjectsRunningSubagentActive(t *testing.T) {
 	if !ok {
 		t.Fatal("running subagent not found in past index")
 	}
+	if thread.Evener.MutationStateAuthoritative {
+		t.Fatal("saved delegate data cannot prove mutation absence")
+	}
 	if thread.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("running subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusActive)
 	}
@@ -974,9 +1093,17 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	// flushes, so the transcript read back is byte-identical.
 	w.SyncInterval = time.Hour
 	for range 199 {
+		// One logical turn per exchange: user input opens, assistant reply
+		// continues. Bare assistant runs would merge into one logical turn.
+		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+			t.Fatal(err)
+		}
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("saved turn"))); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("capture"))); err != nil {
+		t.Fatal(err)
 	}
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
 	if err := w.Append(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
@@ -991,7 +1118,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, TurnLimit: 40}
+	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemLimit: 40}
 }
 
 // TestPastEntryThreadAdvertisesResumableCapabilities asserts a past/exited
@@ -1061,7 +1188,7 @@ func TestMergePastThreadForReadDoesNotReadSavedTurnsWhenLiveWindowPresent(t *tes
 	}
 	liveTurns := []appwire.Turn{{ID: "turn_live", ItemsView: "full"}}
 
-	got, err := mergePastThreadForRead(cfg, params, appwire.Thread{
+	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{
 		ID:        entry.Meta.ID,
 		SessionID: entry.Meta.ID,
 		Turns:     liveTurns,
@@ -1084,7 +1211,7 @@ func TestMergePastThreadForReadUsesSavedTurnsWhenLiveResponseHasNone(t *testing.
 		t.Fatal("past thread not found")
 	}
 
-	got, err := mergePastThreadForRead(cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID})
+	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1099,8 +1226,6 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	if !ok || len(full.Turns) != 200 {
 		t.Fatalf("full saved thread found=%v turns=%d, want true/200", ok, len(full.Turns))
 	}
-	wantTurns, wantCursor := appwire.WindowTurns(full.Turns, params.TurnLimit)
-
 	var projected []int
 	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 	t.Cleanup(restore)
@@ -1108,15 +1233,23 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	if !ok {
 		t.Fatal("past thread not found")
 	}
-	if !reflect.DeepEqual(got.Thread.Turns, wantTurns) || got.OlderCursor != wantCursor {
-		t.Fatal("bounded saved read differs from full reference")
+	if items := flattenTestItems(got.Thread.Turns); len(items) == 0 || len(items) > appwire.TranscriptItemPageLimit || got.OlderCursor == "" {
+		t.Fatalf("bounded saved read = %d items, cursor %q; want 1..%d items and continuation", len(items), got.OlderCursor, appwire.TranscriptItemPageLimit)
 	}
-	if !reflect.DeepEqual(projected, []int{40}) {
-		t.Fatalf("saved read used legacy full projection of 200 turns; bounded projection reports = %v, want [40]", projected)
+	if len(projected) == 0 {
+		t.Fatalf("saved read did not report bounded projection: %v", projected)
 	}
-	last := got.Thread.Turns[len(got.Thread.Turns)-1].Items[0]
-	if len(last.OutputImages) != 1 || last.OutputImages[0].Name != "screenshot" {
-		t.Fatalf("bounded saved projection lost embedded output image: %+v", last)
+	// The newest logical turn is the user input plus its tool result; the
+	// command-execution item with the embedded image is the second item.
+	last := got.Thread.Turns[len(got.Thread.Turns)-1]
+	found := false
+	for _, item := range last.Items {
+		if len(item.OutputImages) == 1 && item.OutputImages[0].Name == "screenshot" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bounded saved projection lost embedded output image: %+v", last.Items)
 	}
 }
 
@@ -1131,11 +1264,11 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, found, err := pastThreadReadResponse(cfg, params)
+	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
 		t.Fatalf("past thread/read = (%+v, %v, %v), want found empty ErrUnsupportedFormat", resp, found, err)
 	}
-	page, found, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
+	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 1})
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
 		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found empty ErrUnsupportedFormat", page, found, err)
 	}
@@ -1148,7 +1281,7 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 // the callers (thread/read, thread/turns/list, the live-thread merge) treat
 // found=false as "nothing to add" and an error as a failed read.
 //
-// The foreign-ref case seeds the index with a session whose id IS the codex
+// The foreign-ref case seeds the index with a session whose id IS the remote
 // ref's thread id: dropping the local-source check would answer another
 // source's caller out of local session state.
 func TestPastThreadForRead_PastGateMisses(t *testing.T) {
@@ -1165,11 +1298,11 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 	}{
 		{"no past index", hubcore.WebConfig{}, appwire.ThreadReadParams{ThreadID: sessionID}},
 		{"no ref and no thread id", cfg, appwire.ThreadReadParams{}},
-		{"another source's ref", cfg, appwire.ThreadReadParams{Ref: "codex:" + sessionID}},
+		{"another source's ref", cfg, appwire.ThreadReadParams{Ref: "remote:" + sessionID}},
 		{"thread id absent from the index", hubcore.WebConfig{Past: emptyIndex}, appwire.ThreadReadParams{ThreadID: sessionID}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			thread, found, err := pastThreadForRead(tc.cfg, tc.params)
+			thread, found, err := pastThreadForRead(context.Background(), tc.cfg, tc.params)
 			if found || err != nil || !reflect.DeepEqual(thread, appwire.Thread{}) {
 				t.Fatalf("pastThreadForRead = (%+v, %v, %v), want the empty not-found miss", thread, found, err)
 			}
@@ -1179,26 +1312,186 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 
 func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
-	full, ok := requirePastThreadForRead(t, cfg, params)
-	if !ok {
-		t.Fatal("past thread not found")
-	}
-	_, cursor := appwire.WindowTurns(full.Turns, params.TurnLimit)
-	want := appwire.PageTurns(full.Turns, cursor, 30)
-
 	var projected []int
 	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 	t.Cleanup(restore)
-	got, ok := requirePastThreadTurnsList(t, cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Cursor: cursor, Limit: 30})
+	first, ok := requirePastThreadReadResponse(t, cfg, params)
+	if !ok || first.OlderCursor == "" {
+		t.Fatal("past thread initial item page missing continuation")
+	}
+	got, ok := requirePastThreadTurnsList(t, cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Cursor: first.OlderCursor, ItemLimit: 30})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatal("bounded saved page differs from full reference")
+	if items := flattenTestItems(got.Data); len(items) == 0 || len(items) > 30 {
+		t.Fatalf("bounded saved page = %d items, want 1..30", len(items))
 	}
-	if !reflect.DeepEqual(projected, []int{30}) {
-		t.Fatalf("saved page used legacy full projection of 200 turns; bounded projection reports = %v, want [30]", projected)
+	if len(projected) == 0 {
+		t.Fatalf("saved page did not report bounded projection: %v", projected)
 	}
+}
+
+func TestPastThreadItemReadPropagatesContextCancellation(t *testing.T) {
+	cfg, sessionID, _, _ := seedPastSessionWithActivity(t, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, found, err := pastThreadReadResponse(ctx, cfg, appwire.ThreadReadParams{
+		Ref:          "local:" + sessionID,
+		IncludeTurns: true,
+		ItemLimit:    1,
+	})
+	if !found {
+		t.Fatal("past item read did not find seeded session")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("past item read error = %v, want context.Canceled", err)
+	}
+}
+
+func TestPastThreadItemBackfillHonorsPreCanceledContext(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("initial", func(t *testing.T) {
+		_, found, err := pastThreadItemReadResponse(ctx, cfg, appwire.ThreadReadParams{
+			Ref:          "local:" + entry.Meta.ID,
+			IncludeTurns: true,
+			ItemLimit:    40,
+		})
+		if !found {
+			t.Fatal("past item read did not find seeded session")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("past item backfill error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("continuation", func(t *testing.T) {
+		latest, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+			Ref:       "local:" + entry.Meta.ID,
+			ItemLimit: 40,
+		})
+		if err != nil || !found {
+			t.Fatalf("seed item page = (%v, %v, %v)", latest, found, err)
+		}
+		_, found, err = pastThreadTurnsList(ctx, cfg, appwire.ThreadTurnsListParams{
+			Ref:       "local:" + entry.Meta.ID,
+			ItemLimit: 40,
+			Cursor:    latest.NextCursor,
+		})
+		if !found {
+			t.Fatal("past item continuation did not find seeded session")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("past item continuation error = %v, want context.Canceled", err)
+		}
+	})
+}
+
+func TestPastThreadItemPagingSplitsTurnsAndEntries(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	params := appwire.ThreadReadParams{
+		Ref:          "local:" + entry.Meta.ID,
+		IncludeTurns: true,
+		ItemLimit:    40,
+	}
+	latest, found, err := pastThreadReadResponse(context.Background(), cfg, params)
+	if err != nil || !found {
+		t.Fatalf("past item read = (%+v, %v, %v)", latest, found, err)
+	}
+	if latest.OlderCursor == "" {
+		t.Fatal("latest item page has no opaque older cursor")
+	}
+	// Each logical turn is a user input followed by its assistant burst, so
+	// the fixture's 40- and 5-item bursts become 41- and 6-item turns; the
+	// 40-item window splits turn one 6+34 and returns all six of turn two.
+	if len(latest.Thread.Turns) != 2 || len(latest.Thread.Turns[0].Items) != 34 || len(latest.Thread.Turns[1].Items) != 6 {
+		t.Fatalf("latest turn fragments = %+v, want 34 items and 6 items", latest.Thread.Turns)
+	}
+	if got := latest.Thread.Turns[0].Items[0].Text; got != "item-06" {
+		t.Fatalf("latest first fragment item=%q, want item-06", got)
+	}
+	if got := latest.Thread.Turns[1].Items[0].Text; got != "in" {
+		t.Fatalf("latest second fragment first item=%q, want the second turn's user input", got)
+	}
+	if got := latest.Thread.Turns[1].Items[1].Text; got != "item-40" {
+		t.Fatalf("latest second fragment second item=%q, want item-40", got)
+	}
+	if !latest.Thread.Turns[0].HasEarlierItems || latest.Thread.Turns[0].HasLaterItems || latest.Thread.Turns[1].HasEarlierItems || latest.Thread.Turns[1].HasLaterItems {
+		t.Fatalf("fragment completeness = first(%v,%v) second(%v,%v), want first earlier and no later on final", latest.Thread.Turns[0].HasEarlierItems, latest.Thread.Turns[0].HasLaterItems, latest.Thread.Turns[1].HasEarlierItems, latest.Thread.Turns[1].HasLaterItems)
+	}
+
+	older, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+		Ref:       params.Ref,
+		ItemLimit: 40,
+		Cursor:    latest.OlderCursor,
+	})
+	if err != nil || !found {
+		t.Fatalf("past older item page = (%+v, %v, %v)", older, found, err)
+	}
+	if len(older.Data) != 1 || len(older.Data[0].Items) != 7 {
+		t.Fatalf("older item page = %+v, want one seven-item fragment", older)
+	}
+	if got := older.Data[0].Items[0].Text; got != "in" {
+		t.Fatalf("older first item=%q, want the first turn's user input", got)
+	}
+	if got := older.Data[0].Items[1].Text; got != "item-00" {
+		t.Fatalf("older second item=%q, want item-00", got)
+	}
+	if older.Data[0].HasEarlierItems || !older.Data[0].HasLaterItems {
+		t.Fatalf("older completeness=(%v,%v), want no earlier and later", older.Data[0].HasEarlierItems, older.Data[0].HasLaterItems)
+	}
+}
+
+func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry) {
+	t.Helper()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-item-paging-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5", TurnCount: 2,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/project"}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	for turnIndex, count := range []int{40, 5} {
+		parts := make([]llm.ContentPart, 0, count)
+		for i := range count {
+			parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: fmt.Sprintf("item-%02d", turnIndex*40+i)})
+		}
+		// One logical turn per assistant burst: a user input opens each one.
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := index.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := index.Find(sessionID)
+	if !ok {
+		t.Fatal("past item-paging entry not found")
+	}
+	return hubcore.WebConfig{Past: index}, entry
 }
 
 func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string) {

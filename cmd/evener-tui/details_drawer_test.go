@@ -85,7 +85,7 @@ func TestDetailsDrawerShowsWorkTimeAndTokens(t *testing.T) {
 
 // TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent verifies the drawer omits
 // the Work: and Tokens: lines entirely when the session carries no WS2
-// metrics (old daemon, Codex thread, or a session with zero usage).
+// metrics (a source-backed thread or a session with zero usage).
 func TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent(t *testing.T) {
 	withTestColorProfile(t)
 	d := detailsDrawer{Detail: hubSessionDetail{}}

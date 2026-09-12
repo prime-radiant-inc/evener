@@ -321,7 +321,7 @@ for (const scene of scenes) {
           let url = BASE + arg;
           if (!authed) {
             const token = readFileSync(path.join(process.env.HOME, ".evener/auth-token"), "utf8").trim();
-            url = `${BASE}/auth?token=${token}&next=${encodeURIComponent(arg)}`;
+            url = `${BASE}/auth/${encodeURIComponent(token)}?next=${encodeURIComponent(arg)}`;
             authed = true;
           }
           await send("Page.navigate", { url });

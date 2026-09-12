@@ -1,14 +1,15 @@
 // The phone's configuration list for the spawn pane: one tappable row per
 // setting, each opening a bottom Sheet.
 //
-// Model is deliberately NOT here. It is set from the prompt card itself, by
-// the same ModelSwitchTrigger the session composer carries (issue #198) - so
-// the one act of choosing a model looks and behaves the same wherever it
-// happens, instead of being a bespoke sheet on this surface and a popover
-// picker on every other.
+// Model AND effort are deliberately NOT here. They are set from the prompt
+// card itself, by the same ModelSwitchTrigger the session composer carries
+// (issue #198) and the same quiet effort control - so the acts of choosing a
+// model and an effort look and behave the same wherever they happen, instead
+// of being bespoke sheets on this surface and different controls on every
+// other.
 import { useEffect, useRef, useState } from "react";
-import type { PathFieldPanelProps } from "../../widgets";
-import { Button, PathFieldPanel, Sheet } from "../../widgets";
+import { Button, Sheet } from "../../widgets";
+import { DirectoryPicker, type DirectoryPickerProps } from "../../widgets/directorypicker";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
@@ -26,15 +27,13 @@ export interface MobileSettingRowsProps {
   onHarnessChange: (value: string) => void;
   cwd: string;
   onCwdChange: (value: string) => void;
-  complete: PathFieldPanelProps["complete"];
-  listRecents: NonNullable<PathFieldPanelProps["listRecents"]>;
+  complete: DirectoryPickerProps["complete"];
+  listRecents: NonNullable<DirectoryPickerProps["listRecents"]>;
   fallbackDir: string;
+  validatePath: DirectoryPickerProps["validatePath"];
+  createDirectory: DirectoryPickerProps["createDirectory"];
   onCwdPanelClose: (value: string) => void;
   branch: string;
-  reasoningEffort: string;
-  reasoningOptions: MobilePickerOption[];
-  reasoningDisabled: boolean;
-  onReasoningChange: (value: string) => void;
   accessMode: string;
   accessOptions: MobilePickerOption[];
   onAccessChange: (value: string) => void;
@@ -45,7 +44,7 @@ export interface MobileSettingRowsProps {
   onPluginRetry: () => void;
 }
 
-type PickerName = "Harness" | "Working directory" | "Reasoning effort" | "Access mode" | "Plugins";
+type PickerName = "Harness" | "Working directory" | "Access mode" | "Plugins";
 
 const CLASS = {
   config: requireClass(styles.config, "MobileSettingRows.module.css", "config"),
@@ -162,12 +161,10 @@ export function MobileSettingRows({
   complete,
   listRecents,
   fallbackDir,
+  validatePath,
+  createDirectory,
   onCwdPanelClose,
   branch,
-  reasoningEffort,
-  reasoningOptions,
-  reasoningDisabled,
-  onReasoningChange,
   accessMode,
   accessOptions,
   onAccessChange,
@@ -186,8 +183,7 @@ export function MobileSettingRows({
     lastTriggerRef.current.focus();
   }, [openPicker]);
 
-  function closePicker(committedCwd = cwd): void {
-    if (openPicker === "Working directory") onCwdPanelClose(committedCwd);
+  function closePicker(): void {
     if (openPicker === "Plugins") setPluginDraft(pluginSelection);
     setOpenPicker(null);
   }
@@ -205,7 +201,6 @@ export function MobileSettingRows({
   }
 
   const harnessLabel = harnessOptions.find((option) => option.value === harness)?.label ?? harness;
-  const reasoningLabel = reasoningOptions.find((option) => option.value === reasoningEffort)?.label ?? "(default)";
   const accessLabel = accessOptions.find((option) => option.value === accessMode)?.label ?? "(default)";
   const pluginResponse =
     pluginPreview.status === "ready" || pluginPreview.status === "error" ? pluginPreview.response : undefined;
@@ -234,13 +229,6 @@ export function MobileSettingRows({
           expanded={openPicker === "Working directory"}
         />
         <MobileSettingRow label="Branch" value={branch === "" ? "No branch detected" : branch} />
-        <MobileSettingRow
-          label="Reasoning effort"
-          value={reasoningLabel}
-          onClick={() => open("Reasoning effort")}
-          expanded={openPicker === "Reasoning effort"}
-          disabled={reasoningDisabled}
-        />
         <MobileSettingRow
           label="Access mode"
           value={accessLabel}
@@ -278,14 +266,6 @@ export function MobileSettingRows({
         onChange={onHarnessChange}
       />
       <OptionSheet
-        name="Reasoning effort"
-        value={reasoningEffort}
-        options={reasoningOptions}
-        open={openPicker === "Reasoning effort"}
-        onClose={closePicker}
-        onChange={onReasoningChange}
-      />
-      <OptionSheet
         name="Access mode"
         value={accessMode}
         options={accessOptions}
@@ -294,27 +274,23 @@ export function MobileSettingRows({
         onChange={onAccessChange}
       />
 
-      <Sheet
-        open={openPicker === "Working directory"}
-        side="bottom"
-        onClose={closePicker}
-        title="Choose working directory"
-      >
-        <div className={CLASS.sheetBody}>
-          <PathFieldPanel
-            kind="dir"
-            value={cwd}
-            onChange={onCwdChange}
-            onCommit={(value) => {
-              onCwdChange(value);
-              closePicker(value);
-            }}
-            complete={complete}
-            listRecents={listRecents}
-            fallbackDir={fallbackDir}
-          />
-        </div>
-      </Sheet>
+      {openPicker === "Working directory" && (
+        <DirectoryPicker
+          key={cwd}
+          value={cwd}
+          fallbackDir={fallbackDir}
+          complete={complete}
+          listRecents={listRecents}
+          validatePath={validatePath}
+          createDirectory={createDirectory}
+          onClose={closePicker}
+          onPick={(path) => {
+            onCwdChange(path);
+            onCwdPanelClose(path);
+            closePicker();
+          }}
+        />
+      )}
 
       <Sheet
         open={pluginsSupported && openPicker === "Plugins" && pluginResponse !== undefined}

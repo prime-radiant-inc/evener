@@ -119,7 +119,6 @@ func (s *Session) Meta() schema.SessionMeta {
 	if s.fork.divergence > 0 {
 		parentID = s.fork.parentID
 		divergence = s.fork.divergence
-		isSubagent = false
 	} else if parentID == "" {
 		// A live spawn wins; the persisted parent covers the resume that left the
 		// carrier empty, so the delegate keeps the parent row the hub nests it

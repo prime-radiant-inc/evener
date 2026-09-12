@@ -1,0 +1,39 @@
+{
+  "case": "google-flash-lite-web-search",
+  "ref": "google/gemini-2.5-flash-lite",
+  "stream": false,
+  "method": "POST",
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Goog-Api-Key": "\u003ccredential\u003e"
+  },
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "What is the weather in Oslo?"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 65536
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are terse."
+        }
+      ]
+    },
+    "tools": [
+      {
+        "google_search": {}
+      }
+    ]
+  },
+  "pruned_fields": null
+}

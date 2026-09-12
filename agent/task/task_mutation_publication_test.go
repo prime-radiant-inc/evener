@@ -24,9 +24,10 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 	emitted := make(chan publication, 2)
 
 	var waitingOnce sync.Once
-	store.beforeMutationPublicationWait = func() {
+	beforeMutationPublicationWaitHook = func() {
 		waitingOnce.Do(func() { close(childWaiting) })
 	}
+	t.Cleanup(func() { beforeMutationPublicationWaitHook = nil })
 
 	rootDone := make(chan error, 1)
 	go func() {

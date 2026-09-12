@@ -1,0 +1,100 @@
+{
+  "case": "openrouter-opus-5-signed-tool-turn",
+  "ref": "openrouter/anthropic/claude-opus-5",
+  "stream": false,
+  "method": "POST",
+  "url": "https://openrouter.ai/api/v1/chat/completions",
+  "headers": {
+    "Authorization": "Bearer \u003ccredential\u003e",
+    "Content-Type": "application/json",
+    "Session_id": "sess-golden",
+    "X-Client-Request-Id": "sess-golden",
+    "X-Session-Affinity": "sess-golden"
+  },
+  "body": {
+    "max_tokens": 128000,
+    "messages": [
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "You are terse.",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": "What is the weather in Oslo?",
+        "role": "user"
+      },
+      {
+        "reasoning_details": [
+          {
+            "format": "anthropic-claude-v1",
+            "index": 0,
+            "signature": "sig-golden",
+            "text": "Need the weather tool.",
+            "type": "reasoning.text"
+          }
+        ],
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"city\":\"Oslo\"}",
+              "name": "weather"
+            },
+            "id": "call_1",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "12C, rain",
+        "role": "tool",
+        "tool_call_id": "call_1"
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "text": "And tomorrow?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "anthropic/claude-opus-5",
+    "reasoning": {
+      "effort": "high"
+    },
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "function": {
+          "description": "Current weather",
+          "name": "weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

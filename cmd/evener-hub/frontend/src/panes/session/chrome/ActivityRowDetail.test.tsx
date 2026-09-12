@@ -1,10 +1,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "../../../protocol/activityData";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { ActivityRowDetail } from "./ActivityRowDetail";
-import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "./activityData";
 import type { ActivityDelegateRow, ActivityJobRow } from "./activityRows";
 
 // Pinned clock: every quiet-age assertion below measures against this instant.

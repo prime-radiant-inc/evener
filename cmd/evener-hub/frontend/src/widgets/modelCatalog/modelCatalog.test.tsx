@@ -63,6 +63,29 @@ async function openPicker(user: ReturnType<typeof userEvent.setup>): Promise<HTM
   return (await screen.findByRole("combobox", { name: "Model" })) as HTMLInputElement;
 }
 
+test("a synchronously throwing catalog loader shows an inline error", async () => {
+  renderPicker({
+    loadCatalog: () => {
+      throw new Error("no client");
+    },
+  });
+  await userEvent.setup().click(openTrigger());
+  expect(await screen.findByText(/Couldn't load models/)).toBeTruthy();
+});
+
+test("an open picker refreshes selectable models when provider configuration changes", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  const { rerender } = render(
+    <ModelCatalog value="" onChange={onChange} loadCatalog={async () => ({ models: [SONNET], recent: [] })} />,
+  );
+  await openPicker(user);
+  await screen.findByRole("option", { name: /Claude Sonnet/ });
+  rerender(<ModelCatalog value="" onChange={onChange} loadCatalog={async () => ({ models: [GPT5], recent: [] })} />);
+  await screen.findByRole("option", { name: /GPT-5/ });
+  expect(screen.queryByRole("option", { name: /Claude Sonnet/ })).toBeNull();
+});
+
 // --- closed state (unchanged: the chip IS the trigger) ---------------------
 
 test("shows the (default) marker when no model is chosen", () => {
@@ -213,6 +236,46 @@ describe("open state", () => {
 });
 
 // --- the input replaces the previously-selected value ---------------------
+
+describe("model warnings", () => {
+  // A global-only model under a regional Vertex location: the registry warns
+  // on the resolved row, and the picker must flag it so the user doesn't pick
+  // a row that will 404 at launch.
+  const VERTEX_GEMINI: ModelCatalogEntry = {
+    provider: "vertex",
+    model: "gemini-3.5-flash",
+    displayName: "Gemini 3.5 Flash",
+    warnings: [
+      'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.5-flash',
+    ],
+  };
+
+  test("a resolved row's warning renders as a visible note beside the model", async () => {
+    const user = userEvent.setup();
+    renderPicker({
+      loadCatalog: vi.fn().mockResolvedValue({ models: [VERTEX_GEMINI], recent: [] }),
+    });
+
+    await openPicker(user);
+    await screen.findByRole("option", { name: /Gemini 3.5 Flash/ });
+
+    const note = screen.getByTestId("model-warning");
+    expect(note.textContent).toContain("regional Vertex location");
+    expect(note.textContent).toContain("gemini-3.5-flash");
+    // The note is informational, not a second option: the row stays pickable.
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+  });
+
+  test("a model with no warnings renders no note", async () => {
+    const user = userEvent.setup();
+    renderPicker();
+
+    await openPicker(user);
+    await screen.findByRole("option", { name: /Claude Sonnet/ });
+
+    expect(screen.queryByTestId("model-warning")).toBeNull();
+  });
+});
 
 describe("input pre-fill", () => {
   test("opens pre-filled with the current qualified value, focused, and fully selected", async () => {
@@ -568,7 +631,7 @@ test("picking from the sheet variant reports the entry to the caller", async () 
   const onPick = vi.fn();
   renderSheetPanel({ onPick });
 
-  await user.click(screen.getByRole("option", { name: /gpt-5/i }));
+  await user.click(screen.getByRole("option", { name: /GPT-5/i }));
 
   expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", model: "gpt-5" }));
 });

@@ -2,13 +2,47 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
+
+// setReplacingClearFunc installs the standard successful clear callback: swap
+// a replacement instance in under the request's stable ref, the way the
+// daemon's real clear does.
+func setReplacingClearFunc(srv *Server, nextID string) {
+	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
+		prepared, err := PrepareAppIdentityForRef("local", nextID, params.Ref, "")
+		if err != nil {
+			return err
+		}
+		srv.ReplaceAppIdentity(prepared, nil)
+		return nil
+	})
+}
+
+// requireMutationErrorData asserts err is a WireError whose ErrorData names
+// the given mutation and outcome.
+func requireMutationErrorData(t *testing.T, err error, wantID string, wantOutcome appwire.MutationOutcome) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("mutation %q succeeded, want a %s error", wantID, wantOutcome)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("mutation error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.ClientMutationID != wantID || data.MutationOutcome != wantOutcome {
+		t.Fatalf("mutation error data = %#v, want clientMutationID %q outcome %q", wire.Data, wantID, wantOutcome)
+	}
+}
 
 func TestServerAppWireThreadClearInvokesConfiguredClear(t *testing.T) {
 	srv := NewServer(ServerConfig{})
@@ -61,6 +95,9 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	if first.Thread.ID != "new" || second.Thread.ID != "new" {
 		t.Fatalf("clear thread ids = (%q, %q), want replacement new", first.Thread.ID, second.Thread.ID)
 	}
+	if !first.Thread.Evener.MutationStateAuthoritative || !second.Thread.Evener.MutationStateAuthoritative {
+		t.Fatal("root clear snapshots must identify the authoritative replacement mutation state")
+	}
 	if first.Ref != params.Ref || second.Ref != params.Ref {
 		t.Fatalf("clear refs = (%q, %q), want stable %q", first.Ref, second.Ref, params.Ref)
 	}
@@ -89,6 +126,10 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	}
 	if replayed.Thread.ID != "new" || replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("restart replay = (%q, %q), want (new, replayed)", replayed.Thread.ID, replayed.Receipt.Disposition)
+	}
+
+	if !replayed.Thread.Evener.MutationStateAuthoritative {
+		t.Fatal("persisted clear receipt lost replacement mutation authority")
 	}
 
 	wrongWorkspace := NewServer(ServerConfig{StateDir: stateDir})
@@ -339,5 +380,263 @@ func TestServerRejectsOldInstanceTurnMutationsAfterClear(t *testing.T) {
 				t.Fatalf("old-generation mutation callback calls = %d, want 0", calls)
 			}
 		})
+	}
+}
+
+// TestServerAppWireThreadClearJournalKeepsOneRecordPerRef pins the journal's
+// size bound: a clear installs a new live instance under the stable ref, so an
+// older clear's record can no longer be a live client's retry (its expected
+// instance is gone) and a new reservation supersedes it. Without this the
+// journal grows by one full ThreadClearResponse per clear, forever.
+func TestServerAppWireThreadClearJournalKeepsOneRecordPerRef(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := NewServer(ServerConfig{StateDir: stateDir})
+	srv.SetAppIdentity("local", "gen-0")
+	generations := []string{"gen-1", "gen-2"}
+	calls := 0
+	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
+		if calls >= len(generations) {
+			return errors.New("unexpected extra clear callback")
+		}
+		next := generations[calls]
+		calls++
+		prepared, err := PrepareAppIdentityForRef("local", next, params.Ref, "")
+		if err != nil {
+			return err
+		}
+		srv.ReplaceAppIdentity(prepared, nil)
+		return nil
+	})
+
+	if _, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-1", ExpectedInstanceID: "gen-0",
+	}); err != nil {
+		t.Fatalf("first clear: %v", err)
+	}
+	if _, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-2", ExpectedInstanceID: "gen-1",
+	}); err != nil {
+		t.Fatalf("second clear: %v", err)
+	}
+
+	srv.mu.RLock()
+	_, oldHeld := srv.clearRecords["clear-1"]
+	newRecord, newHeld := srv.clearRecords["clear-2"]
+	total := len(srv.clearRecords)
+	srv.mu.RUnlock()
+	if oldHeld {
+		t.Fatal("superseded clear record survived a newer clear of the same ref")
+	}
+	if !newHeld || newRecord.State != threadClearApplied || total != 1 {
+		t.Fatalf("clearRecords after two clears = (held=%t state=%q total=%d), want only clear-2, applied", newHeld, newRecord.State, total)
+	}
+
+	loaded, err := loadThreadClearJournal(threadClearJournalPath(stateDir))
+	if err != nil {
+		t.Fatalf("reload journal: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("journal records on disk = %d, want 1", len(loaded))
+	}
+	if _, ok := loaded["clear-2"]; !ok {
+		t.Fatal("journal on disk lost the newest clear record")
+	}
+
+	// The newest clear still replays its durable receipt; the superseded one
+	// is refused as stale without running the callback again.
+	replayed, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-2", ExpectedInstanceID: "gen-1",
+	})
+	if err != nil {
+		t.Fatalf("replay newest clear: %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("newest clear replay disposition = %q, want replayed", replayed.Receipt.Disposition)
+	}
+	_, err = srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-1", ExpectedInstanceID: "gen-0",
+	})
+	requireMutationErrorData(t, err, "clear-1", appwire.MutationOutcomeNotAccepted)
+	if calls != 2 {
+		t.Fatalf("clear callback calls = %d, want 2", calls)
+	}
+}
+
+// TestServerAppWireThreadClearFailedClearRestoresSupersededReceipt pins that
+// superseding is tied to actually replacing the instance: a newer clear's
+// reservation evicts the older receipt, but when its callback fails and
+// installs nothing, the older receipt is live again and must still replay.
+func TestServerAppWireThreadClearFailedClearRestoresSupersededReceipt(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := NewServer(ServerConfig{StateDir: stateDir})
+	srv.SetAppIdentity("local", "gen-0")
+	setReplacingClearFunc(srv, "gen-1")
+	if _, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-1", ExpectedInstanceID: "gen-0",
+	}); err != nil {
+		t.Fatalf("first clear: %v", err)
+	}
+
+	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		return errors.New("replacement provisioning failed")
+	})
+	if _, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-2", ExpectedInstanceID: "gen-1",
+	}); err == nil {
+		t.Fatal("failed newer clear reported success")
+	}
+
+	replayed, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:gen-0", ClientMutationID: "clear-1", ExpectedInstanceID: "gen-0",
+	})
+	if err != nil {
+		t.Fatalf("replay of the older clear after a failed newer clear: %v", err)
+	}
+	if replayed.Thread.ID != "gen-1" || replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("older clear replay = (%q, %q), want (gen-1, replayed)", replayed.Thread.ID, replayed.Receipt.Disposition)
+	}
+
+	loaded, err := loadThreadClearJournal(threadClearJournalPath(stateDir))
+	if err != nil {
+		t.Fatalf("reload journal: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("journal records on disk = %d, want 1", len(loaded))
+	}
+	if _, ok := loaded["clear-1"]; !ok {
+		t.Fatal("journal on disk lost the restored receipt")
+	}
+}
+
+// TestServerAppWireThreadClearFailureReleasesGateAndReservation covers the half
+// of the clear fence a success path cannot: a clear whose replacement callback
+// fails must hand back both the mutation gate and its journal reservation, or
+// one transient failure turns into a clear that is refused forever.
+func TestServerAppWireThreadClearFailureReleasesGateAndReservation(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := NewServer(ServerConfig{StateDir: stateDir})
+	srv.SetAppIdentity("local", "old")
+	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		return errors.New("replacement provisioning failed")
+	})
+
+	_, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-fails", ExpectedInstanceID: "old",
+	})
+	requireMutationErrorData(t, err, "clear-fails", appwire.MutationOutcomeNotAccepted)
+
+	srv.mu.RLock()
+	_, held := srv.clearRecords["clear-fails"]
+	srv.mu.RUnlock()
+	if held {
+		t.Fatal("failed clear left its reservation in clearRecords")
+	}
+
+	setReplacingClearFunc(srv, "new")
+	response, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-retry", ExpectedInstanceID: "old",
+	})
+	if err != nil {
+		t.Fatalf("clear after a failed clear: %v", err)
+	}
+	if response.Thread.ID != "new" || response.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("clear after a failed clear = (%q, %q), want (new, applied)", response.Thread.ID, response.Receipt.Disposition)
+	}
+}
+
+// TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails pins
+// the failure path's failure path: when the callback fails AND the journal
+// write that would remove the reservation also fails, the reservation must stay
+// in memory (matching the journal on disk) and the client must hear
+// mutationOutcomeUnknown -- then the SAME mutation id must be able to retry to
+// completion once persistence recovers.
+func TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails(t *testing.T) {
+	stateDir := t.TempDir()
+	srv := NewServer(ServerConfig{StateDir: stateDir})
+	srv.SetAppIdentity("local", "old")
+	// Occupying the journal's temp path with a directory makes the rollback
+	// persist fail without any production fault seam. The callback installs
+	// the fault after the reservation has already been persisted.
+	journalTmp := threadClearJournalPath(stateDir) + ".tmp"
+	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
+		if err := os.Mkdir(journalTmp, 0o700); err != nil {
+			t.Fatalf("install journal write fault: %v", err)
+		}
+		return errors.New("replacement provisioning failed")
+	})
+
+	_, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-wedged", ExpectedInstanceID: "old",
+	})
+	requireMutationErrorData(t, err, "clear-wedged", appwire.MutationOutcomeUnknown)
+
+	srv.mu.RLock()
+	record, held := srv.clearRecords["clear-wedged"]
+	srv.mu.RUnlock()
+	if !held || record.State != threadClearReserved {
+		t.Fatalf("clearRecords after unpersistable rollback = (%#v, %t), want the reserved record restored", record, held)
+	}
+
+	if err := os.Remove(journalTmp); err != nil {
+		t.Fatalf("clear journal write fault: %v", err)
+	}
+	setReplacingClearFunc(srv, "new")
+	response, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-wedged", ExpectedInstanceID: "old",
+	})
+	if err != nil {
+		t.Fatalf("retry after persistence recovered: %v", err)
+	}
+	if response.Thread.ID != "new" || response.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("recovered retry = (%q, %q), want (new, applied)", response.Thread.ID, response.Receipt.Disposition)
+	}
+}
+
+func TestDescendantAfterClearUsesStableParentRef(t *testing.T) {
+	srv := NewServer(ServerConfig{StateDir: t.TempDir()})
+	srv.SetAppIdentity("local", "old")
+	setReplacingClearFunc(srv, "new")
+	if _, err := srv.handleAppThreadClear(t.Context(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-1", ExpectedInstanceID: "old",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, event := range []events.SessionEvent{
+		{Kind: events.EventUserInput, SessionID: "child", Data: events.UserInputData{Text: "child work"}},
+		{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{}},
+	} {
+		srv.RecordDescendantAppEvent("new", event)
+		child, err := srv.handleAppThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:child"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if child.Thread.Evener.ParentRef != "local:old" {
+			t.Errorf("parent after %s = %q, want stable local:old", event.Kind, child.Thread.Evener.ParentRef)
+		}
+		parent, err := srv.handleAppThreadRead(t.Context(), appwire.ThreadReadParams{Ref: child.Thread.Evener.ParentRef})
+		if err != nil {
+			t.Errorf("resolve descendant parent after %s: %v", event.Kind, err)
+		} else if parent.Thread.ID != "new" || parent.Thread.Evener.Ref != "local:old" {
+			t.Errorf("parent after %s = %+v, want replacement new at local:old", event.Kind, parent.Thread)
+		}
+	}
+
+	started := false
+	for _, notification := range srv.AppNotificationsAfter(0, "child") {
+		if notification.Notification.Method != appwire.NotifyThreadStarted {
+			continue
+		}
+		var params appwire.ThreadStartedParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.Thread.Evener.ParentRef != "local:old" {
+			t.Errorf("started parent = %q, want stable local:old", params.Thread.Evener.ParentRef)
+		}
+		started = true
+	}
+	if !started {
+		t.Fatal("descendant start was not published")
 	}
 }

@@ -25,11 +25,11 @@ export default function assert(measurement) {
   if (!geometry.triggerContainsSummary || !geometry.summaryHitTrigger || !geometry.actionHitAction) {
     return {
       pass: false,
-      reason: `purpose-less disclosure geometry is invalid: ${JSON.stringify(geometry)}`,
+      reason: `intent-less disclosure geometry is invalid: ${JSON.stringify(geometry)}`,
     };
   }
   return {
     pass: true,
-    reason: `demoted line clears AA and purpose-less disclosure hit area is intact (dark ${darkRatio.toFixed(2)}:1, light ${lightRatio.toFixed(2)}:1)`,
+    reason: `demoted line clears AA and intent-less disclosure hit area is intact (dark ${darkRatio.toFixed(2)}:1, light ${lightRatio.toFixed(2)}:1)`,
   };
 }

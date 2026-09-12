@@ -21,7 +21,7 @@
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 import { memo } from "react";
 import type { SteeringKind } from "../../../../protocol/types.gen";
-import { SteeringGlyph } from "../../../../widgets";
+import { Chevron, SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { itemScopeKey } from "../tools/subagentModuleStore";
@@ -132,7 +132,7 @@ function SteeringDivider({
           data-open={open ? "true" : "false"}
           data-testid="steering-chevron"
         >
-          ▸
+          <Chevron />
         </span>
       </summary>
       <pre className={CLASS.body}>{text}</pre>
@@ -158,8 +158,12 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   if (hasNotification) {
     return (
       <>
-        {fragments.map((fragment, index) =>
-          fragment.kind === "notification" ? (
+        {fragments.map((fragment, index) => {
+          // Per-fragment identity: transcript item id + order-stable parse
+          // index (see below). A stable string the key rule cannot mistake
+          // for a bare loop index.
+          const fragmentKey = `${item.id}:${index}`;
+          return fragment.kind === "notification" ? (
             // rawText is NOT a safe key: a generic notification the daemon
             // never gave a job_id (e.g. a watch-timeout retry, kata rail-nav
             // React invariant) can appear more than once in the same steer
@@ -170,11 +174,15 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
             // streamed delta rebuilds this same item with another duplicate.
             // fragments is a fresh, order-stable parse of this one item's
             // text every render (parseSteeringNotifications above), never a
-            // diffed/reordered list, so the array index is a safe, stable
-            // identity here - same reasoning as ExcerptText's own index key in
-            // NotificationCard.tsx.
-            // biome-ignore lint/suspicious/noArrayIndexKey: index is stable - see comment above
-            <NotificationCard key={index} notification={fragment.notification} sessionRef={sessionRef} />
+            // diffed/reordered list, so the fragment key above is a safe,
+            // stable identity - same reasoning as ExcerptText's own index key
+            // in NotificationCard.tsx.
+            <NotificationCard
+              key={fragmentKey}
+              notification={fragment.notification}
+              sessionRef={sessionRef}
+              disclosureId={fragmentKey}
+            />
           ) : (
             // Each interstitial text span gets its own divider, positioned
             // where it appeared in the original text (issue #48) rather than
@@ -189,8 +197,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
               text={fragment.text}
               sessionRef={sessionRef}
             />
-          ),
-        )}
+          );
+        })}
       </>
     );
   }

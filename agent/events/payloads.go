@@ -158,11 +158,15 @@ type ReasoningSummaryDeltaData struct {
 }
 
 // AssistantTextEndData is the payload for an EventAssistantTextEnd event.
+// Provider is the registry instance the round dispatched on; with Model it
+// forms the instance/model reference the round's cost resolves from
+// (spec §7.5). It is omitted by producers that never knew one.
 type AssistantTextEndData struct {
 	Text         string    `json:"text"`
 	Usage        llm.Usage `json:"usage"`
 	FinishReason string    `json:"finish_reason"`
 	Model        string    `json:"model"`
+	Provider     string    `json:"provider,omitempty"`
 	Reasoning    string    `json:"reasoning,omitempty"`
 }
 
@@ -450,9 +454,11 @@ type TaskSummaryData struct {
 
 // TaskStateData is an authoritative task-list progress snapshot.
 type TaskStateData struct {
-	Total   int              `json:"total"`
-	Done    int              `json:"done"`
-	Current *TaskSummaryData `json:"current,omitempty"`
+	Total     int              `json:"total"`
+	Done      int              `json:"done"`
+	Cancelled int              `json:"cancelled"`
+	Remaining int              `json:"remaining"`
+	Current   *TaskSummaryData `json:"current,omitempty"`
 }
 
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current
@@ -461,6 +467,8 @@ type TaskStateData struct {
 type TaskUpdatedData struct {
 	Total                   int              `json:"total"`
 	Done                    int              `json:"done"`
+	Cancelled               int              `json:"cancelled"`
+	Remaining               int              `json:"remaining"`
 	Current                 *TaskSummaryData `json:"current,omitempty"`
 	TaskStoreOwnerSessionID string           `json:"task_store_owner_session_id,omitempty"`
 	// TaskPublicationEpoch and TaskPublicationRevision are internal ordering

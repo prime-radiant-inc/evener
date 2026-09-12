@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -18,16 +19,16 @@ func TestCredentialsPanelShowsStatusBadges(t *testing.T) {
 	withTestColorProfile(t)
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"oauth"}},
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "env", AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"oauth"}},
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "env:ANTHROPIC_API_KEY", AuthModes: []string{"apiKey"}},
 		// CredentialRequired is spelled out because Go's zero value for it is
 		// "optional", which is the wrong answer for a key-authenticated
 		// provider: the hub always sends the field, and for kimi it sends true.
-		{Name: "kimi", Type: "kimi", ActiveSource: "absent", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+		{Name: "kimi", ProviderID: "kimi", ActiveSource: "none", CredentialRequired: true, AuthModes: []string{"apiKey"}},
 	}}})
 	got := updated.(CredentialsPanel).View()
 	plain := ansiPattern.ReplaceAllString(got, "")
-	for _, want := range []string{"OAUTH", "ENV", "ABSENT"} {
+	for _, want := range []string{"OAUTH", "ENV:ANTHROPIC_API_KEY", "NONE"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("credentials panel missing badge %q in:\n%s", want, plain)
 		}
@@ -40,11 +41,11 @@ func TestCredentialsPanelShowsStatusBadges(t *testing.T) {
 func TestCredentialsPanel_RendersList(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey", "oauth"}},
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey", "oauth"}},
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none", CredentialRequired: true, AuthModes: []string{"apiKey"}},
 	}}})
 	view := updated.(CredentialsPanel).View()
-	for _, want := range []string{"openai", "anthropic", "OAUTH", "ABSENT"} {
+	for _, want := range []string{"openai", "anthropic", "OAUTH", "NONE"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q:\n%s", want, view)
 		}
@@ -54,7 +55,7 @@ func TestCredentialsPanel_RendersList(t *testing.T) {
 func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -70,15 +71,73 @@ func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 	}
 }
 
+// TestCredentialsPanel_EnterOnACredentialJsonInstanceSetsTheCredentialJson:
+// a gcp-adc instance takes a pasted credential JSON here, the same store the
+// web hub's Providers & credentials writes; it no longer points at the hub.
+func TestCredentialsPanel_EnterOnACredentialJsonInstanceSetsTheCredentialJson(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none", AuthModes: []string{"apiKey"}},
+		{Name: "google-vertex", ProviderID: "google-vertex", ActiveSource: "none", CredentialRequired: true, AuthModes: []string{"adc", "credentialJson"}},
+	}}})
+	// The list opens on anthropic; Down lands on google-vertex.
+	onVertex, _ := updated.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, cmd := onVertex.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter on a credential-JSON instance should produce a cmd")
+	}
+	got, ok := cmd().(CredentialsActionMsg)
+	if !ok {
+		t.Fatalf("cmd msg = %T, want CredentialsActionMsg", cmd())
+	}
+	if got.Action != "setCredentialJson" || got.Instance != "google-vertex" {
+		t.Fatalf("msg = %+v, want the credential-JSON action for google-vertex", got)
+	}
+	if view := next.View(); strings.Contains(view, "web hub") {
+		t.Fatalf("the panel must no longer send the user to the web hub: %q", view)
+	}
+	// An adc-only instance has nothing to set here and stays silent.
+	adcOnly, _ := NewCredentialsPanel().Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "vertex-adc", ProviderID: "google-vertex", ActiveSource: "adc", CredentialRequired: true, AuthModes: []string{"adc"}},
+	}}})
+	if _, cmd := adcOnly.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("an adc-only instance has no credential to set; got %+v", cmd())
+	}
+}
+
+// TestCredentialsPanel_LoadsACredentialJsonFromAFile: reading the document
+// from a file is its own action, so neither prompt has to guess whether what
+// it was given is a path or a secret.
+func TestCredentialsPanel_LoadsACredentialJsonFromAFile(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none", AuthModes: []string{"apiKey"}},
+		{Name: "google-vertex", ProviderID: "google-vertex", ActiveSource: "none", CredentialRequired: true, AuthModes: []string{"adc", "credentialJson"}},
+	}}})
+	onVertex, _ := updated.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := onVertex.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if cmd == nil {
+		t.Fatal("f on a credential-JSON instance should produce a cmd")
+	}
+	got, ok := cmd().(CredentialsActionMsg)
+	if !ok || got.Action != "loadCredentialJson" || got.Instance != "google-vertex" {
+		t.Fatalf("msg = %#v, want the load-from-file action for google-vertex", cmd())
+	}
+	// The key means nothing for an instance that takes no credential JSON.
+	if _, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")}); cmd != nil {
+		t.Fatalf("an API-key instance has no credential JSON to load; got %+v", cmd())
+	}
+}
+
 // --- new instance-based tests ---
 
 func TestCredentialsPanel_GroupsByType(t *testing.T) {
 	withTestColorProfile(t)
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", IsDefault: true, ActiveSource: "oauth", AuthModes: []string{"oauth"}},
-		{Name: "openai-compat", Type: "openai", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "env", AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", IsDefault: true, ActiveSource: "oauth", AuthModes: []string{"oauth"}},
+		{Name: "openai-compat", ProviderID: "openai", ActiveSource: "none", AuthModes: []string{"apiKey"}},
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "env:ANTHROPIC_API_KEY", AuthModes: []string{"apiKey"}},
 	}}})
 	got := updated.(CredentialsPanel).View()
 	plain := ansiPattern.ReplaceAllString(got, "")
@@ -118,7 +177,7 @@ func TestCredentialsPanel_GroupsByType(t *testing.T) {
 func TestCredentialsPanel_OAuthKeyEmitsOAuth(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey", "oauth"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey", "oauth"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	if cmd == nil {
@@ -137,7 +196,7 @@ func TestCredentialsPanel_OAuthKeyEmitsOAuth(t *testing.T) {
 func TestCredentialsPanel_ClearEmitsLogout(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "env", AuthModes: []string{"apiKey"}},
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "env:ANTHROPIC_API_KEY", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	if cmd == nil {
@@ -156,7 +215,7 @@ func TestCredentialsPanel_ClearEmitsLogout(t *testing.T) {
 func TestCredentialsPanel_StarEmitsSetDefault(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("*")})
 	if cmd == nil {
@@ -175,7 +234,7 @@ func TestCredentialsPanel_StarEmitsSetDefault(t *testing.T) {
 func TestCredentialsPanel_XEmitsRemove(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if cmd == nil {
@@ -194,7 +253,7 @@ func TestCredentialsPanel_XEmitsRemove(t *testing.T) {
 func TestCredentialsPanel_NOpensCreateForm(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	panel := updated.(CredentialsPanel)
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
@@ -210,7 +269,7 @@ func TestCredentialsPanel_NOpensCreateForm(t *testing.T) {
 func TestCredentialsPanel_EOpensEditForm(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	panel := updated.(CredentialsPanel)
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
@@ -227,33 +286,38 @@ func TestCredentialsPanel_NavigationSkipsGroupHeaders(t *testing.T) {
 	m := NewCredentialsPanel()
 	// Two types, two instances each — group headers must be skipped by up/down.
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth"},
-		{Name: "openai2", Type: "openai", ActiveSource: "absent"},
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "env"},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth"},
+		{Name: "openai2", ProviderID: "openai", ActiveSource: "none"},
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "env:ANTHROPIC_API_KEY"},
 	}}})
 	panel := updated.(CredentialsPanel)
 
-	// Move down from first instance: should land on second openai instance, not the anthropic header
+	// The panel groups by provider, so the rows read anthropic, then the two
+	// openai instances by name. Move down from the first instance: it must
+	// skip the openai group header and land on the first openai instance.
+	if got := panel.selectedInstance(); got == nil || got.Name != "anthropic" {
+		t.Fatalf("the first selectable row is %v, want anthropic", got)
+	}
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p2 := panel2.(CredentialsPanel)
 	inst := p2.selectedInstance()
-	if inst == nil || inst.Name != "openai2" {
-		t.Errorf("down from openai should land on openai2, got %v", inst)
+	if inst == nil || inst.Name != "openai" {
+		t.Errorf("down from anthropic should skip the openai header and land on openai, got %v", inst)
 	}
 
-	// Move down again: should skip group header and land on anthropic
+	// Move down again: the second instance of the same group, no header between.
 	panel3, _ := p2.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p3 := panel3.(CredentialsPanel)
 	inst = p3.selectedInstance()
-	if inst == nil || inst.Name != "anthropic" {
-		t.Errorf("down from openai2 should land on anthropic (skipping header), got %v", inst)
+	if inst == nil || inst.Name != "openai2" {
+		t.Errorf("down from openai should land on openai2, got %v", inst)
 	}
 }
 
 func TestCredentialsPanel_EscCloses(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	panel := updated.(CredentialsPanel)
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -280,8 +344,8 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 		panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
 		p = panel.(CredentialsPanel)
 	}
-	if p.formType != "openai" {
-		t.Fatalf("formType = %q, want openai", p.formType)
+	if p.formBase != "openai" {
+		t.Fatalf("formBase = %q, want openai", p.formBase)
 	}
 
 	// Advance to field 1 (name).
@@ -297,11 +361,11 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 		p = panel.(CredentialsPanel)
 	}
 
-	// Advance to field 2 (apiStyle) — skip it.
+	// Advance to field 2 (protocol) — skip it.
 	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	p = panel.(CredentialsPanel)
-	if p.formActiveField() != "apiStyle" {
-		t.Fatalf("after second Enter, active field = %q, want apiStyle", p.formActiveField())
+	if p.formActiveField() != "protocol" {
+		t.Fatalf("after second Enter, active field = %q, want protocol", p.formActiveField())
 	}
 
 	// Advance to field 3 (baseURL) — leave empty.
@@ -325,8 +389,8 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd msg = %T, want InstanceCreateSubmitMsg", msg)
 	}
-	if got.Params.Type != "openai" {
-		t.Errorf("Params.Type = %q, want openai", got.Params.Type)
+	if got.Params.Base != "openai" {
+		t.Errorf("Params.Base = %q, want openai", got.Params.Base)
 	}
 	if got.Params.Name != "myinst" {
 		t.Errorf("Params.Name = %q, want myinst", got.Params.Name)
@@ -337,12 +401,12 @@ func TestCredentialsPanel_InstanceListResultRefreshesPanel(t *testing.T) {
 	m := NewCredentialsPanel()
 	// Initial load
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth"},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth"},
 	}}})
 	// Second load (e.g. after a mutation)
 	updated2, _ := updated.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai", ActiveSource: "oauth"},
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent"},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth"},
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none"},
 	}}})
 	view := updated2.(CredentialsPanel).View()
 	if !strings.Contains(view, "anthropic") {
@@ -353,7 +417,7 @@ func TestCredentialsPanel_InstanceListResultRefreshesPanel(t *testing.T) {
 func TestCredentialsPanel_TestCredentialsActionIsPerInstanceAndRedacted(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "custom / team-east", Type: "openai", ActiveSource: "absent"},
+		{Name: "custom / team-east", ProviderID: "openai", ActiveSource: "none"},
 	}}})
 
 	pendingModel, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
@@ -406,7 +470,7 @@ func TestCredentialsPanel_RendersSafeCredentialTestStatuses(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewCredentialsPanel()
 			updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-				{Name: "openai", Type: "openai"},
+				{Name: "openai", ProviderID: "openai"},
 			}}})
 			pendingModel, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 			secret := "provider-secret-" + tt.name
@@ -430,7 +494,7 @@ func TestCredentialsPanel_RendersSafeCredentialTestStatuses(t *testing.T) {
 func TestCredentialsPanel_RedactsCredentialTestRPCError(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", Type: "openai"},
+		{Name: "openai", ProviderID: "openai"},
 	}}})
 	pendingModel, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	secret := "provider-secret-from-rpc-error"
@@ -479,8 +543,8 @@ func TestCredentialsPanel_KeylessGatewayBadgeReadsOptional(t *testing.T) {
 	th := tuitheme.ActiveTheme()
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "llama", Type: "openai", BaseURL: "http://localhost:8080", ActiveSource: "absent", CredentialRequired: false, AuthModes: []string{"apiKey"}},
-		{Name: "claude", Type: "anthropic", ActiveSource: "absent", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+		{Name: "llama", ProviderID: "openai", BaseURL: "http://localhost:8080", ActiveSource: "none", CredentialRequired: false, AuthModes: []string{"apiKey"}},
+		{Name: "claude", ProviderID: "anthropic", ActiveSource: "none", CredentialRequired: true, AuthModes: []string{"apiKey"}},
 	}}})
 	view := updated.(CredentialsPanel).View()
 
@@ -488,20 +552,20 @@ func TestCredentialsPanel_KeylessGatewayBadgeReadsOptional(t *testing.T) {
 	if !strings.Contains(keyless, tuiprim.StatusBadge(th.TextDim, "optional")) {
 		t.Errorf("the keyless gateway's badge is not the neutral OPTIONAL one:\n%s", ansiPattern.ReplaceAllString(keyless, ""))
 	}
-	if strings.Contains(keyless, tuiprim.StatusBadge(th.StateEnded, "absent")) {
-		t.Errorf("the keyless gateway wears the ended-tone ABSENT badge, which is the badge of a provider missing its key:\n%s", ansiPattern.ReplaceAllString(keyless, ""))
+	if strings.Contains(keyless, tuiprim.StatusBadge(th.StateEnded, "none")) {
+		t.Errorf("the keyless gateway wears the ended-tone NONE badge, which is the badge of a provider missing its key:\n%s", ansiPattern.ReplaceAllString(keyless, ""))
 	}
 
 	missing := instanceRow(t, view, "claude")
-	if !strings.Contains(missing, tuiprim.StatusBadge(th.StateEnded, "absent")) {
-		t.Errorf("a provider whose required key is missing must keep the ended-tone ABSENT badge:\n%s", ansiPattern.ReplaceAllString(missing, ""))
+	if !strings.Contains(missing, tuiprim.StatusBadge(th.StateEnded, "none")) {
+		t.Errorf("a provider whose required key is missing must keep the ended-tone NONE badge:\n%s", ansiPattern.ReplaceAllString(missing, ""))
 	}
 }
 
 func TestCredentialsPanel_RefreshResetsAndRejectsLateCredentialResult(t *testing.T) {
 	m := NewCredentialsPanel()
 	loaded, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "custom", Type: "openai", BaseURL: "https://old.example/v1"},
+		{Name: "custom", ProviderID: "openai", BaseURL: "https://old.example/v1"},
 	}}})
 	pending, actionCmd := loaded.(CredentialsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	if actionCmd == nil {
@@ -509,7 +573,7 @@ func TestCredentialsPanel_RefreshResetsAndRejectsLateCredentialResult(t *testing
 	}
 
 	refreshed, _ := pending.(CredentialsPanel).Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "custom", Type: "openai", BaseURL: "https://new.example/v1"},
+		{Name: "custom", ProviderID: "openai", BaseURL: "https://new.example/v1"},
 	}}})
 	view := refreshed.(CredentialsPanel).View()
 	if strings.Contains(view, "Testing credentials") || strings.Contains(view, "Credentials verified") {
@@ -530,14 +594,12 @@ func TestCredentialsPanel_RefreshResetsAndRejectsLateCredentialResult(t *testing
 // TestCredentialsPanelSourceBadgeTones (kata gk5r) pins the panel's whole
 // source-tone vocabulary in one place.
 //
-// The panel spends three tones: StateIdle marks a credential that is present
-// and working, StateEnded marks one that is missing, and TextDim is chrome —
-// type headings, hints, the "optional" badge and the "none" source that wants
-// no key. "file" is a stored API key, the most-configured state the panel can
-// show, so it belongs with the other configured sources; wearing the chrome
-// tone made it read as no-credential, indistinguishable from a source the
-// panel does not recognise. An unrecognised source has no state to report and
-// must stay dim.
+// The panel spends three tones: StateIdle marks a credential that resolved,
+// StateEnded marks one that is missing, and TextDim is chrome — provider
+// headings, hints, and the "optional" badge. Every registry source but "none"
+// names a resolved credential (spec §10), so all of them wear the configured
+// tone; "none" alone is the state where nothing resolved, and whether that is
+// a problem depends on the instance, which is credentialBadge's call.
 func TestCredentialsPanelSourceBadgeTones(t *testing.T) {
 	withTestColorProfile(t)
 	th := tuitheme.ActiveTheme()
@@ -549,21 +611,234 @@ func TestCredentialsPanelSourceBadgeTones(t *testing.T) {
 		why    string
 	}{
 		{"oauth", th.StateIdle, "a signed-in OAuth credential is configured"},
-		{"env", th.StateIdle, "a credential from the environment is configured"},
-		{"file", th.StateIdle, "a stored API key is configured"},
-		{"absent", th.StateEnded, "a required credential is missing"},
-		{"none", th.TextDim, "this provider wants no credential"},
-		{"something-else", th.TextDim, "an unrecognised source reports no state"},
-		{"", th.TextDim, "an unrecognised source reports no state"},
+		{"env:ANTHROPIC_API_KEY", th.StateIdle, "a credential from the environment is configured"},
+		{"store", th.StateIdle, "a stored API key is configured"},
+		{"api_key", th.StateIdle, "an authored api_key is configured"},
+		{"credential_headers", th.StateIdle, "an authored credential header is configured"},
+		{"adc", th.StateIdle, "application-default credentials are configured"},
+		{"none", th.TextDim, "nothing resolved; the row's own badge says whether that is a problem"},
+		{"", th.TextDim, "an unset source reports no state"},
 	} {
 		if got := p.sourceBadgeColor(tc.source); got != tc.want {
 			t.Errorf("sourceBadgeColor(%q) = %v, want %v — %s", tc.source, got, tc.want, tc.why)
 		}
 	}
 
-	// The three configured sources must be told apart from the chrome tone at
-	// all, which is the whole point of the mapping above.
+	// The configured sources must be told apart from the chrome tone at all,
+	// which is the whole point of the mapping above.
 	if th.StateIdle == th.TextDim {
 		t.Fatal("StateIdle and TextDim are the same color in this theme, so the assertions above prove nothing")
 	}
+
+	// A required credential that did not resolve is the ended tone, and the
+	// same "none" source on an instance that needs nothing is not.
+	missing := p.credentialBadge(appwire.InstanceEntry{Name: "claude", ActiveSource: "none", CredentialRequired: true})
+	if !strings.Contains(missing, tuiprim.StatusBadge(th.StateEnded, "none")) {
+		t.Errorf("a missing required credential must wear the ended tone: %q", ansiPattern.ReplaceAllString(missing, ""))
+	}
+	optional := p.credentialBadge(appwire.InstanceEntry{Name: "llama", ActiveSource: "none"})
+	if !strings.Contains(optional, tuiprim.StatusBadge(th.TextDim, "optional")) {
+		t.Errorf("an instance that needs no credential must wear the optional badge: %q", ansiPattern.ReplaceAllString(optional, ""))
+	}
+}
+
+// TestCredentialsPanel_GroupsEachProviderOnce: the registry ranks instances by
+// default order then name, which can interleave providers, and the panel emits
+// a header whenever the provider changes from one row to the next. Sorting
+// first is what keeps a provider's header from appearing twice.
+func TestCredentialsPanel_GroupsEachProviderOnce(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", ActiveSource: "store"},
+		{Name: "gpt", ProviderID: "openai", ActiveSource: "store"},
+		{Name: "claude", ProviderID: "anthropic", ActiveSource: "store"},
+	}}})
+	panel := updated.(CredentialsPanel)
+
+	var headers, names []string
+	for _, row := range panel.rows {
+		if row.header {
+			headers = append(headers, row.groupName)
+			continue
+		}
+		names = append(names, row.entry.Name)
+	}
+	if !reflect.DeepEqual(headers, []string{"anthropic", "openai"}) {
+		t.Errorf("headers = %v, want each provider once, in order", headers)
+	}
+	if !reflect.DeepEqual(names, []string{"claude", "work", "gpt"}) {
+		t.Errorf("rows = %v, want each provider's instances together, by name", names)
+	}
+}
+
+// TestCredentialsPanelEditClearsAnAuthoredBaseURL: evener/instance/edit now
+// has an additive ClearBaseURL flag (#711) alongside BaseURL's unchanged
+// "empty means unchanged" (v3), so emptying a previously set field and
+// submitting sends an explicit clear instead of being refused.
+func TestCredentialsPanelEditClearsAnAuthoredBaseURL(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", Protocol: "anthropic", BaseURL: "https://existing/v1", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+
+	// Open the edit form on the selected instance.
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	if p.formBaseURL != "https://existing/v1" {
+		t.Fatalf("formBaseURL = %q, want the instance's authored URL", p.formBaseURL)
+	}
+
+	// Move to the Base URL field and erase it.
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if p.formActiveField() != "baseURL" {
+		t.Fatalf("active field = %q, want baseURL", p.formActiveField())
+	}
+	for range len("https://existing/v1") {
+		panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		p = panel.(CredentialsPanel)
+	}
+
+	if note := flattenPanelText(p.View()); !strings.Contains(note, "resets the endpoint to the provider's default") {
+		t.Fatalf("the form does not say emptying resets to the default endpoint:\n%s", p.View())
+	}
+
+	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if cmd == nil {
+		t.Fatal("the cleared field was not submitted")
+	}
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.Name != "work" || msg.Params.BaseURL != "" || !msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want ClearBaseURL true and BaseURL empty", msg.Params)
+	}
+	if p.formOpen {
+		t.Fatal("the form stayed open after a submit it accepted")
+	}
+}
+
+// TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet: an instance with
+// no base_url of its own has nothing to clear, so the empty field is honest
+// and submitting it untouched sends neither BaseURL nor ClearBaseURL.
+func TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", Protocol: "anthropic", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+
+	if note := flattenPanelText(p.View()); strings.Contains(note, "resets the endpoint to the provider's default") {
+		t.Fatalf("nothing was cleared, so the form must not note a reset:\n%s", p.View())
+	}
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("the edit was not submitted")
+	}
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.Name != "work" || msg.Params.BaseURL != "" || msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want neither BaseURL nor ClearBaseURL", msg.Params)
+	}
+}
+
+// TestCredentialsPanelEditOfAnImplicitInstanceLeavesBaseURLUnchanged is
+// #711 (roborev): the edit form pre-fills formBaseURL with the instance's
+// displayed base URL, which for an implicit instance is its resolved
+// registry default, not an authored override. A save that never touches
+// the field must send neither BaseURL nor ClearBaseURL — sending the
+// displayed default back as a literal BaseURL would author it and stop
+// spec §10's credential inheritance on an instance the user only meant to
+// leave alone.
+func TestCredentialsPanelEditOfAnImplicitInstanceLeavesBaseURLUnchanged(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "groq", ProviderID: "groq", Protocol: "openai-chat", BaseURL: "https://api.groq.com/openai/v1", Implicit: true, CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	if p.formBaseURL != "https://api.groq.com/openai/v1" {
+		t.Fatalf("formBaseURL = %q, want the implicit instance's resolved default", p.formBaseURL)
+	}
+
+	// Advance past protocol to the baseURL field and submit without typing
+	// anything into either field.
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if cmd == nil {
+		t.Fatal("the edit was not submitted")
+	}
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.BaseURL != "" || msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want neither BaseURL nor ClearBaseURL: saving without touching the field must not author the displayed default as a literal override", msg.Params)
+	}
+}
+
+// TestCredentialsPanelEditOfAHiddenInstanceLeavesBaseURLUnchanged is #711
+// (roborev): a hidden or otherwise unresolvable authored instance can
+// display this field empty while a real base_url is still authored
+// underneath (InstanceEntry.Hidden: "no resolvable base URL in this
+// environment"). A save that never touches the field must not read that
+// display quirk as a deliberate clear.
+func TestCredentialsPanelEditOfAHiddenInstanceLeavesBaseURLUnchanged(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", Protocol: "anthropic", BaseURL: "", Hidden: true, CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	if p.formBaseURL != "" {
+		t.Fatalf("formBaseURL = %q, want empty: a hidden instance's real base_url does not display", p.formBaseURL)
+	}
+
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if cmd == nil {
+		t.Fatal("the edit was not submitted")
+	}
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.BaseURL != "" || msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want neither BaseURL nor ClearBaseURL: an untouched empty display must not silently clear a real authored base_url the pane could not show", msg.Params)
+	}
+}
+
+// flattenPanelText strips styling and the overlay's box rules, then collapses
+// whitespace, so an assertion on a sentence does not depend on where the
+// panel wrapped it.
+func flattenPanelText(view string) string {
+	plain := ansiPattern.ReplaceAllString(view, "")
+	plain = strings.Map(func(r rune) rune {
+		if strings.ContainsRune("│─╭╮╰╯", r) {
+			return ' '
+		}
+		return r
+	}, plain)
+	return strings.Join(strings.Fields(plain), " ")
 }

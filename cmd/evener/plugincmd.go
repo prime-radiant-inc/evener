@@ -16,43 +16,59 @@ import (
 )
 
 type pluginManager interface {
-	SeedDefaultMarketplaces() (bool, error)
-	ListMarketplaces() (plugins.Marketplaces, error)
+	SeedDefaultMarketplaces(context.Context) (bool, error)
+	ListMarketplaces(context.Context) (plugins.Marketplaces, error)
 	AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
-	RemoveMarketplace(string) error
+	RemoveMarketplace(context.Context, string) error
 	RefreshMarketplace(context.Context, string) error
 	Browse(context.Context, string) (plugins.Catalog, error)
-	List() ([]plugins.ListItem, error)
+	List(context.Context) ([]plugins.ListItem, error)
 	Install(context.Context, string, string) (plugins.InstallEntry, error)
-	Remove(string, string) error
-	SetEnabled(string, string, bool) error
+	Remove(context.Context, string, string) error
+	SetEnabled(context.Context, string, string, bool) error
 	UpdateAll(context.Context) ([]plugins.InstallEntry, error)
 	Upgrade(context.Context, string, string) (plugins.InstallEntry, error)
-	SetAutoUpgrade(string, string, bool) error
-	Gc() ([]string, error)
+	SetAutoUpgrade(context.Context, string, string, bool) error
+	Gc(context.Context) ([]string, error)
 	Doctor() ([]plugins.DoctorFinding, error)
 	UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, error)
 }
 
 type pluginLaunchResolver interface {
-	ResolveForLaunch([]string, *[]string) (plugins.LaunchPluginResolution, error)
+	ResolveForLaunch(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 }
 
 var newPluginManager = func() pluginManager { return plugins.NewManager("") }
 var parsePluginMarketplaceSource = parseMarketplaceSourceArg
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
-	// mutates store state) and must not trigger first-run seeding the way
-	// every other verb does.
-	if len(args) == 0 || args[0] != "doctor" {
-		if _, err := newPluginManager().SeedDefaultMarketplaces(); err != nil {
-			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
-		}
-	}
-	if len(args) == 0 {
+	// Saying how the command works reaches nothing under the config root, so
+	// it answers before the guard below and leaves no root behind: a user with
+	// unmigrated data can still read the usage.
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		printPluginUsage(stderr)
 		return nil
+	}
+	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
+	// mutates store state), so it takes only the read-only half of the guard
+	// and skips first-run seeding: creating the config tree for a diagnostic
+	// would mutate what it reports on, and would fail outright on a read-only
+	// config home. Every other verb works under that tree, and gets the guard
+	// before anything creates it — seeding writes into the config root and
+	// every store path below hangs off it, while the legacy-data check reads
+	// an existing root as already migrated, so running it second would strand
+	// a user's legacy configuration and credentials silently.
+	if args[0] == "doctor" {
+		if err := cmdutil.CheckLegacyDataDirs(); err != nil {
+			return err
+		}
+	} else {
+		if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+			return err
+		}
+		if _, err := newPluginManager().SeedDefaultMarketplaces(context.Background()); err != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
+		}
 	}
 
 	switch args[0] {
@@ -65,9 +81,6 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return runPluginCheckNow(args[1:], stdout, stderr)
 	case "doctor":
 		return runPluginDoctor(args[1:], stdout, stderr)
-	case "help", "-h", "--help":
-		printPluginUsage(stderr)
-		return nil
 	default:
 		printPluginUsage(stderr)
 		return fmt.Errorf("unknown plugin command %q", args[0])
@@ -87,7 +100,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		mk, err := m.ListMarketplaces()
+		mk, err := m.ListMarketplaces(context.Background())
 		if err != nil {
 			return err
 		}
@@ -126,7 +139,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return errors.New("usage: evener plugin marketplace remove <name>")
 		}
 		name := fs.Arg(0)
-		if err := m.RemoveMarketplace(name); err != nil {
+		if err := m.RemoveMarketplace(context.Background(), name); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Removed marketplace %q\n", name)
@@ -214,8 +227,8 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "  marketplace   Manage plugin marketplaces (add, remove, list, refresh, browse)\n")
 	_, _ = fmt.Fprintf(w, "  install       Install a plugin\n")
 	_, _ = fmt.Fprintf(w, "  remove        Remove an installed plugin\n")
-	_, _ = fmt.Fprintf(w, "  enable        Enable a plugin\n")
-	_, _ = fmt.Fprintf(w, "  disable       Disable a plugin\n")
+	_, _ = fmt.Fprintf(w, "  enable        Enable a plugin by default\n")
+	_, _ = fmt.Fprintf(w, "  disable       Disable a plugin by default\n")
 	_, _ = fmt.Fprintf(w, "  list          List installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  upgrade       Upgrade installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  auto-upgrade  Toggle a plugin's auto-upgrade flag (--off to disable)\n")
@@ -287,7 +300,7 @@ func renderPluginList(w io.Writer, items []plugins.ListItem, asJSON bool) error 
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintf(tw, "PLUGIN@MARKETPLACE\tVERSION\tENABLED\tAUTO-UPGRADE\tBROKEN\n")
+	_, _ = fmt.Fprintf(tw, "PLUGIN@MARKETPLACE\tVERSION\tENABLED-BY-DEFAULT\tAUTO-UPGRADE\tBROKEN\n")
 	for _, item := range items {
 		enabled := "no"
 		if item.Enabled {
@@ -309,12 +322,22 @@ func renderPluginList(w io.Writer, items []plugins.ListItem, asJSON bool) error 
 }
 
 func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResolution, asJSON bool) error {
+	// The effective listing answers "what would a default launch load", so a
+	// plugin whose registry default is off is omitted here even though a
+	// session allow-list could name it. `plugin list` is the view of the full
+	// installed inventory.
+	candidates := make([]plugins.LaunchPluginCandidate, 0, len(resolution.Candidates))
+	for _, candidate := range resolution.Candidates {
+		if candidate.Selected {
+			candidates = append(candidates, candidate)
+		}
+	}
 	if asJSON {
 		result := effectivePluginListJSON{
-			Plugins:     make([]effectivePluginJSON, 0, len(resolution.Candidates)),
+			Plugins:     make([]effectivePluginJSON, 0, len(candidates)),
 			Diagnostics: resolution.Diagnostics,
 		}
-		for _, candidate := range resolution.Candidates {
+		for _, candidate := range candidates {
 			result.Plugins = append(result.Plugins, effectivePluginJSON{
 				Name: candidate.Name, Version: candidate.Version, Description: candidate.Description,
 				Source: candidate.Source, Marketplace: candidate.Marketplace, Path: candidate.Path,
@@ -325,14 +348,14 @@ func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResol
 		return json.NewEncoder(w).Encode(result)
 	}
 
-	if len(resolution.Candidates) == 0 {
+	if len(candidates) == 0 {
 		_, _ = fmt.Fprintln(w, "No effective plugins.")
 		renderLaunchPluginDiagnostics(w, resolution.Diagnostics)
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "PLUGIN\tVERSION\tSOURCE\tSKILLS\tAGENTS\tCOMMANDS\tHOOKS\tMCP")
-	for _, candidate := range resolution.Candidates {
+	for _, candidate := range candidates {
 		source := string(candidate.Source)
 		if candidate.Marketplace != "" {
 			source += ":" + candidate.Marketplace
@@ -368,13 +391,16 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			if !ok {
 				return errors.New("plugin manager does not support effective listing")
 			}
-			resolution, err := resolver.ResolveForLaunch([]string(pluginDirs), nil)
+			// context.Background: runPlugin is a one-shot command with no
+			// context of its own, and nothing cancels this listing but the
+			// process ending.
+			resolution, err := resolver.ResolveForLaunch(context.Background(), []string(pluginDirs), nil)
 			if renderErr := renderEffectivePluginList(stdout, resolution, *asJSON); renderErr != nil {
 				return renderErr
 			}
 			return err
 		}
-		items, err := m.List()
+		items, err := m.List(ctx)
 		if err != nil {
 			return err
 		}
@@ -421,7 +447,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		if err := m.Remove(plugin, marketplace); err != nil {
+		if err := m.Remove(ctx, plugin, marketplace); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Removed %s@%s\n", plugin, marketplace)
@@ -440,10 +466,10 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		if err := m.SetEnabled(plugin, marketplace, true); err != nil {
+		if err := m.SetEnabled(ctx, plugin, marketplace, true); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(stdout, "Enabled %s@%s\n", plugin, marketplace)
+		_, _ = fmt.Fprintf(stdout, "Enabled %s@%s by default\n", plugin, marketplace)
 		return nil
 
 	case "disable":
@@ -459,10 +485,10 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		if err := m.SetEnabled(plugin, marketplace, false); err != nil {
+		if err := m.SetEnabled(ctx, plugin, marketplace, false); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(stdout, "Disabled %s@%s\n", plugin, marketplace)
+		_, _ = fmt.Fprintf(stdout, "Disabled %s@%s by default\n", plugin, marketplace)
 		return nil
 
 	case "upgrade":
@@ -518,7 +544,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		on := !*off
-		if err := m.SetAutoUpgrade(plugin, marketplace, on); err != nil {
+		if err := m.SetAutoUpgrade(ctx, plugin, marketplace, on); err != nil {
 			return err
 		}
 		state := "enabled"
@@ -535,7 +561,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		removed, err := m.Gc()
+		removed, err := m.Gc(context.Background())
 		if err != nil {
 			return err
 		}

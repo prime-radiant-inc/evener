@@ -165,20 +165,37 @@ func readAPILogSummary(ctx context.Context, path, ref, rangeArg string) (any, er
 		},
 	}
 	tailAnchored := strings.HasPrefix(normalizedRange, "last:")
+	var sizer *apiLogSummaryEnvelopeSizer
+	sizeOf := func() (int, error) {
+		if sizer != nil {
+			return sizer.envelopeSize(envelope)
+		}
+		encoded, err := json.MarshalIndent(envelope, "", "  ")
+		if err != nil {
+			return 0, err
+		}
+		return len(encoded), nil
+	}
 	for {
 		pageReachesCleanEOF := len(envelope.Records) > 0 && envelope.Records[len(envelope.Records)-1].RecordNumber == totalRecords-1 && !partialTail
 		setAPILogSettlementStates(envelope.Records, pageReachesCleanEOF)
 		envelope.Meta.RecordsReturned = len(envelope.Records)
 		envelope.Meta.Truncated = envelope.Meta.Truncated || len(envelope.Records) < totalRecords
-		encoded, err := json.MarshalIndent(envelope, "", "  ")
+		size, err := sizeOf()
 		if err != nil {
 			return nil, fmt.Errorf("encode API-log summary: %w", err)
 		}
-		if len(encoded) <= maxAPILogOutputBytes {
+		if size <= maxAPILogOutputBytes {
 			return envelope, nil
 		}
 		if len(envelope.Records) == 0 {
 			return nil, fmt.Errorf("API-log summary metadata exceeds %d-byte output limit", maxAPILogOutputBytes)
+		}
+		if sizer == nil {
+			sizer, err = newAPILogSummaryEnvelopeSizer(envelope, size)
+			if err != nil {
+				return nil, fmt.Errorf("encode API-log summary: %w", err)
+			}
 		}
 		if tailAnchored {
 			envelope.Records = envelope.Records[1:]
@@ -186,6 +203,117 @@ func readAPILogSummary(ctx context.Context, path, ref, rangeArg string) (any, er
 			envelope.Records = envelope.Records[:len(envelope.Records)-1]
 		}
 	}
+}
+
+// apiLogSummaryEnvelopeSizer probes the indented size of an apiLogReadEnvelope
+// by accounting instead of re-serializing the whole envelope on every trim
+// step. The trim loop used to json.MarshalIndent the full envelope, drop one
+// record, and repeat until the output fit maxAPILogOutputBytes — O(records)
+// full serializes of up to 64 KiB each. The sizer instead serializes each
+// surviving record once per distinct settlement state it takes, serializes
+// the small meta block per probe, and adds the constant framing, so trimming
+// costs about two envelope-equivalents of serialization plus integer addition
+// no matter how many records are dropped.
+//
+// The accounting is exact, not an estimate, so trim boundaries are unchanged:
+//   - A record embedded in the envelope renders byte-identically to
+//     json.MarshalIndent(record, "    ", "  ") because envelope records sit at
+//     indent depth 2 while the standalone prefix supplies the same leading
+//     whitespace (prefix "    " plus one indent per level matches indent
+//     repeated level+2 with an empty prefix).
+//   - The meta block embedded at depth 1 renders byte-identically to
+//     json.MarshalIndent(meta, "  ", "  ") for the same reason.
+//   - Adjacent records are joined by apiLogSummaryRecordSeparator (comma plus
+//     the depth-2 newline).
+//   - Everything else (transcript identity framing, array/meta punctuation) is
+//     constant while trimming and is derived from one real full-envelope
+//     encoding, never hardcoded, so envelope field changes are absorbed
+//     automatically.
+//
+// All of the above must stay in sync with the json.MarshalIndent(envelope,
+// "", "  ") probe: changing that prefix/indent requires updating the
+// standalone prefixes and separator below.
+type apiLogRecordSizeKey struct {
+	recordNumber int
+	settlement   apiLogSettlementState
+}
+
+type apiLogSummaryEnvelopeSizer struct {
+	fixed int
+	sizes map[apiLogRecordSizeKey]int
+}
+
+// apiLogSummaryRecordSeparator joins adjacent records in the indented summary
+// envelope: the comma plus the newline indenting the next record to depth 2.
+const apiLogSummaryRecordSeparator = ",\n    "
+
+func newAPILogSummaryEnvelopeSizer(envelope apiLogReadEnvelope, fullLen int) (*apiLogSummaryEnvelopeSizer, error) {
+	sizer := &apiLogSummaryEnvelopeSizer{sizes: make(map[apiLogRecordSizeKey]int)}
+	recordsLen, err := sizer.recordsSize(envelope.Records)
+	if err != nil {
+		return nil, err
+	}
+	metaLen, err := apiLogIndentedSize(envelope.Meta, "  ")
+	if err != nil {
+		return nil, err
+	}
+	// Full envelope = fixed framing + records + separators + meta.
+	sizer.fixed = fullLen - recordsLen - (len(envelope.Records)-1)*len(apiLogSummaryRecordSeparator) - metaLen
+	return sizer, nil
+}
+
+func (s *apiLogSummaryEnvelopeSizer) envelopeSize(envelope apiLogReadEnvelope) (int, error) {
+	if len(envelope.Records) == 0 {
+		// Only the identity framing and meta remain; encode directly. This
+		// happens at most once per read (after the last record is dropped).
+		encoded, err := json.MarshalIndent(envelope, "", "  ")
+		if err != nil {
+			return 0, err
+		}
+		return len(encoded), nil
+	}
+	recordsLen, err := s.recordsSize(envelope.Records)
+	if err != nil {
+		return 0, err
+	}
+	metaLen, err := apiLogIndentedSize(envelope.Meta, "  ")
+	if err != nil {
+		return 0, err
+	}
+	return s.fixed + recordsLen + (len(envelope.Records)-1)*len(apiLogSummaryRecordSeparator) + metaLen, nil
+}
+
+func (s *apiLogSummaryEnvelopeSizer) recordsSize(records []apiLogRecordSummary) (int, error) {
+	total := 0
+	for _, record := range records {
+		size, err := s.recordSize(record)
+		if err != nil {
+			return 0, err
+		}
+		total += size
+	}
+	return total, nil
+}
+
+func (s *apiLogSummaryEnvelopeSizer) recordSize(record apiLogRecordSummary) (int, error) {
+	key := apiLogRecordSizeKey{recordNumber: record.RecordNumber, settlement: record.SettlementState}
+	if size, ok := s.sizes[key]; ok {
+		return size, nil
+	}
+	encoded, err := json.MarshalIndent(record, "    ", "  ")
+	if err != nil {
+		return 0, err
+	}
+	s.sizes[key] = len(encoded)
+	return len(encoded), nil
+}
+
+func apiLogIndentedSize(value any, prefix string) (int, error) {
+	encoded, err := json.MarshalIndent(value, prefix, "  ")
+	if err != nil {
+		return 0, err
+	}
+	return len(encoded), nil
 }
 
 func readAPILogAttempt(ctx context.Context, path, ref, attemptID, body string, offsetBytes, maxBytes int) (any, error) {

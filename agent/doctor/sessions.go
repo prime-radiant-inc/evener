@@ -93,6 +93,7 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	}
 
 	res := SessionsResult{Sessions: []SessionRow{}, Unreadable: []UnreadableSession{}}
+	delegates := delegateCache{}
 	for _, b := range buckets {
 		if opts.Bucket != "" && b.projectID != opts.Bucket {
 			continue
@@ -103,7 +104,7 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 		}
 		for _, meta := range metas {
 			paths := pathsFor(b, meta.ID)
-			row, err := sessionRow(b, paths, meta)
+			row, err := sessionRow(b, paths, meta, delegates)
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{
 					SessionID:     meta.ID,
@@ -127,7 +128,7 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 // transcript (header + entries, for started/models/outcome), the transcript
 // file's own size and mtime (bytes/last-activity), the meta (turn count,
 // subagent/observer facts), and the jobs fold (delegate count).
-func sessionRow(b bucket, paths Paths, meta schema.SessionMeta) (SessionRow, error) {
+func sessionRow(b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
 	doc, err := loadTranscript(paths.TranscriptPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
@@ -141,7 +142,11 @@ func sessionRow(b bucket, paths Paths, meta schema.SessionMeta) (SessionRow, err
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
 
-	_, stable, _, err := stableDoctorDelegates(paths)
+	// The meta is already in hand, so resolve the delegates root from it
+	// directly instead of going through delegates.get, which would re-read
+	// the same meta from disk.
+	rootSessionID := delegateRootFromMeta(meta, paths.SessionID)
+	_, stable, _, err := delegates.getForRoot(b.dir, rootSessionID)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -172,10 +177,8 @@ func sessionRow(b bucket, paths Paths, meta schema.SessionMeta) (SessionRow, err
 
 // sessionModels reports the model(s) a session used: the model recorded at
 // creation (the transcript header, immutable) plus the session's current
-// model from meta. A header/meta mismatch is the durable trace of a
-// mid-session model switch — the switch marker text itself
-// (schema.TurnModelSwitch) is presentational prose, not a structured field, so
-// this compares the two canonical structured sources instead of parsing it.
+// model from meta. This summary compares the two endpoint identities; it does
+// not enumerate intermediate transitions from MODEL_SWITCH records.
 func sessionModels(headerModel, metaModel string) []string {
 	switch {
 	case headerModel == "" && metaModel == "":

@@ -70,10 +70,11 @@ broken — that is the failure this card now catches.
 - Leave the hub's auto-materialized `$HOME/.evener/providers.toml` in place. The
   old text told you to move it aside because the config-aware branch of
   `validateProviderCredentials` demanded a credential for ollama; **that is
-  fixed** — the branch now returns early for any instance type whose auth mode
-  is `none` (`cmd/evener-hub/spawn.go:566-572`, `envvars.RequiresNoCredential`,
-  `envvars/providers.go#RequiresNoCredential`; ollama is `AuthModes: ["none"]` at
-  `envvars/providers.go:155-161`). If an ollama spawn 503s with "provider
+  fixed** — the branch returns early for any instance whose resolved auth
+  scheme needs no credential
+  (`cmd/evener-hub/spawn.go#validateProviderCredentials`, on
+  `registry.AuthNone` / `registry.AuthOptionalBearer`; the curated ollama row
+  carries `auth = "optional-bearer"`). If an ollama spawn 503s with "provider
   credentials missing", that regression is back and is worth its own kata.
 
 ## Steps

@@ -28,6 +28,31 @@ func (e *cleanupCountingEnv) Cleanup() {
 
 func (e *cleanupCountingEnv) count() int32 { return e.cleanups.Load() }
 
+// apiLogRouteReleases records the sessions whose API-log route was released. A
+// session releases its route exactly once, when it closes, so this proves a
+// session was closed without holding a reference to it — and without going
+// through its execution environment, which an unadopted child must not touch.
+type apiLogRouteReleases struct {
+	mu       sync.Mutex
+	released []string
+}
+
+func (r *apiLogRouteReleases) WrapComplete(next llm.CompleteFunc) llm.CompleteFunc { return next }
+func (r *apiLogRouteReleases) WrapStream(next llm.StreamFunc) llm.StreamFunc       { return next }
+
+func (r *apiLogRouteReleases) ReleaseSession(sessionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.released = append(r.released, sessionID)
+	return nil
+}
+
+func (r *apiLogRouteReleases) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.released)
+}
+
 // fakeEmit records the events forwarded through a manager's emit closure.
 type fakeEmit struct {
 	mu     sync.Mutex
@@ -199,7 +224,7 @@ func trackSyntheticChild(t *testing.T, sess *Session, id string, status Subagent
 // TestRetention_FailLoudAtCap fills the retention cap with UNCONSUMED terminal
 // records (none reclaimable), then asserts the next spawn fails loudly naming the
 // remedy and does NOT track a new child (no leak — the created session is Closed
-// before the error return).
+// before the error return, without touching the parent's shared environment).
 //
 // Load-bearing: if the cap were not enforced, spawn would succeed and the tracked
 // count would grow; if the error did not name the remedy, the message assertion
@@ -209,6 +234,8 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
+	routes := &apiLogRouteReleases{}
+	c.Use(routes)
 	env := &cleanupCountingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir)}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		MaxSubagentDepth: 1,
@@ -225,6 +252,7 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 
 	before := countTracked(sess.subagents)
 	cleanupsBefore := env.count()
+	releasesBefore := routes.count()
 
 	_, err = sess.spawnAgent(context.Background(), "overflow", "", "", 0, "", "", nil, nil)
 	if err == nil {
@@ -239,10 +267,20 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 	if after := countTracked(sess.subagents); after != before {
 		t.Errorf("failed spawn must not track a child: tracked %d → %d", before, after)
 	}
-	// No leak: the already-created child Session was Closed before the error return,
-	// which invokes the (shared) env's Cleanup exactly once during the spawn call.
-	if got := env.count() - cleanupsBefore; got != 1 {
-		t.Errorf("failed spawn must Close the created child session (env Cleanup delta = %d, want 1)", got)
+	// The already-created child Session was Closed before the error return, but
+	// this child SHARES the live parent's environment (no working dir, no box of
+	// its own), and Cleanup on that environment would release the parent's live
+	// scratch leases and signal the processes the parent tracks. So the close has
+	// to skip it — the same skip the parent's own teardown makes for its children.
+	// That the close still happens is asserted directly, on a held reference, in
+	// TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns.
+	if got := env.count() - cleanupsBefore; got != 0 {
+		t.Errorf("failed spawn ran Cleanup %d time(s) on the live parent's environment, want 0", got)
+	}
+	// And it IS closed: closing releases the session's API-log route, which the
+	// child holds alone, so exactly one release lands during the spawn call.
+	if got := routes.count() - releasesBefore; got != 1 {
+		t.Errorf("failed spawn must Close the created child session (API-log route releases = %d, want 1)", got)
 	}
 }
 
@@ -275,10 +313,13 @@ func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
 	older := time.Now()
 	newer := older.Add(time.Minute)
 
-	// "consumed" is the only reclaimable record; it gets its own counting env so the
-	// test can prove GC eviction CLOSES its (still-live) child Session — a consumed
-	// completed child is not closed when its run finishes, so evicting it must close
-	// it to avoid a leak. "held" is unconsumed and must stay.
+	// "consumed" is the only reclaimable record; a consumed completed child is not
+	// closed when its run finishes, so evicting it must close it to avoid a leak.
+	// It gets its own counting env so the test can prove the eviction closes the
+	// child WITHOUT running its environment's Cleanup: a child's environment is
+	// the parent's own or a clone sharing the parent's process table, and Cleanup
+	// on either signals the parent's in-flight tools and releases its scratch
+	// leases. "held" is unconsumed and must stay.
 	consumedEnv := &cleanupCountingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
 	consumedChild, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), consumedEnv, SessionConfig{MaxSubagentDepth: 1})
 	if err != nil {
@@ -294,8 +335,11 @@ func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
 	if got := sess.getSub("consumed"); got != nil {
 		t.Errorf("consumed terminal record must be reclaimed; still tracked: %+v", got)
 	}
-	if got := consumedEnv.count() - cleanupsBefore; got != 1 {
-		t.Errorf("GC eviction must Close the consumed child's session (env Cleanup delta = %d, want 1)", got)
+	if got := consumedChild.State(); got != SessionClosed {
+		t.Errorf("GC eviction must close the consumed child's session: state = %q, want %q", got, SessionClosed)
+	}
+	if got := consumedEnv.count() - cleanupsBefore; got != 0 {
+		t.Errorf("GC eviction ran Cleanup %d time(s) on the evicted child's environment, want 0", got)
 	}
 	if got := sess.getSub("held"); got == nil {
 		t.Errorf("unconsumed terminal record must be retained")

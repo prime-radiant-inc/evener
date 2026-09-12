@@ -3,9 +3,9 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-1);
+  border: none;
+  border-top: 1px solid var(--edge);
+  background: var(--surface-0);
 }
 
 .head {
@@ -27,7 +27,9 @@
 }
 
 .questionText {
-  font-size: var(--font-size-body);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
+  line-height: var(--line-height-body);
   color: var(--ink-hi);
 }
 
@@ -84,7 +86,7 @@
  * needs-you signal, so this never touches the token-contract allowlist. */
 .optionRecommended {
   font-size: var(--font-size-caption);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .optionDetail {
@@ -100,10 +102,10 @@
 
 .textInput {
   flex: 1;
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-control);
   color: var(--ink-hi);
-  background: var(--surface-0);
-  border: 1px solid var(--edge);
+  background: var(--field);
+  border: 1px solid var(--edge-strong);
   border-radius: var(--radius-control);
   padding: var(--space-1) var(--space-2);
 }

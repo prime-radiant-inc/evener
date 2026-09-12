@@ -17,7 +17,7 @@ package contextmgr
 // "<stateHome>/evener") finds the real record, builds a
 // client via llm.NewFromAvailableProviders (which threads StateHome from
 // XDG_STATE_HOME into the openai factory), and resolve the "openai" profile via
-// provider.ResolveProfileFromConfig. NewManager(profile, client, cheapmodel.New(client)) then summarizes
+// provider.Resolve. NewManager(profile, client, cheapmodel.New(client)) then summarizes
 // through the OAuth-backed Codex backend.
 //
 // Three arms per case (all combined-output scored):
@@ -44,13 +44,8 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
-
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // evalModel is the openai model the eval drives. The profile's cheap-model
@@ -75,25 +70,23 @@ func newOAuthManager(t *testing.T) *Manager {
 	// Point OAuth resolution at the real state home for the duration of the test.
 	t.Setenv(envvars.XDGStateHome.Name, oauthStateHome)
 
-	cfg, exists, err := providercfg.LoadFile(oauthProvidersConfig)
-	if err != nil {
-		t.Fatalf("load providers.toml %s: %v", oauthProvidersConfig, err)
-	}
-	if !exists {
-		t.Skipf("providers.toml not found at %s", oauthProvidersConfig)
+	if _, err := os.Stat(oauthProvidersConfig); err != nil {
+		t.Skipf("providers.toml not found at %s: %v", oauthProvidersConfig, err)
 	}
 
-	// Build the client. NewFromAvailableProviders threads StateHome (from
-	// XDG_STATE_HOME) into each factory, so the openai factory resolves OAuth
-	// from <stateHome>/evener/auth/openai.json and prefers it over any API key.
-	client, errs, err := llm.NewFromAvailableProviders(cfg)
+	// Build the client on the real registry: the user layer at
+	// oauthProvidersConfig names the instances, and the Codex authenticator
+	// reads OAuth from <stateHome>/evener/auth/<instance>.json.
+	t.Setenv(envvars.EVENERProvidersConfig.Name, oauthProvidersConfig)
+	r, err := registry.Load()
 	if err != nil {
-		t.Fatalf("llm.NewFromAvailableProviders: %v (partial errs: %v)", err, errs)
+		t.Fatalf("registry.Load: %v", err)
 	}
+	client := llm.NewClient(llm.WithRegistry(r))
 
-	prof, err := provider.ResolveProfileFromConfig(cfg, "openai/"+evalModel)
+	prof, err := provider.Resolve(client.Registry(), "openai/"+evalModel)
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig openai/%s: %v", evalModel, err)
+		t.Fatalf("Resolve openai/%s: %v", evalModel, err)
 	}
 
 	return NewManager(prof, client, cheapmodel.New(client))
@@ -108,7 +101,11 @@ func liveEvalOAuthPaths(t *testing.T) (string, string) {
 	if err != nil {
 		t.Skipf("live eval requires a resolvable user home: %v", err)
 	}
-	return liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	stateHome, providersConfig, noUserLayer := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	if noUserLayer {
+		t.Skipf("%s is empty: no user provider layer to run a live eval against", envvars.EVENERProvidersConfig.Name)
+	}
+	return stateHome, providersConfig
 }
 
 // pinnedNote wraps a note in a delimited block for the controlled with/without-note

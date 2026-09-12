@@ -16,6 +16,32 @@ afterEach(() => {
   resetDisclosureStoreForTests();
 });
 
+test("a completed launch can have a running child owned by the current stable projection", () => {
+  threadsStore.setState({
+    threads: new Map([
+      [
+        "parent",
+        {
+          delegates: [{ delegateId: "dlg_current", status: "running", outcome: "completed", terminal: false }],
+        } as ThreadModel,
+      ],
+    ]),
+  });
+  const turn: TurnModel = { id: "current", status: "completed", items: [] };
+  const item: ItemModel = {
+    id: "launch",
+    turnId: turn.id,
+    type: "commandExecution",
+    toolName: "delegate",
+    text: "",
+    status: "completed",
+    output: JSON.stringify({ delegate_id: "dlg_current", status: "completed" }),
+  };
+  render(createElement(ToolCallItem, { item, turn, live: false, sessionRef: "parent" }));
+  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+});
+
 test("delegate cards with the same ids read stable status only from their own session", () => {
   const done = {
     delegateId: "dlg_shared",
@@ -46,7 +72,7 @@ test("delegate cards with the same ids read stable status only from their own se
     callId: "call_a",
     text: "",
     description: "Shared delegate",
-    argumentsJSON: JSON.stringify({ task: "shared task" }),
+    argumentsJSON: JSON.stringify({ prompt: "shared task" }),
     output: JSON.stringify({ delegate_id: "dlg_shared", status: "running" }),
   };
   render(

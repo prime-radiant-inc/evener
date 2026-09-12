@@ -1,11 +1,8 @@
 // The settings nav's section inventory - single source of truth for
 // SettingsNav's link list/grouping, the pane's own title() (paneRegistry),
 // and (via DEFAULT_SECTION_ID) what a bare /settings resolves to. Verified
-// against templates/partials/settings.html:13-31 (16 exact - "16 nav
-// sections" per the wave-7 plan's own Goal line) PLUS one section with no
-// legacy counterpart: "about" (design-language credits) and "mobile"
-// (browser-only dedicated-app pairing), added after that
-// baseline and deliberately placed last, in the Daemon cluster. The 16
+// against the original settings inventory after Codex launch controls were
+// removed, plus keybindings, about, mobile, and agents-md. The original
 // legacy-parity sections are 5 ungrouped top links (General/Theme/
 // Transcript display/Display/Notifications) plus 3 labeled clusters ("Agents &
 // models"/"Extensions"/"Daemon"), in this fixed order. The per-project
@@ -20,7 +17,7 @@ export type SettingsClusterId = "agents-models" | "extensions" | "daemon";
 export interface SettingsSection {
   id: string;
   label: string;
-  /** Omitted for the 5 ungrouped top links. */
+  /** Omitted for ungrouped top links. */
   cluster?: SettingsClusterId;
 }
 
@@ -30,7 +27,7 @@ export interface SettingsCluster {
 }
 
 export const SETTINGS_CLUSTERS: SettingsCluster[] = [
-  { id: "agents-models", label: "Agents & models" },
+  { id: "agents-models", label: "Agent setup" },
   { id: "extensions", label: "Extensions" },
   { id: "daemon", label: "Daemon" },
 ];
@@ -42,11 +39,12 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "transcript", label: "Transcript display" },
   { id: "display", label: "Display" },
   { id: "notifications", label: "Notifications" },
+  { id: "keybindings", label: "Keybindings" },
   // --- Agents & models -----------------------------------------------
   { id: "credentials", label: "Providers & credentials", cluster: "agents-models" },
   { id: "agents", label: "Agents", cluster: "agents-models" },
+  { id: "agents-md", label: "AGENTS.md", cluster: "agents-models" },
   { id: "launch-evener", label: "Evener launch", cluster: "agents-models" },
-  { id: "launch-codex", label: "Codex launch", cluster: "agents-models" },
   { id: "inrepo", label: "In-repo config", cluster: "agents-models" },
   // --- Extensions ------------------------------------------------------
   { id: "plugins-manager", label: "Marketplaces & Plugins", cluster: "extensions" },

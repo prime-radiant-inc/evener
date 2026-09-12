@@ -223,13 +223,13 @@ func TestRun_AuditErrorLoopBundledRunbook_HealthyEmitsZero(t *testing.T) {
 // derived from either of the above.
 func inBandMCPErrorLoopTurns() []schema.Turn {
 	var turns []schema.Turn
-	purposes := []string{
+	intents := []string{
 		"checking initial page state", "confirming the viewport resized",
 		"verifying the element is visible", "re-checking after the click",
 	}
-	for i, purpose := range purposes {
+	for i, intent := range intents {
 		id := fmt.Sprintf("mcp%d", i)
-		args := fmt.Sprintf(`{"action":"screenshot","intent":%q}`, purpose)
+		args := fmt.Sprintf(`{"action":"screenshot","intent":%q}`, intent)
 		turns = append(turns,
 			schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 				studyToolCall(id, "use_browser", args),

@@ -98,7 +98,7 @@ func TestHubModelNoticesRenderAsPane(t *testing.T) {
 
 func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "codex-local"
+	m.detail.SourceLabel = "remote"
 	m.addActionUnavailableNotice("send", "Send is not available for this session.", "source does not support send")
 
 	updated, _ := m.Update(hubSessionMsg{
@@ -112,7 +112,7 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 	})
 	updatedModel := updated.(hubModel)
 	got := updatedModel.sessionView()
-	if strings.Contains(got, "Action unavailable") || strings.Contains(got, "source: codex-local") {
+	if strings.Contains(got, "Action unavailable") || strings.Contains(got, "source: remote") {
 		t.Fatalf("session-scoped notice leaked after session change:\n%s", got)
 	}
 }
@@ -125,7 +125,7 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	m = updated.(hubModel)
 	got := m.sessionView()
 	// View() format: summary line contains the notice summary/title, source·cause on second line.
-	for _, want := range []string{"auth endpoint unavailable", "evener", "Retry /auth openai or check Hub auth configuration."} {
+	for _, want := range []string{"auth endpoint unavailable", "evener", "Retry /auth <instance> or check the hub's credentials."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("auth error notice missing %q:\n%s", want, got)
 		}
@@ -143,7 +143,7 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	if strings.Contains(got, "Auth error") {
 		t.Fatalf("successful login did not clear auth notice:\n%s", got)
 	}
-	if !strings.Contains(got, "OpenAI login complete. OpenAI auth: oauth (j@example.com)") {
+	if !strings.Contains(got, "Sign-in complete for openai. openai auth: OAuth (j@example.com)") {
 		t.Fatalf("login success message missing:\n%s", got)
 	}
 }
@@ -194,8 +194,8 @@ func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 		},
 		{
 			name: "action",
-			msg:  hubActionMsg{action: "compact", err: appwire.Unavailable("codex source does not support compact")},
-			want: []string{"codex source does not support compact"},
+			msg:  hubActionMsg{action: "compact", err: appwire.Unavailable("remote source does not support compact")},
+			want: []string{"remote source does not support compact"},
 		},
 		{
 			name: "provider",

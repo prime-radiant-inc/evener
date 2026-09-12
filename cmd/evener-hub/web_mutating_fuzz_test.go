@@ -105,7 +105,7 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		// changing route-indexed inputs would invalidate existing corpus entries.
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
 		{"/api/models?harness={id}", "evener", ""},
-		{"/api/models?harness={id}", "codex", ""},
+		{"/api/models?harness={id}", "external", ""},
 		// Tombstone seeds retain their route indices for existing corpora.
 		{"/__retired__/session-rest/{id}/clear", sandboxSessionID, ""},
 		{"/__retired__/session-rest/{id}/model", sandboxSessionID, `{"model":"openai/gpt-5.5"}`},

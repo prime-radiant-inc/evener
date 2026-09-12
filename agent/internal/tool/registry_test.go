@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestWithIntentParameter_DescriptionGuidesGerundForm(t *testing.T) {
+func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
 	td := WithIntentParameter(llm.ToolDefinition{Name: "demo"})
 	props, _ := td.Parameters["properties"].(map[string]any)
 	if props == nil {
@@ -31,17 +31,16 @@ func TestWithIntentParameter_DescriptionGuidesGerundForm(t *testing.T) {
 	if desc == "" {
 		t.Fatalf("intent property has no description: %#v", intent)
 	}
-	// The intent string renders as an inline activity label in the UI, so the
-	// description must steer the model toward a verb-first gerund phrase with
-	// a concrete example rather than imperative or verbose prose.
+	// The description should steer the model toward a verb-first gerund phrase
+	// that states the expected outcome, not merely the action being taken.
 	if !strings.Contains(desc, "gerund") {
 		t.Errorf("description lacks gerund-form guidance: %q", desc)
 	}
-	if !strings.Contains(desc, "Reading the config file") {
-		t.Errorf("description lacks a concrete gerund example: %q", desc)
+	if !strings.Contains(desc, "expected outcome") {
+		t.Errorf("description lacks expected-outcome guidance: %q", desc)
 	}
-	if utf8.RuneCountInString(desc) > 240 {
-		t.Errorf("description should stay concise, got %d runes: %q", utf8.RuneCountInString(desc), desc)
+	if !strings.Contains(desc, "Reading config to identify the active profile") {
+		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
 	}
 }
 
@@ -129,7 +128,7 @@ func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	}
 }
 
-func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
+func TestToolRegistry_AddsAndStripsUniversalIntent(t *testing.T) {
 	r := NewRegistry()
 	var gotArgs map[string]any
 	if err := r.Register(RegisteredTool{
@@ -344,7 +343,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes+1))
+	arguments := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes+1))
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -353,7 +352,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected error")
 	}
-	wantMsg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), maxToolArgumentBytes)
+	wantMsg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), MaxToolArgumentBytes)
 	if res.Output != wantMsg {
 		t.Fatalf("output = %q, want %q", res.Output, wantMsg)
 	}
@@ -375,7 +374,7 @@ func TestToolRegistry_ArgumentsAtSizeCapBoundary_NotRejectedByCap(t *testing.T) 
 	// Exactly at the cap: must not be rejected by the size gate. It's not
 	// valid JSON either, so it falls through to the existing "invalid tool
 	// arguments JSON" path - this test only confirms the size gate didn't fire.
-	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes))
+	arguments := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes))
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",

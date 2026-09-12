@@ -141,3 +141,21 @@ func TestDashboardSessionRow_AskPendingMarker(t *testing.T) {
 		t.Fatalf("an ask-pending row must show the ◆ question-waiting marker, got %q", rendered)
 	}
 }
+
+func TestRestartRequiredDashboardAttention(t *testing.T) {
+	state := appwire.ThreadStatusRestartRequired
+	rows := []hubRow{
+		{kind: hubRowProject, state: state, live: true},
+		{kind: hubRowSession, state: state, live: true},
+		{kind: hubRowSession, state: state, live: false},
+	}
+	if got := needsYouCount(rows); got != 1 {
+		t.Errorf("needs-you count = %d, want one live session", got)
+	}
+	if got := stateColor(state); got != tuitheme.ActiveTheme().StateWarning {
+		t.Errorf("restart color = %v, want warning", got)
+	}
+	if got := statusDot(state); got != "●" {
+		t.Errorf("restart marker = %q, want filled", got)
+	}
+}

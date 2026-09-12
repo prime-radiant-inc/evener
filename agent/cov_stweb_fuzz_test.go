@@ -202,12 +202,6 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 			t.Fatalf("custom schema recognized as default: %#v", def)
 		}
 	}
-	if got := communicateSchemaStringSlice([]any{"message", 1, "data"}); len(got) != 2 || !communicateSchemaContains(got, "data") {
-		t.Fatalf("schema string normalization = %#v", got)
-	}
-	if got := communicateSchemaStringSlice(42); got != nil {
-		t.Fatalf("unexpected schema strings = %#v", got)
-	}
 
 	return stoolCommunicateTrace{
 		TerminalOutput: terminal.FullOutput,

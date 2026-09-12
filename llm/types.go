@@ -351,7 +351,6 @@ type Request struct {
 
 	HistoryMode                    HistoryMode           `json:"-"`
 	Continuation                   *ContinuationMetadata `json:"-"`
-	FullHistoryFallbackMessages    []Message             `json:"-"`
 	InputTokensEstimate            int                   `json:"-"`
 	FullHistoryInputTokensEstimate int                   `json:"-"`
 	ContinuationDiagnostic         string                `json:"-"`
@@ -523,16 +522,16 @@ type RateLimitInfo struct {
 // AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.
 type AdapterTimeout struct {
 	Connect    time.Duration `json:"connect"`     // time to establish the network connection (default: 10s)
-	Request    time.Duration `json:"request"`     // whole non-stream call or streaming HTTP attempt, including body lifetime (default: 120s)
-	StreamRead time.Duration `json:"stream_read"` // max time between consecutive stream events (default: 30s)
+	Request    time.Duration `json:"request"`     // optional whole-attempt deadline, including body lifetime (default: disabled)
+	StreamRead time.Duration `json:"stream_read"` // max idle time between incoming response bytes, streaming or not (default: 10m)
 }
 
-// DefaultAdapterTimeout returns the spec-recommended defaults.
+// DefaultAdapterTimeout returns bounded connection and response-idle defaults, without a total deadline.
 func DefaultAdapterTimeout() AdapterTimeout {
 	return AdapterTimeout{
 		Connect:    10 * time.Second,
-		Request:    120 * time.Second,
-		StreamRead: 30 * time.Second,
+		Request:    0,
+		StreamRead: 10 * time.Minute,
 	}
 }
 
@@ -600,14 +599,17 @@ func (req Request) Validate() error {
 	return nil
 }
 
+// MinimumThinkingBudgetTokens is the smallest thinking budget Anthropic
+// documents accepting; a lower value is wire-rejectable on budget-shaped
+// rows (#714).
+const MinimumThinkingBudgetTokens = 1024
+
 // ReasoningBudget converts a reasoning effort level to a token budget.
 // Returns 0 for unrecognized values.
 func ReasoningBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "minimal":
-		return 512
-	case "low":
-		return 1024
+	case "minimal", "low":
+		return MinimumThinkingBudgetTokens
 	case "medium":
 		return 8192
 	case "high":
@@ -645,16 +647,17 @@ func ReasoningEffortVocabulary() []string {
 
 // ValidateReasoningEffort reports whether effort is a value NewSession, a
 // delegate dispatch, or a plugin-agent task config may safely accept. The
-// empty string (unset) is always valid. Any of the six known levels is valid,
-// case-insensitive and trimmed. Anything else — including the CLI's
-// disable-alias sugar (none/off/0/etc, already normalized to "" by
-// NormalizeReasoningEffort before reaching this function) — is rejected with
-// an error naming the bad value and the full vocabulary, so a typo or a
-// stale/historical level (e.g. "ultra") fails loudly at config load instead
-// of silently reaching a provider on a session's first turn.
+// empty string (unset) and ReasoningEffortNone (explicit off) are always
+// valid. Any of the six known levels is valid, case-insensitive and trimmed.
+// Anything else — including the CLI's other disable-alias sugar (off/0/etc,
+// already normalized to "none" by NormalizeReasoningEffort before reaching
+// this function) — is rejected with an error naming the bad value and the
+// full vocabulary, so a typo or a stale/historical level (e.g. "ultra") fails
+// loudly at config load instead of silently reaching a provider on a
+// session's first turn.
 func ValidateReasoningEffort(effort string) error {
 	v := strings.ToLower(strings.TrimSpace(effort))
-	if v == "" {
+	if v == "" || v == ReasoningEffortNone {
 		return nil
 	}
 	if _, ok := effortRank[v]; ok {
@@ -663,16 +666,21 @@ func ValidateReasoningEffort(effort string) error {
 	return fmt.Errorf("invalid reasoning_effort %q (expected one of: %s)", effort, strings.Join(ReasoningEffortVocabulary(), ", "))
 }
 
+// ReasoningEffortNone is the canonical configured value for "the user turned
+// thinking off". It is distinct from "" (nothing configured), which lets the
+// session apply a default effort without overriding an explicit off.
+const ReasoningEffortNone = "none"
+
 // NormalizeReasoningEffort lowercases and trims a reasoning-effort value and maps
-// the "disable" aliases (none/null/off/false/0) to "" (no effort). It does not
-// validate the level — unknown non-empty values pass through lowercased. This is
-// the single place the disable-aliases are defined, shared by the CLI resolver
-// and the runtime setter so they cannot drift.
+// the "disable" aliases (none/null/off/false/0) to ReasoningEffortNone. It does
+// not validate the level — unknown non-empty values pass through lowercased.
+// This is the single place the disable-aliases are defined, shared by the CLI
+// resolver and the runtime setter so they cannot drift.
 func NormalizeReasoningEffort(s string) string {
 	v := strings.ToLower(strings.TrimSpace(s))
 	switch v {
-	case "none", "null", "off", "false", "0":
-		return ""
+	case ReasoningEffortNone, "null", "off", "false", "0":
+		return ReasoningEffortNone
 	default:
 		return v
 	}
@@ -692,13 +700,15 @@ func ReasoningEffortRank(effort string) int {
 // e.g. "xhigh" against a wire-spelled ["high","max"] resolves to "max"); a
 // request above the model's top supported level is lowered to that level.
 // Empty, "none", unknown vocabulary, or an empty supported set pass through
-// unchanged so the provider can decide. This is the single guard that keeps
+// unchanged so the provider can decide; callers that spell the level on the
+// wire use VouchedEffort instead, which refuses a level the ladder does not
+// list. This is the single guard that keeps
 // loop-detector escalation, the --reasoning-effort flag, and the UI selector
 // from sending a level a model rejects (e.g. "max" to a model that only
 // supports minimal/low/medium/high).
 func ClampReasoningEffort(requested string, supportedLevels []string) string {
 	req := strings.ToLower(strings.TrimSpace(requested))
-	if req == "" || req == "none" || len(supportedLevels) == 0 {
+	if req == "" || req == ReasoningEffortNone || len(supportedLevels) == 0 {
 		return requested
 	}
 	reqRank, ok := effortRank[req]
@@ -730,6 +740,32 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 		return highest
 	}
 	return requested
+}
+
+// VouchedEffort returns the level to write onto a field that spells the effort
+// NAME — reasoning_effort, reasoning.effort, output_config.effort, or the
+// string-thinking "thinking" value — clamped within the row's listed
+// EffortValues. It returns "" when the row lists no ladder, or when the
+// requested value clamps to nothing the ladder lists: evener never forces an
+// effort name that the resolved row cannot vouch for. The explicit off
+// sentinel ("none") is handled by the adapters' thinking-format logic, not
+// here, so it also returns "".
+//
+// Rows that derive a numeric budget instead of spelling the level
+// (anthropic budget_tokens/budget+effort, the google thinkingConfig) do not
+// use this: such a row legitimately states no effort ladder and still needs
+// the requested effort to size its budget.
+func VouchedEffort(requested string, levels []string) string {
+	v := ClampReasoningEffort(requested, levels)
+	if v == "" || v == ReasoningEffortNone {
+		return ""
+	}
+	for _, l := range levels {
+		if strings.EqualFold(strings.TrimSpace(l), v) {
+			return v
+		}
+	}
+	return ""
 }
 
 // IntFromAny extracts an integer from a JSON-decoded value.

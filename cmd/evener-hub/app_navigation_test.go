@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,78 +18,81 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 )
 
+func TestHubNavigationReadRejectsV1Params(t *testing.T) {
+	service := newNavigationReadTestService(t)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerNavigationReadHandler(server, service)
+	for _, raw := range []string{
+		`{"resource":"manifest"}`,
+		`{"resource":"manifest","representationVersion":1}`,
+		`{"resource":"manifest","representationVersion":2,"etag":"abc"}`,
+		`{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":1,"etag":"e"},"etag":"abc"}`,
+	} {
+		_, err := dispatchNavigationReadRaw(t, server, raw)
+		assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
+	}
+}
+
 func TestHubNavigationReadServesEveryResourceFamily(t *testing.T) {
 	service := newNavigationReadTestService(t)
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
 	registerNavigationReadHandler(server, service)
 
 	tests := []struct {
-		name       string
-		params     appwire.NavigationReadParams
-		field      string
-		wantLength int
+		name         string
+		params       appwire.NavigationReadParams
+		wantEntities int
 	}{
 		{
 			name:   "manifest",
 			params: appwire.NavigationReadParams{Resource: "manifest"},
-			field:  "sources",
 		},
 		{
-			name:       "live section",
-			params:     appwire.NavigationReadParams{Resource: "section", Section: "live"},
-			field:      "sessions",
-			wantLength: 1,
+			name:         "live section",
+			params:       appwire.NavigationReadParams{Resource: "section", Section: "live"},
+			wantEntities: 1,
 		},
 		{
 			name:   "needs you section",
 			params: appwire.NavigationReadParams{Resource: "section", Section: "needs_you"},
-			field:  "sessions",
 		},
 		{
-			name:       "pin catalog",
-			params:     appwire.NavigationReadParams{Resource: "pin_catalog"},
-			field:      "pin_sections",
-			wantLength: 1,
+			name:         "pin catalog",
+			params:       appwire.NavigationReadParams{Resource: "pin_catalog"},
+			wantEntities: 1,
 		},
 		{
-			name:       "pin section",
-			params:     appwire.NavigationReadParams{Resource: "pin_section", SectionID: "pin-a"},
-			field:      "sessions",
-			wantLength: 1,
+			name:         "pin section",
+			params:       appwire.NavigationReadParams{Resource: "pin_section", SectionID: "pin-a"},
+			wantEntities: 1,
 		},
 		{
-			name:       "projects catalog",
-			params:     appwire.NavigationReadParams{Resource: "catalog", Catalog: "projects"},
-			field:      "projects",
-			wantLength: 1,
+			name:         "projects catalog",
+			params:       appwire.NavigationReadParams{Resource: "catalog", Catalog: "projects"},
+			wantEntities: 1,
 		},
 		{
 			name:   "archived projects catalog",
 			params: appwire.NavigationReadParams{Resource: "catalog", Catalog: "archived_projects"},
-			field:  "projects",
 		},
 		{
 			name:   "test runs catalog",
 			params: appwire.NavigationReadParams{Resource: "catalog", Catalog: "test_runs"},
-			field:  "projects",
 		},
 		{
-			name:       "project",
-			params:     appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1"},
-			field:      "current",
-			wantLength: -1,
+			name:         "project",
+			params:       appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1"},
+			wantEntities: 2,
 		},
 		{
-			name:       "project page",
-			params:     appwire.NavigationReadParams{Resource: "project_page", ProjectKey: "p1", Tier: "current"},
-			field:      "sessions",
-			wantLength: 1,
+			name:         "project page",
+			params:       appwire.NavigationReadParams{Resource: "project_page", ProjectKey: "p1", Tier: "current"},
+			wantEntities: 1,
 		},
 		{
-			name:       "location",
-			params:     appwire.NavigationReadParams{Resource: "location", Ref: navigationTestSessionID},
-			field:      "ref",
-			wantLength: -1,
+			name:         "location",
+			params:       appwire.NavigationReadParams{Resource: "location", Ref: navigationTestSessionID},
+			wantEntities: 1,
 		},
 	}
 
@@ -98,39 +102,24 @@ func TestHubNavigationReadServesEveryResourceFamily(t *testing.T) {
 			if response.Status != "ok" {
 				t.Fatalf("status = %q, want ok", response.Status)
 			}
+			if response.Representation != appwire.NavigationRepresentationSnapshot {
+				t.Fatalf("representation = %q, want snapshot", response.Representation)
+			}
 			if response.GenerationID == "" || response.Revision == 0 || response.ETag == "" {
 				t.Fatalf("missing response envelope: %+v", response)
 			}
-			var resource map[string]json.RawMessage
-			if err := json.Unmarshal(response.Data, &resource); err != nil {
-				t.Fatalf("decode resource: %v", err)
+			if response.Base != nil {
+				t.Fatalf("snapshot base = %+v, want nil", response.Base)
 			}
-			value, ok := resource[tt.field]
-			if !ok {
-				t.Fatalf("resource has no %q field: %s", tt.field, response.Data)
+			var snapshot hubapi.NavigationSnapshot
+			if err := json.Unmarshal(response.Data, &snapshot); err != nil {
+				t.Fatalf("decode snapshot: %v", err)
 			}
-			if tt.wantLength >= 0 {
-				var rows []json.RawMessage
-				if err := json.Unmarshal(value, &rows); err != nil {
-					t.Fatalf("decode %q: %v", tt.field, err)
-				}
-				if len(rows) != tt.wantLength {
-					t.Fatalf("%s length = %d, want %d", tt.field, len(rows), tt.wantLength)
-				}
+			if len(snapshot.Entities) != tt.wantEntities {
+				t.Fatalf("entities = %d, want %d: %s", len(snapshot.Entities), tt.wantEntities, response.Data)
 			}
-			var generation string
-			if err := json.Unmarshal(resource["generation_id"], &generation); err != nil {
-				t.Fatalf("decode inner generation: %v", err)
-			}
-			if generation != response.GenerationID {
-				t.Fatalf("inner generation = %q, envelope = %q", generation, response.GenerationID)
-			}
-			var revision uint64
-			if err := json.Unmarshal(resource["revision"], &revision); err != nil {
-				t.Fatalf("decode inner revision: %v", err)
-			}
-			if revision != response.Revision {
-				t.Fatalf("inner revision = %d, envelope = %d", revision, response.Revision)
+			if len(snapshot.Containers) == 0 {
+				t.Fatalf("snapshot has no containers: %s", response.Data)
 			}
 		})
 	}
@@ -304,13 +293,133 @@ func TestHubNavigationReadNormalizesPagingAndRejectsInvalidCombinations(t *testi
 	}
 }
 
+func TestHubNavigationReadRejectsIncompleteBaseBeforeService(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerNavigationReadHandler(server, nil)
+
+	for name, raw := range map[string]string{
+		"revision omitted": `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","etag":"e"}}`,
+		"revision null":    `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":null,"etag":"e"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := dispatchNavigationReadRaw(t, server, raw)
+			assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
+		})
+	}
+}
+
+func TestHubNavigationInvalidParamsDoNotExposeRequestContent(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerNavigationReadHandler(server, nil)
+
+	for _, test := range []struct {
+		name     string
+		sentinel string
+		raw      string
+	}{
+		{
+			name:     "decode failure",
+			sentinel: "decode-private-sentinel",
+			raw:      `{"resource":"manifest","decode-private-sentinel":true}`,
+		},
+		{
+			name:     "semantic validation failure",
+			sentinel: "validation-private-sentinel",
+			raw:      `{"resource":"validation-private-sentinel"}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := dispatchNavigationReadRaw(t, server, test.raw)
+			if err == nil {
+				t.Fatal("error = nil, want invalid params")
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+			}
+			if wire.Code != appwire.CodeInvalidParams || wire.Message != "invalid navigation params" {
+				t.Fatalf("wire error = %+v, want stable invalid params code/message", wire)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok || data.EvenerErrorInfo != appwire.ErrorInvalidParams {
+				t.Fatalf("wire data = %#v, want invalid params error info", wire.Data)
+			}
+			encoded, marshalErr := json.Marshal(wire)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if bytes.Contains(encoded, []byte(test.sentinel)) || strings.Contains(wire.Message, test.sentinel) {
+				t.Fatalf("serialized wire error exposed sentinel %q: %s", test.sentinel, encoded)
+			}
+		})
+	}
+}
+
+func TestHubNavigationInternalErrorsAreLoggedAndRedacted(t *testing.T) {
+	const sentinel = "NAV_PRIVATE_SENTINEL::/private/navigation/path::local:secret-ref::secret-key"
+	var logs []string
+	source := newTestNavigationSource(testNavigationNow())
+	source.err = errors.New("capture failed at " + sentinel)
+	server := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "test",
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	})
+	registerNavigationReadHandler(server, newTestNavigationService(t, source))
+
+	_, err := dispatchNavigationReadResult(t, server, appwire.NavigationReadParams{Resource: "manifest"})
+	assertNavigationWireError(t, err, appwire.CodeInternalError, appwire.ErrorInternal)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Message != "navigation read failed" {
+		t.Errorf("wire message = %q, want fixed redacted message", wire.Message)
+	}
+	encoded, marshalErr := json.Marshal(wire)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	const wantWire = `{"code":-32603,"message":"navigation read failed","data":{"evenerErrorInfo":"internal"}}`
+	if string(encoded) != wantWire {
+		t.Errorf("serialized wire error = %s, want %s", encoded, wantWire)
+	}
+	if bytes.Contains(encoded, []byte(sentinel)) {
+		t.Errorf("serialized wire error exposed sentinel %q: %s", sentinel, encoded)
+	}
+	data, marshalErr := json.Marshal(wire.Data)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	const wantData = `{"evenerErrorInfo":"internal"}`
+	if string(data) != wantData {
+		t.Errorf("serialized wire error data = %s, want %s", data, wantData)
+	}
+	if bytes.Contains(data, []byte(sentinel)) {
+		t.Errorf("serialized wire error data exposed sentinel %q: %s", sentinel, data)
+	}
+	joinedLogs := strings.Join(logs, "\n")
+	if !strings.Contains(joinedLogs, "navigation read failed:") || !strings.Contains(joinedLogs, sentinel) {
+		t.Errorf("server diagnostics did not retain internal error details: %q", logs)
+	}
+}
+
 func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
-	service := newNavigationReadTestService(t)
+	source := newNavigationReadTestSource()
+	service := newTestNavigationService(t, source)
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
 	registerNavigationReadHandler(server, service)
 
-	first := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "manifest"})
-	conditional := appwire.NavigationReadParams{Resource: "manifest", ETag: first.ETag}
+	first := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "manifest", RepresentationVersion: 2})
+	if first.Status != "ok" || first.Representation != appwire.NavigationRepresentationSnapshot {
+		t.Fatalf("initial response = %+v, want ok snapshot", first)
+	}
+	conditional := appwire.NavigationReadParams{
+		Resource:              "manifest",
+		RepresentationVersion: 2,
+		Base:                  &appwire.NavigationReadBase{GenerationID: first.GenerationID, Revision: first.Revision, ETag: first.ETag},
+	}
 	notModified := dispatchNavigationRead(t, server, conditional)
 	if notModified.Status != "not_modified" || len(notModified.Data) != 0 {
 		t.Fatalf("conditional response = %+v, want not_modified without data", notModified)
@@ -319,19 +428,23 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 		t.Fatalf("conditional envelope = %+v, want %+v", notModified, first)
 	}
 
+	v2 := func(params appwire.NavigationReadParams) appwire.NavigationReadParams {
+		params.RepresentationVersion = 2
+		return params
+	}
 	var err error
 	for _, params := range []appwire.NavigationReadParams{
 		{Resource: "project", ProjectKey: "missing"},
 		{Resource: "pin_section", SectionID: "missing"},
 		{Resource: "location", Ref: "missing"},
 	} {
-		_, err = dispatchNavigationReadResult(t, server, params)
+		_, err = dispatchNavigationReadResult(t, server, v2(params))
 		assertNavigationWireError(t, err, appwire.CodeUnavailable, appwire.ErrorActionUnavailable)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = dispatchNavigationReadResultWithContext(canceled, t, server, appwire.NavigationReadParams{Resource: "manifest"})
+	_, err = dispatchNavigationReadResultWithContext(canceled, t, server, v2(appwire.NavigationReadParams{Resource: "manifest"}))
 	assertNavigationWireError(t, err, appwire.CodeUnavailable, appwire.ErrorActionUnavailable)
 
 	failingSource := newTestNavigationSource(testNavigationNow())
@@ -339,16 +452,26 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 	failingService := newTestNavigationService(t, failingSource)
 	failingServer := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
 	registerNavigationReadHandler(failingServer, failingService)
-	_, err = dispatchNavigationReadResult(t, failingServer, appwire.NavigationReadParams{Resource: "manifest"})
+	_, err = dispatchNavigationReadResult(t, failingServer, v2(appwire.NavigationReadParams{Resource: "manifest"}))
 	assertNavigationWireError(t, err, appwire.CodeInternalError, appwire.ErrorInternal)
 
-	changed := dispatchNavigationRead(t, server, appwire.NavigationReadParams{Resource: "manifest", ETag: "different"})
-	want, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
-	if err != nil {
+	source.mu.Lock()
+	source.inputs.Tree.Live = nil
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(changed.Data, want.JSON) {
-		t.Fatalf("response data does not preserve the service representation bytes")
+	changed := dispatchNavigationRead(t, server, conditional)
+	if changed.Status != "ok" || changed.Representation != appwire.NavigationRepresentationDelta || changed.Base == nil || *changed.Base != *conditional.Base || changed.Revision == first.Revision {
+		t.Fatalf("changed conditional response = %+v, want delta against base %+v at a new revision", changed, *conditional.Base)
+	}
+	var delta hubapi.NavigationDelta
+	if err := json.Unmarshal(changed.Data, &delta); err != nil {
+		t.Fatalf("decode v2 delta: %v", err)
+	}
+	if delta.Metadata == nil {
+		t.Fatalf("delta = %+v, want changed manifest metadata", delta)
 	}
 }
 
@@ -392,22 +515,19 @@ func TestHubNavigationReadOverAppWireWebSocket(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 
-	response, err := client.NavigationRead(ctx, appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1"})
+	response, err := client.NavigationRead(ctx, appwire.NavigationReadParams{Resource: "project", ProjectKey: "p1", RepresentationVersion: 2})
 	if err != nil {
 		t.Fatalf("navigation read: %v", err)
 	}
-	if response.Status != "ok" || response.GenerationID == "" || response.Revision == 0 || response.ETag == "" {
+	if response.Status != "ok" || response.Representation != appwire.NavigationRepresentationSnapshot || response.GenerationID == "" || response.Revision == 0 || response.ETag == "" {
 		t.Fatalf("response envelope = %+v", response)
 	}
-	var project hubapi.NavigationProjectResource
-	if err := json.Unmarshal(response.Data, &project); err != nil {
-		t.Fatalf("decode project: %v", err)
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(response.Data, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
 	}
-	if project.Key != "p1" || len(project.Current.Sessions) != 1 {
-		t.Fatalf("project = %+v, want p1 with one current session", project)
-	}
-	if project.GenerationID != response.GenerationID || project.Revision != response.Revision {
-		t.Fatalf("inner metadata = %q/%d, envelope = %q/%d", project.GenerationID, project.Revision, response.GenerationID, response.Revision)
+	if len(snapshot.Entities) != 2 || len(snapshot.Containers) == 0 {
+		t.Fatalf("snapshot = %+v, want 2 entities with containers", snapshot)
 	}
 	select {
 	case path := <-paths:
@@ -419,15 +539,19 @@ func TestHubNavigationReadOverAppWireWebSocket(t *testing.T) {
 	}
 }
 
-func newNavigationReadTestService(t *testing.T) *NavigationService {
-	t.Helper()
+func newNavigationReadTestSource() *testNavigationSource {
 	source := newTestNavigationSource(testNavigationNow())
 	source.inputs.Tree.Live = append([]hubcore.TreeNode(nil), source.inputs.Tree.Projects[0].Current...)
 	source.inputs.PinSections = []hubcore.PinSection{{ID: "pin-a", Name: "Pinned"}}
 	source.inputs.PinAssignments = map[string]hubcore.SessionPin{
 		navigationTestSessionID: {SessionID: navigationTestSessionID, SectionID: "pin-a"},
 	}
-	return newTestNavigationService(t, source)
+	return source
+}
+
+func newNavigationReadTestService(t *testing.T) *NavigationService {
+	t.Helper()
+	return newTestNavigationService(t, newNavigationReadTestSource())
 }
 
 func testNavigationNow() time.Time {
@@ -450,6 +574,7 @@ func dispatchNavigationReadResult(t *testing.T, server *appserver.Server, params
 
 func dispatchNavigationReadResultWithContext(ctx context.Context, t *testing.T, server *appserver.Server, params appwire.NavigationReadParams) (appwire.NavigationReadResponse, error) {
 	t.Helper()
+	params.RepresentationVersion = 2
 	raw, err := json.Marshal(params)
 	if err != nil {
 		t.Fatalf("marshal params: %v", err)
@@ -502,4 +627,43 @@ func assertNavigationWireError(t *testing.T, err error, wantCode int, wantInfo a
 
 func uint32Pointer(value uint32) *uint32 {
 	return new(value)
+}
+
+func TestHubNavigationFailedDeltaServesSnapshotAndLogs(t *testing.T) {
+	var logs []string
+	source := newTestNavigationSource(testNavigationNow())
+	service := newTestNavigationService(t, source)
+	server := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "test",
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	})
+	registerNavigationReadHandler(server, service)
+
+	limit := uint32(1)
+	params := appwire.NavigationReadParams{Resource: "project_page", ProjectKey: "p1", Tier: "current", Limit: &limit, RepresentationVersion: 2}
+	first := dispatchNavigationRead(t, server, params)
+	if first.Status != "ok" || first.Representation != appwire.NavigationRepresentationSnapshot {
+		t.Fatalf("initial response = %+v, want ok snapshot", first)
+	}
+	base := appwire.NavigationReadBase{GenerationID: first.GenerationID, Revision: first.Revision, ETag: first.ETag}
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: limit}
+	corruptRetainedNavigationBase(t, service.history, key, base)
+	source.changeTitle("handler delta fallback")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	params.Base = &base
+	changed, err := dispatchNavigationReadResult(t, server, params)
+	if err != nil {
+		t.Fatalf("read with unreconstructable base: %v", err)
+	}
+	if changed.Status != "ok" || changed.Representation != appwire.NavigationRepresentationSnapshot || changed.Base != nil {
+		t.Fatalf("response = %+v, want ok snapshot without Base", changed)
+	}
+	if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "navigation delta fallback:") {
+		t.Errorf("server diagnostics did not record the abandoned delta: %q", logs)
+	}
 }

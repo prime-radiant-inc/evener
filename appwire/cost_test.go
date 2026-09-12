@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestEvenerUsageFromLLM_NilWhenAllZero(t *testing.T) {
@@ -21,24 +22,30 @@ func TestEvenerUsageFromLLM_MapsFields(t *testing.T) {
 }
 
 func TestEstimateCost_NilUsageReturnsEmpty(t *testing.T) {
-	if got := EstimateCost("claude-opus-4-5", nil); got != "" {
+	if got := EstimateCost(&registry.Cost{Input: 5, Output: 25}, nil); got != "" {
 		t.Errorf("got %q, want empty for nil usage", got)
 	}
 }
 
 func TestEstimateCost_UnpricedModelReturnsEmpty(t *testing.T) {
-	got := EstimateCost("totally-unknown-model-xyz", &EvenerUsage{InputTokens: 100})
+	got := EstimateCost(nil, &EvenerUsage{InputTokens: 100})
 	if got != "" {
-		t.Errorf("got %q, want empty for an unpriced model (not a misleading ~$0.00)", got)
+		t.Errorf("got %q, want empty for a row with no cost (not a misleading ~$0.00)", got)
 	}
 }
 
 func TestEstimateCost_FormatsToCents(t *testing.T) {
-	// claude-opus-4-5: $5/$25 per million (llm/pricing_test.go's known fixture values
-	// also hold for the embedded catalog per TestDefaultPrice_WellKnownModels).
-	got := EstimateCost("claude-opus-4-5", &EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000})
-	// 100_000/1e6*5 + 20_000/1e6*25 = 0.5 + 0.5 = 1.00
-	if got != "~$1.00" {
-		t.Errorf("got %q, want ~$1.00", got)
+	// 1_000_000/1e6*3 + 100_000/1e6*15 = 3.00 + 1.50 = 4.50
+	got := EstimateCost(&registry.Cost{Input: 3, Output: 15}, &EvenerUsage{InputTokens: 1_000_000, OutputTokens: 100_000})
+	if got != "~$4.50" {
+		t.Errorf("got %q, want ~$4.50", got)
+	}
+}
+
+func TestEstimateCost_CacheReadPricesAtItsOwnRate(t *testing.T) {
+	// 1_000_000/1e6*3 + 1_000_000/1e6*0.3 = 3.00 + 0.30 = 3.30
+	got := EstimateCost(&registry.Cost{Input: 3, Output: 15, CacheRead: 0.3}, &EvenerUsage{InputTokens: 1_000_000, CacheReadTokens: 1_000_000})
+	if got != "~$3.30" {
+		t.Errorf("got %q, want ~$3.30", got)
 	}
 }

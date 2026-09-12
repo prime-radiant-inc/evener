@@ -3,6 +3,7 @@ package hub
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -202,6 +203,7 @@ addr = "127.0.0.1:9180"
 past_index_db = "/tmp/evener-index.db"
 spawn_timeout = "10s"
 past_results_per_page = 25
+future_option = "ignored"
 
 [[providers]]
 name = "openai"
@@ -210,22 +212,6 @@ models = ["gpt-5", "gpt-5-mini"]
 [[providers]]
 name = "anthropic"
 models = ["claude-opus-4-7", "claude-sonnet-4-6"]
-
-[[codex_sources]]
-id = "codex-local"
-endpoint = "ws://127.0.0.1:9900"
-bearer_token_file = "/tmp/codex-token"
-
-[[codex_launches]]
-id = "codex-managed"
-binary = "/usr/local/bin/codex"
-working_dir = "/tmp/work"
-listen = "ws://127.0.0.1:9901"
-timeout = "5s"
-args = ["app-server"]
-
-[codex_launches.env]
-CODEX_HOME = "/tmp/codex-home"
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -252,24 +238,43 @@ CODEX_HOME = "/tmp/codex-home"
 	if cfg.Providers[1].Name != "anthropic" || cfg.Providers[1].Models[0] != "claude-opus-4-7" {
 		t.Errorf("providers[1] mismatch: %+v", cfg.Providers[1])
 	}
-	if len(cfg.CodexSources) != 1 {
-		t.Fatalf("codex sources: got %d, want 1", len(cfg.CodexSources))
+}
+
+func TestLoadConfig_RejectsRemovedCodexSections(t *testing.T) {
+	tests := []struct {
+		name    string
+		section string
+		body    string
+	}{
+		{name: "sources empty value", section: "codex_sources", body: "codex_sources = []"},
+		{name: "sources table", section: "codex_sources", body: "[codex_sources]\nendpoint = \"wss://secret.example/session\""},
+		{name: "sources array of tables", section: "codex_sources", body: "[[codex_sources]]\nendpoint = \"wss://secret.example/session\"\nbearer_token = \"secret-value\""},
+		{name: "launches empty value", section: "codex_launches", body: "codex_launches = []"},
+		{name: "launches table", section: "codex_launches", body: "[codex_launches]\nbinary = \"/secret/codex\""},
+		{name: "launches array of tables", section: "codex_launches", body: "[[codex_launches]]\nbinary = \"/secret/codex\"\n[codex_launches.env]\nTOKEN = \"secret-value\""},
 	}
-	if cfg.CodexSources[0].ID != "codex-local" || cfg.CodexSources[0].Endpoint != "ws://127.0.0.1:9900" || cfg.CodexSources[0].BearerTokenFile != "/tmp/codex-token" {
-		t.Errorf("codex source mismatch: %+v", cfg.CodexSources[0])
-	}
-	if len(cfg.CodexLaunches) != 1 {
-		t.Fatalf("codex launches: got %d, want 1", len(cfg.CodexLaunches))
-	}
-	launch := cfg.CodexLaunches[0]
-	if launch.ID != "codex-managed" || launch.Binary != "/usr/local/bin/codex" || launch.WorkingDir != "/tmp/work" || launch.Listen != "ws://127.0.0.1:9901" || launch.Timeout != 5*time.Second {
-		t.Errorf("codex launch mismatch: %+v", launch)
-	}
-	if len(launch.Args) != 1 || launch.Args[0] != "app-server" {
-		t.Errorf("codex launch args mismatch: %+v", launch.Args)
-	}
-	if launch.Env["CODEX_HOME"] != "/tmp/codex-home" {
-		t.Errorf("codex launch env mismatch: %+v", launch.Env)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.toml")
+			if err := os.WriteFile(path, []byte(tt.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatalf("LoadConfig accepted removed %s configuration", tt.section)
+			}
+			message := err.Error()
+			for _, want := range []string{tt.section, "Codex agent integration has been removed", "remove it from hub.toml"} {
+				if !strings.Contains(message, want) {
+					t.Errorf("error %q does not contain %q", message, want)
+				}
+			}
+			for _, secret := range []string{"secret.example", "secret-value", "/secret/codex"} {
+				if strings.Contains(message, secret) {
+					t.Errorf("error exposed configured value %q: %q", secret, message)
+				}
+			}
+		})
 	}
 }
 

@@ -18,6 +18,7 @@ import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { copyText } from "./clipboard";
 import styles from "./oauthDialogs.module.css";
+import { useEditorLifetime } from "./useEditorLifetime";
 
 const CLASS = {
   body: requireClass(styles.body, "oauthDialogs.module.css", "body"),
@@ -42,6 +43,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
+  const active = useEditorLifetime();
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -54,15 +56,18 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
     setError(null);
     try {
       await credentialsStore.getState().loginComplete(name, flowId, trimmed);
+      if (!active.current) return;
       await credentialsStore.getState().fetch();
+      if (!active.current) return;
       toast.push("success", `Signed in to ${name}`);
       onSuccess();
     } catch (err) {
+      if (!active.current) return;
       const message = errorText(err);
       setError(message);
       toast.push("error", `Sign-in failed: ${message}`);
     } finally {
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   }
 
@@ -127,6 +132,7 @@ export function DeviceCodeDialog({
   const [expired, setExpired] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const toast = useToasts();
+  const active = useEditorLifetime();
 
   useEffect(() => {
     let cancelled = false;
@@ -144,9 +150,10 @@ export function DeviceCodeDialog({
         if (!cancelled) setError(errorText(err));
         return;
       }
-      if (cancelled) return;
+      if (cancelled || !active.current) return;
       if (resp.state === "authorized") {
         await credentialsStore.getState().fetch();
+        if (cancelled || !active.current) return;
         toast.push("success", `Signed in to ${name}`);
         onSuccess();
         return;
@@ -171,10 +178,11 @@ export function DeviceCodeDialog({
     // caller-supplied onSuccess WOULD restart this poll's timer on every
     // parent re-render, which is the actual bug this dependency list guards
     // against, not just a lint nicety.
-  }, [name, flowId, intervalSeconds, onSuccess, toast.push]);
+  }, [name, flowId, intervalSeconds, onSuccess, toast.push, active]);
 
   async function handleCopy(): Promise<void> {
     const ok = await copyText(userCode);
+    if (!active.current) return;
     setCopied(true);
     setCopyFailed(!ok);
   }

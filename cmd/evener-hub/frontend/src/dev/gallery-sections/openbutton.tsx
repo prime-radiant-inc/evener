@@ -7,19 +7,16 @@ export default function OpenButtonGallerySection() {
     <section>
       <h2>OpenButton</h2>
       <p className={styles.note}>
-        The one open-out affordance (transcript panes, file docs, external editor). Rendering is planned to change -
-        shown here so the change is reviewed in one place.
+        The one open-out affordance (transcript panes, file docs): icon-only, specific accessible name, tooltip "Open",
+        a 28px (phone: tap-min) touch target that never reaches the line box. The anchor form is reserved for external
+        targets.
       </p>
       <ThemeFlip>
         <div className={styles.row}>
-          <p className={styles.rowLabel}>word</p>
+          <p className={styles.rowLabel}>button</p>
           <OpenButton label="Open transcript" onClick={() => {}} />
           <OpenButton label="Open subagent" onClick={() => {}} />
-        </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>iconOnly</p>
-          <OpenButton iconOnly size="xs" label="Open transcript (xs)" onClick={() => {}} />
-          <OpenButton iconOnly size="sm" label="Open transcript (sm)" onClick={() => {}} />
+          <OpenButton label="Open beside: src/sheet.test.tsx" onClick={() => {}} />
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>anchor</p>

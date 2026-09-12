@@ -1,9 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { LaunchOption } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
+import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
 import { PromptCompositeField, ScalarField } from "./fields";
@@ -33,6 +34,7 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  resetCredentialsStoreForTests();
   fetchModelCatalog = vi
     .spyOn(catalogClientModule, "fetchModelCatalog")
     .mockResolvedValue({ models: [], recent: [], diagnostics: [] });
@@ -106,6 +108,45 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
     expect(trigger.tagName).toBe("BUTTON");
     expect(trigger.textContent).toMatch(/\/tmp\/trace\.jsonl/);
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  test("a directly opened model picker recovers after a hub reconnect", async () => {
+    vi.mocked(fetchModelCatalog).mockRestore();
+    const fake = new FakeClient("ready");
+    let reconnected = false;
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    fake.on("model/list", () => {
+      if (!reconnected) throw new Error("model service unavailable");
+      return { data: [{ provider: "work", model: "new", displayName: "Reconnected model" }] };
+    });
+    connectionStore.getState().connect(fake);
+    render(<ScalarField option={modelPickerOption()} layer="global" value="" onChange={() => {}} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /change model/i }));
+    await screen.findByRole("alert");
+    await act(async () => {
+      fake.emitStateChange("reconnecting");
+      reconnected = true;
+      fake.emitReady();
+    });
+    expect(await screen.findByRole("option", { name: /Reconnected model/ })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("an open model picker reloads after credentials refresh", async () => {
+    vi.mocked(fetchModelCatalog).mockResolvedValue({
+      models: [{ provider: "work", model: "old", displayName: "Old model" }],
+      recent: [],
+    });
+    render(<ScalarField option={modelPickerOption()} layer="global" value="" onChange={() => {}} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /change model/i }));
+    await screen.findByRole("option", { name: /Old model/ });
+    vi.mocked(fetchModelCatalog).mockResolvedValue({
+      models: [{ provider: "work", model: "new", displayName: "New model" }],
+      recent: [],
+    });
+    await act(async () => credentialsStore.setState({ instances: [...credentialsStore.getState().instances] }));
+    expect(await screen.findByRole("option", { name: /New model/ })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /Old model/ })).toBeNull();
   });
 
   test("an empty value shows the layer's own default marker", () => {

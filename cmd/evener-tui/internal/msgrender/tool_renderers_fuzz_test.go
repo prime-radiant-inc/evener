@@ -36,7 +36,7 @@ func FuzzRenderToolCall(f *testing.F) {
 		{"glob", `{"pattern":"**/*"}`, "", "boom"},
 		{"prov__operation", `{"q":"hi","n":3}`, `{"data":1}`, ""},
 		{"weird-unknown", `not-json`, "", ""},
-		{"delegate", `{"task":"do\nthing"}`, "", ""},
+		{"delegate", `{"prompt":"do\nthing"}`, "", ""},
 		{"", "", "", ""},
 		{"write_file", `{"file_path":"/x","content":"a\nb"}`, "", ""},
 	}
@@ -138,7 +138,7 @@ func replayRenderSurface() {
 		{Name: "read_file", RawArgs: `{"file_path":"x.go","intent":"inspect"}`, Output: "a\nb\nc\nd\ne\nf\n", Done: true, Expanded: true, Duration: 250 * time.Millisecond},
 		{Name: "read_file", RawArgs: `{"file_path":"x.go"}`, Detail: "detail", Output: "output", Error: "boom", Expanded: true},
 		{Name: "read_file", RawArgs: `{"file_path":"x.go"}`, Detail: "detail", Error: "boom", Expanded: true},
-		{Name: "delegate", RawArgs: `{"task":"inspect"}`, Error: "boom", Expanded: true, Subagent: &transcript.SubagentRunInfo{Task: "inspect", Status: "done"}},
+		{Name: "delegate", RawArgs: `{"prompt":"inspect"}`, Error: "boom", Expanded: true, Subagent: &transcript.SubagentRunInfo{Task: "inspect", Status: "done"}},
 		{Name: "delegate_send", RawArgs: `{}`, Done: true, Expanded: true, Subagent: &transcript.SubagentRunInfo{}},
 		{Name: "unknown", RawArgs: `{}`, Done: false, Expanded: false},
 		{Name: "unknown", RawArgs: `{}`, Output: `{"ok":true}`, Error: "boom", Expanded: true},
@@ -176,7 +176,7 @@ func replayRenderSurface() {
 	_ = toolRenderers["shell"].Target(ToolArgs{"command": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"})
 	_ = toolRenderers["grep"].Result(nil, "", "", 0)
 	_ = toolRenderers["list_dir"].Result(nil, `[{"name":"x"}]`, "", 0)
-	_ = toolRenderers["delegate"].Target(ToolArgs{"task": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"})
+	_ = toolRenderers["delegate"].Target(ToolArgs{"prompt": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"})
 	_ = toolRenderers["use_skill"].Target(ToolArgs{"skill_name": "named"})
 	_ = formatLineCount(1)
 	mcp, _ := lookupToolRenderer("provider__operation")
@@ -193,7 +193,7 @@ func replayRenderSurface() {
 	_ = taskListBody(nil, "", 80)
 	_ = taskListBody(nil, "bad", 80)
 	_ = taskListBody(nil, `[{"description":"done","status":"done"},{"name":"work","status":"in_progress"},{"name":"wait","status":"pending"}]`, 80)
-	_ = delegateBody(ToolArgs{"task": " task ", "job_id": "123456789", "status": ""}, "", 10)
+	_ = delegateBody(ToolArgs{"prompt": " task ", "job_id": "123456789", "status": ""}, "", 10)
 	_ = delegateBody(nil, `{"job_id":"abcdefghi","status":"completed"}`, 80)
 	_ = delegateBody(ToolArgs{"job_id": "fallback", "status": "queued"}, "bad", 80)
 	_ = SubagentRunBody(transcript.SubagentRunInfo{}, 10)

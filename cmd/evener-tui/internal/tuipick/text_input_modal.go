@@ -1,6 +1,7 @@
 package tuipick
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,9 +23,14 @@ type TextInputModal struct {
 	prompt string
 	input  string
 	mask   bool
-	paths  bool
-	done   bool
-	width  int
+	// summarize renders the value as a character count instead of the value
+	// itself. A prompt that asks for a credential sets it and echoes nothing:
+	// a terminal that marks no pastes makes typed and pasted material
+	// indistinguishable, and guessing from shape cannot be made reliable.
+	summarize bool
+	paths     bool
+	done      bool
+	width     int
 }
 
 func NewTextInputModal(prompt, tag string) TextInputModal {
@@ -47,6 +53,17 @@ func NewTextInputModalMasked(prompt, tag string) TextInputModal {
 	return TextInputModal{prompt: prompt, tag: tag, mask: true}
 }
 
+// NewCredentialPasteModal takes a credential document the user pastes whole:
+// a terminal delivers a bracketed paste as one KeyRunes message carrying
+// every rune, newlines included, so a pretty-printed JSON document arrives
+// intact and its newlines never reach the Enter branch. It echoes nothing —
+// the field shows a character count — because the prompt asks for exactly one
+// thing and that thing is secret. Reading the document from a file is a
+// separate prompt, which takes a path and has nothing to hide.
+func NewCredentialPasteModal(title, prompt, tag string) TextInputModal {
+	return TextInputModal{title: title, prompt: prompt, tag: tag, summarize: true, width: 60}
+}
+
 func (m TextInputModal) Init() tea.Cmd { return nil }
 
 func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -66,6 +83,18 @@ func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.paths {
 				m.input = CompleteLastPathSegment(m.input, nil)
 			}
+		case tea.KeySpace:
+			// A space is its own key type, not a rune; a field that drops it
+			// cannot hold a path — or any value — with a space in it.
+			m.input += " "
+		case tea.KeyCtrlJ:
+			// A terminal that does not bracket its pastes sends the document
+			// as ordinary keys, and bubbletea maps LF to this (only CR is
+			// KeyEnter). Keeping it is what lets such a paste accumulate
+			// whole in the field built to receive one.
+			if m.summarize {
+				m.input += "\n"
+			}
 		case tea.KeyRunes:
 			m.input += string(v.Runes)
 		}
@@ -73,8 +102,24 @@ func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// printable drops the control characters a paste can carry, so clipboard
+// content cannot drive the terminal from a rendered field. C1 goes with C0
+// and DEL: U+009B is CSI and U+009D is OSC, each a control introducer on its
+// own rather than part of an escape sequence.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func (m TextInputModal) inputView() string {
-	display := m.input
+	display := printable(m.input)
+	if m.summarize && m.input != "" {
+		return fmt.Sprintf("> [%d characters]", len([]rune(m.input)))
+	}
 	if m.mask {
 		display = ""
 		var displaySb80 strings.Builder

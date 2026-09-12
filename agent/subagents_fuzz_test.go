@@ -19,15 +19,16 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type safzEnumerableAdapter struct {
 	*agenttest.ScriptedAdapter
-	models []llm.ModelInfo
+	models []registry.Model
 }
 
-func (a *safzEnumerableAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
-	return append([]llm.ModelInfo(nil), a.models...), nil
+func (a *safzEnumerableAdapter) LiveModels(context.Context) ([]registry.Model, error) {
+	return append([]registry.Model(nil), a.models...), nil
 }
 
 // safzResolveProfile is the parent's cross-provider resolver. A "prefix/model"
@@ -97,7 +98,7 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 		ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
 			return agenttest.FinalResponse("parent")
 		}},
-		models: []llm.ModelInfo{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
+		models: []registry.Model{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 	})
 	cfg := SessionConfig{
 		MaxSubagentDepth:      maxDepth,
@@ -113,7 +114,7 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 		cc := llm.NewClient()
 		cc.Register(&safzEnumerableAdapter{
 			ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)},
-			models:          []llm.ModelInfo{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
+			models:          []registry.Model{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
 		})
 		return cc
 	}

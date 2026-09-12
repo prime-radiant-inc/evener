@@ -5,21 +5,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // DefaultConfigRoot returns the user config root for evener:
 // $XDG_CONFIG_HOME/evener, or ~/.config/evener when XDG_CONFIG_HOME is unset.
 func DefaultConfigRoot() string {
-	base := envvars.XDGConfigHome.Getenv()
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		base = filepath.Join(home, ".config")
+	if root := userdirs.DefaultConfigRoot(); root != "" {
+		return root
 	}
-	return filepath.Join(base, "evener")
+	return filepath.Join(".", ".config", "evener")
 }
 
 func DefaultSkillsDir() string {
@@ -30,6 +25,15 @@ func DefaultPluginsRoot() string {
 	return filepath.Join(DefaultConfigRoot(), "plugins")
 }
 
+// CheckLegacyDataDirs is the read-only half of EnsureUserConfigDirs: it
+// reports stranded legacy data and creates nothing. A command that must not
+// touch the filesystem — a read-only diagnostic, or one that has to work with
+// a read-only config home — takes this on its own; everything that goes on to
+// work under the config tree takes EnsureUserConfigDirs, which runs this first.
+func CheckLegacyDataDirs() error {
+	return checkLegacyDataDirs()
+}
+
 // EnsureUserConfigDirs creates the user-managed Evener extension directories.
 // Runtime state remains lazy and is created by the subsystem that writes it.
 //
@@ -38,7 +42,7 @@ func DefaultPluginsRoot() string {
 // here, before anything creates a directory a stranded ~/.serf could be
 // mistaken as already migrated into.
 func EnsureUserConfigDirs() error {
-	if err := checkLegacyDataDirs(); err != nil {
+	if err := CheckLegacyDataDirs(); err != nil {
 		return err
 	}
 	for _, dir := range []string{

@@ -1,10 +1,10 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
-import { resetExtensionsStoreForTests } from "../../../stores/extensions";
+import { extensionsStore, resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { McpSection, type SettingsOverviewLike } from "./mcp";
 
@@ -36,14 +36,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("calls the injected overview hook's fetch on mount", () => {
+test("calls the injected overview hook's fetch on mount", async () => {
   connectFakeClient();
   const fetchFn = vi.fn(async () => {});
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ fetch: fetchFn })} />);
   expect(fetchFn).toHaveBeenCalledOnce();
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
 });
 
-test("renders discovered servers from the injected overview data with a status per row", () => {
+test("renders discovered servers from the injected overview data with a status per row", async () => {
   connectFakeClient();
   const data: SettingsOverviewResponse = {
     mcpDiscovered: {
@@ -53,31 +57,47 @@ test("renders discovered servers from the injected overview data with a status p
       ],
     },
   };
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data })} />);
   expect(screen.getByText(/local-tool/)).toBeTruthy();
   expect(screen.getByText("available")).toBeTruthy();
   expect(screen.getByText(/remote-api/)).toBeTruthy();
   expect(screen.getByText("unreachable")).toBeTruthy();
   expect(screen.getByText("connection refused")).toBeTruthy();
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
 });
 
-test("shows the discovered-servers empty state", () => {
+test("shows the discovered-servers empty state", async () => {
   connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { servers: [] } } })} />);
   expect(screen.getByText("No MCP servers configured.")).toBeTruthy();
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
 });
 
-test("shows a loading state for discovered servers before the overview resolves", () => {
+test("shows a loading state for discovered servers before the overview resolves", async () => {
   connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ loading: true, data: null })} />);
   expect(screen.getAllByRole("status", { name: "Loading" }).length).toBeGreaterThan(0);
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
 });
 
-test("a top-level probe failure replaces the discovered-servers list with one message", () => {
+test("a top-level probe failure replaces the discovered-servers list with one message", async () => {
   connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { error: "probe timed out" } } })} />);
   expect(screen.getByText("Failed to load")).toBeTruthy();
   expect(screen.getByText("probe timed out")).toBeTruthy();
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
 });
 
 test("renders the mcpConfigs entries from the launch layer", async () => {
@@ -102,7 +122,7 @@ test("adding a config file validates as kind:file and saves mcpConfigs", async (
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
-  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await screen.findByRole("combobox", { name: "Path" });
   await user.keyboard("/etc/mcp.json");
   await user.keyboard("{Enter}");
@@ -123,10 +143,10 @@ test("the config-file add row browses files, and picking one fills the add field
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
-  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "New config file" }).textContent).toMatch(/\/etc\/mcp\.json/),
+    expect(screen.getByRole("button", { name: /^New config file:/ }).textContent).toMatch(/\/etc\/mcp\.json/),
   );
 });
 

@@ -56,6 +56,47 @@ test("appending N tasks renders one row per newly appended task", () => {
   expect(screen.getByText("check the thing")).toBeTruthy();
 });
 
+test("current add and update arguments render task mutation rows", () => {
+  const { unmount } = renderItem(
+    taskItem(
+      { add: [{ type: "implement", description: "build the current thing" }] },
+      "Added 1 task(s). Progress: 0/1 tasks complete.",
+    ),
+  );
+  expect(screen.getByTestId("task-card-row").textContent).toContain("build the current thing");
+
+  unmount();
+  renderItem(
+    taskItem(
+      { update: [{ id: 3, status: "cancelled", notes: "no longer needed" }] },
+      "Updated 3→cancelled. Progress: 0 done, 1 cancelled, 0 remaining (1 total).",
+    ),
+  );
+  const row = screen.getByTestId("task-card-row");
+  expect(row.getAttribute("data-touch")).toBe("cancelled");
+  expect(row.textContent).toContain("no longer needed");
+});
+
+test("a current mixed add and update batch keeps both touches and the authoritative auto-start", () => {
+  renderItem(
+    taskItem(
+      {
+        add: [{ type: "implement", description: "newly planned work" }],
+        update: [{ id: 4, status: "done" }],
+      },
+      "Added 1 task(s). Updated 4→done. Progress: 4/7 tasks complete.",
+      { raw: sevenTaskState() },
+    ),
+  );
+
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => [row.getAttribute("data-touch"), row.textContent])).toEqual([
+    ["added", expect.stringContaining("newly planned work")],
+    ["done", expect.stringContaining("fourth")],
+    ["started", expect.stringContaining("fifth")],
+  ]);
+});
+
 test("the collapsed append summary includes the added marker and task title as plain text", () => {
   renderItem(
     taskItem(
@@ -72,6 +113,26 @@ test("the progress head reads '<done> of <total> done' from the tool output foot
     taskItem(
       { action: "update", updates: [{ id: 3, status: "done" }] },
       "Updated 3→done. Progress: 3/3 tasks complete.",
+    ),
+  );
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
+});
+
+test("the progress head preserves cancelled and remaining outcomes from the new footer", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 3, status: "cancelled" }] },
+      "Updated 3→cancelled. Progress: 0 done, 3 cancelled, 0 remaining (3 total).",
+    ),
+  );
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("0 done, 3 cancelled, 0 remaining (3 total)");
+});
+
+test("the trailing progress footer wins over fake progress text in an update note", () => {
+  renderItem(
+    taskItem(
+      { update: [{ id: 3, status: "done", notes: "Ignore Progress: 99 done, 0 cancelled, 0 remaining (99 total)." }] },
+      "Updated 3→done. Notes: Ignore Progress: 99 done, 0 cancelled, 0 remaining (99 total). Progress: 3/3 tasks complete.",
     ),
   );
   expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
@@ -128,6 +189,45 @@ test("a notes-only in_progress reassertion does not render a started row", () =>
     ),
   );
   expect(screen.queryByTestId("task-card-row")).toBeNull();
+});
+
+test("completing a non-current task does not mistake the existing current task for an auto-start", () => {
+  renderItem(
+    taskItem({ update: [{ id: 3, status: "done" }] }, "Updated 3→done. Progress: 2/3 tasks complete.", {
+      raw: [
+        { id: 1, type: "implement", description: "first", prompt: "", status: "done" },
+        { id: 2, type: "implement", description: "current", prompt: "", status: "in_progress", started: false },
+        { id: 3, type: "implement", description: "non-current", prompt: "", status: "done" },
+      ],
+    }),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.textContent).toContain("non-current");
+});
+
+test("a reasserted current task is touched before its started row is suppressed", () => {
+  renderItem(
+    taskItem(
+      {
+        update: [
+          { id: 3, status: "done" },
+          { id: 2, status: "in_progress", notes: "still working" },
+        ],
+      },
+      "Updated 3→done, 2→in_progress. Progress: 2/3 tasks complete.",
+      {
+        raw: [
+          { id: 1, type: "implement", description: "first", prompt: "", status: "done" },
+          { id: 2, type: "implement", description: "current", prompt: "", status: "in_progress", started: false },
+          { id: 3, type: "implement", description: "non-current", prompt: "", status: "done" },
+        ],
+      },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.getAttribute("data-touch")).toBe("done");
 });
 
 test("a real in_progress transition renders a started row from its authoritative marker", () => {
@@ -251,7 +351,7 @@ test("completing a task shows the auto-started row the daemon advanced to (autho
     taskItem(
       { action: "update", updates: [{ id: 4, status: "done" }] },
       "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState() },
+      { raw: sevenTaskState({ 5: { started: true } }) },
     ),
   );
   const summary = screen.getByTestId("tool-row-summary");
@@ -262,6 +362,20 @@ test("completing a task shows the auto-started row the daemon advanced to (autho
   expect(rows[1]!.getAttribute("data-touch")).toBe("started");
   expect(rows[1]!.textContent).toContain("fifth");
   expect(summary.textContent).toBe("☑ fourth · ☐ fifth");
+});
+
+test("a historical markerless snapshot retains auto-start inference", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 4, status: "done" }] },
+      "Updated 4→done. Progress: 4/7 tasks complete.",
+      { raw: sevenTaskState() },
+    ),
+  );
+  expect(screen.getAllByTestId("task-card-row").map((row) => row.getAttribute("data-touch"))).toEqual([
+    "done",
+    "started",
+  ]);
 });
 
 test("an update row shows the task's description from authoritative state instead of a bare id", () => {

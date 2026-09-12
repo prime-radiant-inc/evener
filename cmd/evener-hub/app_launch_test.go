@@ -1,7 +1,10 @@
 package hub
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,8 +14,33 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
 
+func assertHubLaunchError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T is not appwire.WireError: %v", err, err)
+	}
+	if !wireErrorInfoIs(wire.Data, appwire.ErrorHubLaunch) {
+		t.Fatalf("wire error=%+v", wire)
+	}
+}
+
+func wireErrorInfoIs(data any, want appwire.ErrorInfo) bool {
+	switch v := data.(type) {
+	case appwire.ErrorData:
+		return v.EvenerErrorInfo == want
+	case map[string]any:
+		return v["evenerErrorInfo"] == string(want)
+	default:
+		return false
+	}
+}
+
 func TestHubLaunchControllerSchema(t *testing.T) {
-	c := newHubLaunchController(t.TempDir())
+	c := newHubLaunchController(t.TempDir(), false)
 	got, err := c.Schema(context.Background(), appwire.EmptyParams{})
 	if err != nil {
 		t.Fatalf("Schema: %v", err)
@@ -28,12 +56,37 @@ func TestHubLaunchControllerSchema(t *testing.T) {
 	}
 }
 
+func TestHubLaunchControllerSchema_WireMatchesInternal(t *testing.T) {
+	c := newHubLaunchController(t.TempDir(), false)
+	got, err := c.Schema(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("Schema: %v", err)
+	}
+	internal := launchconfig.LaunchOptionSchema()
+	if len(got.Options) != len(internal) {
+		t.Fatalf("got %d wire options, want %d internal options", len(got.Options), len(internal))
+	}
+	for i, opt := range internal {
+		internalJSON, err := json.Marshal(opt)
+		if err != nil {
+			t.Fatalf("marshal internal option %q: %v", opt.Field, err)
+		}
+		wireJSON, err := json.Marshal(got.Options[i])
+		if err != nil {
+			t.Fatalf("marshal wire option %q: %v", opt.Field, err)
+		}
+		if !bytes.Equal(internalJSON, wireJSON) {
+			t.Errorf("option %q: internal and wire JSON diverge\ninternal: %s\nwire:     %s", opt.Field, internalJSON, wireJSON)
+		}
+	}
+}
+
 func TestLaunchController_Resolve_Empty(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
 	// Fixed empty env so an ambient EVENER_MODEL can never leak in and
 	// flip this assertion on a developer machine.
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -49,7 +102,7 @@ func TestLaunchController_Resolve_Empty(t *testing.T) {
 func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	model := "openai/gpt-5"
 	fastCheapModel := "openai/gpt-5-mini"
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
@@ -75,7 +128,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
 	empty := []string{}
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD: cwd, Layer: "global",
 		Config: appwire.LaunchConfigLayer{EnabledPlugins: &empty},
@@ -95,7 +148,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
 		Layer:  "project",
@@ -126,7 +179,7 @@ func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	paths, err := launchconfig.PathsFor(stateRoot, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +209,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	}
 	hash, _ := launchconfig.CanonicalHashTOML(contents)
 
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, true)
 	got, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash})
 	if err != nil {
 		t.Fatalf("TrustRepo: %v", err)
@@ -166,6 +219,9 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	}
 	if got.Effective.Model != "from-repo" {
 		t.Errorf("trusted in-repo did not contribute: %v", got.Effective)
+	}
+	if got.Effective.APILog == nil || !*got.Effective.APILog {
+		t.Errorf("post-trust preview omitted the hub api_log floor: %v", got.Effective.APILog)
 	}
 }
 
@@ -205,7 +261,7 @@ func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 		t.Fatalf("SaveMeta: %v", err)
 	}
 
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	if _, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}); err != nil {
 		t.Fatalf("TrustRepo: %v", err)
 	}
@@ -234,7 +290,7 @@ func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 	if err := os.WriteFile(repoPath, []byte(`model = "x"`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	if _, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: "sha256:nope"}); err == nil {
 		t.Errorf("TrustRepo with wrong hash should error")
 	}
@@ -246,7 +302,7 @@ func TestLaunchController_ResolveAppliesRuntimeDefaults(t *testing.T) {
 	env := map[string]string{
 		"EVENER_MODEL": "anthropic/claude-sonnet-4",
 	}
-	c := newHubLaunchControllerWithEnv(stateRoot, func(name string) string { return env[name] })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(name string) string { return env[name] }, false)
 	got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -293,7 +349,7 @@ func TestLaunchController_ResolveLayerValueWinsOverRuntimeDefault(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(stateRoot, "launch.toml"), []byte("context_strategy = \"ooda\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" })
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
 	got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

@@ -381,5 +381,10 @@ var navigationRESTRoots = []any{
 	hubapi.NavigationProjectPage{},
 	hubapi.NavigationSessionLocation{},
 	hubapi.NavigationSessionSummary{},
+	hubapi.NavigationEntityRecord{},
+	hubapi.NavigationContainerOwner{},
+	hubapi.NavigationOrderContainer{},
+	hubapi.NavigationSnapshot{},
+	hubapi.NavigationDelta{},
 	appwire.NavigationMutation{},
 }

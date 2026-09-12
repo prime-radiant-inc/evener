@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"time"
@@ -19,19 +20,30 @@ func DefaultMarketplaceSeeds() map[string]Source {
 // does not yet exist. It is a no-op once the file exists, so a user who removes a
 // seeded marketplace never gets it back. Seeded entries are unfetched pointers
 // (empty InstallLocation), cloned lazily on first Browse/Install.
-func (m *Manager) SeedDefaultMarketplaces() (bool, error) {
-	if _, err := marketplaceStat(m.marketplacesFile()); err == nil {
+func (m *Manager) SeedDefaultMarketplaces(ctx context.Context) (bool, error) {
+	// Every path under an unresolved root is relative, so seeding would write
+	// the marketplaces file and take its lock in whatever directory the
+	// process happens to be in. Deriving the path is what refuses: the stat
+	// below runs before the lock, and an ambient known_marketplaces.json would
+	// otherwise answer "already seeded" and skip the lock entirely. Launches
+	// seed on the way past and carry a seeding failure as a warning, so
+	// refusing is the whole answer.
+	marketplaces, err := m.storePath(marketplacesFileName)
+	if err != nil {
+		return false, err
+	}
+	if _, err := marketplaceStat(marketplaces); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return false, err
 	}
 	defer release()
 	// re-check under lock
-	if _, err := marketplaceStat(m.marketplacesFile()); err == nil {
+	if _, err := marketplaceStat(marketplaces); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err

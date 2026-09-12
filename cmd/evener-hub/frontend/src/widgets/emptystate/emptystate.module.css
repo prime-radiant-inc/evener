@@ -10,10 +10,16 @@
 .title {
   margin: 0;
   color: var(--ink-hi);
-  font-family: var(--font-sans);
+  font-family: var(--font-prose);
   font-size: var(--font-size-pane-title);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);
+}
+
+/* size="display": the welcome pane's hero, the one place the display step
+ * is used (tokens.css). */
+.titleDisplay {
+  font-size: var(--font-size-display);
 }
 
 .hint {

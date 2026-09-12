@@ -1,13 +1,18 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
@@ -344,7 +349,7 @@ func TestSessionDeleteRejectsRemoteSource(t *testing.T) {
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 
-	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "codex:" + webTestSessionID})
+	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "remote:" + webTestSessionID})
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
 		t.Fatalf("remote-source delete error = %v, want invalid params", err)
@@ -389,7 +394,7 @@ func TestSessionDeleteFailsWithoutPastIndex(t *testing.T) {
 	}
 }
 
-func TestSessionDeleteReportsNavigationFailureAfterCommittedCleanup(t *testing.T) {
+func TestSessionDeletePreservesSuccessAfterNavigationFailure(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -410,14 +415,9 @@ func TestSessionDeleteReportsNavigationFailureAfterCommittedCleanup(t *testing.T
 	failingSource.err = errors.New("capture failed")
 	web.navigation = newTestNavigationService(t, failingSource)
 
-	_, err = dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "local:" + webTestSessionID})
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
-		t.Fatalf("navigation failure error = %v, want action unavailable", err)
-	}
-	data, ok := wireErr.Data.(appwire.ErrorData)
-	if !ok || data.EvenerErrorInfo != appwire.ErrorActionUnavailable {
-		t.Fatalf("navigation failure data = %#v, want actionUnavailable", wireErr.Data)
+	response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "local:" + webTestSessionID})
+	if err != nil || len(response.Deleted) != 1 || response.Deleted[0] != webTestSessionID || len(response.Skipped) != 0 {
+		t.Fatalf("committed deletion outcome: response=%+v error=%v", response, err)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); !os.IsNotExist(err) {
 		t.Fatalf("cleanup must remain committed when the navigation receipt fails: %v", err)
@@ -575,9 +575,9 @@ func TestSessionDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 
 	var events []string
 	prevRefresh := hubRosterRefresh
-	hubRosterRefresh = func(r *hubcore.Roster) {
+	hubRosterRefresh = func(ctx context.Context, r *hubcore.Roster) error {
 		events = append(events, "roster-refresh")
-		prevRefresh(r)
+		return prevRefresh(ctx, r)
 	}
 	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
 
@@ -601,5 +601,242 @@ func TestSessionDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 	}
 	if len(events) < 2 || events[0] != "roster-refresh" || events[1] != "poke" {
 		t.Fatalf("events=%v, want the roster refreshed before PokeAttention", events)
+	}
+}
+
+func TestSessionDeletePreservesUnconfirmedDaemonState(t *testing.T) {
+	for _, identity := range []string{"known", "unidentified"} {
+		t.Run(identity, func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "delete-uncertain-0123456789")
+			writeSession(t, stateDir, webTestSessionID, root)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			runDir := t.TempDir()
+			entry := rendezvous.Entry{PID: os.Getpid(), SessionID: webTestSessionID, ThreadID: webTestSessionID}
+			if identity == "unidentified" {
+				entry.SessionID = ""
+				entry.ThreadID = ""
+			}
+			writeRendezvous(t, runDir, entry)
+			roster := hubcore.NewRoster(runDir, &fakeProber{shouldFail: true})
+			roster.Refresh()
+			if len(roster.UnconfirmedEntries()) != 1 {
+				t.Fatal("missing unconfirmed claim")
+			}
+			web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, RunDir: runDir})
+			response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(webTestSessionID)})
+			if len(response.Deleted) > 0 {
+				t.Fatalf("deleted an unconfirmed live session: %+v", response)
+			}
+			if _, statErr := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); statErr != nil {
+				t.Fatalf("session state removed despite unconfirmed owner: %v (response error: %v)", statErr, err)
+			}
+			if err := rendezvous.Remove(runDir, entry.PID); err != nil {
+				t.Fatal(err)
+			}
+			roster.Refresh()
+			response, err = dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(webTestSessionID)})
+			if err != nil || len(response.Deleted) != 1 {
+				t.Fatalf("deletion stayed blocked after ownership cleared: response=%+v error=%v", response, err)
+			}
+		})
+	}
+}
+
+func TestFailedInitialRosterScanBlocksNavigationAndDeletion(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "delete-uncertain-0123456789")
+	writeSession(t, stateDir, webTestSessionID, root)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	claim := filepath.Join(runDir, "1.json")
+	if err := os.WriteFile(claim, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRoster(runDir, &fakeProber{})
+	roster.Refresh()
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, RunDir: runDir})
+	assertNavigationOwnershipReadOnly(t, web)
+	response, deleteErr := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(webTestSessionID)})
+	if len(response.Deleted) > 0 {
+		t.Error("deleted session after failed discovery")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); err != nil {
+		t.Fatalf("state removed after failed discovery: %v (delete error: %v)", err, deleteErr)
+	}
+	if err := os.Remove(claim); err != nil {
+		t.Fatal(err)
+	}
+	roster.Refresh()
+	if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(webTestSessionID)})
+	if err != nil || len(response.Deleted) != 1 {
+		t.Fatalf("recovered deletion=%+v error=%v", response, err)
+	}
+}
+
+func TestSessionDeletePreservesDaemonOwnedDelegates(t *testing.T) {
+	for _, status := range []string{appwire.ThreadStatusActive, appwire.ThreadStatusRestartRequired, "unconfirmed"} {
+		for _, nested := range []bool{false, true} {
+			name := status + "/direct"
+			if nested {
+				name = status + "/nested"
+			}
+			t.Run(name, func(t *testing.T) {
+				root := t.TempDir()
+				projectDir := filepath.Join(root, "project")
+				if err := os.MkdirAll(projectDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+				rootID, parentID, childID := projectDeleteCanonicalSessionIDs[0], projectDeleteCanonicalSessionIDs[1], projectDeleteCanonicalSessionIDs[2]
+				writeSession(t, stateDir, rootID, projectDir)
+				events := []map[string]any{}
+				addChild := func(id, parent, parentDelegate, delegate string) {
+					writeSession(t, stateDir, id, projectDir)
+					meta, err := schema.LoadSessionMeta(stateDir, id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					meta.ParentSessionID, meta.JobTreeRootSessionID, meta.IsSubagent = parent, rootID, true
+					if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+						t.Fatal(err)
+					}
+					descriptor := map[string]any{"owner_session_id": rootID, "child_session_id": id, "parent_delegate_id": parentDelegate, "transcript_ref": localAppRef(id), "task": "delete ownership", "agent_type": "explorer", "tool_name_ceiling": []string{"communicate"}, "resumable": true, "config": map[string]any{}}
+					events = append(events, map[string]any{"kind": "delegate_created", "seq": len(events) + 1, "delegate_id": delegate, "created": map[string]any{"descriptor": descriptor}})
+				}
+				if nested {
+					addChild(parentID, rootID, "", "dlg_parent")
+					addChild(childID, parentID, "dlg_parent", "dlg_child")
+				} else {
+					addChild(childID, rootID, "", "dlg_child")
+				}
+				batch, err := json.Marshal(map[string]any{"events": events})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(stateDir, "sessions", rootID, "delegates.jsonl"), append(append([]byte("{\"version\":1}\n"), batch...), '\n'), 0600); err != nil {
+					t.Fatal(err)
+				}
+				past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+				if _, err := past.Rebuild(); err != nil {
+					t.Fatal(err)
+				}
+				roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: rootID, Status: status})
+				if status == "unconfirmed" {
+					peer := httptest.NewServer(http.NotFoundHandler())
+					defer peer.Close()
+					runDir := t.TempDir()
+					writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), SessionID: rootID, ThreadID: rootID, Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http")})
+					roster = hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+					roster.Refresh()
+					if !unconfirmedDaemonForThread(roster, rootID) {
+						t.Fatal("fixture has no unresolved owner")
+					}
+				}
+				web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
+				response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(childID)})
+				if len(response.Deleted) != 0 {
+					t.Errorf("deleted owned child: %+v", response)
+				}
+				if err == nil && len(response.Skipped) != 1 {
+					t.Errorf("missing ownership refusal: %+v", response)
+				}
+				if status != "unconfirmed" && (err != nil || len(response.Skipped) != 1 || response.Skipped[0].Reason != "resumed live") {
+					t.Errorf("verified owner not classified live: response=%+v error=%v", response, err)
+				}
+				for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl"} {
+					if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID+suffix)); err != nil {
+						t.Errorf("owned child artifact %s: %v", suffix, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSessionDeleteAllowsIndependentForkOfLiveDaemon(t *testing.T) {
+	for _, status := range []string{appwire.ThreadStatusActive, appwire.ThreadStatusRestartRequired} {
+		t.Run(status, func(t *testing.T) {
+			root := t.TempDir()
+			projectDir := filepath.Join(root, "project")
+			if err := os.MkdirAll(projectDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+			rootID, forkID := projectDeleteCanonicalSessionIDs[0], projectDeleteCanonicalSessionIDs[1]
+			writeSession(t, stateDir, rootID, projectDir)
+			writeSession(t, stateDir, forkID, projectDir)
+			meta, err := schema.LoadSessionMeta(stateDir, forkID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta.ParentSessionID = rootID
+			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: rootID, Status: status})
+			web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
+			response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(forkID)})
+			if err != nil || len(response.Deleted) != 1 || response.Deleted[0] != forkID {
+				t.Fatalf("fork deletion=%+v error=%v", response, err)
+			}
+			if _, err := os.Stat(filepath.Join(stateDir, "sessions", rootID+".meta.json")); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSessionDeleteRetainedDelegateAfterParentDeletion(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "upgrade-0000000000")
+	parentID := buildRPCParentSession(t, stateDir)
+	childID := buildUpgradeDelegate(t, stateDir, parentID)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRoster(t.TempDir(), &hubcore.StatusProber{})
+	roster.Refresh()
+	spawned := false
+	cfg := hubcore.WebConfig{Past: past, Roster: roster, ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		spawned = true
+		return rendezvous.Entry{}, errors.New("spawn sentinel")
+	}}}
+	web := NewWebServer(cfg)
+	response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(parentID)})
+	if err != nil || len(response.Deleted) != 1 {
+		t.Fatalf("delete parent: %+v %v", response, err)
+	}
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: localAppRef(childID), IncludeTurns: true}); err != nil {
+		t.Fatalf("read retained child: %v", err)
+	}
+	_, _ = hubThreadResume(t.Context(), cfg, nil, appwire.ThreadResumeParams{Session: childID})
+	if !spawned {
+		t.Fatal("retained child could not reach resume launcher")
+	}
+	response, err = dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(childID)})
+	if err != nil || len(response.Deleted) != 1 {
+		t.Fatalf("delete child: %+v %v", response, err)
 	}
 }

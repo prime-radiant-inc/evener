@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,6 +71,7 @@ func TestInitializeIncludesNavigationCapabilityWhenConfigured(t *testing.T) {
 			Version:      1,
 			GenerationID: "generation-a",
 			Sequence:     7,
+			ReadVersions: []int{1, 2},
 		},
 	})
 
@@ -80,7 +82,7 @@ func TestInitializeIncludesNavigationCapabilityWhenConfigured(t *testing.T) {
 	if response.Navigation == nil {
 		t.Fatal("navigation capability is absent")
 	}
-	if got, want := *response.Navigation, (appwire.NavigationCapability{Version: 1, GenerationID: "generation-a", Sequence: 7}); got != want {
+	if got, want := *response.Navigation, (appwire.NavigationCapability{Version: 1, GenerationID: "generation-a", Sequence: 7, ReadVersions: []int{1, 2}}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("navigation capability = %+v, want %+v", got, want)
 	}
 }
@@ -1467,6 +1469,68 @@ func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
 	}
 	if server.subs.IsSubscribed(conn.ID(), "th_old") || !server.subs.IsSubscribed(conn.ID(), "th_new") {
 		t.Fatalf("replacement ownership: old=%v new=%v", server.subs.IsSubscribed(conn.ID(), "th_old"), server.subs.IsSubscribed(conn.ID(), "th_new"))
+	}
+}
+
+// A serial unsubscribe that lands between a subscribed read's capture and
+// that capture's release-commit must win. The read's response enters the send
+// queue BEFORE the commit runs (enqueueResponse commits the finalizer after
+// `c.send <- msg`), so a client can observe the response, send
+// thread/unsubscribe, and have it processed while the entry is still
+// buffering. The commit must then honor the drop rather than resurrect the
+// subscription. Deterministic regression test for the CI flake in
+// TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap.
+func TestUnsubscribeBetweenCaptureAndCommitEndsUnsubscribed(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-unsub-commit")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	HandleTyped(server.Router(), "test/subscribe-snapshot", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_live" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Error("subscription capture was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	// HandleMessage returns the response without enqueueing it: the capture
+	// is registered but its finalizer has not committed yet.
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/subscribe-snapshot", struct{}{}),
+	)
+
+	// The unsubscribe lands in exactly the wire race's window: after the
+	// capture registered, before the response enqueue commits it.
+	ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
+	Unsubscribe(ctx, "th_live")
+
+	// The unsubscribe succeeded, so the count reflects it immediately — even
+	// though the capture's commit has not resolved the entry yet.
+	if got := server.SubscriberCount("th_live"); got != 0 {
+		t.Fatalf("subscriber count before commit = %d, want 0", got)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+	// The commit resolved the withdrawn entry by removing it — not by
+	// leaving it behind, filtered out of the count.
+	server.subs.mu.RLock()
+	_, present := server.subs.byConn[conn.id]["th_live"]
+	server.subs.mu.RUnlock()
+	if present {
+		t.Fatal("committed capture left the withdrawn entry in the registry")
+	}
+	if got := server.SubscriberCount("th_live"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe-then-commit = %d, want 0", got)
 	}
 }
 

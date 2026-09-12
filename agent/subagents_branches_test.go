@@ -547,7 +547,7 @@ func TestPreparedSubagentRunDisposeUnadoptedNilSub(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDisposeUnadoptedSubagentSessionNil(t *testing.T) {
-	disposeUnadoptedSubagentSession(nil, false) // should be a no-op
+	disposeUnadoptedSubagentSession(nil) // should be a no-op
 }
 
 // ---------------------------------------------------------------------------

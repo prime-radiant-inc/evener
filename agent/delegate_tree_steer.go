@@ -26,17 +26,8 @@ const (
 func (c *delegateTreeController) completionDecision(lease delegateLease) (delegateCompletionDecision, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	evidence, err := c.completionEvidenceLocked(lease)
-	if err != nil {
-		return delegateCompletionNeedsNudge, err
-	}
-	if evidence.terminalSeen {
-		return delegateCompletionUseExistingTerminal, nil
-	}
-	if evidence.requirement == delegateCompletionAttentionOnly && evidence.outcome == delegateCompletionOutcomeAttentionNoAction {
-		return delegateCompletionFinishNoAction, nil
-	}
-	return delegateCompletionNeedsNudge, nil
+	decision := c.reduceCompletionDecisionIntent(finishIntent{lease: lease})
+	return decision.completion, decision.err
 }
 
 type delegateSteeringAdmission struct {
@@ -489,12 +480,13 @@ func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnI
 	turn.SteeringSource = source
 	turn.SteeringKind = kind
 	turn.StableTurnID = stableTurnID
-	if err := s.writeTranscriptDurable(turn); err != nil {
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
 		return delegateTranscriptEntry{}, err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, turn)
-	s.mu.Unlock()
 	return delegateTranscriptEntry{entryID: turn.StableTurnID, timestamp: turn.Timestamp}, nil
 }
 

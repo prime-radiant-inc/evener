@@ -236,21 +236,19 @@ func FuzzGeminiStreamStructured(f *testing.F) {
 		f.Add(s)
 	}
 
-	a := &Adapter{BaseURL: "http://fuzz.local"}
-
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		sse := structuredGeminiSSE(raw)
 
-		base, baseErr := accumulateGeminiSSE(a, sse, false) // Oracle (floor): never panics.
+		base, baseErr := accumulateGeminiSSE(sse, false) // Oracle (floor): never panics.
 
-		rechunked, reErr := accumulateGeminiSSE(a, sse, true)
+		rechunked, reErr := accumulateGeminiSSE(sse, true)
 		if !sameGeminiResponse(base, baseErr, rechunked, reErr) {
 			t.Fatalf("re-chunk boundary changed the accumulated response:\n base=%+v (err=%v)\n one-byte=%+v (err=%v)\n sse=%q",
 				base, baseErr, rechunked, reErr, sse)
 		}
 
 		commented := bytes.ReplaceAll(sse, []byte("\n\n"), []byte("\n\n: fuzz-keepalive\n\n"))
-		withComments, cErr := accumulateGeminiSSE(a, commented, false)
+		withComments, cErr := accumulateGeminiSSE(commented, false)
 		if !sameGeminiResponse(base, baseErr, withComments, cErr) {
 			t.Fatalf("interstitial SSE comments changed the accumulated response:\n base=%+v (err=%v)\n commented=%+v (err=%v)\n sse=%q",
 				base, baseErr, withComments, cErr, sse)
@@ -265,7 +263,6 @@ func FuzzGeminiStreamStructured(f *testing.F) {
 // Response). Raw bytes interpreted as SSE essentially never form a valid finish
 // chunk; the structured generator does so on most inputs.
 func TestStructuredGeminiReachesDeeper(t *testing.T) {
-	a := &Adapter{BaseURL: "http://fuzz.local"}
 	const iters = 2000
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
@@ -274,10 +271,10 @@ func TestStructuredGeminiReachesDeeper(t *testing.T) {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 
-		if resp, _ := accumulateGeminiSSE(a, raw, false); resp != nil {
+		if resp, _ := accumulateGeminiSSE(raw, false); resp != nil {
 			rawCompleted++
 		}
-		if resp, _ := accumulateGeminiSSE(a, structuredGeminiSSE(raw), false); resp != nil {
+		if resp, _ := accumulateGeminiSSE(structuredGeminiSSE(raw), false); resp != nil {
 			structCompleted++
 		}
 	}

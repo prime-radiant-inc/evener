@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // toolDeps is the dependency surface the core tool handler closures need from
@@ -114,8 +115,9 @@ type toolDeps struct {
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
 
-	// webSearchEnabled is the resolved decision (BehaviorTag == "google") for
-	// whether the function-tool web_search should be registered.
+	// webSearchEnabled is the resolved decision (the google protocol on a row
+	// that serves web search) for whether the function-tool web_search should
+	// be registered.
 	webSearchEnabled bool
 
 	// stateDir and sessionID locate the current session's transcript bucket and
@@ -256,9 +258,10 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,
-			controlEnv:    s.worktreeControlEnv,
 			enterWorktree: s.enterWorktree,
 			exitWorktree:  s.exitWorktree,
+			beginOp:       s.beginEnvWork,
+			endOp:         s.endEnvWork,
 			liveWorkUnder: s.liveWorkUnder,
 			create:        s.worktreeCreate,
 			switchByName:  s.worktreeSwitchByName,
@@ -287,7 +290,7 @@ func newToolDeps(s *Session) *toolDeps {
 			return meta, ok
 		},
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
-		webSearchEnabled:      s.profile.BehaviorTag() == "google",
+		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
 		currentMeta:           s.Meta,
@@ -405,6 +408,11 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 		}
 	}
 	for _, rt := range transcriptTools(deps) {
+		if err := register(rt); err != nil {
+			return err
+		}
+	}
+	for _, rt := range doctorTools(deps) {
 		if err := register(rt); err != nil {
 			return err
 		}

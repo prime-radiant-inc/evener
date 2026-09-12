@@ -6,10 +6,11 @@
 //
 // Every evener/instance/* mutation's Go handler returns the FULL updated
 // InstanceListResponse (appwire/types.go) - so create/edit/remove/setDefault
-// apply that response directly to `instances`/`availableTypes` instead of
-// issuing a separate evener/instance/list refetch, same round-trip the legacy
-// credentials.html's own instanceCreate/instanceEdit/... + refresh() pattern
-// achieves in two calls.
+// apply that response directly to `instances`/`availableProviders`/
+// `diagnostics`/`userLayer`/`writesRefused` instead of issuing a separate
+// evener/instance/list refetch, same round-trip the legacy credentials.html's
+// own instanceCreate/instanceEdit/... + refresh() pattern achieves in two
+// calls.
 //
 // Never-echo invariant: no method here stores a secret VALUE anywhere in
 // this store's state - setApiKey/loginComplete/deviceStart/devicePoll return
@@ -33,6 +34,7 @@ import type {
   InstanceEditParams,
   InstanceEntry,
   InstanceListResponse,
+  ProviderDescriptor,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 
@@ -46,20 +48,36 @@ function requireClient(): AppwireClientLike {
 
 export interface CredentialsStoreState {
   instances: InstanceEntry[];
-  availableTypes: string[];
+  availableProviders: ProviderDescriptor[];
+  // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
+  // optional fields (appwire/types.go), normalized here to always-present
+  // values (spec §11.3) so components never need an `?? []`/`?? false`
+  // fallback of their own.
+  diagnostics: string[];
+  userLayer: string;
+  writesRefused: boolean;
   loading: boolean;
   error: string | null;
   fetch(): Promise<void>;
   create(params: InstanceCreateParams): Promise<void>;
-  edit(params: InstanceEditParams): Promise<void>;
+  // Resolves true when the listing this edit answered with is the one the
+  // store now holds, false when a newer request superseded it. The instance
+  // sheet steers itself on the store's verdict, never on the raw response.
+  edit(params: InstanceEditParams): Promise<boolean>;
   remove(name: string): Promise<void>;
   setDefault(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
-  // instances/availableTypes themselves - the caller (CredentialsSection)
+  // instances/availableProviders themselves - the caller (CredentialsSection)
   // re-fetches on success, matching the legacy's own "close editor +
   // refresh()" sequencing, and surfaces failures as inline errors/toasts
   // itself rather than this store swallowing them into an `error` field.
   setApiKey(provider: string, value: string): Promise<AuthStatusResponse>;
+  setCredentialJson(provider: string, value: string): Promise<AuthStatusResponse>;
+  // clearStoredKey removes only the credentials.toml entry, leaving any
+  // OAuth/ADC/env credential untouched - the counterpart to setApiKey, and
+  // the narrow alternative to logout() for a stray stored key shadowed
+  // behind an active oauth/adc sign-in (issue #713).
+  clearStoredKey(provider: string): Promise<AuthStatusResponse>;
   logout(provider: string): Promise<AuthLogoutResponse>;
   loginStart(provider: string): Promise<AuthLoginStartResponse>;
   loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
@@ -68,50 +86,104 @@ export interface CredentialsStoreState {
   testCredentials(provider: string): Promise<AuthTestResponse>;
 }
 
-function applyList(resp: InstanceListResponse): void {
-  credentialsStore.setState({ instances: resp.instances, availableTypes: resp.availableTypes });
+// listState normalizes one instance/list answer into the store's own always-
+// present shape. Every reader of the listing goes through it, so a field
+// added to InstanceListResponse is defaulted in exactly one place.
+type ListState = Pick<
+  CredentialsStoreState,
+  "instances" | "availableProviders" | "diagnostics" | "userLayer" | "writesRefused"
+>;
+
+function listState(resp: InstanceListResponse): ListState {
+  return {
+    instances: resp.instances,
+    availableProviders: resp.availableProviders,
+    diagnostics: resp.diagnostics ?? [],
+    userLayer: resp.userLayer ?? "",
+    writesRefused: resp.writesRefused ?? false,
+  };
+}
+
+// emptyListState is the listing state before anything has been fetched, and
+// the state resetCredentialsStoreForTests returns to. A function, not a
+// shared literal: each caller gets its own arrays.
+function emptyListState(): ListState {
+  return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
+}
+
+let requestVersion = 0;
+let requestedList = false;
+
+// Reads and writes share ordering: only the most recently started request
+// can replace the listing, even when responses arrive out of order. Reports
+// whether THIS response is the one that replaced it: a superseded response
+// carries a listing the store discarded, and a caller steering a view on the
+// strength of its own write has to be able to tell the two apart.
+async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<boolean> {
+  const version = ++requestVersion;
+  try {
+    const response = await request();
+    if (version !== requestVersion) return false;
+    credentialsStore.setState({ ...listState(response), loading: false, error: null });
+    return true;
+  } finally {
+    if (version === requestVersion) credentialsStore.setState({ loading: false });
+  }
 }
 
 export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
-  instances: [],
-  availableTypes: [],
+  ...emptyListState(),
   loading: false,
   error: null,
 
   async fetch() {
     const client = requireClient();
+    requestedList = true;
+    const version = ++requestVersion;
     set({ loading: true, error: null });
     try {
       const resp = await client.request("evener/instance/list", {});
-      set({ instances: resp.instances, availableTypes: resp.availableTypes, loading: false });
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
+      set({ ...listState(resp), loading: false });
     } catch (err) {
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ loading: false, error: errorText(err) });
     }
   },
 
   async create(params) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/create", params));
+    await applyMutation(() => client.request("evener/instance/create", params));
   },
 
   async edit(params) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/edit", params));
+    return applyMutation(() => client.request("evener/instance/edit", params));
   },
 
   async remove(name) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/remove", { name }));
+    await applyMutation(() => client.request("evener/instance/remove", { name }));
   },
 
   async setDefault(name) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/setDefault", { name }));
+    await applyMutation(() => client.request("evener/instance/setDefault", { name }));
   },
 
   async setApiKey(provider, value) {
     const client = requireClient();
     return client.request("evener/auth/apiKey/set", { provider, value });
+  },
+
+  async setCredentialJson(provider, value) {
+    const client = requireClient();
+    return client.request("evener/auth/credentialJson/set", { provider, value });
+  },
+
+  async clearStoredKey(provider) {
+    const client = requireClient();
+    return client.request("evener/auth/apiKey/clear", { provider });
   },
 
   async logout(provider) {
@@ -173,6 +245,7 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;
+let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleRefetch(): void {
@@ -194,10 +267,13 @@ function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/auth/updated") scheduleRefetch();
 }
 
-function attachNotifications(client: AppwireClientLike): void {
+function attachNotifications(client: AppwireClientLike | null): void {
   if (client === wiredClient) return; // already wired to this exact client
+  unsubscribeNotifications?.();
+  clearTimeout(refetchTimer);
+  refetchTimer = undefined;
   wiredClient = client;
-  client.onNotification(handleNotification);
+  unsubscribeNotifications = client?.onNotification(handleNotification);
 }
 
 // Watches connectionStore for the client becoming available and attaches
@@ -205,8 +281,27 @@ function attachNotifications(client: AppwireClientLike): void {
 // identical wiring for the full "why react to the store instead of reading
 // it once" rationale (a mount-order race between this module and AppShell's
 // own connect() effect).
-connectionStore.subscribe((state) => {
-  if (state.client) attachNotifications(state.client);
+connectionStore.subscribe((state, previous) => {
+  if (state.client !== previous.client || state.state !== previous.state) {
+    requestVersion += 1;
+    credentialsStore.setState({ loading: false });
+    clearTimeout(refetchTimer);
+    refetchTimer = undefined;
+  }
+  attachNotifications(state.client);
+  // Once a view has requested credentials, reconnects must restore its list
+  // even if its one-shot mount loader was interrupted.
+  if (
+    requestedList &&
+    state.client &&
+    state.state === "ready" &&
+    (state.client !== previous.client || previous.state !== "ready")
+  ) {
+    void credentialsStore
+      .getState()
+      .fetch()
+      .catch(() => {});
+  }
 });
 const initialClient = connectionStore.getState().client;
 if (initialClient) attachNotifications(initialClient);
@@ -216,8 +311,12 @@ if (initialClient) attachNotifications(initialClient);
 // mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
+  requestVersion += 1;
+  requestedList = false;
+  unsubscribeNotifications?.();
+  unsubscribeNotifications = undefined;
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
-  credentialsStore.setState({ instances: [], availableTypes: [], loading: false, error: null });
+  credentialsStore.setState({ ...emptyListState(), loading: false, error: null });
 }

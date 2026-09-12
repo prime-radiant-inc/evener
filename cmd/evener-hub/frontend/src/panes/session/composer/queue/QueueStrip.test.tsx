@@ -50,7 +50,13 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "evener",
-    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: {
+      ref,
+      mutationStateAuthoritative: true,
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
     turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
     ...overrides,
   };
@@ -276,6 +282,15 @@ describe("durable recovery rows", () => {
     expect(within(row).getByRole("button", { name: "Dismiss" })).toBeTruthy();
   });
 
+  test.each(["restartRequired", "notLoaded"] as const)("Retry stays blocked for %s sessions", async (type) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type } });
+    await seedBlockedUnknown("uncertain");
+    renderStrip(defaultProps());
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+  });
+
   test("blocked unknown has Retry but no sendable action", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -398,6 +413,9 @@ describe("dismiss a rejected Stop", () => {
 
   test("a record already discarded elsewhere still leaves the strip", async () => {
     const { record, row } = await renderRejectedStop();
+    // The seeded row is visible before the mount's projection reads settle.
+    // Finish those existing reads before another surface deletes their record.
+    await flushPendingTurnsProjectionForTests();
     // Discarded by another surface (a second tab, or this session's own
     // Composer) after this projection last read: the durable record is gone,
     // the row on screen is not, and the discard below reports "nothing to do".
@@ -909,8 +927,10 @@ describe("drain-as-steer affordance", () => {
       defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: false }), onDrainSuccess }),
     );
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
 
     await waitFor(() => {
@@ -934,8 +954,10 @@ describe("drain-as-steer affordance", () => {
     });
     renderStrip(defaultProps());
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
     expect(getToasts()).toHaveLength(0);
     expect(screen.queryByText(/reload/i)).toBeNull();
@@ -967,8 +989,10 @@ describe("drain-as-steer affordance", () => {
     }));
     renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
 
     await screen.findByText(/image attachment is still processing/i);
@@ -1039,4 +1063,15 @@ describe("drain-as-steer affordance", () => {
     fireEvent.click(drainButton);
     expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
   });
+});
+
+test.each(["active", "idle"])("Retry stays disabled for saved %s delegate data", async (type) => {
+  const fake = connectFakeClient();
+  const thread = testThread("ref_a", { status: { type } });
+  thread.evener.mutationStateAuthoritative = false;
+  await hydrate(fake, "ref_a", thread);
+  await seedBlockedUnknown("uncertain");
+  renderStrip(defaultProps());
+  const retry = await screen.findByRole("button", { name: "Retry" });
+  expect(isDisabled(retry)).toBe(true);
 });

@@ -53,15 +53,18 @@ func (s *RecursiveDistillStrategy) ManageContext(ctx context.Context, history *[
 
 	// After compaction, inject distilled summary hierarchy if we have any.
 	if len(s.macroSummaries) > 0 || len(s.microSummaries) > 0 {
-		s.injectDistilledContext(history)
+		s.injectDistilledContext(ctx, history)
 	}
 
 	return nil
 }
 
 // injectDistilledContext places the distilled memory hierarchy as a steering
-// message at the end of history. Removes any previous distilled turn first.
-func (s *RecursiveDistillStrategy) injectDistilledContext(history *[]schema.Turn) {
+// message at the end of history. Removes any previous distilled turn first,
+// then reports the net turn-count delta via reportPostFoldInjection so a
+// caller correcting a fold-removal delta for the N4 boundary (issue #634)
+// sees this append.
+func (s *RecursiveDistillStrategy) injectDistilledContext(ctx context.Context, history *[]schema.Turn) {
 	var b strings.Builder
 	b.WriteString("[DISTILLED MEMORY]\n")
 
@@ -86,19 +89,10 @@ func (s *RecursiveDistillStrategy) injectDistilledContext(history *[]schema.Turn
 
 	b.WriteString("[END DISTILLED MEMORY]")
 
-	// Remove any existing distilled memory turn.
-	filtered := (*history)[:0]
-	for _, t := range *history {
-		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), "[DISTILLED MEMORY]") {
-			continue
-		}
-		filtered = append(filtered, t)
-	}
-	*history = filtered
-
-	// Append at the end.
-	distilledTurn := schema.NewTurn(schema.TurnSteering, llm.User(b.String()))
-	*history = append(*history, distilledTurn)
+	// Replace any existing distilled memory turn(s) with the fresh banner at
+	// the end and report the baseline-corrected injection delta (see
+	// replaceSteeringMarkerTurn for the shared swap/correction semantics).
+	replaceSteeringMarkerTurn(ctx, history, "[DISTILLED MEMORY]", b.String())
 }
 
 // AfterAction checks if enough turns have accumulated for a micro or macro

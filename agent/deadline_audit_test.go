@@ -43,11 +43,10 @@ import (
 // real defect (kata ww3g bucket 3) instead of hacking around it here.
 //
 // Naming the bound -- a package- or file-level constant/variable with its own
-// doc comment, e.g. fifoReadTripwireFor in cmd/evener-test-dev-tooling/wave_test.go
-// -- also clears the audit: there is no bare literal left at the call site
-// once the duration is a named identifier. That is not a second sanctioned
-// mechanism, it is simply outside what "bare" means; the audit never inspects
-// the identifier's own declaration.
+// doc comment -- also clears the audit: there is no bare literal left at the
+// call site once the duration is a named identifier. That is not a second
+// sanctioned mechanism, it is simply outside what "bare" means; the audit
+// never inspects the identifier's own declaration.
 func TestNoBareWallClockDeadlineInAgentTests(t *testing.T) {
 	findings, err := deadlineAuditFindings(".", deadlineAuditAllowlist)
 	if err != nil {

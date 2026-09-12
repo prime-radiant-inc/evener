@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -189,5 +191,58 @@ func TestS3Cov_GlobTool_FullyExcludedResultExplainsRatherThanEmpties(t *testing.
 	}
 	if !strings.Contains(res.Output, "index.js") {
 		t.Fatalf("expected include_ignored=true to find the match, got: %q", res.Output)
+	}
+}
+
+// TestS3Cov_GlobTool_TruncationNoteNamesTheCapWithoutDroppingMatches proves
+// the glob tool boundary surfaces GlobBudgeter's truncation (#497): when a
+// glob call hits the match cap, the tool result must still contain every
+// match collected before the cap tripped *and* say the listing was capped,
+// so a model cannot mistake a partial result for the whole answer. A bare
+// strings.Join(matches, "\n") is indistinguishable from an uncapped result,
+// which is exactly the failure mode this guards against.
+//
+// This drives the real environment rather than a fake: GlobBudget's
+// truncation accounting is only ever mutated from inside package execenv, so
+// a fake outside it has no way to make a caller-supplied budget report
+// truncation without actually tripping the walk. Not parallel: it lowers
+// execenv's package-level match cap for its duration.
+func TestS3Cov_GlobTool_TruncationNoteNamesTheCapWithoutDroppingMatches(t *testing.T) {
+	dir := t.TempDir()
+
+	const capAt = 7
+	const fileCount = capAt + 3
+	names := make([]string, fileCount)
+	for i := range names {
+		// Digit-free names: the cap-number assertion below must be satisfiable
+		// only by the note, never by a filename that happens to contain the
+		// cap's digits.
+		names[i] = fmt.Sprintf("match%c%c.txt", 'a'+i/26, 'a'+i%26)
+		if err := os.WriteFile(filepath.Join(dir, names[i]), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(execenv.SetMaxGlobMatchesForTesting(capAt))
+
+	s := newSession(t, withDir(dir))
+	res := s3cov_exec(t, s, "glob", `{"pattern":"*.txt","path":"."}`)
+	if res.IsError {
+		t.Fatalf("glob error: %v", res.Output)
+	}
+	// The note is a separate section after a blank line, so splitting there is
+	// what tells "matches plus a note" apart from a bare match list. Asserting
+	// on the whole output instead would let a match list with no note at all
+	// satisfy every check below.
+	matchList, note, hasNote := strings.Cut(res.Output, "\n\n")
+	if !hasNote || strings.TrimSpace(note) == "" {
+		t.Fatalf("truncated glob result carries no note, so a model cannot tell truncation happened: %q", res.Output)
+	}
+	for _, name := range names[:capAt] {
+		if !strings.Contains(matchList, name) {
+			t.Fatalf("truncated glob result dropped match %q: %q", name, res.Output)
+		}
+	}
+	if !strings.Contains(note, strconv.Itoa(capAt)) {
+		t.Fatalf("the truncation note does not name the cap (%d): %q", capAt, note)
 	}
 }

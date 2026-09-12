@@ -51,7 +51,7 @@ func errSandboxUnsupported() error {
 // contract above: unreachable in practice (no sandboxFS is ever built here),
 // fail closed if somehow reached.
 
-func (s *sandboxFS) close() {}
+func (s *sandboxFS) close() { s.closed.Store(true) }
 
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	return nil, errSandboxUnsupported()
@@ -79,7 +79,7 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
+func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool, budget *GlobBudget) ([]string, int, error) {
 	return nil, 0, errSandboxUnsupported()
 }
 

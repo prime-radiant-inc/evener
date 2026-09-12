@@ -115,8 +115,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadTurnsList", MethodThreadTurnsList, `{"ref":"local:th","limit":5}`, ThreadTurnsListResponse{NextCursor: "n1"}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadTurnsList(ctx, ThreadTurnsListParams{Ref: "local:th", Limit: 5})
+		{"ThreadTurnsList", MethodThreadTurnsList, `{"ref":"local:th","cursor":"opaque","itemLimit":5}`, ThreadTurnsListResponse{NextCursor: "n1"}, func(ctx context.Context, c *Client) error {
+			out, err := c.ThreadTurnsList(ctx, ThreadTurnsListParams{Ref: "local:th", Cursor: "opaque", ItemLimit: 5})
 			if err != nil {
 				return err
 			}
@@ -452,6 +452,12 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"MarketplaceList", MethodEvenerMarketplaceList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
 		{"MarketplaceAdd", MethodEvenerMarketplaceAdd, `{"name":"acme","source":{"kind":"url","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "url", Repo: "acme/plugins"}})
+			return err
+		}},
+		{"MarketplaceEdit", MethodEvenerMarketplaceEdit, `{"name":"acme","newName":"acme2","source":{"kind":"url","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceEdit(ctx, MarketplaceEditParams{
+				Name: "acme", NewName: "acme2", Source: &MarketplaceSourceInput{Kind: "url", Repo: "acme/plugins"},
+			})
 			return err
 		}},
 		{"MarketplaceRemove", MethodEvenerMarketplaceRemove, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {

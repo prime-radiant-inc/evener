@@ -28,6 +28,18 @@ export interface ItemRenderProps {
   // A projector-owned compact summary for a critical entry. When present,
   // renderers must not reconstruct a routine summary from raw tool fields.
   projectedSummary?: string;
+  // True when the projector chose a content-free entry for this item (the
+  // "thinking" projection of a live current reasoning item while the reasoning
+  // content flag is off). The renderer must render only a placeholder and must
+  // not render the item's own text (it may read it for a length estimate). Set
+  // for every entry kind by TurnBlock, so a memoized renderer can compare it by
+  // value.
+  contentFree?: boolean;
+  // True when a critical reasoning row must render with no thought text at all
+  // (the content flag is off and the row is only on the failure path). The
+  // renderer shows a neutral failure summary instead of the thought's body,
+  // preview, or disclosure.
+  redacted?: boolean;
   /** Snapshot inputs relevant to this item; stable when an unrelated delta lands. */
   threadFingerprint?: string;
   thread?: ThreadModel;
@@ -76,6 +88,8 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.opensExchange === next.opensExchange &&
     prev.agentLabel === next.agentLabel &&
     prev.projectedSummary === next.projectedSummary &&
+    prev.contentFree === next.contentFree &&
+    prev.redacted === next.redacted &&
     prev.renderContext === next.renderContext &&
     prev.threadFingerprint === next.threadFingerprint
   );
@@ -101,14 +115,32 @@ export function threadFingerprintForItem(
       }
     }
   }
+  // The delegate tuple must cover every field the memoized delegate row reads
+  // (ToolCallItem's lifecycle line, SubagentCard, JobDetailSection):
+  // attention, resumability, exhaustion evidence, reason, usage, and run
+  // timing can all change while status/terminal/outcome stay put. projectionRevision
+  // is the reducer's catch-all (reducer.ts's mergeStableDelegate replaces a
+  // stable snapshot only when it or latestActivityAt advances), so a snapshot
+  // field the row starts consuming later cannot silently go stale.
   return JSON.stringify({
     cwd: thread.cwd,
     delegates: thread.delegates?.map((delegate) => [
       delegate.delegateId,
+      delegate.projectionRevision,
       delegate.status,
       delegate.terminal,
       delegate.outcome,
       delegate.latestActivityAt,
+      delegate.needsAttention,
+      delegate.resumable,
+      delegate.notResumableReason,
+      delegate.exhaustionResumable,
+      delegate.exhaustionBudget,
+      delegate.exhaustionLimit,
+      delegate.reason,
+      delegate.usage,
+      delegate.runStartedAt,
+      delegate.runEndedAt,
     ]),
     laterSameTool,
     summarySuffix,

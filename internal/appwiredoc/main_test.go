@@ -136,3 +136,29 @@ func TestBuildIncludesStableDelegateInfo(t *testing.T) {
 	}
 	t.Fatal("build() missing EvenerDelegateInfo")
 }
+
+// TestBuildIncludesInstanceEntry guards PR #758's review finding:
+// InstanceEntry only ever appears nested inside InstanceListResponse's
+// Instances field, never as a method's own Params/Result, so without an
+// explicit registration it silently gets no field table at all - and a
+// field added there (shadowedEnvVar) can be documented on its
+// AuthStatusResponse twin while missing here with nothing to catch it.
+func TestBuildIncludesInstanceEntry(t *testing.T) {
+	d := build()
+	for _, tv := range d.Types {
+		if tv.Name != "InstanceEntry" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"name", "providerId", "activeSource", "envVar", "shadowedEnvVar", "credentialRequired"} {
+			if !fields[name] {
+				t.Fatalf("InstanceEntry missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing InstanceEntry")
+}

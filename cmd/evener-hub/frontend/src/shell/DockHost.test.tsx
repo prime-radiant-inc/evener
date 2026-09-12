@@ -207,9 +207,13 @@ test("wires the 'Pop out' group-header affordance into the live dockview host", 
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_main/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  });
   await screen.findByText(/doc pane: ref_a/); // secondary group's header is already visible with just this one pane
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  });
   await screen.findByText(/doc pane: ref_b/);
 
   // The affordance is a dockview right-header action rendered by the real
@@ -269,17 +273,23 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     render(<DockHost />);
     await screen.findByText(/doc pane: ref_main/);
 
-    const delayed = workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_delayed" }).paneId;
+    const delayed = await act(
+      async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_delayed" }).paneId,
+    );
     expect(await screen.findByText("Loading…")).toBeTruthy();
     expect(screen.queryByText("delayed details body")).toBeNull();
 
-    workspaceStore.getState().focusPane(main);
+    act(() => {
+      workspaceStore.getState().focusPane(main);
+    });
     await vi.waitFor(() => expect(tabIsActive("Doc ref_main")).toBe(true));
 
     const previousFocus = document.createElement("button");
     document.body.append(previousFocus);
     previousFocus.focus();
-    workspaceStore.getState().focusPane(delayed);
+    act(() => {
+      workspaceStore.getState().focusPane(delayed);
+    });
     expect(await screen.findByText("Loading…")).toBeTruthy();
     await act(async () => {
       resolveChunk();
@@ -309,7 +319,9 @@ test("a host teardown preserves the still-focused pane's pending focus marker", 
     const view = render(<DockHost />);
     await screen.findByText(/doc pane: ref_main/);
 
-    const delayed = workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_swap" }).paneId;
+    const delayed = await act(
+      async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_swap" }).paneId,
+    );
     expect(await screen.findByText("Loading…")).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(delayed);
 
@@ -368,7 +380,9 @@ test("a second pane opens in a group to the RIGHT of the main pane, not stacked 
   await screen.findByText(/doc pane: ref_a/);
   expect(document.querySelectorAll(".dv-groupview")).toHaveLength(1);
 
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  });
 
   await screen.findByText(/doc pane: ref_b/);
   // Two groups side by side, so both panes are visible at once - the main pane
@@ -382,9 +396,13 @@ test("a third pane joins the existing right-hand group rather than making a thir
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
 
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  });
   await screen.findByText(/doc pane: ref_b/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_c" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_c" });
+  });
   await screen.findByText(/doc pane: ref_c/);
 
   expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2); // still two columns
@@ -407,13 +425,17 @@ test("the main group's header is always hidden; the secondary group's is always 
   // The lone main pane: dockview's own per-group header, hidden.
   expect(headerHiddenFlags()).toEqual([true]);
 
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  });
   await screen.findByText(/doc pane: ref_b/);
   // The lone SECONDARY pane's header is visible - this is the fix for 65zj,
   // not a lingering bare group.
   expect(headerHiddenFlags()).toEqual([true, false]);
 
-  workspaceStore.getState().openPane("doc", { ref: "ref_c" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_c" });
+  });
   await screen.findByText(/doc pane: ref_c/);
   // The right-hand group now stacks two panes; still visible, main still bare.
   expect(headerHiddenFlags()).toEqual([true, false]);
@@ -433,7 +455,7 @@ test("a lone secondary pane has a reachable native close control, and closing it
   await screen.findByText(/doc pane: ref_main/);
   expect(document.querySelectorAll(".dv-groupview")).toHaveLength(1); // no right-hand column yet
 
-  const beside = workspaceStore.getState().openPane("doc", { ref: "ref_a" }); // e.g. a file's "Open beside"
+  const beside = await act(async () => workspaceStore.getState().openPane("doc", { ref: "ref_a" })); // e.g. a file's "Open beside"
   await screen.findByText(/doc pane: ref_a/);
   expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
 
@@ -478,7 +500,9 @@ test("the main pane offers no way to close it - it is replaceable, not closeable
   // And the main slot is never empty: closing it programmatically (the only
   // route left, since no affordance does) puts welcome back rather than
   // leaving a hole.
-  workspaceStore.getState().closePane(workspaceStore.getState().mainPane()!.id);
+  act(() => {
+    workspaceStore.getState().closePane(workspaceStore.getState().mainPane()!.id);
+  });
   await screen.findByText("No session open");
   expect(workspaceStore.getState().mainPane()?.type).toBe("welcome");
 });
@@ -502,7 +526,9 @@ test("navigating from the boot welcome pane to a real pane replaces it in the ma
   render(<DockHost />);
   await screen.findByText("No session open"); // the boot fallback's welcome pane
 
-  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  });
 
   await screen.findByText(/doc pane: ref_a/);
   expect(screen.queryByText("No session open")).toBeNull();
@@ -515,7 +541,9 @@ test("closing the only main pane relaunches welcome in the main slot", async () 
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
 
-  workspaceStore.getState().closePane(main);
+  act(() => {
+    workspaceStore.getState().closePane(main);
+  });
 
   expect(await screen.findByText("No session open")).toBeTruthy();
   expect(workspaceStore.getState().mainPane()?.type).toBe("welcome");
@@ -525,10 +553,14 @@ test("closing the main pane relaunches welcome there without promoting a right-h
   const main = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // secondary group
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  }); // secondary group
   await screen.findByText(/doc pane: ref_b/);
 
-  workspaceStore.getState().closePane(main);
+  act(() => {
+    workspaceStore.getState().closePane(main);
+  });
 
   expect(await screen.findByText("No session open")).toBeTruthy();
   expect(workspaceStore.getState().mainPane()?.type).toBe("welcome");
@@ -541,10 +573,12 @@ test("closing a secondary pane does NOT relaunch welcome - the main slot is stil
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
-  const secondary = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  const secondary = await act(async () => workspaceStore.getState().openPane("doc", { ref: "ref_b" }));
   await screen.findByText(/doc pane: ref_b/);
 
-  workspaceStore.getState().closePane(secondary);
+  act(() => {
+    workspaceStore.getState().closePane(secondary);
+  });
 
   await vi.waitFor(() => {
     expect(document.querySelectorAll(".dv-groupview")).toHaveLength(1);
@@ -567,7 +601,9 @@ test("reopening a singleton pane focuses the existing tab instead of duplicating
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
 
-  workspaceStore.getState().openPane("settings", { section: "appearance" });
+  act(() => {
+    workspaceStore.getState().openPane("settings", { section: "appearance" });
+  });
 
   await screen.findByText(/settings pane: appearance/);
   expect(workspaceStore.getState().panes).toHaveLength(2); // still just the two panes, not three
@@ -578,7 +614,9 @@ test("reopening a singleton pane with different params updates the existing tab'
   render(<DockHost />);
   await screen.findByText(/settings pane: appearance/);
 
-  workspaceStore.getState().openPane("settings", { section: "credentials" });
+  act(() => {
+    workspaceStore.getState().openPane("settings", { section: "credentials" });
+  });
 
   expect(await screen.findByText(/settings pane: credentials/)).toBeTruthy();
   expect(workspaceStore.getState().panes).toHaveLength(1);
@@ -592,10 +630,12 @@ test("a primary replacement removes stale panels from the live DockHost", async 
   workspace.openPane("session", { ref: "local:session-a" });
   render(<DockHost />);
   await screen.findAllByText("local:session-a");
-  workspace.openPane("doc", { ref: "secondary" });
+  act(() => {
+    workspace.openPane("doc", { ref: "secondary" });
+  });
   await screen.findByText(/doc pane: secondary/);
 
-  const replacementId = workspace.replacePrimary("session", { ref: "local:session-b" });
+  const replacementId = await act(async () => workspace.replacePrimary("session", { ref: "local:session-b" }));
 
   expect(workspaceStore.getState().panes).toEqual([
     { id: replacementId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
@@ -614,9 +654,11 @@ test("clicking a different tab updates workspaceStore.focusedPaneId", async () =
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_main/);
-  const second = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  const second = await act(async () => workspaceStore.getState().openPane("doc", { ref: "ref_a" }));
   await screen.findByText(/doc pane: ref_a/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks on ref_a, focused
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  }); // stacks on ref_a, focused
   await screen.findByText(/doc pane: ref_b/);
 
   const user = userEvent.setup();
@@ -635,9 +677,11 @@ test("clicking a secondary tab's native close button updates workspaceStore.pane
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_main/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  });
   await screen.findByText(/doc pane: ref_a/);
-  const closing = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  const closing = await act(async () => workspaceStore.getState().openPane("doc", { ref: "ref_b" }));
   await screen.findByText(/doc pane: ref_b/);
 
   const user = userEvent.setup();
@@ -657,7 +701,7 @@ test("clicking a secondary tab's native close button updates workspaceStore.pane
   // Reopening the same ref proves the id was actually released, not just
   // hidden - a still-tracked "closed" pane would come back focused instead
   // of minting a fresh one.
-  const reopened = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  const reopened = await act(async () => workspaceStore.getState().openPane("doc", { ref: "ref_b" }));
   expect(reopened).not.toBe(closing);
 });
 
@@ -667,13 +711,17 @@ test("workspace.closePane removes the dockview tab", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_main/);
-  const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  const first = await act(async () => workspaceStore.getState().openPane("doc", { ref: "ref_a" }));
   await screen.findByText(/doc pane: ref_a/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks on ref_a
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  }); // stacks on ref_a
   await screen.findByText(/doc pane: ref_b/);
   expect(visibleTabTexts()).toEqual(["Doc ref_a", "Doc ref_b"]);
 
-  workspaceStore.getState().closePane(first);
+  act(() => {
+    workspaceStore.getState().closePane(first);
+  });
 
   // dockview announces "<title> closed" via an off-screen aria-live region
   // (a nice a11y feature it ships with by default - see this task's
@@ -691,12 +739,16 @@ test("workspace.focusPane activates the corresponding dockview tab", async () =>
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_main/);
-  const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  const first = await act(async () => workspaceStore.getState().openPane("doc", { ref: "ref_a" }));
   await screen.findByText(/doc pane: ref_a/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // focused initially
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  }); // focused initially
   await screen.findByText(/doc pane: ref_b/);
 
-  workspaceStore.getState().focusPane(first);
+  act(() => {
+    workspaceStore.getState().focusPane(first);
+  });
 
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
   expect(tabIsActive("Doc ref_a")).toBe(true);
@@ -807,7 +859,7 @@ function setNavigationTitle(ref: string, title: string): void {
     },
   };
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -861,10 +913,12 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   await screen.findByTestId("empty-state");
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Original name");
 
-  threadsStore.setState((s) => {
-    const next = new Map(s.threads);
-    next.set("ref_x", { ...next.get("ref_x")!, name: "Renamed" });
-    return { threads: next };
+  await act(async () => {
+    threadsStore.setState((s) => {
+      const next = new Map(s.threads);
+      next.set("ref_x", { ...next.get("ref_x")!, name: "Renamed" });
+      return { threads: next };
+    });
   });
 
   await vi.waitFor(() => {
@@ -912,10 +966,12 @@ test("a session pane's tab shows a live status dot wired to the real dockview ho
   // Idle (this fixture's default status): no dot at all.
   expect(within(sessionTab()).queryByRole("img")).toBeNull();
 
-  threadsStore.setState((s) => {
-    const next = new Map(s.threads);
-    next.set("ref_x", { ...next.get("ref_x")!, status: { type: "awaiting" } });
-    return { threads: next };
+  act(() => {
+    threadsStore.setState((s) => {
+      const next = new Map(s.threads);
+      next.set("ref_x", { ...next.get("ref_x")!, status: { type: "awaiting" } });
+      return { threads: next };
+    });
   });
   expect(await within(sessionTab()).findByRole("img", { name: "Needs you" })).toBeTruthy();
 

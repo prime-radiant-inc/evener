@@ -1,7 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import { connectionStore } from "../../stores/connection";
+import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
 import buttonStyles from "../../widgets/button/button.module.css";
@@ -12,6 +15,30 @@ afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
   resetNavigationStoreForTests();
+  connectionStore.setState({ state: "idle", client: null });
+  resetCredentialsStoreForTests();
+});
+
+test("automatic setup replaces Welcome so Back returns to the previous page", async () => {
+  window.history.replaceState({}, "", "/settings");
+  window.history.pushState({}, "", "/");
+  const client = new FakeClient("ready");
+  client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  connectionStore.getState().connect(client);
+  render(<Welcome params={{}} paneId="welcome" focused={true} />);
+  await waitFor(() => expect(window.location.pathname).toBe("/new"));
+  window.history.back();
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
+});
+
+test("a background welcome pane does not replace the active session for setup", async () => {
+  window.history.pushState({}, "", "/s/local:existing");
+  const client = new FakeClient("ready");
+  client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  connectionStore.getState().connect(client);
+  render(<Welcome params={{}} paneId="welcome" focused={false} />);
+  await screen.findByText("No session open");
+  expect(window.location.pathname).toBe("/s/local:existing");
 });
 
 function node(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
@@ -48,7 +75,7 @@ function setRows(needsYou: NavigationSessionSummary[] = [], live: NavigationSess
       generationID: "generation_test",
     });
   }
-  navigationStore.setState({ mode: "v1", clientGenerationID: "generation_test", resources });
+  navigationStore.setState({ mode: "v2", clientGenerationID: "generation_test", resources });
 }
 
 test('shows "No session open"', () => {
@@ -127,6 +154,14 @@ test('offers "Jump back in" to the first needs-you session when one exists', () 
   setRows([node({ ref: "local:ny1", title: "Fix the thing", project: "myrepo" })]);
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
   expect(screen.getByRole("button", { name: /Jump back in.*Fix the thing/s })).toBeTruthy();
+});
+
+test('can hide "Jump back in" while retaining orientation text', () => {
+  setRows([], [node({ ref: "local:live1", title: "Refactor auth", project: "myrepo" })]);
+  render(<WelcomeContent showResume={false} />);
+
+  expect(screen.queryByRole("button", { name: /Jump back in/ })).toBeNull();
+  expect(screen.getByText(/read and edit the repository/i)).toBeTruthy();
 });
 
 test("falls back to the first live session when nothing needs you", () => {

@@ -6,11 +6,13 @@ import {
   APPWIRE_PROTOCOL_VERSION,
   AppwireClient,
   type ConnectionState,
+  decodeInitializeResponse,
   RECONNECT_BASE_MS,
 } from "./client";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
+import type { InitializeResponse } from "./types.gen";
 
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -63,22 +65,106 @@ describe("rpcURLFromLocation", () => {
   });
 });
 
+describe("decodeInitializeResponse", () => {
+  test("accepts and preserves the exact typed handshake identity", () => {
+    expect(decodeInitializeResponse(FAKE_INITIALIZE_RESULT)).toEqual(FAKE_INITIALIZE_RESULT);
+  });
+
+  test("accepts and preserves known optional navigation and feature fields", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, transcriptDisplaySettings: true },
+      navigation: { version: 1, generationId: "test-navigation-generation", sequence: 0 },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test.each([true, false])("accepts the v4 keybindings capability %s", (keybindingsSettings) => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test("rejects a malformed v4 keybindings capability", () => {
+    expect(() =>
+      decodeInitializeResponse({
+        ...FAKE_INITIALIZE_RESULT,
+        features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings: "yes" },
+      }),
+    ).toThrow("invalid initialize response");
+  });
+
+  test.each([
+    ["serverInfo", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
+    ["protocolVersion", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
+    ["sourceId", { ...FAKE_INITIALIZE_RESULT, sourceId: "" }],
+    ["features", { ...FAKE_INITIALIZE_RESULT, features: { ...FAKE_INITIALIZE_RESULT.features, tasks: "yes" } }],
+    ["navigation", { ...FAKE_INITIALIZE_RESULT, navigation: null }],
+    [
+      "navigation.readVersions",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: { version: 1, generationId: "generation", sequence: 0, readVersions: [0] },
+      },
+    ],
+  ])("reports the malformed initialize field %s without payload values", (field, value) => {
+    let error: unknown;
+    try {
+      decodeInitializeResponse(value);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ field, name: "InitializeValidationError" });
+    expect(error).toHaveProperty("message", `invalid initialize response at ${field}`);
+  });
+
+  test("accepts and preserves maximum safe navigation integers", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      navigation: {
+        version: Number.MAX_SAFE_INTEGER,
+        generationId: "maximum-safe-navigation-generation",
+        sequence: Number.MAX_SAFE_INTEGER,
+      },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test.each([
+    ["missing server version", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
+    ["empty protocol", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
+    [
+      "malformed features",
+      { ...FAKE_INITIALIZE_RESULT, features: { ...FAKE_INITIALIZE_RESULT.features, tasks: "yes" } },
+    ],
+    ["extra top-level key", { ...FAKE_INITIALIZE_RESULT, bearerToken: "never" }],
+    ["null navigation", { ...FAKE_INITIALIZE_RESULT, navigation: null }],
+    ["incomplete navigation", { ...FAKE_INITIALIZE_RESULT, navigation: { version: 1, generationId: "generation" } }],
+    [
+      "malformed navigation",
+      { ...FAKE_INITIALIZE_RESULT, navigation: { version: "1", generationId: "generation", sequence: 0 } },
+    ],
+  ])("rejects %s", (_name, value) => {
+    expect(() => decodeInitializeResponse(value)).toThrow("invalid initialize response");
+  });
+});
+
 describe("AppwireClient", () => {
   test("connect performs initialize handshake then notifies ready", async () => {
     const fake = new FakeSocket({ autoInitialize: true });
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
     const states: ConnectionState[] = [];
     client.onStateChange((s) => states.push(s));
-    let readyCount = 0;
-    client.onReady(() => {
-      readyCount += 1;
-    });
+    const readyResults: InitializeResponse[] = [];
+    client.onReady((value) => readyResults.push(value));
 
     const result = await connectReady(fake, client);
 
     expect(client.state).toBe("ready");
     expect(states).toEqual(["connecting", "ready"]);
-    expect(readyCount).toBe(1);
+    expect(readyResults).toEqual([FAKE_INITIALIZE_RESULT]);
     expect(result).toEqual(FAKE_INITIALIZE_RESULT);
 
     const frames = sentFrames(fake);
@@ -92,6 +178,28 @@ describe("AppwireClient", () => {
       },
     });
     expect(frames[1]).toEqual({ method: "initialized", params: {} });
+  });
+
+  test("connect advertises v4 and rejects a v3 daemon", async () => {
+    // Keep this assertion first so the pre-cutover client fails immediately,
+    // rather than waiting on a handshake that it still considers compatible.
+    expect(APPWIRE_PROTOCOL_VERSION).toBe("evener-appwire-v5");
+
+    const fake = new FakeSocket();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    const connecting = connectReady(fake, client);
+    await flushUntil(() => fake.sent.length > 0);
+    const frame = lastSentFrame(fake);
+    expect(frame.params).toMatchObject({ protocolVersion: "evener-appwire-v5" });
+    fake.receive({
+      id: frame.id,
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v3" },
+    });
+
+    await expect(connecting).rejects.toThrow(
+      "AppwireClient: expected protocol evener-appwire-v5, received evener-appwire-v3",
+    );
+    expect(client.terminalReason).toBe("protocol");
   });
 
   test("connect rejects an initialize response for a different protocol version", async () => {
@@ -145,6 +253,57 @@ describe("AppwireClient", () => {
     expect(client.terminalReason).toBe("protocol");
   });
 
+  test("a malformed initial handshake is a terminal protocol failure", async () => {
+    const fake = new FakeSocket();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    const connecting = connectReady(fake, client);
+    await flushUntil(() => fake.sent.length > 0);
+    fake.receive({ id: lastSentFrame(fake).id, result: { ...FAKE_INITIALIZE_RESULT, features: null } });
+
+    await expect(connecting).rejects.toThrow("invalid initialize response");
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
+  });
+
+  test("a malformed reconnect handshake closes without retrying or publishing ready", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const ready = vi.fn();
+    const handshakes = vi.fn();
+    client.onReady(ready);
+    client.onHandshakeResult(handshakes);
+    const connecting = client.connect();
+    const initial = sockets[0];
+    if (!initial) throw new Error("expected initial socket");
+    initial.open();
+    await connecting;
+    initial.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnect = sockets[1];
+    if (!reconnect) throw new Error("expected reconnect socket");
+    reconnect.open();
+    await flushUntil(() => reconnect.sent.length > 0);
+    reconnect.receive({
+      id: lastSentFrame(reconnect).id,
+      result: { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } },
+    });
+    await flushUntil(() => reconnect.closeRequests.length > 0);
+
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
+    await vi.runAllTimersAsync();
+    expect(sockets).toHaveLength(2);
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(handshakes).toHaveBeenCalledTimes(1);
+  });
+
   test("connect is idempotent across concurrent callers", async () => {
     const fake = new FakeSocket({ autoInitialize: true });
     let socketsCreated = 0;
@@ -182,7 +341,7 @@ describe("AppwireClient", () => {
     if (!socket) throw new Error("expected the initial socket");
     socket.open();
     await connecting;
-    expect(client.connect()).toBe(connecting);
+    await expect(client.connect()).resolves.toEqual(FAKE_INITIALIZE_RESULT);
 
     client.close();
     const afterClose = client.connect();
@@ -264,6 +423,76 @@ describe("AppwireClient", () => {
 
     await terminalRejection;
     expect(socketsCreated).toBe(1);
+  });
+
+  test("publishes each strictly decoded initial and reconnect handshake exactly once", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const versions: string[] = [];
+    client.onHandshakeResult((result) => versions.push(result.serverInfo.version));
+
+    const connecting = client.connect();
+    const initialSocket = sockets[0];
+    if (!initialSocket) throw new Error("expected initial socket");
+    initialSocket.open();
+    await flushUntil(() => initialSocket.sent.length > 0);
+    const initial = lastSentFrame(initialSocket);
+    initialSocket.receive({ id: initial.id, result: FAKE_INITIALIZE_RESULT });
+    await connecting;
+    expect(versions).toEqual(["0.0.0-test"]);
+
+    initialSocket.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({
+      id: reconnect.id,
+      result: { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "new-hub", version: "2.0.0" } },
+    });
+    await flushUntil(() => client.state === "ready");
+
+    expect(versions).toEqual(["0.0.0-test", "2.0.0"]);
+  });
+
+  test("does not publish a malformed reconnect handshake", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const versions: string[] = [];
+    client.onHandshakeResult((result) => versions.push(result.serverInfo.version));
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({ id: reconnect.id, result: { protocolVersion: APPWIRE_PROTOCOL_VERSION } });
+    await flushUntil(() => client.state === "closed");
+
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
+    expect(versions).toEqual(["0.0.0-test"]);
   });
 
   test("request resolves the matching id and types the result", async () => {
@@ -568,4 +797,161 @@ describe("AppwireClient", () => {
     expect(states).toEqual(["connecting", "ready"]);
     expect(readyCount).toBe(1);
   });
+});
+
+describe("independent force-stop connection", () => {
+  test("slow recovery connection leaves the full request window for the hub response", async () => {
+    const recovery = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => recovery });
+    const stopped = client.forceStop("local:owner");
+    const outcome = stopped.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(25_000);
+    recovery.open();
+    await flushUntil(() => sentFrames(recovery).some((frame) => frame.method === "evener/thread/forceStop"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    recovery.receive({ id: lastSentFrame(recovery).id, error: { code: -32000, message: "exit unconfirmed" } });
+    expect(await outcome).toMatchObject({ message: "exit unconfirmed" });
+    expect(recovery.closeRequests).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    client.close();
+  });
+
+  test("bypasses primary backlog, bounds overlap and closes after confirmed recovery", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "wss://hub/rpc?auth=fixture",
+      socketFactory: (url) => {
+        expect(url).toBe("wss://hub/rpc?auth=fixture");
+        const socket = new FakeSocket({ autoInitialize: true });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const connected = client.connect();
+    const primary = sockets[0];
+    if (!primary) throw new Error("missing primary");
+    primary.open();
+    await connected;
+    const backlog = Array.from({ length: 66 }, () => client.request("thread/list", {}).catch(() => undefined));
+    const stopped = client.forceStop("local:owner");
+    const recovery = sockets[1];
+    if (!recovery) throw new Error("missing independent recovery connection");
+    await expect(client.forceStop("local:other")).rejects.toThrow();
+    recovery.open();
+    await flushUntil(() => sentFrames(recovery).some((frame) => frame.method === "evener/thread/forceStop"));
+    const request = lastSentFrame(recovery);
+    expect(request.method).toBe("evener/thread/forceStop");
+    expect(request.params).toEqual({ ref: "local:owner" });
+    expect(sentFrames(primary).some((frame) => frame.method === "evener/thread/forceStop")).toBe(false);
+    recovery.receive({ id: request.id, result: {} });
+    await stopped;
+    expect(recovery.closeRequests).toHaveLength(1);
+    expect(client.state).toBe("ready");
+    expect(primary.closeRequests).toHaveLength(0);
+    client.close();
+    await Promise.all(backlog);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test.each(["disconnect", "rejected", "handshake timeout", "owner close"])(
+    "cleans up on %s without a recovery retry",
+    async (failure) => {
+      const sockets: FakeSocket[] = [];
+      const client = new AppwireClient({
+        url: "ws://hub/rpc",
+        socketFactory: () => {
+          const socket = new FakeSocket({ autoInitialize: true });
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const stopped = client.forceStop("local:owner");
+      const rejected = expect(stopped).rejects.toThrow();
+      const recovery = sockets[0];
+      if (!recovery) throw new Error("missing recovery connection");
+      if (failure === "disconnect" || failure === "rejected") {
+        recovery.open();
+        await flushUntil(() => sentFrames(recovery).some((frame) => frame.method === "evener/thread/forceStop"));
+        if (failure === "disconnect") recovery.closeFromServer(1006);
+        else recovery.receive({ id: lastSentFrame(recovery).id, error: { code: -32000, message: "exit unconfirmed" } });
+      } else if (failure === "owner close") {
+        client.close();
+      } else {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      await rejected;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sockets).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+      client.close();
+    },
+  );
+});
+
+test("explicit Resume replaces the primary transport and never replays old requests", async () => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  const oldMutation = client.request("thread/reasoning-effort/set", { ref: "local:owner", reasoningEffort: "high" });
+  const oldRejected = expect(oldMutation).rejects.toThrow();
+  const resumed = client.resumeThread("local:owner");
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing fresh primary");
+  await oldRejected;
+  expect(primary.closeRequests).toHaveLength(1);
+  await expect(client.resumeThread("local:owner")).rejects.toThrow();
+  replacement.open();
+  await flushUntil(() => sentFrames(replacement).some((frame) => frame.method === "thread/resume"));
+  expect(sentFrames(replacement).some((frame) => frame.method === "thread/reasoning-effort/set")).toBe(false);
+  const request = lastSentFrame(replacement);
+  expect(request.method).toBe("thread/resume");
+  replacement.receive({ id: request.id, result: {} });
+  await resumed;
+  expect(client.state).toBe("ready");
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test.each(["closed", "rejected"])("explicit Resume releases its waiters when %s", async (outcome) => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  const resumed = client.resumeThread("local:owner");
+  const rejected = expect(resumed).rejects.toThrow();
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing replacement");
+  if (outcome === "closed") client.close();
+  else {
+    replacement.open();
+    await flushUntil(() => sentFrames(replacement).some((frame) => frame.method === "thread/resume"));
+    replacement.receive({ id: lastSentFrame(replacement).id, error: { code: -32000, message: "resume refused" } });
+  }
+  await rejected;
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
 });

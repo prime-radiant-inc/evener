@@ -23,6 +23,7 @@ var (
 	doctorCreateTemp   = func(dir, pattern string) (doctorTempFile, error) { return os.CreateTemp(dir, pattern) }
 	doctorRemove       = os.Remove
 	doctorGitAvailable = gitAvailable
+	doctorAcquireLock  = acquireExistingLock
 )
 
 // Doctor finding levels.
@@ -46,6 +47,13 @@ const (
 // "pull" and are never flagged for staleness.
 const marketplaceStaleAfter = 30 * 24 * time.Hour
 
+// doctorOrphanLockWait is how long the orphaned-cache-directory walk waits for
+// the store lock. Doctor is a report somebody is sitting in front of, so it
+// does not queue behind the git fetches install, upgrade and marketplace
+// refresh hold that lock across; a lock still busy after this becomes a
+// finding of its own.
+const doctorOrphanLockWait = time.Second
+
 // DoctorFinding is one read-only plugin-store health check result. Level is
 // one of LevelOK, LevelWarn, LevelFail.
 type DoctorFinding struct {
@@ -64,9 +72,28 @@ type DoctorFinding struct {
 // or known_marketplaces.json) failed to parse — the same failure every other
 // Manager verb would hit. A per-plugin or per-marketplace problem is never
 // returned as an error; it becomes a FAIL finding instead, so the rest of the
-// report is still useful.
+// report is still useful. A store root that cannot be used is a finding too,
+// and the report is then that finding and the git check, which is the only
+// other one that does not need the store.
 func (m *Manager) Doctor() ([]DoctorFinding, error) {
-	reg, err := LoadRegistry(m.registryPath())
+	// A root that cannot be used is an environment problem, and Doctor reports
+	// those as findings — this is the one it exists to report, since it
+	// explains every other check that cannot run. There is nothing under such
+	// a root to check either: the registry and the marketplaces file would be
+	// read from, and the writability probe written into, whatever directory
+	// the process happens to be in. git is the exception, because it is on
+	// PATH rather than in the store, and a report that dropped it would hide a
+	// second thing the user has to fix.
+	if err := m.storeRootError(); err != nil {
+		return []DoctorFinding{doctorGitFinding(), {
+			Level:       LevelFail,
+			Category:    catEnvironment,
+			Message:     fmt.Sprintf("plugin store is unusable: %v", err),
+			Remediation: "point the store at an absolute path: set XDG_CONFIG_HOME or HOME to an absolute directory, or pass an absolute --store-root to evener-doctor (--plugin-root to evener serve)",
+		}}, nil
+	}
+
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +103,6 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 	}
 
 	var findings []DoctorFinding
-	knownPaths := map[string]bool{}
 
 	keys := make([]string, 0, len(reg.Plugins))
 	for key := range reg.Plugins {
@@ -88,12 +114,10 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 		if len(entries) == 0 {
 			continue
 		}
-		e := entries[0]
-		knownPaths[filepath.Clean(e.InstallPath)] = true
-		findings = append(findings, m.doctorEntry(key, e)...)
+		findings = append(findings, m.doctorEntry(key, entries[0])...)
 	}
 
-	findings = append(findings, m.doctorOrphanCacheDirs(knownPaths)...)
+	findings = append(findings, m.doctorOrphanCacheDirs()...)
 
 	names := make([]string, 0, len(mk))
 	for name := range mk {
@@ -184,7 +208,41 @@ func sourceCannotUpgrade(src Source) bool {
 // doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and flags any
 // sha-dir that no registry entry's InstallPath points at — left behind by a
 // crash mid-install/upgrade, or a superseded dir awaiting the gc sweep (§12).
-func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFinding {
+//
+// Alone among Doctor's checks this one draws its conclusion from two pieces of
+// store state, so a writer caught between them invents it: a materialize
+// creates the sha-dir before it records the entry, and gc drops the entry
+// before it removes the dir, and either window makes a live plugin look
+// orphaned. Reading the registry and the cache under the store lock — the lock
+// both of those writers hold — is what makes "has no registry entry" true
+// rather than merely momentary. The registry Doctor's other checks read is the
+// one from before the lock, so this reads its own.
+func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
+	// A store with no cache directory has no orphans to report and no writer
+	// to wait for, so it is answered without going near the lock at all.
+	if _, err := doctorStat(m.cacheDir()); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	release, err := m.acquireStoreLock(context.Background(), doctorAcquireLock, m.lockPath(), doctorOrphanLockWait)
+	if err != nil {
+		return []DoctorFinding{{
+			Level: LevelWarn, Category: catRegistry,
+			Message:     fmt.Sprintf("skipped the check for unreferenced cache directories: %v", err),
+			Remediation: "re-run the check once the plugin operation holding the store lock has finished",
+		}}
+	}
+	defer release()
+
+	reg, err := m.loadRegistry()
+	if err != nil {
+		return []DoctorFinding{{
+			Level: LevelFail, Category: catRegistry,
+			Message: fmt.Sprintf("reading the registry for the unreferenced cache directory check: %v", err),
+		}}
+	}
+	referenced := referencedInstallPaths(reg)
+
 	marketplaceEnts, err := doctorReadDir(m.cacheDir())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -220,7 +278,7 @@ func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFind
 					continue
 				}
 				shaPath := filepath.Join(plugPath, shaEnt.Name())
-				if knownPaths[filepath.Clean(shaPath)] {
+				if referenced[filepath.Clean(shaPath)] {
 					continue
 				}
 				findings = append(findings, DoctorFinding{
@@ -240,6 +298,18 @@ func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFind
 // sources), and parse as a catalog; staleness is flagged separately and only
 // once the marketplace is otherwise healthy.
 func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFinding {
+	// Doctor reads the file as recorded, without the store lock that would
+	// rename an entry like this (lockStore), so the rename is still pending.
+	// It is the whole finding: every other remediation would name a name
+	// that is about to change. The predicate is the migration's, so doctor
+	// cannot call a name healthy that the next lock holder would rename.
+	if pendingMigration(name) {
+		return DoctorFinding{
+			Level: LevelWarn, Category: catMarketplace,
+			Message:     name + ": recorded under a name the store no longer accepts; the next plugin operation renames it",
+			Remediation: "run `evener plugin marketplace list` to rename it now; the new name is printed",
+		}
+	}
 	if ref.InstallLocation == "" {
 		return DoctorFinding{Level: LevelOK, Category: catMarketplace, Message: name + ": seeded, not yet fetched"}
 	}
@@ -292,19 +362,24 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	return DoctorFinding{Level: LevelOK, Category: catMarketplace, Message: name + ": healthy"}
 }
 
+// doctorGitFinding reports whether git is on PATH. It is the one check that
+// does not look at the store, so it is also the one Doctor can still make when
+// the store root is unusable.
+func doctorGitFinding() DoctorFinding {
+	if doctorGitAvailable() {
+		return DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"}
+	}
+	return DoctorFinding{
+		Level: LevelWarn, Category: catEnvironment,
+		Message:     "git not found on PATH",
+		Remediation: "install git; marketplace/plugin fetch, clone, and upgrade all shell out to it",
+	}
+}
+
 // doctorEnvironment checks the two preconditions every other operation
 // depends on: git for fetch/clone/pull, and a writable store root.
 func (m *Manager) doctorEnvironment() []DoctorFinding {
-	var findings []DoctorFinding
-	if doctorGitAvailable() {
-		findings = append(findings, DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"})
-	} else {
-		findings = append(findings, DoctorFinding{
-			Level: LevelWarn, Category: catEnvironment,
-			Message:     "git not found on PATH",
-			Remediation: "install git; marketplace/plugin fetch, clone, and upgrade all shell out to it",
-		})
-	}
+	findings := []DoctorFinding{doctorGitFinding()}
 
 	switch exists, err := m.checkStoreWritable(); {
 	case err != nil:
@@ -331,7 +406,16 @@ func (m *Manager) doctorEnvironment() []DoctorFinding {
 // exist, it is probed with a throwaway temp file, without disturbing any real
 // state.
 func (m *Manager) checkStoreWritable() (exists bool, err error) {
-	info, statErr := doctorStat(m.Root)
+	// Deriving the root is what refuses an unresolved one, before the probe
+	// creates its temp file. Under a relative root that file landed in the
+	// working directory, which is a write from the one verb that promises to
+	// make none. Doctor turns the root away before it gets here; this keeps
+	// the promise for any caller that does not.
+	root, err := m.storePath()
+	if err != nil {
+		return false, err
+	}
+	info, statErr := doctorStat(root)
 	if statErr != nil {
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return false, nil
@@ -339,10 +423,10 @@ func (m *Manager) checkStoreWritable() (exists bool, err error) {
 		return false, statErr
 	}
 	if !info.IsDir() {
-		return true, fmt.Errorf("%s is not a directory", m.Root)
+		return true, fmt.Errorf("%s is not a directory", root)
 	}
 
-	f, err := doctorCreateTemp(m.Root, ".doctor-write-test-*")
+	f, err := doctorCreateTemp(root, ".doctor-write-test-*")
 	if err != nil {
 		return true, err
 	}

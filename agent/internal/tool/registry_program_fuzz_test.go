@@ -24,7 +24,7 @@ import (
 // intentional FileMutator path and receives a fresh LocalExecutionEnvironment
 // rooted in t.TempDir, so its mutation is confined to the test's own root.
 //
-// Its semantic checks cover registration/clone/restrict isolation, purpose
+// Its semantic checks cover registration/clone/restrict isolation, intent
 // handling, schema and JSON rejection, middleware, typed execution results,
 // error propagation, output limits, and FileMutator capability handling.
 func FuzzToolRegistryProgram(f *testing.F) {
@@ -105,8 +105,8 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("executor calls = %d, want %d", *calls, beforeCalls+6)
 		}
 
-		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || !*readFileSawIntent {
-			t.Fatalf("read_file intent preservation = result=%+v saw=%v", got, *readFileSawIntent)
+		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || *readFileSawIntent {
+			t.Fatalf("read_file must not see intent (stripped like every other tool) = result=%+v saw=%v", got, *readFileSawIntent)
 		}
 
 		toolProgramPatchBoundary(t, reg, deny, payload)
@@ -151,7 +151,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			case 2:
 				return TextResult{Output: "text:" + value, FullOutput: "full:" + value}, nil
 			case 3:
-				return ImageResult{Text: "image:" + value, Data: encodeRasterFixture(t, "png"), MediaType: "image/png", Intent: "program"}, nil
+				return ImageResult{Text: "image:" + value, Data: encodeRasterFixture(t, "png"), MediaType: "image/png", Prompt: "program"}, nil
 			case 4:
 				return "partial:" + value, errors.New("program executor error")
 			case 5:
@@ -330,7 +330,7 @@ func toolProgramHelpers(t *testing.T, payload string) {
 func toolProgramRegistryEdges(t *testing.T) {
 	t.Helper()
 	if got := WithIntentParameter(llm.ToolDefinition{}); got.Parameters["type"] != "object" {
-		t.Fatalf("nil schema purpose injection = %#v", got.Parameters)
+		t.Fatalf("nil schema intent injection = %#v", got.Parameters)
 	}
 	nonObject := llm.ToolDefinition{Parameters: map[string]any{"type": "string"}}
 	if got := WithIntentParameter(nonObject); got.Parameters["type"] != "string" {

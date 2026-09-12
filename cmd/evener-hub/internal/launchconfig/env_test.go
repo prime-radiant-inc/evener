@@ -4,26 +4,11 @@ import (
 	"testing"
 )
 
-type stubCreds struct {
-	keys map[string]string
-}
-
-func (s stubCreds) APIKeyFor(provider string) (string, string) {
-	v, ok := s.keys[provider]
-	if !ok {
-		return "", "absent"
-	}
-	return v, "file"
-}
-
-func checkToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
+func checkToEnv_BaselineSetsRunStateAndToken(t *testing.T) {
 	parent := []string{"PATH=/usr/bin"}
 	r := Resolved{Effective: Layer{Model: "anthropic/claude-1", Env: map[string]string{"FOO": "bar"}}}
-	creds := stubCreds{keys: map[string]string{"anthropic": "sk-ant-FROM-FILE"}}
 	got := ToEnv(EnvInputs{
 		Resolved:  r,
-		Provider:  "anthropic",
-		Creds:     creds,
 		ParentEnv: parent,
 		RunDir:    "/run",
 		StateDir:  "/state",
@@ -36,7 +21,6 @@ func checkToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 		"EVENER_RUN_DIR":     "/run",
 		"EVENER_STATE_DIR":   "/state",
 		"EVENER_HUB_TOKEN":   "tok",
-		"ANTHROPIC_API_KEY":  "sk-ant-FROM-FILE",
 	}
 	gotMap := envSliceToMap(got)
 	for k, v := range want {
@@ -46,52 +30,42 @@ func checkToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 	}
 }
 
-func checkToEnv_PerLaunchEnvBeatsCredsStore(t *testing.T) {
+func checkToEnv_PerLaunchEnvBeatsParentEnv(t *testing.T) {
 	r := Resolved{Effective: Layer{Env: map[string]string{"ANTHROPIC_API_KEY": "from-overrides"}}}
-	creds := stubCreds{keys: map[string]string{"anthropic": "from-file"}}
 	got := envSliceToMap(ToEnv(EnvInputs{
-		Resolved: r, Provider: "anthropic", Creds: creds,
+		Resolved:  r,
+		ParentEnv: []string{"ANTHROPIC_API_KEY=from-parent"},
 	}))
 	if got["ANTHROPIC_API_KEY"] != "from-overrides" {
 		t.Errorf("per-launch env should win: %q", got["ANTHROPIC_API_KEY"])
 	}
 }
 
-func checkToEnv_OpenAICompatibleCredentialUsesAPIKeyEnv(t *testing.T) {
-	r := Resolved{Effective: Layer{Env: map[string]string{
-		"OPENAI_COMPATIBLE_BASE_URL": "https://compat.example.test/v1",
-	}}}
-	creds := stubCreds{keys: map[string]string{"openai-compatible": "compat-key"}}
+// checkToEnv_AddsOnlyItsOwnControls is the guard against re-introducing
+// credential injection: the child resolves every provider credential itself,
+// from the registry and the store it is pointed at, so the only keys the hub
+// adds beyond the parent environment are its own controls and the per-launch
+// env the user authored (spec §10).
+func checkToEnv_AddsOnlyItsOwnControls(t *testing.T) {
+	parent := []string{"PATH=/usr/bin"}
 	got := envSliceToMap(ToEnv(EnvInputs{
-		Resolved: r,
-		Provider: "openai-compatible",
-		Creds:    creds,
+		Resolved:            Resolved{Effective: Layer{Env: map[string]string{"FOO": "bar"}}},
+		ParentEnv:           parent,
+		RunDir:              "/run",
+		StateDir:            "/state",
+		HubToken:            "tok",
+		ProvidersConfigPath: "/cfg/providers.toml",
+		CredentialsPath:     "/cfg/credentials.toml",
 	}))
-	if got["OPENAI_COMPATIBLE_API_KEY"] != "compat-key" {
-		t.Errorf("OPENAI_COMPATIBLE_API_KEY = %q, want compat-key", got["OPENAI_COMPATIBLE_API_KEY"])
+	allowed := map[string]bool{
+		"PATH": true, "FOO": true,
+		"EVENER_HUB_SPAWNED": true, "EVENER_RUN_DIR": true, "EVENER_STATE_DIR": true,
+		"EVENER_HUB_TOKEN": true, "EVENER_PROVIDERS_CONFIG": true, "EVENER_CREDENTIALS_CONFIG": true,
 	}
-	if got["OPENAI_COMPATIBLE_BASE_URL"] != "https://compat.example.test/v1" {
-		t.Errorf("OPENAI_COMPATIBLE_BASE_URL = %q", got["OPENAI_COMPATIBLE_BASE_URL"])
-	}
-}
-
-func checkToEnv_NoProviderNoInjection(t *testing.T) {
-	creds := stubCreds{keys: map[string]string{"anthropic": "x"}}
-	got := envSliceToMap(ToEnv(EnvInputs{Provider: "", Creds: creds}))
-	if _, ok := got["ANTHROPIC_API_KEY"]; ok {
-		t.Errorf("no provider, no injection; got %v", got)
-	}
-}
-
-func checkToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey(t *testing.T) {
-	creds := stubCreds{keys: map[string]string{"openai": "sk-FROM-FILE"}}
-	got := envSliceToMap(ToEnv(EnvInputs{
-		Provider:  "openai",
-		Creds:     creds,
-		ParentEnv: []string{"PATH=/usr/bin"},
-	}))
-	if got["OPENAI_API_KEY"] != "sk-FROM-FILE" {
-		t.Errorf("OPENAI_API_KEY = %q, want sk-FROM-FILE", got["OPENAI_API_KEY"])
+	for k := range got {
+		if !allowed[k] {
+			t.Errorf("child env carries unexpected %s: the hub injects no provider credentials", k)
+		}
 	}
 }
 
@@ -111,6 +85,40 @@ func checkToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
 	}))
 	if _, ok := got["EVENER_PROVIDERS_CONFIG"]; ok {
 		t.Errorf("EVENER_PROVIDERS_CONFIG should not be set when ProvidersConfigPath is empty, got %q", got["EVENER_PROVIDERS_CONFIG"])
+	}
+}
+
+// checkToEnv_NoUserLayerSetsEmptyProvidersConfig is spec §10's third state:
+// a hub whose providers.toml failed to load hands every child a present but
+// empty EVENER_PROVIDERS_CONFIG, replacing whatever it inherited, so the
+// child computes the same implicit-only instance set the hub is running on.
+func checkToEnv_NoUserLayerSetsEmptyProvidersConfig(t *testing.T) {
+	got := ToEnv(EnvInputs{
+		NoUserLayer:         true,
+		ProvidersConfigPath: "/hub/.evener/providers.toml",
+		ParentEnv:           []string{"PATH=/usr/bin", "EVENER_PROVIDERS_CONFIG=/inherited/providers.toml"},
+	})
+	found := false
+	for _, kv := range got {
+		if kv == "EVENER_PROVIDERS_CONFIG=" {
+			found = true
+		}
+		if kv == "EVENER_PROVIDERS_CONFIG=/inherited/providers.toml" {
+			t.Error("the inherited EVENER_PROVIDERS_CONFIG survived; it must be replaced")
+		}
+	}
+	if !found {
+		t.Errorf("EVENER_PROVIDERS_CONFIG= (present, empty) missing from %v", got)
+	}
+}
+
+func checkToEnv_CredentialsPathSetsEnvVar(t *testing.T) {
+	got := envSliceToMap(ToEnv(EnvInputs{
+		CredentialsPath: "/hub/.evener/credentials.toml",
+		ParentEnv:       []string{"PATH=/usr/bin"},
+	}))
+	if got["EVENER_CREDENTIALS_CONFIG"] != "/hub/.evener/credentials.toml" {
+		t.Errorf("EVENER_CREDENTIALS_CONFIG = %q, want /hub/.evener/credentials.toml", got["EVENER_CREDENTIALS_CONFIG"])
 	}
 }
 

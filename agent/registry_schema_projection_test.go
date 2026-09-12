@@ -44,29 +44,28 @@ func TestProjectToolSchemaBehaviorMatrix(t *testing.T) {
 	}
 }
 
+// The real registry schemas must be projection-free: no core tool ships a
+// oneOf disjunction, so every schema goes through the plain generator path.
+// (The delegate tool's former sandbox/sandbox_net oneOf was replaced by a
+// single combined enum — an invalid combo is now unrepresentable rather than
+// excluded by a conditional.) projectToolSchema itself stays covered by
+// TestProjectToolSchemaBehaviorMatrix with synthetic fixtures.
 func TestProjectToolSchemaUsesRealCapableToolShape(t *testing.T) {
 	defs := coreToolSchemaDefs(t)
-	found := false
-	for _, td := range defs {
-		projection, err := projectToolSchema(td.params)
-		if err != nil {
-			continue
-		}
-		found = true
-		if projection.absent == nil || projection.present == nil {
-			t.Fatalf("tool %q projection arms = %#v", td.name, projection)
-		}
-		for _, arm := range []map[string]any{projection.absent, projection.present} {
-			for i := range 300 {
-				value := schemagen.Value(schemagen.NewByteSource([]byte{byte(i), byte(i >> 8), 0xa5}), arm, schemagen.Valid)
-				if err := td.schema.Validate(value); err != nil {
-					t.Fatalf("tool %q byte value %d rejected: %v; value=%#v", td.name, i, err, value)
-				}
-			}
-		}
+	if len(defs) == 0 {
+		t.Fatal("capable fixture exposed no tool schemas")
 	}
-	if !found {
-		t.Fatal("capable fixture exposed no projectable tool schema")
+	for _, td := range defs {
+		if _, err := projectToolSchema(td.params); !errors.Is(err, errProjectionNotNeeded) {
+			t.Fatalf("tool %q schema must not need projection, got %v", td.name, err)
+		}
+		generator, err := projectedToolGenerator(td.params)
+		if err != nil {
+			t.Fatalf("tool %q generator: %v", td.name, err)
+		}
+		if generator == nil {
+			t.Fatalf("tool %q produced no generator", td.name)
+		}
 	}
 }
 

@@ -17,9 +17,9 @@
 //     parseTaskListData (pinned wire-true against agent/task/task_store.go's
 //     real Task shape) owns interpreting the raw `unknown` response.
 //
-// Failure handling: a Codex-source thread rejects the wire call outright
+// Failure handling: a source-backed thread may reject the wire call outright
 // (appwire.Unavailable, "actionUnavailable" - verified against
-// CodexSource.ListTasks) - an expected capability gap, not a bug, so it
+// a source that omits the capability) - an expected capability gap, not a bug, so it
 // gets an honest inline "not available" state and no toast. A resolved-
 // but-uninterpretable response (parseTaskListData returning null - e.g. an
 // old daemon with no tasksFn registered, which responds with null data
@@ -71,13 +71,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import { isActionUnavailable, isThreadNotFound } from "../../../protocol/sessionErrors";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, type ChipTone, EmptyState, Markdown, Meter, Sheet, useToasts } from "../../../widgets";
+import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
 import { groupTasks } from "./taskGroups";
 import styles from "./taskspanel.module.css";
@@ -176,8 +176,19 @@ export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
   cancelled: "neutral",
 };
 
+function hasTaskOutcomes(tasks: NonNullable<ThreadModel["tasks"]>): boolean {
+  return tasks.cancelled !== undefined || tasks.remaining !== undefined;
+}
+
+export function taskAggregateLabel(tasks: NonNullable<ThreadModel["tasks"]>): string {
+  if (hasTaskOutcomes(tasks)) {
+    return `${tasks.done} done, ${tasks.cancelled ?? 0} cancelled, ${tasks.remaining ?? 0} remaining (${tasks.total} total)`;
+  }
+  return `${tasks.done}/${tasks.total}`;
+}
+
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
-  return tasks ? `Tasks ${tasks.done}/${tasks.total}` : "Tasks";
+  return tasks ? `Tasks ${taskAggregateLabel(tasks)}` : "Tasks";
 }
 
 // The one name this panel's failure goes by. Both reports of it - the toast
@@ -295,11 +306,11 @@ function TaskPromptDisclosure({ task, sessionRef }: { task: TaskRow; sessionRef:
         }}
       >
         <span className={CLASS.promptLabel}>Prompt</span>
-        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-          ▸
-        </span>
         <span className={CLASS.promptPreview}>
           <Markdown source={firstLine} />
+        </span>
+        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
+          ▸
         </span>
       </summary>
       {open && (
@@ -409,8 +420,6 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
   const groups = groupTasks(rows);
   return (
     <>
-      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
-      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
       {groups.settled.length > 0 && (
         <Disclosure
           id={`${sessionRef}\0settled-group`}
@@ -428,6 +437,8 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
           </ul>
         </Disclosure>
       )}
+      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
+      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
     </>
   );
 }
@@ -569,14 +580,10 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
         )}
         {model.tasks && (
           <div className={CLASS.bodyHead} data-testid="tasks-body-head">
-            <Meter
-              label={`Task progress: ${model.tasks.done} of ${model.tasks.total} complete`}
-              value={model.tasks.done}
-              max={model.tasks.total}
-              tone="neutral"
-            />
             <span className={CLASS.count}>
-              {model.tasks.done}/{model.tasks.total} done
+              {hasTaskOutcomes(model.tasks)
+                ? taskAggregateLabel(model.tasks)
+                : `${model.tasks.done}/${model.tasks.total} done`}
             </span>
           </div>
         )}

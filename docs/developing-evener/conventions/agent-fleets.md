@@ -146,10 +146,9 @@ by the time anyone looked, while a session watched five background
 `go test` jobs die at their run timeout with zero output and no
 explanation (kata r07s). A bounded preflight probe used to catch both
 cases ahead of time and name them (disk-reclaim.sh); that check has since
-been removed with no replacement — suites now rely on the wave runner's
-per-suite cleanup instead of a disk-health gate — so an unmounted or
-stalled cache volume once again surfaces only as an ordinary hung or
-failing `go` command. Do not route around a full checkout volume with
+been removed with no replacement, so an unmounted or stalled cache volume
+once again surfaces only as an ordinary hung or failing `go` command. Do
+not route around a full checkout volume with
 `GOCACHE=/tmp/...`; that fills the volume the external cache exists to
 spare (kata 98x9).
 
@@ -299,10 +298,9 @@ workspace.
 These three rules once lived in an automated classifier
 (`disk-reclaim.sh`) that could remove a MERGED worktree on its own. That
 script, its disk-floor preflight check, and its whole reclaim/report
-machinery have since been removed with no replacement: per-suite cleanup
-enforced by the selftest wave runner now covers the failure mode the
-preflight check existed for (kata 98x9's disk exhaustion), and worktree
-disposal is entirely a human/controller judgment call again. The three
+machinery have since been removed with no replacement, and worktree
+disposal is entirely a human/controller judgment call again (kata 98x9 is
+the disk-exhaustion incident the preflight check existed for). The three
 rules above are what any such review — automated or by hand — still has
 to get right; they cost six worktrees, then five more, to learn the first
 time.
@@ -367,7 +365,11 @@ in-session fleet. What works:
   refuses too, and the session's shell is dead for good. Two agents
   proved this deterministically; briefs now forbid the call outright.
 - **Fresh isolation worktrees have no `node_modules` symlink.** A
-  frontend brief must carry the `ln -sfn` line itself.
+  frontend brief must carry the `ln -sfn` line itself. The
+  `editorial-preview` script tests skip with a stated reason when they see
+  that symlink (their isolated fixture server pins `fs.allow` to the
+  checkout, which a shared install cannot honor); they run fully only in a
+  checkout with its own `npm ci` install, such as CI.
 
 ## Model tiering
 

@@ -6,9 +6,23 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
+
+func TestTaskSummaryUsesSharedOutcomeCounts(t *testing.T) {
+	tasks := []taskpkg.Task{
+		{Status: taskpkg.TaskDone},
+		{Status: taskpkg.TaskCancelled},
+		{Status: taskpkg.TaskOpen},
+		{Status: taskpkg.TaskInProgress},
+	}
+	const want = "1 done, 1 cancelled, 2 remaining (4 total)"
+	if got := taskSummary(tasks); got != want {
+		t.Fatalf("taskSummary() = %q, want %q", got, want)
+	}
+}
 
 // TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary guards the
 // existing contract: when EvenerDiagnostics is nil, the rendered status is
@@ -255,7 +269,7 @@ func TestHubDetailFromThreadLeavesFailedToolCallsNilWhenThreadHasNone(t *testing
 }
 
 // TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone guards the "no data"
-// path: an old daemon or Codex thread reports no usage, and the mapping must
+// path: a source-backed thread reports no usage, and the mapping must
 // not synthesize a zero-value struct (which would render ↑0 ↓0).
 func TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone(t *testing.T) {
 	detail := hubDetailFromThread(appwire.Thread{

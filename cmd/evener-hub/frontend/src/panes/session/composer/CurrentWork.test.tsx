@@ -125,5 +125,5 @@ test("uses the approved semantic green ring and uppercase micro-label treatment"
 
   const label = currentWorkCssRule("label");
   expect(label).toContain("text-transform: uppercase");
-  expect(label).toContain("letter-spacing: var(--tracking-micro)");
+  expect(label).toContain("letter-spacing: var(--tracking-eyebrow)");
 });

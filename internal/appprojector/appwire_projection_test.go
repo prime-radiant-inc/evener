@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
@@ -43,6 +45,36 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.TranscriptEntryIndex != 3 {
 		t.Fatalf("transcript entry index=%d, want 3", item.TranscriptEntryIndex)
+	}
+}
+
+func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	// The agent's informational context-budget warnings (an output clamp, a
+	// context-usage notice) carry an explicit neutral title and hint so the
+	// classifier's keyword fallback cannot stamp its generic "Evener error"
+	// title and session-log hint onto them — the Web UI renders the title on
+	// the warning chip, and that title read as a failure for routine budget
+	// arithmetic. This is the wire-side half of that contract: whatever title
+	// the emitter supplied must survive projection verbatim.
+	out := p.Project(events.SessionEvent{Kind: events.EventWarning, SessionID: "th_1", Data: events.WarningData{
+		Message: "Output allocation reduced for inst/model: requested=100 admitted=50",
+		Source:  "evener",
+		Title:   "Context budget",
+		Hint:    "The model's output allocation was reduced to fit its context window. No action needed.",
+	}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyWarning {
+		t.Fatalf("notifications=%+v", out)
+	}
+	params, ok := out[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if params["title"] != "Context budget" {
+		t.Fatalf("title=%v, want the emitter-supplied neutral title", params["title"])
+	}
+	if strings.Contains(fmt.Sprint(params["hint"]), "session log") {
+		t.Fatalf("hint=%v, want the emitter-supplied hint, not the generic session-log guidance", params["hint"])
 	}
 }
 
@@ -204,6 +236,21 @@ func TestProject_TaskUpdated(t *testing.T) {
 	}
 }
 
+func TestProject_TaskUpdatedPreservesFullyCancelledState(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventTaskUpdated,
+		Data: events.TaskUpdatedData{Total: 3, Cancelled: 3, Remaining: 0},
+	})
+	if len(out) != 1 {
+		t.Fatalf("notifications = %+v, want one task update", out)
+	}
+	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
+	if !ok || params.Total != 3 || params.Done != 0 || params.Cancelled != 3 || params.Remaining != 0 || params.Current != nil {
+		t.Fatalf("params = %+v, want fully cancelled task state", out[0].Params)
+	}
+}
+
 func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
@@ -211,13 +258,13 @@ func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 		TaskPublicationEpoch:    7,
 		TaskPublicationRevision: 41,
 		CurrentWork: &events.CurrentWorkSeedData{
-			Tasks: &events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
+			Tasks: &events.TaskStateData{Total: 3, Done: 1, Cancelled: 1, Remaining: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
 			Goal:  &events.GoalStateData{Objective: "seeded objective", Status: "active", Iterations: 2},
 		},
 	}})
 
 	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
-	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 3 || thread.Evener.Tasks.Done != 1 ||
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 3 || thread.Evener.Tasks.Done != 1 || thread.Evener.Tasks.Cancelled != 1 || thread.Evener.Tasks.Remaining != 1 ||
 		thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "seeded task" {
 		t.Fatalf("started tasks = %+v, want complete current-work seed", thread.Evener.Tasks)
 	}
@@ -1035,22 +1082,30 @@ func TestProjectorTurnEndedPreservesInterruptStatus(t *testing.T) {
 // TestProjectorAccumulatesPerTurnUsageAcrossRounds verifies the completed
 // Turn's Usage is the turn's own total across every round (not a
 // cumulative-session figure) — each EventAssistantTextEnd's usage is summed
-// until the turn itself completes, and Cost is estimated from the model seen
-// on those rounds.
+// until the turn itself completes, and Cost is estimated at the cost the
+// instance and model seen on those rounds resolve to.
 func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.SetCostLookup(func(provider, model string) *registry.Cost {
+		if provider != "anthropic" || model != "claude-opus-4-5" {
+			return nil
+		}
+		return &registry.Cost{Input: 5, Output: 25}
+	})
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
-		Text:  "first round",
-		Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
-		Model: "claude-opus-4-5",
+		Text:     "first round",
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
 	}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "claude-opus-4-5"}})
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
-		Text:  "second round",
-		Usage: llm.Usage{InputTokens: 20, OutputTokens: 10},
-		Model: "claude-opus-4-5",
+		Text:     "second round",
+		Usage:    llm.Usage{InputTokens: 20, OutputTokens: 10},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
 	}})
 	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
 
@@ -1064,8 +1119,62 @@ func TestProjectorAccumulatesPerTurnUsageAcrossRounds(t *testing.T) {
 	if turn.Usage.OutputTokens != 60 {
 		t.Fatalf("turn.Usage.OutputTokens=%d, want 60", turn.Usage.OutputTokens)
 	}
-	if !strings.HasPrefix(turn.Cost, "~$") {
-		t.Fatalf("turn.Cost=%q, want ~$ prefix", turn.Cost)
+	// 120/1e6*5 + 60/1e6*25 = 0.0006 + 0.0015 = 0.0021 -> "~$0.00"
+	if turn.Cost != "~$0.00" {
+		t.Fatalf("turn.Cost=%q, want ~$0.00 from the looked-up registry cost", turn.Cost)
+	}
+}
+
+// TestProjectorTurnCostComesFromTheRegistryLookup pins where the per-turn
+// cost comes from (spec §7.5): the lookup is keyed on the provider and model
+// the round reported, and its Cost — not a catalog entry keyed on the model
+// id alone — is what the turn is priced at.
+func TestProjectorTurnCostComesFromTheRegistryLookup(t *testing.T) {
+	var gotProvider, gotModel string
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.SetCostLookup(func(provider, model string) *registry.Cost {
+		gotProvider, gotModel = provider, model
+		return &registry.Cost{Input: 3, Output: 15}
+	})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:     "answer",
+		Usage:    llm.Usage{InputTokens: 1_000_000, OutputTokens: 100_000},
+		Model:    "claude-sonnet-4-5",
+		Provider: "work",
+	}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if gotProvider != "work" || gotModel != "claude-sonnet-4-5" {
+		t.Fatalf("cost lookup called with (%q, %q), want (\"work\", \"claude-sonnet-4-5\")", gotProvider, gotModel)
+	}
+	// 1_000_000/1e6*3 + 100_000/1e6*15 = 3.00 + 1.50 = 4.50
+	if turn.Cost != "~$4.50" {
+		t.Fatalf("turn.Cost=%q, want ~$4.50", turn.Cost)
+	}
+}
+
+// TestProjectorWithoutCostLookupLeavesTurnCostEmpty pins the flag-day rule
+// (spec §14.1): with nothing to price against, the turn reports its usage and
+// no cost at all rather than a fabricated "~$0.00".
+func TestProjectorWithoutCostLookupLeavesTurnCostEmpty(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{
+		Text:     "answer",
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 50},
+		Model:    "claude-opus-4-5",
+		Provider: "anthropic",
+	}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
+
+	turn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if turn.Usage == nil {
+		t.Fatalf("turn.Usage=nil, want the turn's own usage regardless of pricing")
+	}
+	if turn.Cost != "" {
+		t.Fatalf("turn.Cost=%q, want empty with no cost lookup installed", turn.Cost)
 	}
 }
 
@@ -1391,21 +1500,39 @@ func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
 }
 
 func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
-	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(events.SessionEvent{
-		Kind:      events.EventSteeringInjected,
-		SessionID: "th_1",
-		Data:      events.SteeringInjectedData{Text: "stay focused"},
-	})
-	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
-		t.Fatalf("out=%+v", out)
-	}
-	params, ok := out[0].Params.(map[string]any)
-	if !ok {
-		t.Fatalf("params=%T", out[0].Params)
-	}
-	if params["threadId"] != "th_1" || params["ref"] != "local:th_1" || params["text"] != "stay focused" {
-		t.Fatalf("params=%+v", params)
+	for name, images := range map[string][]events.UserInputImage{
+		"nil":   nil,
+		"empty": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			out := projector.Project(events.SessionEvent{
+				Kind:      events.EventSteeringInjected,
+				SessionID: "th_1",
+				Data:      events.SteeringInjectedData{Text: "stay focused", Images: images},
+			})
+			if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
+				t.Fatalf("out=%+v", out)
+			}
+			params, ok := out[0].Params.(map[string]any)
+			if !ok {
+				t.Fatalf("params=%T", out[0].Params)
+			}
+			if params["threadId"] != "th_1" || params["ref"] != "local:th_1" || params["text"] != "stay focused" {
+				t.Fatalf("params=%+v", params)
+			}
+			wire, err := json.Marshal(out[0].Params)
+			if err != nil {
+				t.Fatalf("marshal params: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(wire, &payload); err != nil {
+				t.Fatalf("unmarshal params: %v", err)
+			}
+			if _, present := payload["images"]; present {
+				t.Fatalf("wire payload contains images for %s input: %s", name, wire)
+			}
+		})
 	}
 }
 
@@ -1771,6 +1898,60 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			description: "Tool call repaired",
 			contains:    []string{"edit_file", "invalid character"},
 			notContains: []string{`unicode_repair::invalid \u escape → �`},
+		},
+		{
+			name: "tool call repaired: fill_required",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes:  []string{"fill_required:output:filled message"},
+			}},
+			description: "Tool call repaired",
+			contains:    []string{"communicate", "filled", "message"},
+			notContains: []string{"fill_required:output:filled message", "adjusted the"},
+		},
+		{
+			name: "tool call repaired: fill_required three keys",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes: []string{
+					"fill_required:output:filled message",
+					"fill_required:output:filled data",
+					"fill_required:output:filled artifacts",
+				},
+			}},
+			description: "Tool call repaired",
+			contains: []string{
+				`filled the required "message" key`,
+				`filled the required "data" key`,
+				`filled the required "artifacts" key`,
+			},
+			notContains: []string{
+				"fill_required:output:filled message",
+				"fill_required:output:filled data",
+				"fill_required:output:filled artifacts",
+				"adjusted the",
+			},
+		},
+		{
+			name: "tool call repaired: nested fill_required three keys",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes: []string{
+					"fill_required:output.message:filled default",
+					"fill_required:output.data:filled default",
+					"fill_required:output.artifacts:filled default",
+				},
+			}},
+			description: "Tool call repaired",
+			contains: []string{
+				`filled the required "message" key`,
+				`filled the required "data" key`,
+				`filled the required "artifacts" key`,
+			},
+			notContains: []string{"fill_required:output.message:filled default", `"default"`},
 		},
 		{
 			name: "tool call repaired: multiple changes",
@@ -2659,9 +2840,8 @@ func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 
 // notificationTurn reads the "turn" payload off either shape a producer might
 // use: appwire.TurnStartedParams (turn/started, converted - kcb5) or a bare
-// map[string]any (turn/completed, deliberately left unconverted - kcb5's own
-// TurnCompletedParams declaration doesn't match what producers send, see
-// appwire_projection.go's own comment on its turn/completed sites).
+// map[string]any (turn/completed, deliberately left unconverted - see
+// appwire_projection.go's own comment on its turn/completed sites for why).
 func notificationTurn(t *testing.T, items []AppNotification, method string) appwire.Turn {
 	t.Helper()
 	for _, item := range items {

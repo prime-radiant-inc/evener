@@ -820,12 +820,10 @@ func installedServeStatus(t *testing.T, repoRoot string, baseEnv []string, evene
 	workDir := t.TempDir()
 	providersPath := filepath.Join(t.TempDir(), "providers.toml")
 	if err := os.WriteFile(providersPath, []byte(`
-schema = 1
 default = "work"
 
-[instances.work]
-type = "openai"
-api_style = "responses"
+[providers.work]
+base    = "openai"
 api_key = "sk-install-test"
 `), 0o600); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
@@ -1268,9 +1266,7 @@ else
 fi
 exit 0
 `
-	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(npmShim), 0o755); err != nil {
-		t.Fatalf("write fake npm: %v", err)
-	}
+	writeExecutable(t, filepath.Join(fakeBin, "npm"), npmShim)
 
 	path := os.Getenv("PATH")
 	for _, item := range env {

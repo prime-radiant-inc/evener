@@ -111,12 +111,11 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return "", false
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return "", false
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer done()
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
 	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
@@ -189,6 +188,15 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 	return context.WithTimeout(ctx, LaneClosePassBudget)
 }
 
+// laneCloseReleaseBudget bounds one session's close-time lock-release pass. It
+// reserves half of LaneClosePassBudget, the same split closeStopJoinContext
+// makes and for the same reason: child sessions close serially inside the
+// parent's close, and every one of them runs this pass on a budget of its own.
+// Halving caps that amplification — a wedged git costs the cascade budget plus
+// (K children + 1) x LaneClosePassBudget/2 rather than (K + 1) x the full
+// budget.
+func laneCloseReleaseBudget() time.Duration { return LaneClosePassBudget / 2 }
+
 // closeStopJoinContext reserves half of the shared close budget for the
 // bounded joins and teardown that follow the delegate stop. A stop driver can
 // be parked forever behind an uncancellable tool call; letting that driver
@@ -222,12 +230,11 @@ func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return ""
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return ""
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer done()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	metaDir := metaDirForLane(lanePath)
 
@@ -422,34 +429,59 @@ func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent,
 	}
 }
 
-// unlockOwnManagedWorktreeAtClose unlocks the session's OWN occupied managed
-// worktree on a clean close (native worktree tools spec §5 close-unlock), so a
-// close→resume round-trip re-enters an unlocked tree. This is distinct from
-// delegate-lane disposal: the session's own managed worktree (tracked by
-// worktreeCurrentManaged / worktreeCurrentPath) is unlocked on disk, never
-// removed. The unlock routes through leaveCurrentWorktree, which applies the
-// EvLeave lock rule (own session marker → unlock; unlocked / foreign / delegate
-// → no-op).
+// unlockOwnManagedWorktreeAtClose releases every managed worktree this session's
+// own marker still holds on a clean close (native worktree tools spec §5
+// close-unlock), so a close→resume round-trip re-enters unlocked trees. This is
+// distinct from delegate-lane disposal: a managed worktree is unlocked on disk,
+// never removed.
+//
+// It sweeps the project's managed lanes rather than only the occupied one
+// (worktreeCurrentPath). A lane keeps this session's marker after a process
+// death inside it, and after a resume whose re-entry was refused (child session,
+// non-local env, out-of-project target, unverifiable registry) returned before
+// the lane was recorded as current — and the residue sweeps take only unlocked
+// lanes, so nothing else ever released it. Once this close finishes the session
+// id those markers carry names no live session at all, which makes close the one
+// place that can retire them without guessing at another owner's liveness.
+//
+// Every release routes through the EvLeave lock rule (own session marker →
+// unlock; unlocked / foreign / delegate marker → leave untouched), so another
+// session's lock stays put and a live delegate lane remains the parent's §9
+// disposal lifecycle's to release. Child sessions are in scope: a delegating
+// child keeps the full manage_worktree tool (session init strips it only for a
+// worktree-isolated child and for a zero delegation allowance), so it does take
+// an evener:<child-sid> marker of its own on a lane it creates or switches into.
+//
+// The pass runs on a release budget of its own, never on the close cascade's
+// context. Releasing our own locks is tail work of the same kind as the P0
+// pass's budget-exempt touch+unlock tail (which runs its unlocks unbounded),
+// just capped: inheriting the cascade deadline would make the guarantee depend
+// on how much of that budget the steps before it consumed, and a cascade
+// expiring during the registry listing or between two unlocks would leave the
+// markers held that this pass exists to clear. laneCloseReleaseBudget keeps the
+// independent budget from amplifying across a subtree — see its doc comment for
+// the bound.
 func (s *Session) unlockOwnManagedWorktreeAtClose() {
-	s.mu.Lock()
-	path := s.worktreeCurrentPath
-	managed := s.worktreeCurrentManaged
-	s.mu.Unlock()
-	if path == "" || !managed {
+	st := s.worktreeStateSnapshot()
+	if st.env == nil || st.mainRepoRoot == "" || st.worktreeRoot == "" {
 		return
 	}
-	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
+	ctx, cancel := context.WithTimeout(context.Background(), laneCloseReleaseBudget())
+	defer cancel()
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	if err != nil {
 		return
 	}
-	rootedAtPath := local.WithWorkingDirectory(path)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtPath, path)
-	if mainRoot == "" {
+	defer done()
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
+	porcelain, err := readWorktreePorcelain(run)
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree locks under %s at close failed: %v", projectDir, err)})
 		return
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
-	if err := s.leaveCurrentWorktree(run); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", path, err)})
+	for _, e := range managedPorcelainEntries(porcelain, projectDir) {
+		if err := s.releaseOwnWorktreeLock(run, e.Path, e.Locked, e.LockReason); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", e.Path, err)})
+		}
 	}
 }

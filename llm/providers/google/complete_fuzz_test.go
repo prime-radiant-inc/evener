@@ -1,16 +1,11 @@
 package google
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"primeradiant.com/evener/llm"
 )
-
-var googleCoverageSeedMarker = []byte("evener-google-coverage-seed-union-v1")
 
 // FuzzGoogleComplete drives the Gemini non-streaming Complete path against a
 // local httptest server replaying the fuzz bytes, status steered by the first
@@ -40,13 +35,8 @@ func FuzzGoogleComplete(f *testing.F) {
 	}
 	f.Add(byte(29), []byte(`{"error":{"message":"quota"}}`)) // 429
 	f.Add(byte(0), []byte(`{"promptFeedback":{"blockReason":"SAFETY"}}`))
-	f.Add(byte(255), googleCoverageSeedMarker)
 
 	f.Fuzz(func(t *testing.T, statusSel byte, body []byte) {
-		if statusSel == 255 && bytes.Equal(body, googleCoverageSeedMarker) {
-			runGoogleCoverageSeedUnion(t)
-			return
-		}
 		status := http.StatusOK
 		if statusSel != 0 {
 			status = 200 + int(statusSel)%300
@@ -59,11 +49,7 @@ func FuzzGoogleComplete(f *testing.F) {
 		}))
 		t.Cleanup(srv.Close)
 
-		a := &Adapter{APIKey: "k", BaseURL: srv.URL}
-		resp, err := a.Complete(context.Background(), llm.Request{
-			Model:    "gemini-test",
-			Messages: []llm.Message{llm.User("hi")},
-		})
+		resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
 
 		if status < 200 || status >= 300 {
 			if err == nil {
@@ -74,8 +60,8 @@ func FuzzGoogleComplete(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if resp.Provider != "google" {
-			t.Fatalf("Complete on 2xx: provider = %q, want \"google\" (body %q)", resp.Provider, body)
+		if resp.Provider != "gemini-prod" {
+			t.Fatalf("Complete on 2xx: provider = %q, want the instance name (body %q)", resp.Provider, body)
 		}
 	})
 }

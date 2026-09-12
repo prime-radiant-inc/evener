@@ -28,8 +28,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
-	"path"
 	"strings"
 	"time"
 
@@ -54,6 +52,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "locate":
 		return cmdLocate(rest, stdout, stderr)
+	case "reconstruct":
+		return cmdReconstruct(rest, stdout, stderr)
 	case "transcript":
 		return cmdTranscript(rest, stdout, stderr)
 	case "apilog":
@@ -95,6 +95,7 @@ USAGE:
 
 SUBCOMMANDS:
   locate      resolve a selector to its transcript/API-log/meta/jobs/mutations paths
+  reconstruct stage a lost transcript from an AgentsView archive and surviving metadata (never changes live state)
   transcript  render a session's turns; --count <tool> prints the structural call count; --health prints mechanical per-session health metrics
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes; --health prints a one-line API-health verdict
   jobs        job inspector: every job the session ran, with status, reason, exit code, output bytes, and timings
@@ -480,16 +481,11 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 var bundledSkills = bundled.Skills
 
 // loadRunbook resolves a runbook by name from the bundled doctoring-evener
-// skill's runbooks/ dir and parses it. It is the only place this binary
-// touches internal/bundled — agent/doctor stays a pure reader over durable
-// session state, per its package doc.
+// skill's runbooks/ dir and parses it, via the shared doctor-side resolver.
+// It is the only place this binary touches internal/bundled — agent/doctor
+// stays a pure reader over durable session state, per its package doc.
 func loadRunbook(name string) (doctor.Runbook, error) {
-	rbPath := path.Join("doctoring-evener", "runbooks", name+".md")
-	content, err := fs.ReadFile(bundledSkills(), rbPath)
-	if err != nil {
-		return doctor.Runbook{}, fmt.Errorf("load runbook %q: %w", name, err)
-	}
-	return doctor.ParseRunbook(name, content)
+	return doctor.ParseRunbookFromFS(bundledSkills(), "doctoring-evener", name)
 }
 
 // cmdAudit runs a runbook's mechanical checks across a session set. Like

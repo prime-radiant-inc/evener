@@ -11,8 +11,8 @@ import (
 )
 
 // syntheticZeroedResponsesSSE mirrors the affected Responses-API wire shape
-// pinned by llm/providers/openai/responses_recording_test.go and
-// responses_recompute_test.go: a function_call and a text message item
+// pinned by llm/providers/responses/recompute_test.go: a function_call and
+// a text message item
 // arrive via response.output_item.done events, but the terminal
 // response.completed payload's "output" is empty. Pre-fix, this is exactly
 // the stored body shape whose TextLength/ToolCalls were recorded as zero.
@@ -126,5 +126,68 @@ func TestAPILogRecomputeReExtractsZeroedResponsesRecord(t *testing.T) {
 	}
 	if got := apilogHumanColumn(t, human, attempt.AttemptID, "recomputed_tools"); got != "1" {
 		t.Fatalf("recomputed_tools column = %q, want %q\n%s", got, "1", human)
+	}
+}
+
+// zeroedCompatChatAttempt builds a successful api_attempt recorded as empty
+// under the retired openai_compatible_chat_completions family, whose stored
+// body is an ordinary Chat Completions JSON response. Records like this are
+// what --recompute exists for: they were written before the settlement fix
+// and no new record will ever carry that family again.
+func zeroedCompatChatAttempt(group string) apilog.APIAttemptRecord {
+	const body = `{"id":"chatcmpl_1","model":"glm-5","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Hello"}}]}`
+	return apilog.APIAttemptRecord{
+		Kind:             "api_attempt",
+		SchemaVersion:    1,
+		AttemptID:        identifier.MustNewAPIAttemptID(),
+		AttemptGroupID:   group,
+		AttemptIndex:     1,
+		Timestamp:        time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC),
+		LatencyMS:        700,
+		ProviderInstance: "compat-primary",
+		RequestModel:     "glm-5",
+		Request: apilog.APIAttemptRequest{
+			Method:         "POST",
+			Endpoint:       "https://provider.test/v1/chat/completions",
+			Body:           apilog.EncodeBody([]byte("{}")),
+			Model:          "glm-5",
+			EndpointFamily: "openai_compatible_chat_completions",
+		},
+		Outcome: apilog.AttemptSuccess,
+		Response: &apilog.APIAttemptResponse{
+			StatusCode:    new(200),
+			Body:          apilog.EncodeBody([]byte(body)),
+			Model:         "glm-5",
+			FinishReason:  "stop",
+			TextLength:    new(0),
+			ToolCallCount: new(0),
+		},
+	}
+}
+
+// TestAPILogRecomputeReExtractsRetiredCompatChatRecord pins that reading old
+// data still works after the flag day: the registry emits one chat family
+// now, but a log written before it carries the retired
+// openai_compatible_chat_completions family over the same wire shape, and
+// the merged chatcompletions extractor decodes it unchanged.
+func TestAPILogRecomputeReExtractsRetiredCompatChatRecord(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := zeroedCompatChatAttempt("ag_zeroed_compat")
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
+
+	result, err := APILog(base, sidA, APILogOpts{Recompute: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(result.Calls))
+	}
+	row := result.Calls[0]
+	if row.RecomputedTextLength == nil || *row.RecomputedTextLength != len("Hello") {
+		t.Fatalf("recomputed text length = %v, want %d", row.RecomputedTextLength, len("Hello"))
+	}
+	if result.Totals.RecomputedNonEmpty != 1 {
+		t.Fatalf("totals.recomputed_nonempty = %d, want 1", result.Totals.RecomputedNonEmpty)
 	}
 }

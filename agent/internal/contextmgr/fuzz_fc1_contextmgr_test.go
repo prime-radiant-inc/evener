@@ -159,8 +159,11 @@ func FuzzFc1SummarizationRoutes(f *testing.F) {
 		if ctx != nil && ctx.Err() != nil && got {
 			t.Fatalf("cancelled/expired context must not advance (err=%v)", err)
 		}
-		if err != nil && ctx.Err() == nil && llm.Classify(err) == llm.ErrorClassFallback && !got {
-			t.Fatalf("fallback-classified error under live context must advance: %v", err)
+		// A permanent error whose kind names a refused model or endpoint is the
+		// only shape that advances to the next summarization route.
+		advances := map[llm.ErrorKind]bool{llm.KindInvalidRequest: true, llm.KindNotFound: true, llm.KindAccessDenied: true}
+		if err != nil && ctx.Err() == nil && llm.Classify(err) == llm.ErrorClassPermanent && advances[llm.Kind(err)] && !got {
+			t.Fatalf("refused-model error under live context must advance: %v", err)
 		}
 	})
 }

@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/server"
 )
 
@@ -56,6 +55,9 @@ func newWaiterInterruptAdapter() *waiterInterruptAdapter {
 func (a *waiterInterruptAdapter) Name() string { return "openai" }
 
 func (a *waiterInterruptAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	text := requestFullText(req)
 	if strings.Contains(text, waiterInterruptChildTask) && !strings.Contains(text, waiterInterruptRootPrompt) {
 		a.mu.Lock()
@@ -202,15 +204,11 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default:   "openai",
-			Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	var liveSession *agent.Session
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
@@ -484,44 +482,44 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	default:
 		t.Fatal("TurnInterrupt returned before the interrupted runner emitted TURN_ENDED")
 	}
-	turns, err := daemon.client.ThreadTurnsList(daemon.ctx, appwire.ThreadTurnsListParams{Ref: daemon.ref})
+	turns, err := daemon.client.ThreadRead(daemon.ctx, appwire.ThreadReadParams{Ref: daemon.ref, IncludeTurns: true})
 	if err != nil {
-		t.Fatalf("ThreadTurnsList: %v", err)
+		t.Fatalf("ThreadRead: %v", err)
 	}
 	startedCount := 0
 	startedStatus := ""
-	for _, turn := range turns.Data {
+	for _, turn := range turns.Thread.Turns {
 		if turn.ID == started.Turn.ID {
 			startedCount++
 			startedStatus = turn.Status
 		}
 	}
 	if startedCount != 1 || startedStatus != "inProgress" {
-		t.Fatalf("started turn was not exactly once and inProgress before SESSION_END projection: count=%d status=%q turns=%#v", startedCount, startedStatus, turns.Data)
+		t.Fatalf("started turn was not exactly once and inProgress before SESSION_END projection: count=%d status=%q turns=%#v", startedCount, startedStatus, turns.Thread.Turns)
 	}
 	stoppedBeforeProjection := daemon.mutationSnapshot(t)
 	interruptBeforeProjection := stoppedBeforeProjection.Journal[interrupt.ClientMutationID]
-	t.Logf("before SESSION_END projection: turns=%v interrupt=%#v fence=%s", waiterInterruptTurnStatuses(turns.Data), interruptBeforeProjection, stoppedBeforeProjection.InterruptFence)
+	t.Logf("before SESSION_END projection: turns=%v interrupt=%#v fence=%s", waiterInterruptTurnStatuses(turns.Thread.Turns), interruptBeforeProjection, stoppedBeforeProjection.InterruptFence)
 	if len(stoppedBeforeProjection.InterruptFence) != 0 || interruptBeforeProjection.OperationState != "terminal" ||
 		interruptBeforeProjection.ExecutionState != "interrupted" {
 		t.Fatalf("interrupt was not durably terminal before projection: %#v", stoppedBeforeProjection)
 	}
 	daemon.releaseInterruptedSessionEnd()
 	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.sessionEndProjected, "interrupted SESSION_END projection")
-	turns, err = daemon.client.ThreadTurnsList(daemon.ctx, appwire.ThreadTurnsListParams{Ref: daemon.ref})
+	turns, err = daemon.client.ThreadRead(daemon.ctx, appwire.ThreadReadParams{Ref: daemon.ref, IncludeTurns: true})
 	if err != nil {
-		t.Fatalf("ThreadTurnsList after SESSION_END projection: %v", err)
+		t.Fatalf("ThreadRead after SESSION_END projection: %v", err)
 	}
 	terminal := false
-	for _, turn := range turns.Data {
+	for _, turn := range turns.Thread.Turns {
 		if turn.ID == started.Turn.ID {
 			terminal = turn.Status == "interrupted"
 		}
 	}
 	if !terminal {
-		t.Fatalf("turn %q was not terminalized after SESSION_END projection: %#v", started.Turn.ID, turns.Data)
+		t.Fatalf("turn %q was not terminalized after SESSION_END projection: %#v", started.Turn.ID, turns.Thread.Turns)
 	}
-	t.Logf("after SESSION_END projection: turns=%v", waiterInterruptTurnStatuses(turns.Data))
+	t.Logf("after SESSION_END projection: turns=%v", waiterInterruptTurnStatuses(turns.Thread.Turns))
 	if err := daemon.client.TurnInterrupt(daemon.ctx, interrupt); err != nil {
 		t.Fatalf("replay terminal interrupt: %v", err)
 	}
@@ -529,8 +527,16 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	// The interrupt response is not enough by itself: read the durable mutation
 	// snapshot that future client mutations are serialized against. The runner
 	// must have terminalized the fence before the RPC returned.
-	if !stopped.QueueHeld || !stopped.SteeringHeld {
-		t.Fatalf("Stop did not park both input rails before re-engagement: queue=%t steering=%t", stopped.QueueHeld, stopped.SteeringHeld)
+	//
+	// The queue is what witnesses that here. A Stop parks it unconditionally,
+	// but parks the steering rail only over steering there is to park, and
+	// this session has none: a hold armed over an empty rail names nothing
+	// this Stop cancelled and swallows whatever the user steers next (#710).
+	if !stopped.QueueHeld {
+		t.Fatal("Stop did not park the input queue before re-engagement")
+	}
+	if stopped.SteeringHeld {
+		t.Fatal("Stop parked the steering rail with no user steering pending: the hold names nothing and every steer accepted from here is parked behind it and never delivered")
 	}
 
 	// Queueing is a user re-engagement and clears both durable held gates in the

@@ -27,18 +27,19 @@ tasks:
       that package's API, not a lower-level alternative. Plan how you
       will verify the result — what acceptance criteria matter, what
       shortcuts to watch for. Create the task list you will pass
-      to the implementer inside the delegate task prompt.
+      to the implementer inside the delegate prompt.
       DO NOT read source files, run code, or test solutions during
       planning. Your job is to write the delegation prompt, not to
       do the implementer's work.
     reasoning_effort: high
   - title: Delegate
     prompt: >
-      Start ONE implementer with delegate using your delegation prompt and task list
-      from your plan. Use agent_type="implementer", reasoning_effort=low. Low
-      reasoning effort gives the implementer more rounds in its time
-      budget; it auto-escalates when the agent gets stuck. Include the
-      task list directly in the task prompt. The delegate task must contain
+      Start ONE implementer with delegate: your delegation prompt goes in
+      `prompt` and the task list from your plan in `task_list`, one
+      self-contained item per step. Use agent_type="implementer",
+      reasoning_effort=low. Low reasoning effort gives the implementer more
+      rounds in its time budget; it auto-escalates when the agent gets
+      stuck. The delegate prompt must contain
       ALL critical constraints from the spec — the implementer reads this first
       and may start work immediately. Do not summarize — include constraints
       verbatim. Keep the returned delegate_id and transcript_ref for follow-up,
@@ -49,7 +50,7 @@ tasks:
     prompt: >
       Start a verifier with delegate to check the implementer's work. Use
       agent_type="verifier", reasoning_effort=low. The
-      verifier's task parameter must include:
+      verifier's prompt must include:
       (1) the COMPLETE task spec verbatim, (2) the acceptance
       criteria, (3) what the implementer reported doing, and
       (4) the implementer's transcript_ref (from the delegate

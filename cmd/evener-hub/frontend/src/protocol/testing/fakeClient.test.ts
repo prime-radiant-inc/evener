@@ -7,8 +7,9 @@
 // rename can no longer leave a test green against a production build that
 // calls — or listens for — a name the hub stopped serving.
 import { describe, expect, test, vi } from "vitest";
-import type { AnyNotification, MethodName } from "../types.gen";
+import type { AnyNotification, InitializeResponse, MethodName } from "../types.gen";
 import { FakeClient } from "./fakeClient";
+import { FAKE_INITIALIZE_RESULT } from "./fakeSocket";
 
 // A name the hub has never served. Cast because MethodName correctly refuses
 // it at compile time — this suite exercises the runtime guard that catches
@@ -115,5 +116,29 @@ describe("FakeClient notification-name validation", () => {
     expect(() => fake.emitUnknownNotification({ method: "thread/started", params: {} })).toThrow(
       /"thread\/started" is a real notification.*emitNotification/s,
     );
+  });
+});
+
+describe("FakeClient ready handoff", () => {
+  test("delivers each exact initialize result to ready handlers", () => {
+    const fake = new FakeClient();
+    const first: InitializeResponse = {
+      ...FAKE_INITIALIZE_RESULT,
+      navigation: { version: 1, generationId: "a", sequence: 0 },
+    };
+    const second: InitializeResponse = {
+      ...first,
+      navigation: { version: 1, generationId: "b", sequence: 0 },
+    };
+    const ready = vi.fn();
+    fake.onReady(ready);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady(first);
+    fake.emitStateChange("reconnecting");
+    fake.emitReady(second);
+
+    expect(ready).toHaveBeenNthCalledWith(1, first);
+    expect(ready).toHaveBeenNthCalledWith(2, second);
   });
 });

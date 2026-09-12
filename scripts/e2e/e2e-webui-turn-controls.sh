@@ -202,10 +202,10 @@ cat >&2 <<EOF
 Ready. $mode_line
 
   Open the UI (visit once per browser, then navigate freely):
-    $hub_addr/auth?token=$token
+    $hub_addr/auth/$token
 
   Start a session through the AppWire-backed UI:
-    visit $hub_addr/auth?token=$token, then navigate to /new
+    visit $hub_addr/auth/$token, then navigate to /new
     and use working directory $workspace, model fake/fake-test-model,
     and prompt "read NOTES.md and keep working"
 

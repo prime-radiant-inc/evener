@@ -1,0 +1,52 @@
+{
+  "case": "azure-gpt55-prod",
+  "ref": "azure/gpt55-prod",
+  "stream": false,
+  "method": "POST",
+  "url": "https://contoso-prod.openai.azure.com/openai/v1/responses",
+  "headers": {
+    "Api-Key": "\u003ccredential\u003e",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "What is the weather in Oslo?",
+            "type": "input_text"
+          }
+        ],
+        "role": "user",
+        "type": "message"
+      }
+    ],
+    "instructions": "You are terse.",
+    "max_output_tokens": 128000,
+    "model": "gpt55-prod",
+    "reasoning": {
+      "effort": "high"
+    },
+    "store": false,
+    "tool_choice": "required",
+    "tools": [
+      {
+        "description": "Current weather",
+        "name": "weather",
+        "parameters": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

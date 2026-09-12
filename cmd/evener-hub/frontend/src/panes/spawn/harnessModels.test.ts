@@ -5,7 +5,7 @@ import { harnessUsesEvenerModels } from "./harnessModels";
 
 const HARNESSES: HarnessDescriptor[] = [
   { id: "evener", label: "evener", kind: "evener" },
-  { id: "codex-cli", label: "codex-cli", kind: "codex" },
+  { id: "external", label: "external", kind: "external" },
 ];
 
 describe("harnessUsesEvenerModels", () => {
@@ -17,8 +17,8 @@ describe("harnessUsesEvenerModels", () => {
     expect(harnessUsesEvenerModels("evener", HARNESSES)).toBe(true);
   });
 
-  test("a codex-kind harness does not use evener models", () => {
-    expect(harnessUsesEvenerModels("codex-cli", HARNESSES)).toBe(false);
+  test("an external-kind harness does not use evener models", () => {
+    expect(harnessUsesEvenerModels("external", HARNESSES)).toBe(false);
   });
 
   test("an unknown harness id is treated as non-evener", () => {

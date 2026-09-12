@@ -41,7 +41,7 @@ func TestRunResumeWithFailedReservationPreservesForeignOwnedChild(t *testing.T) 
 		runRestoreSession = oldRestore
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{}, nil
 	}
 	runRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
@@ -52,8 +52,8 @@ func TestRunResumeWithFailedReservationPreservesForeignOwnedChild(t *testing.T) 
 	var childID string
 	foreignAcquiredPublishedChild := false
 	var foreignLogger *llm.APILogger
-	runAttachAPILogger = func(client *llm.Client, gotStateDir string, warnings io.Writer) (func(string) error, func() error, error) {
-		reserveCreator, closeCreator, err := oldAttach(client, gotStateDir, warnings)
+	runAttachAPILogger = func(client *llm.Client, gotStateDir string, warnings io.Writer, recordAttempts bool) (func(string) error, func() error, error) {
+		reserveCreator, closeCreator, err := oldAttach(client, gotStateDir, warnings, recordAttempts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -206,7 +206,7 @@ func TestServeFreshIdleSessionOwnsResumeTarget(t *testing.T) {
 
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.listen = func(context.Context, string, string) (net.Listener, error) {
 		return newFreshOwnerListener(), nil
 	}

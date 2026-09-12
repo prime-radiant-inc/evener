@@ -20,13 +20,13 @@ import (
 // (confstr _CS_DARWIN_USER_TEMP_DIR). Only an explicit path template is honoured,
 // which is why `mktemp -d "${TMPDIR:-/tmp}/name.XXXXXX"` is the spelling to use.
 //
-// The consequence is not cosmetic. The dev-tooling wave gives each suite its own
-// TMPDIR and fails a suite that leaves anything behind, so a script whose scratch
-// escapes to the Darwin directory sits outside BOTH the isolation and the leak
-// check. The coverage floor ratchet leaked one directory per run that way —
-// including one per run of its own selftest, which asserted `ls -A "$tmphome"`
-// was empty and passed by inspecting a directory the scratch never entered. 56
-// abandoned directories holding 1.5GB accumulated before anyone looked.
+// The consequence is not cosmetic: TMPDIR is how a script's scratch stays
+// visible and gets cleaned up. A script whose scratch escapes to the Darwin
+// per-user temp directory instead puts it somewhere nothing is watching, so
+// it silently accumulates on the real machine. The coverage floor ratchet
+// leaked one directory per run that way; 56 abandoned directories holding
+// 1.5GB had accumulated in one developer's real temp directory by the time
+// anyone looked.
 func mktempEscapesTMPDIR(call string) bool {
 	// Stop at whatever ends the command, so the next command's words are not
 	// mistaken for mktemp's arguments.
@@ -89,9 +89,9 @@ func scriptShellFiles(t *testing.T) []string {
 	return paths
 }
 
-// TestNoScriptCreatesScratchOutsideTMPDIR keeps the swept scripts swept: the
-// coverage runners and every *-selftest.sh, which the dev-tooling wave isolates
-// by TMPDIR and then checks for leftovers.
+// TestNoScriptCreatesScratchOutsideTMPDIR keeps the swept scripts swept:
+// every script that mints scratch must keep it inside TMPDIR, where a
+// caller can find and reclaim it.
 func TestNoScriptCreatesScratchOutsideTMPDIR(t *testing.T) {
 	t.Parallel()
 	paths := scriptShellFiles(t)
@@ -136,102 +136,37 @@ func TestNoScriptCreatesScratchOutsideTMPDIR(t *testing.T) {
 	}
 }
 
-// uncheckedMktempAssignment reports whether a line assigns a variable from a
-// `mktemp` command substitution without checking whether mktemp succeeded.
-//
-// `if ! work="$(mktemp -d ...)"` and `work="$(mktemp -d ...)" || die` both
-// check. A bare assignment does not, and under `set -uo pipefail` — which the
-// selftests use, deliberately, so that a failed assertion does not abort the
-// suite before its summary — nothing stops the script at that line.
-func uncheckedMktempAssignment(line string) bool {
-	at := strings.Index(line, "=$(mktemp")
-	if at < 0 {
-		at = strings.Index(line, `="$(mktemp`)
-	}
-	if at <= 0 {
-		return false
-	}
-	if strings.HasPrefix(line, "if ") || strings.Contains(line, "||") {
-		return false
-	}
-	return true
-}
-
-// scratchDirAllowedScripts are the *-selftest.sh suites still building
-// scratch from an unchecked `mktemp`. As with mktempAllowedScripts above, the
-// list is the finding rather than an exemption, and removing an entry after
-// converting its suite to scratch_dir is the intended lifecycle.
-//
-// Every suite now builds its scratch root with scratch_dir; the list is empty
-// and a new entry needs the same reviewed reason any allowlist growth does.
-var scratchDirAllowedScripts = map[string]bool{}
-
-// TestScratchDirCannotResolveToCWD keeps kata 5hs2's failure mode out of
-// the selftests: an unchecked `mktemp -d` whose empty result was then resolved
-// to the suite's OWN WORKING DIRECTORY by `work="$(cd "$work" && pwd -P)"`,
-// because `cd ""` succeeds and leaves $PWD alone. The suite wrote its fixtures
-// into the checkout and its EXIT trap ran `rm -rf` on it.
-//
-// The rule here is aimed at the unchecked mktemp rather than at the
-// canonicalization that amplified it, because the unchecked mktemp is the line
-// an author actually writes, and you cannot reach the destructive shape without
-// it first. Every entry in the allowlist is a real one; a rule aimed at the
-// canonicalization instead would have needed entries for lines that are fine.
-//
-// It also pins scratch_dir's calling convention. The guard reports failure
-// by exiting, so calling it inside a command substitution would end only that
-// subshell and hand the caller an empty path — reinstating the bug. Making that
-// a failing test is what keeps the convention from being folklore.
-func TestScratchDirCannotResolveToCWD(t *testing.T) {
+// TestScratchDirSubstitutionDoesNotSwallowFailure pins scratch_dir's calling
+// convention: the guard reports failure by exiting, so calling it inside a
+// command substitution would end only that subshell and hand the caller an
+// empty path, reinstating kata 5hs2's failure mode — an unchecked scratch
+// root that a later `cd` canonicalization can resolve to the caller's own
+// working directory, which its cleanup then deletes. Making that a failing
+// test is what keeps the calling convention from being folklore.
+func TestScratchDirSubstitutionDoesNotSwallowFailure(t *testing.T) {
 	t.Parallel()
 	paths := scriptShellFiles(t)
-	var unchecked, swallowed []string
-	seenAllowed := map[string]bool{}
+	var swallowed []string
 	for _, path := range paths {
-		name := filepath.Base(path)
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		isSelftest := strings.HasSuffix(name, "-selftest.sh")
 		for i, line := range strings.Split(string(body), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "#") {
 				continue
 			}
-			where := fmt.Sprintf("%s:%d: %s", path, i+1, trimmed)
 			if strings.Contains(trimmed, "$(scratch_dir") {
-				swallowed = append(swallowed, where)
+				swallowed = append(swallowed, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
 			}
-			if !isSelftest || !uncheckedMktempAssignment(trimmed) {
-				continue
-			}
-			if scratchDirAllowedScripts[name] {
-				seenAllowed[name] = true
-				continue
-			}
-			unchecked = append(unchecked, where)
 		}
-	}
-	sort.Strings(unchecked)
-	for _, o := range unchecked {
-		t.Errorf("this mktemp is unchecked, so a failed mktemp leaves the variable empty "+
-			"and any later `cd` canonicalization of it resolves to the suite's own working "+
-			"directory, which its cleanup then deletes (kata 5hs2); build scratch with "+
-			"`scratch_dir <var> <prefix>` from scripts/lib/scratch-lib.sh:\n  %s", o)
 	}
 	sort.Strings(swallowed)
 	for _, o := range swallowed {
 		t.Errorf("scratch_dir reports failure by exiting, which a command substitution "+
 			"swallows — the caller would continue with an empty path. Call it as a "+
-			"statement instead: `scratch_dir work my-selftest`:\n  %s", o)
-	}
-
-	for name := range scratchDirAllowedScripts {
-		if !seenAllowed[name] {
-			t.Errorf("scratchDirAllowedScripts names %s, which no longer builds scratch "+
-				"from an unchecked mktemp — delete the entry", name)
-		}
+			"statement instead: `scratch_dir work my-prefix`:\n  %s", o)
 	}
 }
 
@@ -300,10 +235,6 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// existence and symlink guards, scoped to basenames whose pid suffix no
 	// longer answers kill -0 — never from a caller's variable.
 	"scripts/lib/covscratch-lib.sh": 1,
-	// Between-check resets of the suite's private tmphome fixture, each
-	// guarded by ${tmphome:?} so an unset or empty variable aborts the
-	// expansion instead of widening the delete.
-	"scripts/lib/covscratch-selftest-lib.sh": 4,
 	// POSIX sh by contract — its own test execs it via `sh`, which ignores
 	// the shebang — so the bash-only guard is unreachable. Under set -eu a
 	// failed mint aborts before the trap arms, and the trap deletes only the
@@ -541,10 +472,10 @@ func scratchOrderOffenses(t *testing.T, paths []string) []scratchOrderOffense {
 // exists to prevent.
 func TestScratchOrderAuditCatchesMintBeforeTrap(t *testing.T) {
 	dir := t.TempDir()
-	poison := filepath.Join(dir, "poison-selftest.sh")
+	poison := filepath.Join(dir, "poison-scratchdir.sh")
 	writeAuditScriptFixture(t, poison, "#!/usr/bin/env bash\n"+
 		"set -uo pipefail\n"+
-		"scratch_dir work poison-selftest\n"+
+		"scratch_dir work poison-scratchdir\n"+
 		"trap 'scratch_rm' EXIT\n")
 
 	offenses := scratchOrderOffenses(t, []string{poison})
@@ -579,11 +510,11 @@ func TestScratchOrderAuditCatchesManualMkdirBeforeTrap(t *testing.T) {
 // false-positive on either correctly-ordered idiom.
 func TestScratchOrderAuditAllowsTrapBeforeMint(t *testing.T) {
 	dir := t.TempDir()
-	good := filepath.Join(dir, "good-selftest.sh")
+	good := filepath.Join(dir, "good-scratchdir.sh")
 	writeAuditScriptFixture(t, good, "#!/usr/bin/env bash\n"+
 		"set -uo pipefail\n"+
 		"trap 'scratch_rm' EXIT\n"+
-		"scratch_dir work good-selftest\n")
+		"scratch_dir work good-scratchdir\n")
 	goodManual := filepath.Join(dir, "good-coverage.sh")
 	writeAuditScriptFixture(t, goodManual, "#!/usr/bin/env bash\n"+
 		"set -uo pipefail\n"+

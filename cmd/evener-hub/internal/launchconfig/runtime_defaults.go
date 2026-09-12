@@ -13,11 +13,16 @@ import (
 const (
 	LayerEnv     LayerName = "env"
 	LayerBuiltin LayerName = "builtin"
+	// LayerHub is the hub.toml floor source: the hub-wide default applied to
+	// fields the hub owns (api_log today) when every file layer left them
+	// unset. It beats the builtin floor for those fields and loses to any
+	// layer value.
+	LayerHub LayerName = "hub"
 )
 
 // ApplyEnvDefaults returns resolved with the effective layer's
 // still-unset fields filled from the environment floor only: the schema's
-// non-secret EnvFallback set (EVENER_MODEL, EVENER_REASONING_EFFORT,
+// EnvFallback set (EVENER_MODEL, EVENER_REASONING_EFFORT,
 // EVENER_OPENAI_RESPONSES_CONTINUATION). A field any file layer already set
 // is left untouched; provenance records "env" for the fields filled.
 //
@@ -49,7 +54,7 @@ func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []La
 	}
 
 	for _, opt := range schema {
-		if opt.EnvFallback == nil || opt.EnvFallback.Secret {
+		if opt.EnvFallback == nil {
 			continue
 		}
 		// All env-fallback fields are string scalars, so a single read of the
@@ -81,7 +86,7 @@ func ApplyEnvDefaults(resolved Resolved, getenv func(string) string, schema []La
 // ApplyRuntimeDefaults returns a copy of resolved with the effective layer's
 // still-unset fields filled from two floors of the fallback chain, in order:
 //
-//  1. env: the schema's non-secret EnvFallback set, and
+//  1. env: the schema's EnvFallback set, and
 //  2. builtin: the agent's own defaults declared on each LaunchOption
 //     (BuiltinDefault / BuiltinDefaultInt / BuiltinDefaultBool) — the floor
 //     the agent itself applies when flag, env, and layer are all absent.
@@ -108,6 +113,11 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 		case "agent":
 			if strings.TrimSpace(out.Effective.Agent) == "" && opt.BuiltinDefault != "" {
 				out.Effective.Agent = opt.BuiltinDefault
+				set(opt.Field)
+			}
+		case "providerIdleTimeout":
+			if strings.TrimSpace(out.Effective.ProviderIdleTimeout) == "" && opt.BuiltinDefault != "" {
+				out.Effective.ProviderIdleTimeout = opt.BuiltinDefault
 				set(opt.Field)
 			}
 		case "contextStrategy":
@@ -171,6 +181,12 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 			if out.Effective.Verbose == nil && opt.BuiltinDefaultBool != nil {
 				v := *opt.BuiltinDefaultBool
 				out.Effective.Verbose = &v
+				set(opt.Field)
+			}
+		case "apiLog":
+			if out.Effective.APILog == nil && opt.BuiltinDefaultBool != nil {
+				v := *opt.BuiltinDefaultBool
+				out.Effective.APILog = &v
 				set(opt.Field)
 			}
 		case "exportATIFProviderHandles":

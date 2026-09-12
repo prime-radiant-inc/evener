@@ -8,18 +8,24 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func (s *Server) AppServer() *appserver.Server {
@@ -55,6 +61,76 @@ func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppI
 	return PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath)
 }
 
+// prepareAppIdentitySource is the already-projected half every
+// PrepareAppIdentity* entry point installs.
+type prepareAppIdentitySource struct {
+	turns            []appwire.Turn
+	persistedEntries int
+	nextEntry        uint64
+	threadRef        string
+	incarnation      string
+}
+
+var preparedAppIncarnationSerial atomic.Uint64
+
+// preparedTranscriptItemCache is used only while an identity is prepared. It
+// builds a rebuildable, independent item-index incarnation from the same
+// transcript. Saved reads use a different projector and cache, so their cursors
+// do not transfer; RPC reads remain file-free.
+var preparedTranscriptItemCache = apptranscript.NewTurnCache()
+
+func preparedItemProjector(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	if entryIndex <= 0 {
+		return nil
+	}
+	// The bounded item-window reader assigns each item its grouped
+	// Position/TranscriptKey; per-entry positioning here would only be
+	// overwritten, and wrong for merged call/result items.
+	return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+}
+
+func preparedItemIndexIncarnation(path, threadRef string) (string, error) {
+	_, identity, err := preparedTranscriptItemCache.LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
+		ThreadRef: threadRef,
+		Limit:     40,
+	}, preparedItemProjector)
+	if err != nil {
+		return "", err
+	}
+	return identity.Incarnation, nil
+}
+
+// fromTranscriptFile is the file-reading source. A missing transcript is not
+// an error: the session simply has no persisted history to seed from. A
+// transcript whose header names a DIFFERENT session is an error -- seeding
+// one thread from another thread's history would publish a conversation
+// that never happened.
+func fromTranscriptFile(threadID, threadRef, transcriptPath string) (prepareAppIdentitySource, error) {
+	var out prepareAppIdentitySource
+	if path := strings.TrimSpace(transcriptPath); path != "" {
+		header := transcriptHeader(path, appTranscriptMaxLineBytes)
+		if header.SessionID != "" && header.SessionID != threadID {
+			return out, fmt.Errorf("transcript %s belongs to session %s, not %s", path, header.SessionID, threadID)
+		}
+		projection, err := appTurnProjectionFromTranscriptFile(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return out, err
+		}
+		out.turns = projection.turns
+		out.persistedEntries = projection.persistedEntries
+		out.nextEntry = projection.nextEntry
+		if err == nil {
+			incarnation, identityErr := preparedItemIndexIncarnation(path, threadRef)
+			if identityErr != nil {
+				return out, identityErr
+			}
+			out.threadRef = threadRef
+			out.incarnation = incarnation
+		}
+	}
+	return out, nil
+}
+
 // PrepareAppIdentityForRef is PrepareAppIdentity for a replacement that keeps
 // the same stable workspace ref while advancing the live session instance.
 // The projector must use that ref too: otherwise the first event after clear
@@ -74,29 +150,91 @@ func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (P
 	if parsedRef.SourceID != sourceID {
 		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
 	}
-	var turns []appwire.Turn
-	persistedEntries := 0
+	source, err := fromTranscriptFile(threadID, parsedRef.String(), transcriptPath)
+	if err != nil {
+		return PreparedAppIdentity{}, err
+	}
+	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, source)
+}
+
+// PrepareAppIdentityFromEntries is the sidecar-free resume wrapper: it projects
+// the SAME transcript the session restore just strict-decoded, instead of
+// re-reading and re-decoding the file. header and entries must come from that
+// restore pass (OpenWriterForSession's resume reader), which already validated
+// the header's SessionID against threadID. Because this wrapper has no path, it
+// uses a prepared process-local incarnation; callers that have the transcript
+// path should use PrepareAppIdentityFromEntriesForPath instead.
+//
+// Ref parsing, turn seeding, projector construction, and the fence of live turn
+// ids above the seeded ones are identical to PrepareAppIdentityForRef.
+func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
+	return prepareAppIdentityFromEntries(sourceID, threadID, ref, "", header, entries)
+}
+
+// PrepareAppIdentityFromEntriesForPath is the path-aware resume form. The
+// entries are still the already strict-decoded restore result; transcriptPath
+// is consulted only so the prepared live snapshot can reuse the persisted
+// item-index incarnation instead of minting a process-local cursor generation.
+func PrepareAppIdentityFromEntriesForPath(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
+	return prepareAppIdentityFromEntries(sourceID, threadID, ref, transcriptPath, header, entries)
+}
+
+func prepareAppIdentityFromEntries(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
+	if sourceID == "" {
+		sourceID = "local"
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return PreparedAppIdentity{}, errors.New("thread id is required")
+	}
+	parsedRef, err := appwire.ParseRef(strings.TrimSpace(ref))
+	if err != nil {
+		return PreparedAppIdentity{}, fmt.Errorf("invalid app identity ref: %w", err)
+	}
+	if parsedRef.SourceID != sourceID {
+		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
+	}
+	if header.SessionID != "" && header.SessionID != threadID {
+		return PreparedAppIdentity{}, fmt.Errorf("transcript header belongs to session %s, not %s", header.SessionID, threadID)
+	}
+	projection, err := appTurnProjectionFromEntries(header, entries)
+	if err != nil {
+		return PreparedAppIdentity{}, err
+	}
+	source := prepareAppIdentitySource{turns: projection.turns, persistedEntries: projection.persistedEntries, nextEntry: projection.nextEntry}
 	if path := strings.TrimSpace(transcriptPath); path != "" {
-		header := transcriptHeader(path, appTranscriptMaxLineBytes)
-		if header.SessionID != "" && header.SessionID != threadID {
-			return PreparedAppIdentity{}, fmt.Errorf("transcript %s belongs to session %s, not %s", path, header.SessionID, threadID)
-		}
-		projected, entries, err := appTurnsFromTranscriptFile(path)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		incarnation, err := preparedItemIndexIncarnation(path, parsedRef.String())
+		if err != nil {
 			return PreparedAppIdentity{}, err
 		}
-		turns = projected
-		persistedEntries = entries
+		source.threadRef = parsedRef.String()
+		source.incarnation = incarnation
+	}
+	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, source)
+}
+
+// finishPreparedAppIdentity validates the identity triple and installs the
+// projected source into a PreparedAppIdentity. It is the shared tail of
+// PrepareAppIdentityForRef and PrepareAppIdentityFromEntries.
+func finishPreparedAppIdentity(sourceID, threadID string, parsedRef appwire.Ref, source prepareAppIdentitySource) (PreparedAppIdentity, error) {
+	incarnation := source.incarnation
+	if incarnation == "" {
+		incarnation = fmt.Sprintf("appwire-prepared-v%d", preparedAppIncarnationSerial.Add(1))
+	}
+	threadRef := source.threadRef
+	if threadRef == "" {
+		threadRef = parsedRef.String()
 	}
 	snapshot := &appTurnSnapshot{threadID: threadID}
-	snapshot.Seed(turns)
+	// Item positions advance by every started logical turn. The projection's
+	// absolute next ordinal includes zero-item groups omitted from source.turns.
+	snapshot.Seed(appTurnSeed{Turns: source.turns, ThreadRef: threadRef, TranscriptIncarnation: incarnation, NextEntry: source.nextEntry})
 	// Fence the live turn ids above the seeded ones HERE, where the seed count
 	// is known, rather than waiting for the session's own SessionStart to carry
 	// it: nothing orders that event ahead of the first turn-starting request,
 	// and since this snapshot became the only turn authority a collision
 	// overwrites the seeded turn permanently.
 	projector := appprojector.NewAppEventProjector(threadID, parsedRef.String())
-	projector.SeedPersistedTurns(persistedEntries)
+	projector.SeedPersistedTurns(source.persistedEntries)
 	return PreparedAppIdentity{
 		sourceID:  sourceID,
 		threadID:  threadID,
@@ -147,6 +285,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appThreadID = prepared.threadID
 		s.appRef = newRef
 		s.appProjector = prepared.projector
+		s.installCostLookup(s.appProjector)
 		s.appTurns = prepared.turns
 		oldDescendantIDs := make([]string, 0, len(s.appDescendants))
 		for threadID := range s.appDescendants {
@@ -155,7 +294,10 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
+		s.appPendingStableTurnID = ""
+		s.appDeferredTerminalNotifications = nil
 		s.appReservedTurnID = ""
+		s.appProcessingReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
 		// daemon's session, so it is replaced in the SAME commit as the identity
@@ -239,6 +381,13 @@ func (s *Server) appNotificationTarget(threadID string) string {
 	return threadID
 }
 
+// insideAppProjectionCommitHook, when non-nil, runs inside RecordAppEvent's
+// commit callback, i.e. while the projection gate is held. It is a test seam:
+// production never assigns it, so the commit path pays one nil check on a
+// package-level word instead of the s.mu.RLock a per-server field would need
+// on every projected event.
+var insideAppProjectionCommitHook func()
+
 func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	s.mu.RLock()
 	beforeCommit := s.beforeAppProjectionCommit
@@ -251,22 +400,47 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		// held. beforeAppProjectionCommit above cannot serve that purpose: it
 		// runs before CommitProjection takes the gate, so a goroutine parked
 		// there holds nothing and any ordering it appears to establish is a
-		// coin toss. Deliberately called without s.mu, so a parked commit
+		// coin toss. Deliberately consulted without s.mu, so a parked commit
 		// blocks a concurrent one on the projection gate rather than on s.mu.
-		s.mu.RLock()
-		insideCommit := s.insideAppProjectionCommit
-		s.mu.RUnlock()
-		if insideCommit != nil {
-			insideCommit()
+		if insideAppProjectionCommitHook != nil {
+			insideAppProjectionCommitHook()
 		}
 		s.mu.Lock()
 		if !s.acceptsSessionEventLocked(event.SessionID) {
 			s.mu.Unlock()
 			return nil
 		}
+		if isAppTurnCarrier(event) && s.status.State == string(agent.SessionClosed) {
+			s.mu.Unlock()
+			return nil
+		}
+		if sessionEventClosesSession(event) {
+			s.setProcessingLocked(false)
+			s.status.State = string(agent.SessionClosed)
+			s.appDeferredTerminalNotifications = nil
+		}
 		s.ensureAppProjectorLocked(event.SessionID)
+		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
+		stableTurnID := eventStableTurnID(event)
+		pendingCarrier := stableTurnID != "" && stableTurnID == s.appPendingStableTurnID
+		if pendingCarrier {
+			s.appProjector.ReserveStableTurnID(stableTurnID)
+			s.appPendingStableTurnID = ""
+			// The carrier owns the new turn, so a terminal event from the
+			// previous turn must not be replayed after this boundary.
+			s.appDeferredTerminalNotifications = nil
+		}
 		projected := s.appProjector.Project(event)
-		s.appActiveTurnID = s.appProjector.ActiveTurnID()
+		projectedTurnID := s.appProjector.ActiveTurnID()
+		if isAppTurnCarrier(event) && projectedTurnID != "" && s.appPendingStableTurnID == "" {
+			// A carrier can arrive after processing cleanup and a queued
+			// terminal event. Reconcile the pull state before publishing the
+			// carrier's active notification so thread/read agrees with it.
+			s.status.State = appwire.ThreadStatusActive
+		}
+		if s.appPendingStableTurnID == "" {
+			s.appActiveTurnID = projectedTurnID
+		}
 		threadID := s.appThreadID
 		if threadID == "" {
 			threadID = event.SessionID
@@ -285,6 +459,14 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
 		for _, item := range projected {
+			// A queued terminal event can finish the old projector turn after a
+			// new stable turn has been admitted. Preserve its turn/item terminal
+			// notifications, but do not publish the old thread status or close
+			// frame over the newer durable active identity.
+			if supersededSessionEnd && (item.Method == appwire.NotifyThreadStatusChanged || item.Method == appwire.NotifyThreadClosed) {
+				s.appDeferredTerminalNotifications = append(s.appDeferredTerminalNotifications, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
+				continue
+			}
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
 				startSeed := start.CurrentWork
@@ -343,12 +525,114 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			if item.threadID == threadID {
 				notificationTarget = rootNotificationTarget
 			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
-			item.snapshot.Apply([]appserver.SequencedNotification{record})
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
 			committed = append(committed, record)
 		}
 		return committed
 	})
+}
+
+// finishProcessing clears the processing identity and publishes any deferred
+// terminal status in one projection commit. A queued carrier therefore either
+// discards the prior terminal state or arrives after its publication. Completed
+// turn and item events are not replayed.
+func (s *Server) finishProcessing() {
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		s.setProcessingLocked(false)
+		if s.appPendingStableTurnID != "" || len(s.appDeferredTerminalNotifications) == 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		pending := s.appDeferredTerminalNotifications
+		s.appDeferredTerminalNotifications = nil
+		currentThreadID := s.appThreadID
+		if currentThreadID == "" {
+			currentThreadID = s.status.SessionID
+		}
+		currentRef := s.appRef
+		if currentRef == "" && currentThreadID != "" {
+			sourceID := s.appSourceID
+			if sourceID == "" {
+				sourceID = "local"
+			}
+			currentRef = appwire.Ref{SourceID: sourceID, ThreadID: currentThreadID}.String()
+		}
+		currentTurns := s.appTurns
+		retained := pending[:0]
+		for _, item := range pending {
+			if item.threadID == currentThreadID && item.ref == currentRef && item.snapshot == currentTurns {
+				retained = append(retained, item)
+			}
+		}
+		pending = retained
+		for _, item := range pending {
+			if item.method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok {
+				s.status.State = params.Status.Type
+			}
+		}
+		s.mu.Unlock()
+
+		committed := make([]appserver.SequencedNotification, 0, len(pending))
+		for _, item := range pending {
+			params := s.stampFailureCountOnStatusChange(item.method, item.params)
+			params = s.stampCapabilitiesOnStatusChange(item.method, params)
+			params = stampAppNotificationTarget(params, item.threadID, item.ref)
+			notificationTarget := item.threadID
+			s.mu.RLock()
+			isRoot := item.threadID == s.appThreadID
+			s.mu.RUnlock()
+			if isRoot {
+				notificationTarget = s.appNotificationTarget(item.threadID)
+			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
+			record := s.appNotifier.Record(notificationTarget, item.method, params)
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
+			committed = append(committed, record)
+		}
+		return committed
+	})
+}
+
+func eventStableTurnID(event events.SessionEvent) string {
+	switch data := event.Data.(type) {
+	case events.UserInputData:
+		return data.StableTurnID
+	case events.GoalContinuationData:
+		return data.StableTurnID
+	case events.TurnStartedData:
+		// A steering carrier announces the durable mutation identity on its
+		// turn boundary. RecordAppEvent's pending-identity check decides
+		// whether this boundary owns that identity; ordinary synthetic turns
+		// must not be treated as durable merely because they have a TurnID.
+		return data.TurnID
+	default:
+		return ""
+	}
+}
+
+func isAppTurnCarrier(event events.SessionEvent) bool {
+	switch event.Kind {
+	case events.EventTurnStarted, events.EventUserInput, events.EventGoalContinuation:
+		return true
+	default:
+		return false
+	}
 }
 
 // RecordDescendantAppEvent projects an in-process descendant onto its root
@@ -369,6 +653,10 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			s.mu.Unlock()
 			return nil
 		}
+		parentRef := s.appRef
+		if parentRef == "" {
+			parentRef = appwire.Ref{SourceID: sourceIDForProjection(s.appSourceID), ThreadID: ownerThreadID}.String()
+		}
 		projection := s.appDescendants[threadID]
 		if projection == nil {
 			sourceID := s.appSourceID
@@ -383,9 +671,10 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					ID:        threadID,
 					SessionID: threadID,
 					Source:    sourceID,
-					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent"},
+					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent", ParentRef: parentRef},
 				},
 			}
+			s.installCostLookup(projection.projector)
 			// Seed from the descendant's own transcript BEFORE this first event is
 			// applied, the same order PrepareAppIdentity uses for the ROOT thread:
 			// a resumed descendant's persisted history must already be in the
@@ -393,9 +682,9 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			// answers from the restore point forward (ledger #110/#111).
 			if s.appDescendantTranscriptPathFunc != nil {
 				if path := strings.TrimSpace(s.appDescendantTranscriptPathFunc(threadID)); path != "" {
-					if turns, entries, err := appTurnsFromTranscriptFile(path); err == nil {
-						projection.turns.Seed(turns)
-						projection.projector.SeedPersistedTurns(entries)
+					if persisted, err := appTurnProjectionFromTranscriptFile(path); err == nil {
+						projection.turns.Seed(appTurnSeed{Turns: persisted.turns, NextEntry: persisted.nextEntry})
+						projection.projector.SeedPersistedTurns(persisted.persistedEntries)
 					}
 				}
 			}
@@ -417,6 +706,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					startSeed = currentWorkSeedWithoutTasks(startSeed)
 				}
 				mergeStartCurrentWork(&params.Thread.Evener, cachedTasks, projection.thread.Evener.Goal, startSeed)
+				params.Thread.Evener.ParentRef = parentRef
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
 				projection.thread.Evener.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
@@ -468,8 +758,14 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			if item.threadID == ownerThreadID {
 				notificationTarget = rootNotificationTarget
 			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
-			item.snapshot.Apply([]appserver.SequencedNotification{record})
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
 			committed = append(committed, record)
 		}
 		return committed
@@ -625,7 +921,13 @@ func currentWorkSeedWithoutTasks(seed *events.CurrentWorkSeedData) *events.Curre
 }
 
 func taskPatch(params appwire.TaskUpdatedParams) *appwire.TaskAggregate {
-	return cloneTaskAggregate(&appwire.TaskAggregate{Total: params.Total, Done: params.Done, Current: params.Current})
+	return cloneTaskAggregate(&appwire.TaskAggregate{
+		Total:     params.Total,
+		Done:      params.Done,
+		Cancelled: params.Cancelled,
+		Remaining: params.Remaining,
+		Current:   params.Current,
+	})
 }
 
 func goalPatch(params appwire.GoalUpdatedParams) *appwire.GoalState {
@@ -663,24 +965,28 @@ func (s *Server) applyTaskCarrierLocked(threadID string, params appwire.TaskUpda
 	}
 }
 
+// stampAppNotificationTarget re-addresses params to the fanout target the
+// server is committing them under. The projector already stamps its own view
+// of threadId/ref; the server overwrites both with the authoritative target
+// (ref remapping, descendant fanout). Params are either structs implementing
+// appwire.NotificationTargeted or map[string]any carrying threadId/ref keys;
+// anything else passes through untouched.
 func stampAppNotificationTarget(params any, threadID, ref string) any {
-	data, err := json.Marshal(params)
-	if err != nil {
+	switch p := params.(type) {
+	case appwire.NotificationTargeted:
+		return p.WithNotificationTarget(threadID, ref)
+	case map[string]any:
+		// Copy rather than mutate: the caller's map must stay untouched so a
+		// future multi-target fanout of one params value cannot make every
+		// notification share the last target stamped.
+		out := make(map[string]any, len(p))
+		maps.Copy(out, p)
+		out["threadId"] = threadID
+		out["ref"] = ref
+		return out
+	default:
 		return params
 	}
-	fields := map[string]json.RawMessage{}
-	if len(data) > 0 && string(data) != "null" {
-		if err := json.Unmarshal(data, &fields); err != nil {
-			return params
-		}
-	}
-	fields["threadId"], _ = json.Marshal(threadID)
-	fields["ref"], _ = json.Marshal(ref)
-	qualified, err := json.Marshal(fields)
-	if err != nil {
-		return params
-	}
-	return json.RawMessage(qualified)
 }
 
 // stampFailureCountOnStatusChange rides the session's running failure count
@@ -861,6 +1167,7 @@ func (s *Server) registerAppWireHandlers() {
 	router := s.appServer.Router()
 	appserver.HandleTyped(router, appwire.MethodThreadList, s.handleAppThreadList)
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
+	appserver.HandleTyped(router, appwire.MethodThreadUnsubscribe, s.handleAppThreadUnsubscribe)
 	appserver.HandleTyped(router, appwire.MethodTurnStart, s.handleAppTurnStart)
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
 	appserver.HandleTyped(router, appwire.MethodEvenerSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
@@ -885,8 +1192,8 @@ func (s *Server) registerAppWireHandlers() {
 }
 
 func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-	data := []appwire.Thread{s.appThread()}
 	s.mu.RLock()
+	data := []appwire.Thread{s.appThreadLocked()}
 	ids := make([]string, 0, len(s.appDescendants))
 	for id := range s.appDescendants {
 		ids = append(ids, id)
@@ -903,28 +1210,37 @@ func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) 
 }
 
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if err := appwire.ValidateThreadReadParams(params); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
 	if !params.Subscribe {
-		return s.appThreadReadSnapshot(params), nil
+		return s.appThreadReadSnapshotChecked(params)
 	}
-	threadID := s.appThreadIDForRead(params)
-	if threadID == "" {
-		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread is unavailable")
-	}
+	var threadID string
 	var response appwire.ThreadReadResponse
+	var readErr error
 	captured := appserver.CaptureSubscription(
 		ctx,
 		params.ReplaceSubscription,
-		func() string { return s.appNotificationTarget(threadID) },
+		nil,
 		s.appNotifier.CurrentSequence,
 		func() bool {
-			response = s.appThreadReadSnapshot(params)
+			response, readErr = s.appThreadReadSnapshotForTarget(params, threadID)
 			return true
+		},
+		func() appserver.SubscriptionTarget {
+			var key string
+			threadID, key = s.appReadTarget(params)
+			if threadID == "" {
+				return appserver.SubscriptionTarget{}
+			}
+			return appserver.SubscriptionTarget{ThreadID: key, LifecycleKey: key}
 		},
 	)
 	if !captured {
 		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
 	}
-	return response, nil
+	return response, readErr
 }
 
 // appThreadReadSnapshot answers entirely from memory. It runs under the
@@ -949,19 +1265,84 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 // this is a struct copy, and the Server holds no callback that could reach a
 // session from a read path.
 func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
-	threadID := s.appThreadIDForRead(params)
+	response, _ := s.appThreadReadSnapshotChecked(params)
+	return response
+}
+
+func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return s.appThreadReadSnapshotForTarget(params, s.appThreadIDForRead(params))
+}
+
+// appThreadReadSnapshotForTarget materializes the exact target selected under
+// the subscription projection gate, without resolving mutable request aliases.
+func (s *Server) appThreadReadSnapshotForTarget(params appwire.ThreadReadParams, threadID string) (appwire.ThreadReadResponse, error) {
 	thread, ok := s.appThreadForID(threadID)
 	if !ok {
-		return appwire.ThreadReadResponse{}
+		return appwire.ThreadReadResponse{}, nil
 	}
 	var olderCursor string
 	if params.IncludeTurns {
-		thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
+		var err error
+		thread.Turns, olderCursor, err = s.appLatestItemTurns(thread.ID, params.ItemLimit)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
 	}
-	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
+	// Descendant projections carry events and transcript windows, but not the
+	// addressed child's durable queue and mutation receipts.
+	thread.Evener.MutationStateAuthoritative = threadID == s.appProjectionThreadID()
+	response := appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
+	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	return response, nil
+}
+
+// handleAppThreadUnsubscribe drops the calling connection's subscription to
+// this daemon's thread. It resolves the thread identity exactly as
+// handleAppThreadRead does, so an unsubscribe names the same registry key the
+// subscribe created — including through a replace/clear identity swap, where
+// appNotificationTarget's stable ref is the key subscribers were registered
+// under. A ref that no longer resolves (an identity swap moved the stable ref
+// on, an old pre-swap ref) still tries the raw identities the client named:
+// the registry keys a subscribe could have used are exactly the stable-ref
+// form and the bare thread ID, and Unsubscribe is idempotent, so trying both
+// costs nothing and leaks nothing.
+func (s *Server) handleAppThreadUnsubscribe(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+	threadID, target := s.appReadTarget(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+	if threadID == "" {
+		// Teardown finding nothing is a success; still try the raw identities
+		// so a pre-swap key does not linger until connection close.
+		rawRef := strings.TrimSpace(params.Ref)
+		if rawRef != "" {
+			appserver.Unsubscribe(ctx, rawRef)
+		}
+		if bare := strings.TrimSpace(params.ThreadID); bare != "" {
+			appserver.Unsubscribe(ctx, s.appNotificationTarget(bare))
+		}
+		return appwire.EmptyResponse{}, nil
+	}
+	appserver.Unsubscribe(ctx, target)
+	return appwire.EmptyResponse{}, nil
 }
 
 func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
+	threadID, _ := s.appReadTarget(params)
+	return threadID
+}
+
+// appReadTarget takes one identity snapshot for both the requested thread and
+// its admission/delivery key. Ingress must not recompute the key after releasing
+// this lock: a same-workspace identity replacement could turn the saved root ID
+// into a stale bare key between those two reads.
+func (s *Server) appReadTarget(params appwire.ThreadReadParams) (string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appReadTargetLocked(params)
+}
+
+// appReadTargetLocked requires s.mu and calls no lock-taking helpers.
+func (s *Server) appReadTargetLocked(params appwire.ThreadReadParams) (string, string) {
 	threadID := strings.TrimSpace(params.ThreadID)
 	rawRef := strings.TrimSpace(params.Ref)
 	if threadID == "" && rawRef != "" {
@@ -972,25 +1353,29 @@ func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
 		// else entirely (ledger #110/#111).
 		ref, err := appwire.ParseRef(rawRef)
 		if err != nil || ref.SourceID != "local" {
-			return ""
+			return "", ""
 		}
-		s.mu.RLock()
-		stableRef := s.appRef
-		currentThreadID := s.appThreadID
-		s.mu.RUnlock()
-		if rawRef == stableRef {
-			threadID = currentThreadID
+		if rawRef == s.appRef {
+			threadID = s.appThreadID
 		} else {
 			threadID = ref.ThreadID
 		}
 	}
+	rootID := s.appThreadID
+	if rootID == "" {
+		rootID = s.status.SessionID
+	}
 	if threadID == "" {
-		threadID = s.appProjectionThreadID()
+		threadID = rootID
 	}
-	if _, ok := s.appThreadForID(threadID); !ok {
-		return ""
+	if threadID == "" || (threadID != rootID && s.appDescendants[threadID] == nil) {
+		return "", ""
 	}
-	return threadID
+	target := threadID
+	if threadID == s.appThreadID && s.appRef != "" {
+		target = s.appRef
+	}
+	return threadID, target
 }
 
 func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
@@ -1076,35 +1461,48 @@ func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) transcript.H
 	}
 }
 
-// appLatestTurns windows the newest limit turns out of the installed snapshot
-// and returns the cursor for the page before them. A limit of zero or less
-// returns the whole thread with no cursor.
-func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string) {
+func (s *Server) appLatestItemTurns(threadID string, limit int) ([]appwire.Turn, string, error) {
 	snapshot := s.appTurnSnapshotForID(threadID)
 	if snapshot == nil {
-		return nil, ""
+		return nil, "", nil
 	}
-	return snapshot.Latest(limit)
+	window, _, err := snapshot.LatestItemCandidates(limit)
+	if err != nil {
+		return nil, "", err
+	}
+	turns, err := appitempaging.RegroupTurnFragments(appitempaging.NormalizeProjectedItemCompleteness(window.Candidates))
+	if err != nil {
+		return nil, "", err
+	}
+	return turns, window.OlderCursor, nil
 }
 
-// appPageTurns pages backward through the installed snapshot from cursor.
-func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
-	snapshot := s.appTurnSnapshotForID(threadID)
-	if snapshot == nil {
-		return appwire.ThreadTurnsListResponse{}
-	}
-	return snapshot.Page(cursor, limit)
-}
-
-// handleAppThreadTurnsList pages turns backward (older) for lazy transcript
-// loading. The web client seeds the latest window via thread/read(TurnLimit)
-// and walks back with this as the user scrolls up.
+// handleAppThreadTurnsList pages backward (older) through bounded atomic items.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
 	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if threadID == "" {
 		return appwire.ThreadTurnsListResponse{}, appwire.SessionUnavailable("thread is unavailable")
 	}
-	return s.appPageTurns(threadID, params.Cursor, params.Limit), nil
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return appwire.ThreadTurnsListResponse{}, nil
+	}
+	window, _, err := snapshot.PreviousItemCandidates(params.Cursor, params.ItemLimit)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	turns, err := appitempaging.RegroupTurnFragments(appitempaging.NormalizeProjectedItemCompleteness(window.Candidates))
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	response := appwire.ThreadTurnsListResponse{Data: turns, NextCursor: window.OlderCursor}
+	if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	return response, nil
 }
 
 func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -1395,7 +1793,10 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 	if parsedRef.SourceID != "local" {
 		return appwire.ThreadClearResponse{}, appwire.SessionUnavailable("thread is unavailable")
 	}
-	requestHash := threadClearRequestHash(params)
+	requestHash, err := threadClearRequestHash(params)
+	if err != nil {
+		return appwire.ThreadClearResponse{}, appwire.InternalError(err.Error())
+	}
 	if !s.appMutationGate.TryLock() {
 		return appwire.ThreadClearResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "a retry-safe mutation is already in progress")
 	}
@@ -1475,24 +1876,43 @@ func (s *Server) handleAppThreadClear(ctx context.Context, params appwire.Thread
 		ExpectedInstanceID: params.ExpectedInstanceID,
 		State:              threadClearReserved,
 	}
+	// A new reservation supersedes every older record for the same stable ref:
+	// the instance those records expected (or installed) is being replaced, so
+	// none of them can be a live client's retry anymore. This bounds the
+	// journal at one record per ref instead of one per clear, forever. The two
+	// snapshots make each rollback below a wholesale restore; only this
+	// handler mutates clearRecords, and appMutationGate serializes it.
+	beforeReservation := maps.Clone(s.clearRecords)
+	for id, existing := range s.clearRecords {
+		if existing.Ref == params.Ref {
+			delete(s.clearRecords, id)
+		}
+	}
 	s.clearRecords[params.ClientMutationID] = record
 	if err := persistThreadClearJournal(s.clearJournalPath, s.clearRecords); err != nil {
-		delete(s.clearRecords, params.ClientMutationID)
+		s.clearRecords = beforeReservation
 		s.mu.Unlock()
 		return appwire.ThreadClearResponse{}, appwire.MutationUnknown(params.ClientMutationID, "thread clear reservation could not be persisted")
 	}
+	reserved := maps.Clone(s.clearRecords)
 	s.mu.Unlock()
 
 	if err := fn(ctx, params); err != nil {
 		s.mu.Lock()
-		reservedRecord := s.clearRecords[params.ClientMutationID]
-		delete(s.clearRecords, params.ClientMutationID)
+		// The failed clear installed nothing, so the records its reservation
+		// superseded describe the still-current instance: restoring the
+		// pre-reservation journal keeps an older receipt's replay alive after
+		// a failed newer clear.
+		s.clearRecords = beforeReservation
 		persistErr := persistThreadClearJournal(s.clearJournalPath, s.clearRecords)
 		if persistErr != nil {
-			// Keep the reservation in memory when its removal could not be
-			// persisted. A retry must not invoke the replacement callback a
-			// second time while the journal still records this request.
-			s.clearRecords[params.ClientMutationID] = reservedRecord
+			// Roll memory back to the journal the reservation persisted. Disk
+			// may already hold the rollback if only the post-rename directory
+			// sync failed, but either state is safe: every persist rewrites
+			// the whole file from memory, so the next successful one resyncs
+			// disk, and a retry that re-invokes the callback re-runs work that
+			// failed without installing anything.
+			s.clearRecords = reserved
 		}
 		s.mu.Unlock()
 		if persistErr != nil {
@@ -1533,6 +1953,7 @@ func (s *Server) clearBlockedReasonLocked() string {
 
 func (s *Server) threadClearResponse(clientMutationID string, disposition appwire.MutationDisposition) appwire.ThreadClearResponse {
 	thread := s.appThread()
+	thread.Evener.MutationStateAuthoritative = true
 	return appwire.ThreadClearResponse{
 		Thread: thread,
 		Ref:    thread.Evener.Ref,
@@ -1639,11 +2060,11 @@ func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params app
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("reasoning effort change not available")
 	}
-	// Normalize disable-aliases to "" and reject unknown vocabulary, so a typo or
-	// direct API call can't persist a provider-rejected effort that breaks later
-	// requests.
+	// Normalize disable-aliases to "none" and reject unknown vocabulary, so a
+	// typo or direct API call can't persist a provider-rejected effort that
+	// breaks later requests.
 	effort := llm.NormalizeReasoningEffort(params.ReasoningEffort)
-	if effort != "" && llm.ReasoningEffortRank(effort) == 0 {
+	if err := llm.ValidateReasoningEffort(effort); err != nil {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("invalid reasoning effort: " + params.ReasoningEffort)
 	}
 	fn(effort)
@@ -1789,6 +2210,11 @@ func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListPara
 // jobs.jsonl read, or the session's own mutex.
 func (s *Server) appThread() appwire.Thread {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appThreadLocked()
+}
+
+func (s *Server) appThreadLocked() appwire.Thread {
 	status := s.status
 	sourceID := s.appSourceID
 	threadID := s.appThreadID
@@ -1797,7 +2223,6 @@ func (s *Server) appThread() appwire.Thread {
 	turnReserved := strings.TrimSpace(s.appReservedTurnID) != ""
 	envelope := s.appEnvelope
 	activeTurnID := s.appActiveTurnID
-	s.mu.RUnlock()
 
 	if sourceID == "" {
 		sourceID = "local"
@@ -1853,14 +2278,14 @@ func (s *Server) appThread() appwire.Thread {
 			ContextUsed:           metrics.Used,
 			ContextWindow:         metrics.Window,
 			ContextRemaining:      metrics.Remaining,
-			Capabilities:          s.appCapabilities(status.State, processing),
+			Capabilities:          s.appCapabilitiesLocked(status.State, processing),
 			Diagnostics:           diagnostics,
 			Queue:                 queue,
 			PendingMutations:      pendingMutations,
 			Tasks:                 taskAggregate,
 			Goal:                  goalState,
 			Usage:                 usage,
-			Cost:                  appwire.EstimateCost(status.Model, usage),
+			Cost:                  appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
 			WorkMillis:            workMillis,
 			ActiveTurnStartedAt:   activeTurnStartedAt,
 			FailedToolCalls:       failedToolCalls,
@@ -1921,6 +2346,9 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 			ExitCode:         job.ExitCode,
 			OutputBytes:      job.OutputBytes,
 			TranscriptRef:    job.TranscriptRef,
+			Command:          job.Command,
+			Intent:           job.Intent,
+			Task:             job.Task,
 		})
 	}
 	for _, delegate := range ds.Delegates {
@@ -1985,6 +2413,10 @@ func cloneServerInt64(value *int64) *int64 {
 func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCapabilities {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.appCapabilitiesLocked(state, processing)
+}
+
+func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.ThreadCapabilities {
 	// Status-dependent capabilities derive from the status this thread PUBLISHES,
 	// not assembled again from the fields behind it. Clear additionally requires
 	// its handler and state gate to report that the action is currently safe.
@@ -2047,6 +2479,20 @@ func (s *Server) ensureAppProjectorLocked(threadID string) {
 		ref = appwire.Ref{SourceID: s.appSourceID, ThreadID: threadID}.String()
 	}
 	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
+	s.installCostLookup(s.appProjector)
+}
+
+// installCostLookup points a projector at this daemon's cost source, so the
+// turns it stamps are priced from the live session's registry (spec §7.5).
+// The closure reads the lookup at call time, so a projector installed before
+// the daemon was wired still prices correctly once it is.
+func (s *Server) installCostLookup(p *appprojector.AppEventProjector) {
+	if p == nil {
+		return
+	}
+	p.SetCostLookup(func(provider, model string) *registry.Cost {
+		return s.costFor(provider + "/" + model)
+	})
 }
 
 func (s *Server) reserveAppTurnIDForStart() (string, error) {

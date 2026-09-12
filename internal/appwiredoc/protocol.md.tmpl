@@ -5,7 +5,7 @@
 
 AppWire is the JSON-RPC wire protocol that connects the three evener binaries:
 the browser and `evener tui` talk to `evener hub`, and `evener hub` talks to each
-`evener serve` daemon (and to Codex app-server sources). The same message shapes
+`evener serve` daemon. The same message shapes
 and method catalog ride every hop.
 
 ```

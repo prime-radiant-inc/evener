@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -320,6 +322,15 @@ func parseDashRange(spec string) (lo, hi int, ok bool) {
 // truncated to a contiguous prefix at a line boundary (head-only), truncated is
 // set to true, and no non-JSON marker is injected. Returns the joined content,
 // the number of lines returned, the skipped count, and whether truncation occurred.
+//
+// Performance notes: the hot loop stays on []byte throughout (the ReadLine
+// buffer slice is trimmed in place and handed directly to DecodeEntry and
+// publicTranscriptLine with no string round-trips), per-line rune counts are
+// accumulated once via utf8.RuneCount (exactly equal to len([]rune(s)) for both
+// valid and invalid UTF-8: each invalid byte counts as one RuneError in both),
+// the output builder is grown up front to the exact byte size, and cap
+// enforcement is a single linear prefix walk — never a re-decode or re-copy of
+// the accumulator per line.
 func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
 	f, err := openTranscriptFile(path)
 	if err != nil {
@@ -331,8 +342,11 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 
 	// The first non-empty complete line is the header. This matches every v2
 	// semantic reader and keeps accepted leading blanks out of returned JSONL.
-	var headerLine string
-	for headerLine == "" {
+	// header aliases the ReadLine buffer: it is never mutated, only read and
+	// (below) possibly replaced wholesale by the re-encoded system_prompt-free
+	// form, so retaining the subslice is safe.
+	var header []byte
+	for header == nil {
 		headerBytes, complete, _, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
 		if readErr != nil {
 			return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", readErr)
@@ -340,16 +354,17 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		if !complete {
 			return "", 0, 0, false, errors.New("transcript file is empty: no header")
 		}
-		headerLine = strings.TrimSuffix(string(headerBytes), "\r")
-		if strings.TrimSpace(headerLine) == "" {
-			headerLine = ""
+		headerBytes = bytes.TrimSuffix(headerBytes, []byte("\r"))
+		if len(bytes.TrimSpace(headerBytes)) == 0 {
+			continue
 		}
+		header = headerBytes
 	}
-	if _, err := transcript.DecodeHeader([]byte(headerLine)); err != nil {
+	if _, err := transcript.DecodeHeader(header); err != nil {
 		return "", 0, 0, false, fmt.Errorf("parse transcript header: %w", err)
 	}
 	var semanticHeader map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(headerLine), &semanticHeader); err != nil {
+	if err := json.Unmarshal(header, &semanticHeader); err != nil {
 		return "", 0, 0, false, fmt.Errorf("decode semantic transcript header: %w", err)
 	}
 	if _, hasSystemPrompt := semanticHeader["system_prompt"]; hasSystemPrompt {
@@ -358,15 +373,23 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		if err != nil {
 			return "", 0, 0, false, fmt.Errorf("encode semantic transcript header: %w", err)
 		}
-		headerLine = string(encodedHeader)
+		header = encodedHeader
 	}
-	if len([]rune(headerLine))+1 > hardCapChars {
+	headerRunes := utf8.RuneCount(header)
+	if headerRunes+1 > hardCapChars {
 		return "", 0, 0, false, fmt.Errorf("semantic transcript header exceeds %d-character output limit", hardCapChars)
 	}
 
 	// Walk remaining lines.
 	// entryPos tracks how many "entry" lines we've seen (the derived seq).
-	var included []string
+	// included holds the projected output lines; includedRunes parallels it with
+	// each line's rune count (excluding its newline) so the hard-cap decision
+	// needs no second pass over the bytes. totalRunes/totalBytes accumulate the
+	// exact joined size including every "\n".
+	var included [][]byte
+	var includedRunes []int
+	totalRunes := headerRunes + 1 // header + "\n"
+	totalBytes := len(header) + 1
 	entryPos := -1
 
 	for {
@@ -380,14 +403,23 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 			}
 			break
 		}
-		rawLine := strings.TrimSuffix(string(line), "\r")
-		if strings.TrimSpace(rawLine) == "" {
+		// Trim in place: line is a fresh ReadLine buffer per call, and neither
+		// DecodeEntry nor publicTranscriptLine retains it (the latter returns
+		// freshly marshaled bytes), so the subslice is safe to share.
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		if _, err := transcript.DecodeEntry([]byte(rawLine)); err != nil {
+		// Strict validation stays DecodeEntry's job (unknown-field and trailing-
+		// data rejection); publicTranscriptLine does the lenient public
+		// projection. Both now share the one []byte with no string copies
+		// between them. Fusing them into a single JSON parse would mean
+		// reimplementing one of the two semantics here (strictness vs. the
+		// exact map-marshaled key order), so the two calls stay.
+		if _, err := transcript.DecodeEntry(line); err != nil {
 			return "", 0, skipped, false, fmt.Errorf("parse transcript entry: %w", err)
 		}
-		encoded, include, err := publicTranscriptLine([]byte(rawLine), entryPos+1)
+		encoded, include, err := publicTranscriptLine(line, entryPos+1)
 		if err != nil {
 			return "", 0, skipped, false, err
 		}
@@ -396,43 +428,54 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		}
 		entryPos++
 		if entryPos >= startSeq && entryPos <= endSeq {
-			included = append(included, string(encoded))
+			included = append(included, encoded)
+			lr := utf8.RuneCount(encoded)
+			includedRunes = append(includedRunes, lr)
+			totalRunes += lr + 1 // line + "\n"
+			totalBytes += len(encoded) + 1
 		}
 	}
 
 	// Build output: header first, then included lines, joined with "\n" + trailing newline.
-	var b strings.Builder
-	b.WriteString(headerLine)
-	b.WriteByte('\n')
-	for _, line := range included {
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	result := b.String()
 	lineCount := 1 + len(included) // header counts as 1
+	if totalRunes <= hardCapChars {
+		var b strings.Builder
+		b.Grow(totalBytes)
+		b.Write(header)
+		b.WriteByte('\n')
+		for _, line := range included {
+			b.Write(line)
+			b.WriteByte('\n')
+		}
+		return b.String(), lineCount, skipped, false, nil
+	}
 
 	// Enforce the hard cap at a line boundary (contiguous prefix, head-only).
 	// Stop adding lines at the last whole line that fits within hardCapChars runes.
 	// Do NOT inject any non-JSON marker: truncation is reported only via the
 	// truncated return value (the tool envelope sets meta.truncated from it).
-	if len([]rune(result)) > hardCapChars {
-		var capped strings.Builder
-		capped.WriteString(headerLine)
-		capped.WriteByte('\n')
-		capLines := 1
-		for _, line := range included {
-			candidate := capped.String() + line + "\n"
-			if len([]rune(candidate)) > hardCapChars {
-				break
-			}
-			capped.WriteString(line)
-			capped.WriteByte('\n')
-			capLines++
-		}
-		return capped.String(), capLines, skipped, true, nil
+	//
+	// Rune counts add exactly over concatenation here (join boundaries are the
+	// ASCII "\n" bytes, which cannot join or split a multi-byte rune), so this
+	// linear prefix walk selects exactly the same lines as re-measuring the
+	// whole accumulator per line did.
+	used := headerRunes + 1
+	keep := 0
+	keepBytes := len(header) + 1
+	for keep < len(included) && used+includedRunes[keep]+1 <= hardCapChars {
+		used += includedRunes[keep] + 1
+		keepBytes += len(included[keep]) + 1
+		keep++
 	}
-
-	return result, lineCount, skipped, false, nil
+	var capped strings.Builder
+	capped.Grow(keepBytes)
+	capped.Write(header)
+	capped.WriteByte('\n')
+	for _, line := range included[:keep] {
+		capped.Write(line)
+		capped.WriteByte('\n')
+	}
+	return capped.String(), 1 + keep, skipped, true, nil
 }
 
 // renderTranscript renders a transcript header + entry slice for a range, applies
@@ -1429,14 +1472,21 @@ func indentLines(lines []string) string {
 }
 
 // toolIntent returns the value of an explicit "intent" argument, or "" if
-// none is present. Intent is never inferred from commands or paths.
-// Spec §Tool Call Condensation.
+// none is present. Intent is never inferred from commands or paths. Falls
+// back to "purpose" — the field's name before the 2026-08-29 rename
+// (7512a736e) — so a transcript recorded before that rename still shows its
+// intent line when read back (issue #709). Spec §Tool Call Condensation.
 func toolIntent(args json.RawMessage) string {
 	m := parseArgs(args)
 	if m == nil {
 		return ""
 	}
 	if v, ok := m["intent"]; ok {
+		if s := scalarString(v); s != "" {
+			return s
+		}
+	}
+	if v, ok := m["purpose"]; ok {
 		if s := scalarString(v); s != "" {
 			return s
 		}
@@ -1541,7 +1591,13 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		return quoteIfSet(get("query"))
 
 	case "delegate":
-		parts := []string{truncRunes(get("task"), 80)}
+		// Older transcripts carry the brief under the retired task key;
+		// display only, invocation validation stays prompt-only.
+		brief := get("prompt")
+		if brief == "" {
+			brief = get("task")
+		}
+		parts := []string{truncRunes(brief, 80)}
 		if at := get("agent_type"); at != "" {
 			parts = append(parts, "type="+at)
 		}

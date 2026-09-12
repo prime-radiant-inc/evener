@@ -36,16 +36,31 @@ func newFakeClockShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecu
 	return jm, env, clk
 }
 
-func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
-	t.Helper()
+// shellDoneChannel returns the running job's done channel, which
+// armFinalizedJob closes only after the owner notification is enqueued, and
+// false when the job is no longer in the running map.
+func shellDoneChannel(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 	jm.mu.Lock()
+	defer jm.mu.Unlock()
 	run := jm.running[jobID]
 	if run == nil {
-		jm.mu.Unlock()
+		return nil, false
+	}
+	return run.done, true
+}
+
+// waitForShellDone blocks until jobID has finished. Finalization removes the
+// job from jm.running before it resolves the stable-delegate receipt, enqueues
+// the owner notification and closes done, so absence from the running map is
+// not a finish signal: a job that has already left it settles on its shell
+// receipt instead.
+func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	done, live := shellDoneChannel(jm, jobID)
+	if !live {
+		waitForShellReceiptResolved(t, jm, jobID)
 		return
 	}
-	done := run.done
-	jm.mu.Unlock()
 
 	select {
 	case <-done:
@@ -55,6 +70,68 @@ func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("job %s did not finish", jobID)
 	}
+}
+
+// waitForShellReceiptResolved blocks until the stable-delegate controller holds
+// no shell receipt for jobID. The receipt is the one piece of a finishing
+// shell's state that outlives its running-map entry: finalization drops it
+// after the removal and before it closes done.
+func waitForShellReceiptResolved(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	// TRIPWIRE: the receipt is dropped a few store appends past the removal, so
+	// this only bounds a genuine finalization hang.
+	waitForCondition(t, 30*time.Second, "job "+jobID+" to release its delegate shell receipt", func() bool {
+		return !shellReceiptHeld(jm, jobID)
+	})
+}
+
+// shellReceiptPollHook observes a receipt wait's look at a job, so a test can
+// stage the finish that wait is watching for on the wait itself rather than on
+// a timing window. Reads and writes are guarded because parallel tests wait on
+// shells while it is installed.
+var shellReceiptPollHook struct {
+	mu   sync.Mutex
+	fire func(jobID string)
+}
+
+func setShellReceiptPollHook(t *testing.T, fire func(jobID string)) {
+	t.Helper()
+	shellReceiptPollHook.mu.Lock()
+	shellReceiptPollHook.fire = fire
+	shellReceiptPollHook.mu.Unlock()
+	t.Cleanup(func() {
+		shellReceiptPollHook.mu.Lock()
+		shellReceiptPollHook.fire = nil
+		shellReceiptPollHook.mu.Unlock()
+	})
+}
+
+// shellReceiptHeld reports whether the stable-delegate controller still holds a
+// committed process receipt for jobID. Only a job manager bound to a stable
+// delegate parent has a lease, and beginStableDelegateShellReceipt takes a
+// receipt only for a non-empty lease, so root-owned shells never hold one and
+// this is always false for them.
+func shellReceiptHeld(jm *jobManager, jobID string) bool {
+	shellReceiptPollHook.mu.Lock()
+	fire := shellReceiptPollHook.fire
+	shellReceiptPollHook.mu.Unlock()
+	if fire != nil {
+		fire(jobID)
+	}
+	jm.mu.Lock()
+	controller := jm.delegateController
+	jm.mu.Unlock()
+	if controller == nil {
+		return false
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	for _, work := range controller.work {
+		if work.jobID == jobID {
+			return true
+		}
+	}
+	return false
 }
 
 func loadShellRecord(t *testing.T, jm *jobManager, jobID string) *jobstore.JobRecord {
@@ -362,6 +439,10 @@ func TestRunShellBackgroundWaitErrorFinalizesFailed(t *testing.T) {
 func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
+	// Virtual time never advances, so closeRuntimeState's grace timer never
+	// expires on its own: close waits on the released start's real
+	// completion instead of racing a wall-clock window.
+	jm.clock = agenttest.NewFakeClock()
 	se := newBlockingStartStreamingExecutor()
 
 	resultCh := make(chan shellResult, 1)

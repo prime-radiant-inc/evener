@@ -18,10 +18,22 @@ var (
 )
 
 // RepairJSON makes unparseable tool-argument bytes parseable by fixing broken
-// \u escapes and lone UTF-16 surrogates in string values. Deliberately narrow:
+// \u escapes and lone UTF-16 surrogates in string values, or appending a missing
+// outer-object brace. These repairs are never combined. Deliberately narrow:
 // it does not attempt general JSON slop repair (trailing commas, etc.). Returns
 // (raw, nil) when it changes nothing.
 func RepairJSON(raw []byte) ([]byte, []Change) {
+	// A nonempty object that becomes valid with exactly one appended brace
+	// already has complete members. Let the JSON parser reject unfinished
+	// values, trailing commas, and missing nested closers; never invent fields.
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 1 && trimmed[0] == '{' {
+		candidate := append(bytes.Clone(raw), '}')
+		if json.Valid(candidate) {
+			return candidate, []Change{{Kind: ChangeMissingOuterBrace, Detail: "appended missing outer-object }"}}
+		}
+	}
+
 	s := string(raw)
 	var changes []Change
 

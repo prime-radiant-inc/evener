@@ -15,7 +15,7 @@ import (
 // persisted jobs.jsonl through agent.LoadSessionJobActivityTree, behind the
 // same past-index gate pastTasksListResponse uses.
 func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
-	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+	source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, "")
 	var resp appwire.JobsListResponse
 	if err == nil {
 		resp, err = source.ListJobs(ctx, params)
@@ -26,7 +26,7 @@ func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.
 	if !isDeadSessionError(err) {
 		return appwire.JobsListResponse{}, err
 	}
-	pastResp, ok, pastErr := pastJobsListResponse(cfg, params)
+	pastResp, ok, pastErr := pastJobsListResponse(ctx, cfg, params)
 	if pastErr != nil {
 		return appwire.JobsListResponse{}, pastErr
 	}
@@ -41,13 +41,15 @@ func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.
 // past thread id the index already knows, so a job tree is never returned for
 // a session the hub cannot otherwise account for — and never from local state
 // for another source's ref. Only then does it read the session's persisted
-// jobs.jsonl.
-func pastJobsListResponse(cfg hubcore.WebConfig, params appwire.JobsListParams) (appwire.JobsListResponse, bool, error) {
+// jobs.jsonl. ctx flows through to LoadSessionJobActivityTree so a canceled
+// or timed-out hub request stops the persisted-tree walk instead of reading
+// every visited session's journal regardless.
+func pastJobsListResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.JobsListParams) (appwire.JobsListResponse, bool, error) {
 	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
 	if !ok {
 		return appwire.JobsListResponse{}, false, nil
 	}
-	tree, err := agent.LoadSessionJobActivityTree(entry.StateDir, entry.Meta.ID, params)
+	tree, err := agent.LoadSessionJobActivityTree(ctx, entry.StateDir, entry.Meta.ID, params)
 	if err != nil {
 		return appwire.JobsListResponse{}, true, err
 	}
@@ -58,7 +60,7 @@ func pastJobsListResponse(cfg hubcore.WebConfig, params appwire.JobsListParams) 
 // dead-session-fallback split. A job id absent from the persisted store is
 // invalid params — the caller guessed.
 func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+	source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, "")
 	var resp appwire.JobsOutputResponse
 	if err == nil {
 		resp, err = source.JobOutput(ctx, params)

@@ -9,15 +9,15 @@ import (
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string"},
-				"offset":    map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
-				"limit":     map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
-				"intent":    map[string]any{"type": "string", "description": "For image/PDF files: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
+				"file_path":     map[string]any{"type": "string"},
+				"offset":        map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
+				"limit":         map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
+				"vision_prompt": map[string]any{"type": "string", "description": "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
 			},
 			"required": []string{"file_path"},
 		},
@@ -97,19 +97,21 @@ func DefShell() llm.ToolDefinition {
 	}
 }
 
-// DelegateSandboxSchema describes the sandbox controls that the current
-// session can actually enforce. Available=false removes both sandbox knobs;
-// explicit values are still rejected by the handler rather than ignored.
-// Modes and NetworkValues are copied into the returned definition. An empty
-// NetworkValues leaves sandbox_net as an unconstrained boolean, which is the
-// portable full-capability schema used by DefDelegate.
+// DelegateSandboxSchema describes the sandbox control that the current
+// session can actually enforce. Available=false removes the sandbox knob;
+// an explicit value is still rejected by the handler rather than ignored.
+// Modes lists the mode names the parent floor permits (informational);
+// SandboxEnum (or, when empty, DelegateSandboxEnumFromModes over Modes)
+// becomes the sandbox property's enum: combined mode+network values such
+// as "read-only+nonet" and "nonet".
 type DelegateSandboxSchema struct {
-	Available                   bool
-	Modes                       []string
-	NetworkValues               []bool
-	RequireNonOffModeForNetwork bool
-	SandboxDescription          string
-	SandboxNetDescription       string
+	Available          bool
+	Modes              []string
+	SandboxDescription string
+	// SandboxEnum carries the precomputed combined sandbox+sandbox_net enum
+	// values (e.g. "off", "read-only", "read-only+nonet", "nonet"). Empty
+	// derives the enum from Modes via DelegateSandboxEnumFromModes.
+	SandboxEnum []string
 	// ModelDescription is appended to the model override description when a
 	// caller has captured a bounded, startup-frozen availability snapshot.
 	// Empty preserves the generic string contract.
@@ -165,20 +167,42 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable " +
 			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
-			"`delegation_allowance` lets the delegate itself delegate, up to one " +
-			"level shallower than your own allowance. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\") and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
+			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
+			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\") and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
 			"delegate to call `communicate` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"task":                 map[string]any{"type": "string"},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here.",
+				},
+				"task_list": map[string]any{
+					"type":        "array",
+					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
+					"items": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"title":            map[string]any{"type": "string", "description": "Short task title, under 10 words."},
+							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
+							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
+							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
+						},
+						"required": []string{"title", "prompt"},
+					},
+				},
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
+				"delegation_allowance": map[string]any{"type": "integer", "description": "Absent (default): the delegate gets an allowance one below yours and may delegate in turn. 0: a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type carries the `delegate` tool (the built-in `default` and `subagent` roles do; `explorer` does not)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
+				"fork_context": map[string]any{
+					"type": "boolean", "default": false,
+					"description": "Copy the parent's full conversation history into this delegate. Use only when the assignment requires that full context and history. Defaults to false. When selected facts, decisions, or excerpts are sufficient, include them in the prompt and start a clean session. The snapshot excludes the unfinished tool round; the child keeps its own role and permissions. Requires the parent's model and provider.",
+				},
 				"isolation": map[string]any{
 					"type":        "string",
 					"enum":        []string{"worktree"},
@@ -187,11 +211,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 				"sandbox": map[string]any{
 					"type":        "string",
 					"enum":        []string{"off", "read-only", "workspace-write", "restricted"},
-					"description": "Run this delegate under its own sandbox, independent of your session. Modes: off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential/secret paths, give a private temp dir, and confine spawned shell commands too; network is a separate toggle (sandbox_net). Most useful with isolation=\"worktree\". The modes are a partial order: you may only pick a box at least as confining as your own on BOTH reads and writes — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
-				},
-				"sandbox_net": map[string]any{
-					"type":        "boolean",
-					"description": "Whether the sandboxed delegate may use the network. Setting this to false disables all IP networking, including TCP, UDP, DNS, and loopback, and may break tests that start or connect to a local network server. Omit to inherit your session's setting. You cannot enable network for a delegate if your own session has it off.",
+					"description": "Run this delegate under its own sandbox, independent of your session. Each value encodes a sandbox mode and an optional network override: the base mode (e.g. \"read-only\") inherits your session's network; appending \"+nonet\" (e.g. \"read-only+nonet\") disables all IP networking. \"off\" = no confinement; \"read-only\" = reads anywhere but secret paths, no writes (a private temp dir only); \"workspace-write\" = reads anywhere but secret paths, writes the working tree; \"restricted\" = reads and writes only the working tree. All sandboxed modes mask credential/secret paths, give a private temp dir, and confine spawned shell commands too. \"nonet\" alone inherits your session's sandbox mode and disables network. Most useful with isolation=\"worktree\". The modes are a partial order: you may only pick a box at least as confining as your own on BOTH reads and writes — you cannot grant a delegate more access than you have. Omit to inherit your session's sandbox.",
 				},
 				"result_schema": map[string]any{
 					"type":                 "object",
@@ -199,7 +219,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 					"additionalProperties": true,
 				},
 			},
-			"required": []string{"task"},
+			"required": []string{"prompt"},
 		},
 	}
 	props := def.Parameters["properties"].(map[string]any)
@@ -208,48 +228,51 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	if !sandboxSchema.Available {
 		delete(props, "sandbox")
-		delete(props, "sandbox_net")
-		def.Description += " This session's host cannot enforce per-delegate sandboxing, so `sandbox` and `sandbox_net` are unavailable; do not send them."
+		def.Description += " This session's host cannot enforce per-delegate sandboxing, so `sandbox` is unavailable; do not send it."
 		return def
 	}
-	if len(sandboxSchema.Modes) > 0 {
-		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.Modes...)
+	if len(sandboxSchema.SandboxEnum) > 0 {
+		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.SandboxEnum...)
+	} else if enum := DelegateSandboxEnumFromModes(sandboxSchema.Modes, true, false); len(enum) > 0 {
+		props["sandbox"].(map[string]any)["enum"] = enum
 	} else {
-		// An available backend may still have no explicit mode that satisfies the
-		// parent's effective floor (for example, restricted plus WriteBlocked).
-		// Omit only the unusable mode control; sandbox_net remains available for
-		// the valid net-only tightening/inheritance path.
+		// No usable sandbox mode; remove the control entirely.
 		delete(props, "sandbox")
-	}
-	if len(sandboxSchema.NetworkValues) > 0 {
-		props["sandbox_net"].(map[string]any)["enum"] = append([]bool(nil), sandboxSchema.NetworkValues...)
-	}
-	if sandboxSchema.RequireNonOffModeForNetwork {
-		nonOffModes := make([]string, 0, len(sandboxSchema.Modes))
-		for _, mode := range sandboxSchema.Modes {
-			if mode != "off" {
-				nonOffModes = append(nonOffModes, mode)
-			}
-		}
-		def.Parameters["oneOf"] = []any{
-			map[string]any{"not": map[string]any{"required": []string{"sandbox_net"}}},
-			map[string]any{
-				"required": []string{"sandbox", "sandbox_net"},
-				"properties": map[string]any{
-					"sandbox": map[string]any{"enum": nonOffModes},
-				},
-			},
-		}
 	}
 	if sandboxSchema.SandboxDescription != "" {
 		if sandbox, ok := props["sandbox"].(map[string]any); ok {
 			sandbox["description"] = strings.TrimSpace(sandbox["description"].(string) + " " + sandboxSchema.SandboxDescription)
 		}
 	}
-	if sandboxSchema.SandboxNetDescription != "" {
-		props["sandbox_net"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox_net"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxNetDescription)
-	}
 	return def
+}
+
+// DelegateSandboxEnumFromModes expands sandbox mode names into the combined
+// sandbox+sandbox_net enum values: each non-off mode produces a base value
+// (inherit parent network) and a +nonet variant (disable network). When the
+// parent network is off, only +nonet variants are emitted. Bare "nonet"
+// (inherit the parent's mode, disable network) is available under any non-off
+// parent with network on; when parentModeOff it is omitted, since network
+// confinement is meaningless without a sandbox.
+func DelegateSandboxEnumFromModes(modes []string, parentNetwork, parentModeOff bool) []string {
+	var values []string
+	for _, mode := range modes {
+		if mode == "off" {
+			values = append(values, "off")
+			continue
+		}
+		if parentNetwork {
+			// Parent has network: base value inherits network, +nonet disables it.
+			values = append(values, mode, mode+"+nonet")
+		} else {
+			// Parent network is off: only +nonet is enforceable.
+			values = append(values, mode+"+nonet")
+		}
+	}
+	if parentNetwork && !parentModeOff {
+		values = append(values, "nonet")
+	}
+	return values
 }
 
 // DefDelegateSend defines the delegate_send tool, the single follow-up surface
@@ -303,12 +326,17 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Create, inspect, list, or clear standing triggers on a source you can observe. " +
+	desc := "Wake yourself later: `after_seconds` fires once and `repeat_seconds` fires every interval. " +
+		"Source defaults to `self` for these. Use a timer for state Evener cannot tell you about, such as an external service; your delegates and jobs wake you when they finish, so never set a timer to learn whether one finished. " +
+		"To be nudged if a job is still running later, create a one-shot on yourself with a note naming the job (`after_seconds:600, note:\"job_x should be done; check job_status\"`) and call `job_status` when it fires. " +
+		"`note` is the watch's own prose payload: any create accepts one, and it comes back with every fire so you know why you armed it. " +
+		"Each `create` installs a new watch; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
+		"Create, inspect, list, or clear standing triggers on a source you can observe. " +
 		"For operation=\"create\", set `source` to `self`, `parent`, a stable delegate ID (`dlg_...`), or a concrete shell `job_id`. " +
 		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
 		"Delivery is implicit: matching frames are delivered to the session that created the watch. " +
 		"For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. " +
-		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress uses `progress_interval_ms`. " +
+		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress on a concrete job uses `progress_interval_ms`. " +
 		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
 		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
 		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
@@ -324,11 +352,14 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
 				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
-				"source":               map[string]any{"type": "string", "description": "`self`, `parent` when granted by delegate(watch_parent=true), a stable delegate ID (`dlg_...`), or a concrete shell job_id visible to this session."},
-				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
-				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
+				"source":               map[string]any{"type": []string{"string", "null"}, "description": "`self`, `parent` when granted by delegate(watch_parent=true), a stable delegate ID (`dlg_...`), or a concrete shell job_id visible to this session."},
+				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
+				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Concrete job source only: periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
+				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "Fire once this many seconds from now (60 to 86400); source self only."},
+				"repeat_seconds":       map[string]any{"type": []string{"integer", "null"}, "description": "Fire every this many seconds until cleared (60 to 3600); source self only."},
+				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Delivered with every fire of any watch; use it to say why you armed it and, for a loop, where you are."},
 				"events": map[string]any{
-					"type":        "array",
+					"type":        []string{"array", "null"},
 					"items":       map[string]any{"type": "string"},
 					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ". Watch communicate for result/status messages.",
 				},
@@ -337,7 +368,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default (fire on every occurrence); values above 1 require `events` to contain exactly one kind.",
 				},
 				"event_filter": map[string]any{
-					"type":                 "object",
+					"type":                 []string{"object", "null"},
 					"additionalProperties": false,
 					"description":          "Structured predicate for assistant.tool watches. With events [\"assistant.tool\"], match the emitted tool call by tool_name and/or status. Communicate content is delivered in event.message for the observer task to evaluate.",
 					"properties": map[string]any{
@@ -618,22 +649,26 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 		// every property) still lets the model decline to override.
 		reasoningSchema["enum"] = append(append([]string(nil), effortLevels...), "inherit")
 	}
+	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. Use view to inspect tasks and reasoning effort levels, append to add new tasks, and update to change status, notes, dependencies, or reasoning_effort. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same updates array.",
+		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, the field named description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
+		// Strict is explicitly false: the OpenAI Responses adapter defaults
+		// strict=true when unset and force-requires every nested property,
+		// which would force strict-mode models to emit "status": "" (enum
+		// violation) or "depends_on": [] (which clears deps) on every update
+		// item. Opting out keeps optional fields genuinely omittable.
+		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"action": map[string]any{
-					"type": "string",
-					"enum": []string{"view", "append", "update"},
-				},
-				"tasks": map[string]any{
+				"add": map[string]any{
 					"type":        "array",
-					"description": "For append: tasks to add. Each has a type, brief description (<10 words), a detailed prompt, and optional reasoning_effort.",
+					"description": "Tasks to add. Omit or [] for none. Each: type, the field named description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort.",
 					"items": map[string]any{
-						"type": "object",
+						"type":                 "object",
+						"additionalProperties": false,
 						"properties": map[string]any{
 							"type": map[string]any{
 								"type":        "string",
@@ -645,18 +680,19 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							"depends_on": map[string]any{
 								"type":        "array",
 								"items":       map[string]any{"type": "integer"},
-								"description": "IDs of tasks this one depends on. Optional.",
+								"description": "IDs of existing tasks (or earlier tasks in this same add array, which get sequential IDs) this one depends on. Optional.",
 							},
 							"reasoning_effort": reasoningSchema,
 						},
 						"required": []string{"type", "description", "prompt"},
 					},
 				},
-				"updates": map[string]any{
+				"update": map[string]any{
 					"type":        "array",
-					"description": "For update: list of {id, status} pairs with optional notes.",
+					"description": "Changes to existing tasks. Omit or [] for none. Each: id plus optional status, notes, depends_on, or reasoning_effort. Omit status to leave it unchanged.",
 					"items": map[string]any{
-						"type": "object",
+						"type":                 "object",
+						"additionalProperties": false,
 						"properties": map[string]any{
 							"id":     map[string]any{"type": "integer"},
 							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
@@ -668,11 +704,10 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							},
 							"reasoning_effort": reasoningSchema,
 						},
-						"required": []string{"id", "status"},
+						"required": []string{"id"},
 					},
 				},
 			},
-			"required": []string{"action"},
 		},
 	}
 }
@@ -709,6 +744,71 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 				"scope":       map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
 				"limit":       map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
 			},
+		},
+	}
+}
+
+// DefDoctorEvener defines the read-only in-process doctor data plane: the
+// same commands and result shapes as the `evener doctor` CLI, executed against
+// the session's own state root by default so inspection never depends on a
+// shell, PATH, or cwd. Mirrors the doctoring-evener skill's command table.
+//
+// The command enum lives here as the single source: the definition's schema
+// and the agent-layer dispatcher both derive from DoctorEvenerCommands, so
+// the tool surface and dispatch cannot drift.
+func DoctorEvenerCommands() []string {
+	return []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "turnids", "sessions", "audit", "plugins"}
+}
+
+func DefDoctorEvener() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        "doctor_evener",
+		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur>, bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health). First positional in the CLI is the `selector` argument here: local:<id>, proj:<hash>:<id>, or a bare <id> searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"enum":        DoctorEvenerCommands(),
+					"description": "Doctor subcommand, matching `evener doctor <cmd>`.",
+				},
+				"selector":  map[string]any{"type": "string", "description": "Session selector: local:<id>, proj:<hash>:<id>, or bare <id>. Required by selector-taking commands; rejected by sessions/audit/turnids/plugins."},
+				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root)."},
+				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
+				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
+				"range":     map[string]any{"type": "string", "description": "transcript: turn window: last:N | start:N | A-B."},
+				"text_max":  map[string]any{"type": "integer", "description": "transcript: byte cap on each turn's rendered text and tool-result previews."},
+				"full_text": map[string]any{"type": "boolean", "description": "transcript: render turns whole, with no byte cap."},
+				"empty":     map[string]any{"type": "boolean", "description": "apilog: only empty responses."},
+				"errors":    map[string]any{"type": "boolean", "description": "apilog: only failed calls."},
+				"cache_spikes": map[string]any{
+					"type":        "boolean",
+					"description": "apilog: only calls whose uncached input >= threshold.",
+				},
+				"threshold": map[string]any{"type": "integer", "description": "apilog: uncached-input-token floor for cache_spikes."},
+				"summary":   map[string]any{"type": "boolean", "description": "apilog: render only the per-session aggregate."},
+				"validate":  map[string]any{"type": "boolean", "description": "apilog: whole-history integrity scan; the result carries clean=false when any problem is found."},
+				"recompute": map[string]any{
+					"type":        "boolean",
+					"description": "apilog: re-extract text/tool-call counts from stored bodies for rows recorded empty.",
+				},
+				"job_id":   map[string]any{"type": "string", "description": "jobs: scope to one job_id."},
+				"watch_id": map[string]any{"type": "string", "description": "watches: scope to one watch_id."},
+				"self_loops": map[string]any{
+					"type":        "boolean",
+					"description": "watches: only watches where the runaway fuse fired.",
+				},
+				"depth":     map[string]any{"type": "integer", "description": "tree: max depth to expand; 0 or omitted means the max (50)."},
+				"observers": map[string]any{"type": "boolean", "description": "tree: include observer edges."},
+				"since":     map[string]any{"type": "string", "description": "sessions/audit: only sessions with last activity within this duration (e.g. 120h)."},
+				"bucket":    map[string]any{"type": "string", "description": "sessions: scope to one bucket (project id). Enumerating every bucket is already the default (the CLI --all flag is that default made explicit, so it has no tool argument)."},
+				"runbook":   map[string]any{"type": "string", "description": "audit: runbook name, resolved from the bundled doctoring-evener skill's runbooks/."},
+				"sessions":  map[string]any{"type": "string", "description": "audit: comma-separated session selectors (mutually exclusive with since)."},
+			},
+			"required": []string{"command"},
 		},
 	}
 }
@@ -838,20 +938,20 @@ func DefReadTranscript() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_transcript",
-		Description: "Read retained evidence by transcript_ref. A session ref (from find_session_transcripts or a delegate result) keeps the existing semantic transcript contract: markdown by default, optional outline/jsonl, range windows, and expand_turn as exact transcript_v2_jsonl in fixed 16 KiB pages continued with offset_bytes. Session refs do not support output_match. A stable delegate's session ref reads its conversation; delegates never use job: refs. A `job:<job_id>` ref comes from job_status/job_list, a windowed shell result, or the `read with:` line of a watch frame and reads shell output only; job-control tools remain scoped even when the ref is readable. With no offset_bytes or output_match, a job: ref keeps the existing shell-process markdown view. Explicit offset_bytes selects a fixed 16 KiB raw page in lifetime byte coordinates; output_match selects bounded RE2 line search with 0–10 context_lines and is limited to 65,536 characters so the complete exact JSON envelope remains below the registry backstop. Job page/search responses include job_status and honest total_bytes/retained_start_bytes; output_unavailable means retention pruned the requested prefix. range and expand_turn are session-only; outline/jsonl are invalid for job: refs, and any explicit format cannot accompany job paging/search. An `artifact:<id>` ref is exact generic truncated tool output retained only for the current root session tree; an expired or unknown capability returns artifact_expired. Artifact reads default to raw page 0, also support offset_bytes or output_match/context_lines, always have retained_start_bytes 0, omit job_status, and reject every explicit format plus range/expand_turn with invalid_request. Post-open artifact read failures return path-free artifact_unavailable errors. Page and search continuations carry lifetime offset_bytes. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
+		Description: "Read retained evidence by transcript_ref. A session ref (from find_session_transcripts or a delegate result) keeps the existing semantic transcript contract: markdown by default, optional outline/jsonl, range windows, and expand_turn as exact transcript_v2_jsonl in fixed 16 KiB pages continued with offset_bytes. Session refs do not support output_match. A stable delegate's session ref reads its conversation; delegates never use job: refs. A `job:<job_id>` ref comes from job_status/job_list, a windowed shell result, or the `read with:` line of a watch frame and reads shell output only; job-control tools remain scoped even when the ref is readable. With no offset_bytes or output_match, a job: ref keeps the existing shell-process markdown view. Explicit offset_bytes selects a fixed 16 KiB raw page in lifetime byte coordinates; output_match selects bounded RE2 line search with 0–10 context_lines and is limited to 65,536 characters so the complete exact JSON envelope remains below the registry backstop. Job page/search responses include job_status and honest total_bytes/retained_start_bytes; output_unavailable means retention pruned the requested prefix. range and expand_turn are session-only; outline/jsonl are invalid for job: refs. format=markdown is a no-op for every job view, including paging/search; other explicit formats are invalid. An `artifact:<id>` ref is exact generic truncated tool output retained only for the current root session tree; an expired or unknown capability returns artifact_expired. Artifact reads default to raw page 0, also support offset_bytes or output_match/context_lines, always have retained_start_bytes 0, omit job_status, and reject every explicit format plus range/expand_turn with invalid_request. Post-open artifact read failures return path-free artifact_unavailable errors. Page and search continuations carry lifetime offset_bytes. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
-				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
-				"range":          map[string]any{"type": "string", "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
-				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
+				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
+				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
+				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
-				"output_match":   map[string]any{"type": "string", "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
+				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
 				"context_lines": map[string]any{
-					"type":        "integer",
+					"type":        []any{"integer", "null"},
 					"minimum":     0,
 					"maximum":     10,
 					"description": "Lines before and after each output_match; requires output_match. Default 0.",

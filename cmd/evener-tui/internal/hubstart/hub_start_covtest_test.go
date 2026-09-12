@@ -43,7 +43,7 @@ func TestCovDialHubRPCWithFrameHandler(t *testing.T) {
 		observed <- observedFrame{msg: msg, err: err}
 	}
 
-	client, err := dialHubRPC(context.Background(), addr, srv.Client(), handler)
+	client, err := dialHubRPC(context.Background(), addr, srv.Client(), handler, nil)
 	if err != nil {
 		t.Fatalf("dialHubRPC: %v", err)
 	}

@@ -43,7 +43,7 @@ test("renders a nav landmark labelled Settings sections", () => {
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
 });
 
-test("renders all 16 section links with their visible labels", () => {
+test("renders all 15 legacy section links with their visible labels", () => {
   render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
   for (const label of [
     "General",
@@ -54,7 +54,6 @@ test("renders all 16 section links with their visible labels", () => {
     "Providers & credentials",
     "Agents",
     "Evener launch",
-    "Codex launch",
     "In-repo config",
     "Marketplaces & Plugins",
     "Plugins",
@@ -69,7 +68,7 @@ test("renders all 16 section links with their visible labels", () => {
 
 test("renders the 3 cluster headers", () => {
   render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
-  expect(screen.getByText("Agents & models")).toBeTruthy();
+  expect(screen.getByText("Agent setup")).toBeTruthy();
   expect(screen.getByText("Extensions")).toBeTruthy();
   expect(screen.getByText("Daemon")).toBeTruthy();
 });
@@ -115,7 +114,7 @@ test("a cluster header hides once every one of its links is filtered out", async
   await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "storage");
 
   expect(screen.getByText("Daemon")).toBeTruthy(); // Storage matches, stays
-  expect(screen.queryByText("Agents & models")).toBeNull(); // nothing in it matches
+  expect(screen.queryByText("Agent setup")).toBeNull(); // nothing in it matches
   expect(screen.queryByText("Extensions")).toBeNull();
 });
 

@@ -11,9 +11,12 @@ it" for the endpoints, "Driving the web UI with superpowers-chrome:browsing" for
 `/auth` recipe and selector map. Two facts this card is built on, because they invert what
 it used to say:
 
-- The answering surface is the **composer's ask dock**
-  (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`), not a form inside the
-  transcript. The transcript's own `ask_user` row is deliberately read-only and says so
+- The answering surface is the **ask dock**
+  (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`), mounted as the
+  **transcript's trailing row** while a question is pending (`Session.tsx` passes it as
+  `TranscriptBody`'s `trailingRow`) — it scrolls with the transcript content, and the
+  composer's own input row stays `hidden`/`inert` meanwhile. The transcript's own
+  historical `ask_user` row is deliberately read-only and says so
   (`panes/session/transcript/tools/askUser.tsx:16-21`, `:105`).
 - Every `[data-ask-card]` / `[data-ask-option]` / `.ask-question-header` /
   `[data-ask-note-toggle]` / `[data-ask-send-btn]` / `.ask-settled-line` / `.agent-question`
@@ -112,7 +115,7 @@ gesture.
 3. **(browser)** Authenticate a tab and open the session. Note the ref form — a bare
    `/s/<SID>` renders "Page not found" by design:
    ```
-   navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+   navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
    await_element [data-ask-response-dock]
    ```
 4. **(browser)** Inspect the rendered question. Options are plain radios labelled by the
@@ -128,20 +131,24 @@ gesture.
      const tagged = [...q.querySelectorAll('input[type="radio"][aria-label]')]
        .filter((el) => el.closest('label')?.textContent.includes('recommended'))
        .map((el) => el.getAttribute('aria-label'));
-     return {
-       port: location.port,                       // page-identity check, always
-       path: location.pathname,                   // /s/local:<SID>
-       anchor: dock.querySelector('[role="status"]')?.textContent,
-       askKey: q.getAttribute('data-ask-key'),    // "<callId>:<idx>"
-       header: q.textContent.slice(0, 40),
-       opts,
-       tagged,
-       count: [...dock.querySelectorAll('span')].map((s) => s.textContent)
-                .find((t) => / of \d+ question/.test(t)),
-       composerHidden: document.querySelector('[data-testid="composer-input-card"]')?.hasAttribute('hidden'),
-     };
-   })()
-   ```
+    return {
+      port: location.port,                       // page-identity check, always
+      path: location.pathname,                   // /s/local:<SID>
+      // The dock row is virtualized and carries NO live regions; the one
+      // aria-live region for this surface is AskDockAnnouncements, mounted
+      // outside the virtual list (Session.tsx).
+      anchor: document.querySelector('[data-testid="ask-dock-announcements"]')?.textContent,
+      dockInTranscript: !!dock.closest('[data-testid="transcript-virtual-list"]'),
+      askKey: q.getAttribute('data-ask-key'),    // "<callId>:<idx>"
+      header: q.textContent.slice(0, 40),
+      opts,
+      tagged,
+      count: [...dock.querySelectorAll('span')].map((s) => s.textContent)
+               .find((t) => / of \d+ question/.test(t)),
+      composerHidden: document.querySelector('[data-testid="composer-input-card"]')?.hasAttribute('hidden'),
+    };
+  })()
+  ```
 5. **(browser)** Deliberately pick **against** the model's recommendation — proves the
    reply carries the user's real choice, not an echo of the suggestion — and attach a note.
    Use real key events for the note: it is a React-controlled input, and a bare
@@ -153,7 +160,9 @@ gesture.
    click [data-ask-response-dock] input[placeholder="note (optional)"]
    type only for the prototype; revisit before prod
    ```
-   Re-read the answered count (the footer's `aria-live` span, `AskDock.tsx:244-246`):
+   Re-read the answered count (the batch footer's visual count span — no longer
+   `aria-live`; count announcements for screen readers come from the
+   `ask-dock-announcements` region):
    ```javascript
    [...document.querySelectorAll('[data-ask-response-dock] span')]
      .map((s) => s.textContent).find((t) => / of \d+ question/.test(t))
@@ -191,8 +200,11 @@ gesture.
   `Queue: … && active && !closed`). Falsify: `queue` true while `awaiting`, or the thread
   never reports `awaiting` at all.
 - **Step 4**: `opts` contains both `Postgres` and `SQLite`; `tagged` contains `Postgres`
-  if the model honored `recommended: true`; `anchor` reads `Answer the agent’s questions.`
-  (curly apostrophe, `AskDock.tsx:311`); `count` reads `0 of 1 question answered`;
+  if the model honored `recommended: true`; `dockInTranscript` is `true` — the dock is the
+  transcript's trailing virtual row, not a composer child; `anchor` reads
+  `Answer the agent’s questions.` (curly apostrophe) from the
+  `[data-testid="ask-dock-announcements"]` region outside the virtual list; `count` reads
+  `0 of 1 question answered`;
   `composerHidden` is `true` — the plain composer card is `hidden`/`inert` while a question
   is pending (`Composer.tsx:303,761` into `widgets/promptcard/index.tsx:58`). Falsify: no
   `[data-ask-response-dock]` on an `awaiting`-with-ask session, or the plain composer is
@@ -210,7 +222,7 @@ gesture.
 - **Step 8 (exact)**: the outline shows the `ask_user` tool result carrying the ack text
   `questions posted; answers arrive in the user's reply after your turn ends`
   (`agent/session_tools_ask.go:23`), followed by a user turn whose text is exactly the
-  §4.3 form (`composeAskAnswers`, `askDock/askCompose.ts:84-93` — byte-exact,
+  §4.3 form (`composeAskAnswers`, `cmd/evener-hub/frontend/src/protocol/askAnswers.ts:92-100` — byte-exact,
   golden-string tested):
   ```
   [answers]

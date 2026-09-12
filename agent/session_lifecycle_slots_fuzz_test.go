@@ -316,6 +316,7 @@ func FuzzLcyc_DiscardRestoredCandidate(f *testing.F) {
 			}
 		}
 
+		parent.ownsEnv = true
 		for _, code := range teardown {
 			if code == 0 {
 				parent.discardRestoredCandidate()

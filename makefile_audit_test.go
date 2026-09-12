@@ -33,9 +33,7 @@ var makefileVariableFedDeletes = map[string]string{}
 // The hazard is the one from kata 5hs2: a recursive delete whose path arrives
 // in a variable deletes whatever that variable happens to hold, and an empty
 // expansion turns a scratch cleanup into a delete of something a person would
-// miss. The Makefile's DEV_TOOLING_TEST_SCRIPTS comment records the same
-// lesson from the other side — the scratch-lib suite exists to prove no
-// selftest can be made to delete the checkout.
+// miss.
 //
 // Two limits are worth stating, because a passing run does not cover them. The
 // scan is textual, so `find … -exec rm -rf {} +` reads as a delete of the

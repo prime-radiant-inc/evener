@@ -7,36 +7,36 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-// CredentialResolver is the slice of internal/credentials.Store that
-// ToEnv depends on. Decoupled to a small interface so tests don't need
-// to construct a real store.
-type CredentialResolver interface {
-	// APIKeyFor returns the API key value plus the source label
-	// ("file", "env", "oauth", "absent"). Empty value means absent.
-	APIKeyFor(provider string) (string, string)
-}
-
 // EnvInputs bundles everything ToEnv needs.
 type EnvInputs struct {
-	Resolved            Resolved
-	Provider            string
-	Creds               CredentialResolver
-	ParentEnv           []string // typically os.Environ()
-	RunDir              string
-	StateDir            string
-	HubToken            string
-	ProvidersConfigPath string // if set, passed as EVENER_PROVIDERS_CONFIG to spawned children
+	Resolved  Resolved
+	ParentEnv []string // typically os.Environ()
+	RunDir    string
+	StateDir  string
+	HubToken  string
+	// ProvidersConfigPath is passed as EVENER_PROVIDERS_CONFIG so the child
+	// reads the same user layer the hub does. NoUserLayer overrides it.
+	ProvidersConfigPath string
+	// NoUserLayer sets EVENER_PROVIDERS_CONFIG to the empty string —
+	// spec §10's third state, "no user layer" — replacing any inherited
+	// value. It is how a hub whose providers.toml failed to load still
+	// spawns children that resolve the implicit instance set.
+	NoUserLayer bool
+	// CredentialsPath is passed as EVENER_CREDENTIALS_CONFIG so the child
+	// resolves credentials out of the same credentials.toml the hub's pane
+	// writes.
+	CredentialsPath string
 }
 
 // ToEnv produces the env slice for the spawned `evener serve`. Order of
 // precedence per the spec §4.5:
 //  1. Per-launch env from Resolved.Effective.Env (last-write-wins).
-//  2. The matching credential env var (from Creds).
-//  3. Parent process env (typically os.Environ()).
-//  4. Provider-specific on-disk OAuth state — handled by evener itself.
+//  2. Parent process env (typically os.Environ()).
 //
 // Items earlier in the priority list are applied later in setEnv so they
-// overwrite earlier writes.
+// overwrite earlier writes. Provider credentials are not among them: the
+// child resolves its own from the registry, the credentials.toml named by
+// EVENER_CREDENTIALS_CONFIG, and the environment (spec §10).
 func ToEnv(in EnvInputs) []string {
 	out := append([]string{}, in.ParentEnv...)
 	out = setEnv(out, envvars.EVENERHubSpawned.Name, "1")
@@ -49,14 +49,14 @@ func ToEnv(in EnvInputs) []string {
 	if in.HubToken != "" {
 		out = setEnv(out, envvars.EVENERHubToken.Name, in.HubToken)
 	}
-	if in.ProvidersConfigPath != "" {
+	switch {
+	case in.NoUserLayer:
+		out = setEnv(out, envvars.EVENERProvidersConfig.Name, "")
+	case in.ProvidersConfigPath != "":
 		out = setEnv(out, envvars.EVENERProvidersConfig.Name, in.ProvidersConfigPath)
 	}
-	// 2. Credentials store value.
-	if envKey, ok := envvars.InjectAPIKeyVar(strings.ToLower(in.Provider)); ok && in.Creds != nil {
-		if v, _ := in.Creds.APIKeyFor(strings.ToLower(in.Provider)); v != "" {
-			out = setEnv(out, envKey.Name, v)
-		}
+	if in.CredentialsPath != "" {
+		out = setEnv(out, envvars.EVENERCredentialsConfig.Name, in.CredentialsPath)
 	}
 
 	// 1. Per-launch env: applied last so it wins, in sorted key order

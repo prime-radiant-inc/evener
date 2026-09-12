@@ -202,6 +202,7 @@ func FuzzSessionLifecycleTeardownCoverage(f *testing.F) {
 
 		discard := sltcNewSession(t, false, false)
 		discard.mcpMgr = &mcp.Manager{}
+		discard.ownsEnv = true
 		discard.discardRestoredCandidate()
 
 		parent := sltcNewSession(t, false, false)
@@ -211,7 +212,8 @@ func FuzzSessionLifecycleTeardownCoverage(f *testing.F) {
 		child.mu.Lock()
 		child.env = execenv.NewLocalExecutionEnvironment(t.TempDir())
 		child.mu.Unlock()
-		parent.subagents.track(&subagent{id: "owned", sess: child, ownsEnv: true, done: make(chan struct{})})
+		child.ownsEnv = true
+		parent.subagents.track(&subagent{id: "owned", sess: child, done: make(chan struct{})})
 		parent.Close()
 	})
 }
@@ -275,7 +277,7 @@ func FuzzSessionLifecyclePromptHookCoverage(f *testing.F) {
 func sltcNewToolSession(t *testing.T) *Session {
 	t.Helper()
 	root := t.TempDir()
-	args, err := json.Marshal(map[string]any{"action": "view"})
+	args, err := json.Marshal(map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}

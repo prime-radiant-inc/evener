@@ -40,10 +40,10 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestBridge_UsesSessionStartStateWhenProvided", TestBridge_UsesSessionStartStateWhenProvided)
 	t.Run("TestServerAppWireThreadClearInvokesConfiguredClear", TestServerAppWireThreadClearInvokesConfiguredClear)
 	t.Run("TestDaemonRouterMatchesCatalog", TestDaemonRouterMatchesCatalog)
-	t.Run("TestDaemonThreadReadWindowsAndTurnsListPagesToHead", TestDaemonThreadReadWindowsAndTurnsListPagesToHead)
+	t.Run("TestFlagDayDefaultThreadReadIsBoundedItems", TestFlagDayDefaultThreadReadIsBoundedItems)
 	t.Run("TestDaemonTranscriptPreparationPropagatesUnsupportedFormat", TestDaemonTranscriptPreparationPropagatesUnsupportedFormat)
 	t.Run("TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue", TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue)
-	t.Run("TestHandleAppThreadReasoningEffortSet_NoneNormalizesToEmpty", TestHandleAppThreadReasoningEffortSet_NoneNormalizesToEmpty)
+	t.Run("TestHandleAppThreadReasoningEffortSet_NoneStaysNone", TestHandleAppThreadReasoningEffortSet_NoneStaysNone)
 	t.Run("TestHandleAppThreadReasoningEffortSet_RejectsUnknownEffort", TestHandleAppThreadReasoningEffortSet_RejectsUnknownEffort)
 	t.Run("TestHandleAppThreadReasoningEffortSet_UnavailableWhenFuncUnset", TestHandleAppThreadReasoningEffortSet_UnavailableWhenFuncUnset)
 	t.Run("TestAppThreadPendingAskTrueFalseTrueAfterRestart", TestAppThreadPendingAskTrueFalseTrueAfterRestart)
@@ -212,15 +212,25 @@ func exerciseAppWireResiduals() {
 	s.SetCompactFunc(func(context.Context) error { return nil })
 	_, _ = s.handleAppThreadCompactStart(ctx, appwire.ThreadCompactStartParams{})
 	_, _ = s.handleAppThreadShutdown(ctx, appwire.ThreadShutdownParams{})
-	s.SetProcessing(true)
-	_, _ = s.handleAppThreadClear(ctx, appwire.ThreadClearParams{})
-	s.SetProcessing(false)
-	s.SetClearFunc(nil)
-	_, _ = s.handleAppThreadClear(ctx, appwire.ThreadClearParams{})
-	s.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return errors.New("clear") })
-	_, _ = s.handleAppThreadClear(ctx, appwire.ThreadClearParams{})
-	s.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
-	_, _ = s.handleAppThreadClear(ctx, appwire.ThreadClearParams{})
+	// The clear arms run on a dedicated server with a known identity: the
+	// handler's mandatory Ref/ClientMutationID/ExpectedInstanceID checks
+	// reject empty params before the gate, the journal, or clearFunc, and the
+	// turn state earlier residuals left on s would block the clear anyway.
+	clearSrv := NewServer(ServerConfig{})
+	clearSrv.SetAppIdentity("local", "thread")
+	clearParams := func(id string) appwire.ThreadClearParams {
+		return appwire.ThreadClearParams{Ref: "local:thread", ClientMutationID: id, ExpectedInstanceID: "thread"}
+	}
+	_, _ = clearSrv.handleAppThreadClear(ctx, appwire.ThreadClearParams{})
+	clearSrv.SetProcessing(true)
+	_, _ = clearSrv.handleAppThreadClear(ctx, clearParams("clear-busy"))
+	clearSrv.SetProcessing(false)
+	_, _ = clearSrv.handleAppThreadClear(ctx, clearParams("clear-unwired"))
+	clearSrv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return errors.New("clear") })
+	_, _ = clearSrv.handleAppThreadClear(ctx, clearParams("clear-failed"))
+	clearSrv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
+	_, _ = clearSrv.handleAppThreadClear(ctx, clearParams("clear-applied"))
+	_, _ = clearSrv.handleAppThreadClear(ctx, clearParams("clear-applied"))
 	_, _ = s.handleAppThreadModelSet(ctx, appwire.ThreadModelSetParams{})
 	s.SetModelFunc(nil)
 	_, _ = s.handleAppThreadModelSet(ctx, appwire.ThreadModelSetParams{Model: "m"})

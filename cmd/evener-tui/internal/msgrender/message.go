@@ -292,7 +292,14 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 	}
 
 	var bodyLines []string
-	if intent := strings.TrimSpace(args.Str("intent")); intent != "" {
+	// "purpose" was "intent"'s name before the 2026-08-29 rename
+	// (7512a736e); fall back so pre-rename transcripts still show their
+	// intent line (issue #709).
+	intent := strings.TrimSpace(args.Str("intent"))
+	if intent == "" {
+		intent = strings.TrimSpace(args.Str("purpose"))
+	}
+	if intent != "" {
 		line := lipgloss.NewStyle().Italic(true).Render(intent)
 		bodyLines = append(bodyLines, indentBlock(line, th.IndentToolBody))
 	}

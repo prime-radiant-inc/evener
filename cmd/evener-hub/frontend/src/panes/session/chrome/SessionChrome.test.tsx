@@ -105,7 +105,7 @@ function setLocation(ref: string): void {
   const key = { kind: "location", ref } as const;
   const data = locationWithSession(ref);
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -296,6 +296,46 @@ test("status row has no inline Details/Tasks/Activity buttons; they live in the 
   expect(screen.getByRole("menuitem", { name: "Details" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: /Tasks/ })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: /Activity/ })).toBeTruthy();
+});
+
+test("SessionChrome shows task outcome aggregates in its actions menu", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_outcomes", {
+      evener: {
+        ref: "ref_outcomes",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        tasks: { total: 7, done: 1, cancelled: 5, remaining: 1 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_outcomes");
+
+  render(<SessionChrome ref="ref_outcomes" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+});
+
+test("SessionChrome infers a missing zero outcome in its task label", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_remaining", {
+      evener: {
+        ref: "ref_remaining",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        tasks: { total: 7, done: 1, remaining: 5 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_remaining");
+
+  render(<SessionChrome ref="ref_remaining" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 0 cancelled, 5 remaining (7 total)" })).toBeTruthy();
 });
 
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {
@@ -728,7 +768,9 @@ test("desktop Activity waits for the body's first root attempt before owning lat
 
   const current = threadsStore.getState().threads.get("ref_activity_fresh");
   if (!current) throw new Error("missing activity freshness model");
-  threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
+  act(() => {
+    threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
+  });
   // Two more fetches, not one: the unmount hands refresh ownership back to
   // the chrome, which first catches up on bump 1 (the body's attempt ran at
   // a null bump), and bump 2 - arriving while that catch-up is in flight -

@@ -12,7 +12,7 @@ func TestW2Conc_FireProgressTickClosingBails(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestW2Conc_FireProgressTickStaleConfigBails(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestW2Conc_FireProgressTickStaleConfigBails(t *testing.T) {
 func TestW2Conc_FireProgressTickJobTargetGoneBails(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	cfg, err := newWatchConfig(watchArgs{Target: "job_gone", ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: "job_gone", ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
@@ -63,37 +63,42 @@ func TestW2Conc_FireProgressTickJobTargetGoneBails(t *testing.T) {
 	}
 }
 
-// TestW2Conc_FireProgressTickOverBudgetAutoClears pins the over-budget arm: a
-// notification tick that crosses the per-watch delivery budget records the
-// notification and auto-clears the watch (circuit breaker, spec §4 F1).
-func TestW2Conc_FireProgressTickOverBudgetAutoClears(t *testing.T) {
+// TestW2Conc_FireProgressTickAtBudgetStaysInstalled pins the periodic-tick
+// accounting arm: a notification tick that reaches the per-watch delivery
+// budget counts its delivery but does NOT trip the circuit breaker. The budget
+// bounds condition fires; a periodic tick (job progress or a timer) is a clock,
+// not a condition, so a watch that only ever ticks stays installed.
+func TestW2Conc_FireProgressTickAtBudgetStaysInstalled(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID}
 	jm.mu.Lock()
 	jm.watches[key] = cfg
-	cfg.deliveries = watchDeliveryBudget - 1 // next delivery crosses the budget
+	cfg.deliveries = watchDeliveryBudget - 1 // next delivery reaches the budget
 	jm.mu.Unlock()
 
 	if !jm.fireProgressTick(key, cfg) {
 		t.Fatal("fireProgressTick returned false for a live watch, want true")
 	}
 	if cfg.deliveries != watchDeliveryBudget {
-		t.Fatalf("deliveries = %d, want %d (budget crossed)", cfg.deliveries, watchDeliveryBudget)
+		t.Fatalf("deliveries = %d, want %d (budget reached)", cfg.deliveries, watchDeliveryBudget)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("notifications = %+v, want the one progress tick", notified)
 	}
 	jm.mu.Lock()
 	_, stillInstalled := jm.watches[key]
 	jm.mu.Unlock()
-	if stillInstalled {
-		t.Fatal("over-budget watch was not auto-cleared from jm.watches")
+	if !stillInstalled {
+		t.Fatal("a periodic tick at the budget auto-cleared the watch; the budget bounds condition fires only")
 	}
 }
 

@@ -38,6 +38,7 @@ import (
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -150,6 +151,10 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 // the initial SessionStart envelope. It returns an error if any input is nil or
 // if initialization fails.
 func NewSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
+	idleTimeout, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout)
+	if err != nil {
+		return nil, err
+	}
 	if client == nil {
 		return nil, errors.New("llm client is nil")
 	}
@@ -162,10 +167,39 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
+	// Normalize before validating so a mixed-case level or disable alias is
+	// stored canonically rather than reaching a provider verbatim.
+	cfg.ReasoningEffort = llm.NormalizeReasoningEffort(cfg.ReasoningEffort)
 	if err := llm.ValidateReasoningEffort(cfg.ReasoningEffort); err != nil {
 		return nil, err
 	}
-	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile)
+	// A durable delegate's child session id is controller-reserved before
+	// NewSession is ever called (cfg.spawn.sessionID carries it in); a fresh
+	// root session or a legacy in-process spawn has no id yet, leaving this
+	// trimmed empty. Hoisted here (instead of at its prior mint site below)
+	// so the live-model listing below can attribute to it when it already
+	// exists — the same identifier the rest of this function later mints or
+	// validates into s.id.
+	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
+	// The listing below may attribute a canonical API-log attempt to
+	// sessionID (when non-empty), which opens and locks
+	// sessions/<sessionID>.api.jsonl in the shared *APILogger. That happens
+	// before this function acquires ownership of sessionID (below) or
+	// registers its ordinary construction-failure cleanup (also below), so
+	// guard the route's release from here: initComplete only flips true at
+	// the very end of a successful NewSession, and sessionID is read live at
+	// defer time, so this covers every failure path between here and then —
+	// membership validation (immediately below), a later pre-ownership step,
+	// or ownership acquisition itself — not just the ones after ownership is
+	// acquired. ReleaseSessionAPILog no-ops for "" and for a route nothing
+	// ever opened, so this is always safe to run.
+	initComplete := false
+	defer func() {
+		if !initComplete && sessionID != "" {
+			_ = client.ReleaseSessionAPILog(sessionID)
+		}
+	}()
+	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile, sessionID, llm.AdapterTimeout{Connect: 10 * time.Second, StreamRead: idleTimeout})
 	if err != nil {
 		return nil, err
 	}
@@ -190,14 +224,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		owner = context.Background()
 	}
 	sessCtx, sessCancel := context.WithCancel(owner)
-	initComplete := false
-	ownedSessionID := ""
 	defer func() {
 		if !initComplete {
 			sessCancel()
-			if ownedSessionID != "" {
-				_ = client.ReleaseSessionAPILog(ownedSessionID)
-			}
 			if ownsArtifactStore {
 				_ = store.Close()
 			}
@@ -222,7 +251,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// down the tree.
 	cfg.spawn.treeCounter = tc
 	cfg.spawn.driveCounter = dc
-	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
 	if sessionID == "" {
 		sessionID, err = identifier.NewSessionID()
 		if err != nil {
@@ -244,8 +272,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if err := cfg.AcquireSessionOwnership(sessionID); err != nil {
 			return nil, fmt.Errorf("acquire session ownership: %w", err)
 		}
-		ownedSessionID = sessionID
 	}
+	inheritedContext := cfg.spawn.inheritedContext
+	cfg.spawn.inheritedContext = nil
 	s := &Session{
 		id:                            sessionID,
 		cfg:                           cfg,
@@ -273,6 +302,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		artifactStore:                 store,
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
+	}
+	if inheritedContext != nil {
+		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
+		s.history = ResumeHistory(inheritedContext)
+		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
+		s.history = append(s.history, boundary)
+		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
 	}
 	s.captureModelAvailability(selectedModels)
 	s.createdAt = s.sclock().Now().UTC()
@@ -359,7 +395,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
 				// Inject the first task prompt. Its reasoning_effort applies
-				// per-round via prepareModelRequest while it is in progress; it
+				// per-round via prepareModelRequestWithError while it is in progress; it
 				// must not overwrite the session's configured effort.
 				if current, ok := store.CurrentInProgress(); ok {
 					s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask)
@@ -410,17 +446,27 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
-			// A fresh session starts from an empty transcript, so the running
-			// failure count starts at a MEASURED zero rather than at "unknown"
-			// (FailedToolCallsSnapshot).
-			tw.TrackFailures(nil, 0)
+			// Only this session's own turns count as failures; a forked
+			// delegate's inherited prefix belongs to its parent.
+			tw.TrackFailures(nil, s.fork.divergence)
+		}
+	}
+	if inheritedContext != nil {
+		if tw == nil {
+			return nil, errors.New("fork delegate context requires a writable child transcript")
+		}
+		for _, entry := range inheritedContext {
+			if err := tw.Append(entry.Turn); err != nil {
+				_ = tw.Close()
+				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
+			}
 		}
 	}
 	s.attachTranscript(tw)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
+	if err := s.rearmRootDelegateAttentionFromTranscript(nil); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
@@ -480,14 +526,25 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 	if len(names) == 0 {
 		return
 	}
-	catalog := llm.EmbeddedModelCatalog()
-	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
-		if name == s.profile.ID() {
-			return selectedModels.models, selectedModels.err
+	// s.id is always valid here (called after session construction and, for a
+	// fresh/delegate session, after ownership acquisition): attribute every
+	// other-provider listing this triggers to it, same as any other
+	// session-attributed call, instead of leaving it unattributed.
+	snapshot := modelavailability.Capture(s.apiLogContext(s.sessionCtx), names, s.profile.ID(), func(ctx context.Context, name string) ([]string, error) {
+		// The session's own instance was listed during startup; reuse that
+		// result rather than asking the provider a second time.
+		listing, err := selectedModels.listing, selectedModels.err
+		if name != s.profile.ID() {
+			listing, err = s.client.Models(llm.WithModelListingTimeout(ctx, *s.providerAdapterTimeout()), name)
 		}
-		return s.client.ListModels(ctx, name)
-	}, func(name string, model llm.ModelInfo) bool {
-		return modelSwitchVisible(s.client.BehaviorTagOf(name), model, catalog)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(listing.Models))
+		for _, m := range listing.Models {
+			ids = append(ids, m.ModelID)
+		}
+		return ids, nil
 	}, liveModelMetadataTimeout)
 	s.modelSnapshot = &snapshot
 	if text, ok := inlineModelSnapshot(snapshot); ok {
@@ -520,8 +577,9 @@ func (s *Session) hasConfiguredDelegateCapability() bool {
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
-	// LifetimeContext owns this restored session tree when supplied by a
-	// one-shot run. Nil preserves daemon/background ownership.
+	// LifetimeContext owns this restored session tree exactly as
+	// SessionConfig.LifetimeContext owns a fresh one: run and serve each supply
+	// their own, and nil is the library/test shape that roots at Background.
 	LifetimeContext         context.Context
 	StateDir                string
 	Project                 identifier.Project
@@ -532,6 +590,7 @@ type RestoreSessionConfig struct {
 	OwnershipAlreadyAcquired    bool
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
+	ProviderIdleTimeout         string
 	LLMRetryPolicy              *llm.RetryPolicy
 	LLMSleep                    llm.SleepFunc
 	spawn                       spawnConfig
@@ -557,6 +616,20 @@ type RestoreSessionConfig struct {
 	// exists so a CHILD session inherits its parent's answer (children are built
 	// from the parent's own toSnapshot), which is a different question.
 	TurnEndsProcess bool
+
+	// AgentsDocPath carries through to the restored Session's SessionConfig,
+	// REPLACING the persisted value rather than merging with it, exactly like
+	// TurnEndsProcess above. Which personal AGENTS.md a session reads belongs
+	// to whoever is restoring it — a hub hands over its own concrete config
+	// root, the same one Settings edits — not to the session on disk, whose
+	// snapshot predates the flag or names a root the hub has since left. Empty
+	// is the restorer's own answer as much as a path is, and means the one thing
+	// it means everywhere: no personal doc resolves in this environment. A hub
+	// whose config root is unresolvable and a plain `evener serve --resume` both
+	// read the file their own environment names and never one a departed hub
+	// persisted. The persisted field exists so a CHILD built from its parent's
+	// snapshot inherits the parent's answer; it does not outlive the run.
+	AgentsDocPath string
 
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
@@ -624,6 +697,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	// A pre-normalization meta.json may carry a mixed-case level or disable
+	// alias; canonicalize so the loop detector's and request builder's
+	// comparisons hold on restored sessions too. A value outside the
+	// vocabulary (a hand-edited file, a level a future release retired)
+	// falls back to unset — resuming with the default beats bricking the
+	// session or letting garbage reach a provider.
+	cfg.ReasoningEffort = llm.NormalizeReasoningEffort(cfg.ReasoningEffort)
+	if llm.ValidateReasoningEffort(cfg.ReasoningEffort) != nil {
+		cfg.ReasoningEffort = ""
+	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.Project = restoreCfg.Project
@@ -633,9 +716,21 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
 	}
+	if meta.IsSubagent && meta.DivergenceTurn > 0 && cfg.spawn.subagentTask == "" {
+		// A direct resume has no live parent carrier. The assignment in meta
+		// belongs to this delegate; the first inherited input belongs to its parent.
+		cfg.spawn.subagentTask = meta.OriginalPrompt
+	}
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
 	}
+	if strings.TrimSpace(restoreCfg.ProviderIdleTimeout) != "" {
+		cfg.ProviderIdleTimeout = restoreCfg.ProviderIdleTimeout
+	}
+	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
+		return nil, err
+	}
+	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
 	}
@@ -674,6 +769,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// every other open or parse error fails the resume closed.
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
+	var restoredTranscriptHeader transcript.Header
+	// ok flag for RestoredTranscript; captured at the open so the refresh
+	// below can't flip it.
+	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		var openErr error
@@ -681,6 +780,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
 			return nil, fmt.Errorf("open transcript for resume: %w", openErr)
 		}
+		if resumeTranscript != nil {
+			restoredTranscriptHeader = resumeTranscript.Header()
+		}
+		restoredTranscriptOpened = openErr == nil
 	}
 	defer func() {
 		if !restoreComplete && resumeTranscript != nil {
@@ -825,7 +928,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Delegate reconciliation is durable, local startup work. Complete it before
 	// any provider metadata access so caller-delivery crash replay cannot depend
 	// on provider availability or latency.
-	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile)
+	// s.id is already known (meta.ID, set above), unlike a fresh NewSession
+	// call: attribute this listing's canonical API-log attempt to it instead
+	// of letting it fall into the shared unattributed bucket.
+	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile, s.id, *s.providerAdapterTimeout())
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
 	closeDelegateStoreOnError := true
@@ -922,6 +1028,22 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.resumeWorktreeReentry(meta); err != nil {
 		return nil, err
 	}
+	// Re-entry REPLACES the environment with a clone rooted in the persisted
+	// worktree; the clone adopts whatever scratch the caller's environment
+	// already owned, and initSessionState's snapshot below mints one for a
+	// clone that owns none. A caller's own failure path can only dispose the
+	// environment it handed in (it has no reference to the clone, and the
+	// environment it holds owns nothing any more), so a restore that fails from
+	// here on disposes what it re-rooted onto itself — otherwise the directory
+	// and its live lease outlive every owner. Never the caller's own env: when
+	// nothing was re-rooted, that one is the caller's to dispose or to keep.
+	reenteredEnv := s.env
+	defer func() {
+		if restoreComplete || sameEnvironment(reenteredEnv, env) {
+			return
+		}
+		disposeUnadoptedScratch(reenteredEnv)
+	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
@@ -1000,6 +1122,24 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 	s.attachTranscript(tw)
+	// refreshFromDisk re-reads the transcript file whenever a restore-time
+	// replay appended turns it did not decode: the retained entry list would
+	// otherwise end at the last pre-append entry, and serve (which projects
+	// exactly this list) would seed its turn snapshot and live-turn-id fence
+	// one turn behind the file. Both refresh triggers share it so there is
+	// one refresh, not two mechanisms.
+	refreshFromDisk := func(reason string) error {
+		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+		if err != nil {
+			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
+		}
+		if refreshed.Header.SessionID != s.id {
+			return fmt.Errorf("refresh transcript after %s: header session %q does not match %q", reason, refreshed.Header.SessionID, s.id)
+		}
+		transcriptEntries = refreshed.Entries
+		restoredTranscriptHeader = refreshed.Header
+		return nil
+	}
 	s.delegateDeliveryMu.Lock()
 	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
 	s.delegateDeliveryMu.Unlock()
@@ -1007,23 +1147,38 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
 	if tw != nil && hadPendingDelegateDeliveries {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-		if err != nil {
-			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: %w", err)
+		if err := refreshFromDisk("delegate delivery replay"); err != nil {
+			return nil, err
 		}
-		if refreshed.Header.SessionID != s.id {
-			return nil, fmt.Errorf("refresh transcript after delegate delivery replay: header session %q does not match %q", refreshed.Header.SessionID, s.id)
-		}
-		transcriptEntries = refreshed.Entries
 	}
-	if err := s.rearmRootDelegateAttentionFromTranscript(); err != nil {
-		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
-	}
+	// Client-mutation failure recovery appends the turns the crashed process
+	// never got to write (recordClientMutationFailure's user and failure
+	// turns, plus the environment-context turn that can precede the user
+	// one inside the same !items.User block). The interrupt recovery writes
+	// nothing — it only terminalizes the journal fence — so only the failure
+	// path can append. Restored history and the durable identity index stay
+	// on the pre-recovery list on purpose: the recovered turns enter
+	// s.history directly (recordClientMutationFailure appends them itself).
 	if err := s.recoverClientMutationFailures(); err != nil {
 		return nil, fmt.Errorf("recover client mutation failures: %w", err)
 	}
 	if err := s.recoverClientMutationInterrupt(); err != nil {
 		return nil, fmt.Errorf("recover client mutation interrupt: %w", err)
+	}
+	s.mu.Lock()
+	clientMutationRecoveryAppended := s.clientMutationAppendedTurn
+	s.mu.Unlock()
+	if tw != nil && clientMutationRecoveryAppended {
+		if err := refreshFromDisk("client mutation recovery"); err != nil {
+			return nil, err
+		}
+	}
+	// setRestoredTranscript and the attention rearm both run after every
+	// restore-time transcript append, so serve and the fold see the same
+	// final entry list the file holds.
+	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
+	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
+		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 
 	if !restoreCfg.deferRestoreSideEffects {
@@ -1140,17 +1295,18 @@ func cacheReadPtr(n int64) *int {
 // Returns the prompt sources so the caller can emit events after SessionStart.
 func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
 	s.cheap = cheapmodel.New(s.client)
+	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
 	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
+		if inRepo, branch, mod, untracked, commits := snapshotGit(s.sessionContext(), env, ei.WorkingDir); inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
 			ei.GitUntrackedFiles = untracked
 			ei.GitRecentCommitTitles = commits
-			ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
+			ei.GitOriginURL = gitOriginURL(s.sessionContext(), env, ei.WorkingDir)
 		}
 	}
 	s.envInfo = ei
@@ -1199,7 +1355,12 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if embedded, err := skill.EmbeddedSkills(); err == nil {
 		maps.Copy(s.skills, embedded)
 	}
-	// filesystem shadows embedded
+	// The automatic user directory is above embedded skills but below project
+	// skills and explicitly configured directories. Discover it separately so
+	// DiscoverSkills' project walk can shadow it.
+	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
+		skill.ScanSkillsDir(userSkillsDir, s.skills)
+	}
 	maps.Copy(s.skills, skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...))
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
@@ -1222,6 +1383,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 
 	s.contextMgr = contextmgr.NewManager(s.profile, s.client, s.cheap)
+	s.contextMgr.AdapterTimeout = s.providerAdapterTimeout()
 	s.contextMgr.ResultToolName = s.resultToolName()
 
 	var reg *tool.Registry
@@ -1293,8 +1455,8 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 
-	// Cache project docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.currentEnv(), s.profile.ProjectDocFiles()...)
+	// Cache instruction docs once; reused every round for system prompt rebuilds.
+	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
@@ -1321,36 +1483,40 @@ func (s *Session) validateModelFallbacks() error {
 // s.profile. It backs both validateModelFallbacks (all-or-nothing, run at
 // session init) and revalidateModelFallbacksLocked (per-entry, run after a
 // mid-session model switch commits).
+//
+// A slashed ref naming another instance is allowed when the two instances
+// share a surface (spec §7.5): the refusal exists because prompt and tool
+// surfaces differ, so a same-surface hop across instances is fine.
 func (s *Session) validateModelFallbackEntry(fbModel string) error {
-	// Always check whether the ref is a cross-provider switch, regardless of
-	// whether a resolver is present. Cross-provider fallbacks are unsupported
-	// because the prompt/tool surfaces differ between providers.
-	if parts := strings.SplitN(fbModel, "/", 2); len(parts) == 2 {
-		if s.profile.CrossProviderRef(fbModel) {
-			// Resolve to get the target provider name for the error message.
-			targetTag := strings.ToLower(parts[0]) // best-effort for the error message
-			fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
-			if err != nil {
-				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
-			}
-			if crossProvider {
-				targetTag = fbProfile.BehaviorTag()
-			}
-			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
-		}
+	parts := strings.SplitN(fbModel, "/", 2)
+	if len(parts) != 2 || !s.profile.CrossProviderRef(fbModel) {
+		// A ref reaching this point is same-instance. resolveProfileForRef only
+		// invokes the injected resolver for cross-instance refs, so a
+		// same-instance ref is a direct WithModel projection.
+		return nil
 	}
-	// A ref reaching this point is same-provider. resolveProfileForRef only
-	// invokes the injected resolver for cross-provider refs, which returned
-	// above; same-provider refs are a direct WithModel projection.
+	fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
+	if err != nil {
+		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+	}
+	if !crossProvider {
+		// Without a resolver the target instance never materializes as a
+		// profile, so its surface is unknowable and the entry cannot be shown
+		// compatible.
+		return fmt.Errorf("model_fallbacks entry %q switches from surface %q to instance %q, whose surface cannot be resolved; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), strings.ToLower(parts[0]))
+	}
+	if fbProfile.Surface() != s.profile.Surface() {
+		return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), fbProfile.Surface())
+	}
 	return nil
 }
 
 // revalidateModelFallbacksLocked re-checks cfg.ModelFallbacks against the
 // session's current profile after a mid-session model switch commits,
-// dropping entries that no longer validate (cross-tag, or otherwise
+// dropping entries that no longer validate (cross-surface, or otherwise
 // unresolvable against the new profile) and returning their names in order.
-// A same-tag switch leaves every still-valid entry in place. Must be called
-// with s.mu held.
+// A same-surface switch leaves every still-valid entry in place. Must be
+// called with s.mu held.
 func (s *Session) revalidateModelFallbacksLocked() []string {
 	if len(s.cfg.ModelFallbacks) == 0 {
 		return nil
@@ -1376,7 +1542,7 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 		return false
 	}
 	switch llm.Classify(err) {
-	case llm.ErrorClassPermanent, llm.ErrorClassFallback:
+	case llm.ErrorClassPermanent:
 		return true
 	case llm.ErrorClassRetryable:
 		return retryLoopDeclined(err, policy)
@@ -1450,6 +1616,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	s.plugins = plugins
 
 	runner := hooks.NewRunner(s.client, s.profile.Model())
+	runner.AdapterTimeout = s.providerAdapterTimeout()
 	runner.SetSandboxWrapper(s.sandboxWrapper())
 	allAgents := map[string]plugin.Agent{}
 
@@ -1574,7 +1741,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 // loadPluginsFailSoft loads each plugin directory independently so one broken
 // or duplicate-named plugin cannot brick session initialization. This matters
 // beyond the CLI's own pre-validation (internal/plugins.Manager.
-// EnabledPluginDirs, which dry-run validates and dedups the registry-enabled
+// ResolveForLaunch, which dry-run validates and dedups the registry-enabled
 // dirs before they ever reach here): resume replays a PluginDirs list
 // persisted in the session's ConfigSnapshot, which can name a plugin that was
 // edited, broken, or uninstalled since the session started, bypassing that

@@ -32,6 +32,7 @@ import (
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.EventData, p *provenance.Causal) {
@@ -90,9 +91,22 @@ type Session struct {
 	// response through an injected transport without touching the network.
 	httpClient httpDoer
 	env        execenv.ExecutionEnvironment
-	clock      clock.Clock
-	stateDir   string
-	installID  string
+	// ownsEnv is true when this session is a child whose execution environment was
+	// built FOR it (a working-dir re-root and/or a per-delegate sandbox) rather
+	// than shared with its parent. Such an environment owns scratch dirs and
+	// file-tool fds no parent cleanup reaches, so the child's teardown settles
+	// them; a shared one belongs to the live parent and is left alone. The child
+	// records it because a teardown can reach a child no parent bookkeeping names
+	// — a runtime the stable controller holds for its own close.
+	ownsEnv bool
+	// parentSharedEnv is the environment a child was handed when it is the live
+	// parent's own object (ownsEnv false) — the one environment this session must
+	// never settle and whose scratch it must never take. Nil on a root session and
+	// on a child whose environment was built for it.
+	parentSharedEnv execenv.ExecutionEnvironment
+	clock           clock.Clock
+	stateDir        string
+	installID       string
 	// origin marks how the session was launched: "test" for agentic-testing
 	// runs (set from EVENER_SESSION_ORIGIN on fresh create), empty for normal
 	// sessions. Preserved across resume from the persisted SessionMeta.Origin.
@@ -106,7 +120,11 @@ type Session struct {
 	strictTranscriptMaxLineBytes int
 	events                       chan events.SessionEvent
 	eventsMu                     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
-	eventsClosed                 bool         // set under eventsMu.Lock immediately before close(events)
+	closeCtxMu                   sync.RWMutex
+	closeCtx                     context.Context // shared shutdown deadline for blocked authoritative sends
+	closeSignal                  chan struct{}
+	testOnlyBlockedSendEntered   func()
+	eventsClosed                 bool // set under eventsMu.Lock immediately before close(events)
 	// descendantEvent is inherited from the spawning root and remains immutable
 	// for this Session's lifetime. Children use it to expose their live event
 	// stream without acquiring an authoritative consumer for their own channel.
@@ -188,6 +206,10 @@ type Session struct {
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
+	// metaSaveMu serializes each metadata snapshot with its write. It is acquired
+	// before mu by maybeAutoSave, preventing an older snapshot from waiting behind
+	// and then overwriting a newer save from another goroutine.
+	metaSaveMu sync.Mutex
 	// goalUpdateMu serializes each goal-store mutation with the GOAL_UPDATED event
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.
@@ -256,13 +278,17 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren            map[string]drainGraceChild
-	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
-	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
-	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
-	sweepWG                       sync.WaitGroup  // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
-	laneSweepTimer                clock.Timer     // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
-	laneReLockRetryTimer          clock.Timer     // one-shot resume re-lock retry timer for a restored subagent coordinator (which has no P3 open timer to piggyback on); armed at resume when a re-lock failed, stopped at close; guarded by mu
-	pendingReLock                 []isolationLane // own undisposed lanes whose resume re-lock failed and await one retry (P3 open timer for top-level, laneReLockRetryTimer for a subagent coordinator); guarded by mu
+	toolEventsWG                  sync.WaitGroup                       // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
+	sendersWG                     sync.WaitGroup                       // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
+	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
+	sweepWG                       sync.WaitGroup                       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
+	envWorkWG                     sync.WaitGroup                       // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using
+	envWork                       map[envWorkID]string                 // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
+	abandonedEnvs                 []*execenv.LocalExecutionEnvironment // environments swapped away from that are neither current nor parked (the clone between two enters); a child sharing one can still mint scratch on it, so close retains each; one entry per environment; guarded by mu
+	envWorkSeq                    uint64                               // last envWork handle issued; guarded by mu
+	laneSweepTimer                clock.Timer                          // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
+	laneReLockRetryTimer          clock.Timer                          // one-shot resume re-lock retry timer for a restored subagent coordinator (which has no P3 open timer to piggyback on); armed at resume when a re-lock failed, stopped at close; guarded by mu
+	pendingReLock                 []isolationLane                      // own undisposed lanes whose resume re-lock failed and await one retry (P3 open timer for top-level, laneReLockRetryTimer for a subagent coordinator); guarded by mu
 	state                         SessionState
 	closing                       bool
 	turns                         int       // user input count (for MaxTurns enforcement)
@@ -273,6 +299,10 @@ type Session struct {
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
+	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
+	persistedAppendLog            []schema.Turn // persisted transcript forms of the append/write pairs since the last fold publication, in append order — the exact forms publishFoldTransaction re-appends after its markers. Pruned wholesale by each successful publication. Guarded by mu.
+	persistedAppendLogBase        int           // count of pair appends already pruned from persistedAppendLog by fold publications; base+len(log) is the total pair-append count a fold snapshot captures as snapAppends. Guarded by mu.
+	newestPublishedFoldRevision   int           // publication sequence (historyRevision at publish) of the newest fold publication, set inside publishFoldTransaction's s.mu window. Last-write-wins deferred effects (compaction naming, task/artifact steering) are suppressed — at flush time and again at async naming completion — for any fold with an older publication revision: suppression binds to PUBLICATION order, never flush order, so an older fold flushing while the newest is published-but-unflushed stays silent, and the newest fold's own flush can never be suppressed. Guarded by mu.
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 
 	// currentRoundRecorder is the in-flight round's salvage recorder: per retry
@@ -361,6 +391,11 @@ type Session struct {
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
 	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// clientMutationAppendedTurn flags that a restore-time client-mutation
+	// recovery appended turns to the transcript file. Restore consults it
+	// after the recovery pass to decide whether the retained transcript
+	// entry list must be refreshed from disk. Guarded by mu.
+	clientMutationAppendedTurn bool
 	// clientMutationStartWake is installed by the lifecycle runner. Start
 	// acceptance invokes it only after the durable mutation commit; setting it
 	// after restore immediately wakes any accepted start already owned by the
@@ -382,17 +417,13 @@ type Session struct {
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
 	// explicitly ended the turn that ends the process. Unlike comm it is never
-	// reset — the one-shot drain and the round loop read it to refuse to
-	// resurrect a run the model already declared over (issue #329). Guarded by
-	// mu.
+	// reset — the one-shot drain reads it to abandon residue with no live work
+	// behind it, and the round loop reads it to finish an empty post-terminal
+	// notification turn idle instead of retrying (issue #329). A completion
+	// the model was never shown is still delivered after it; watch
+	// notifications queued before it are cut when the drain starts (#865).
+	// Guarded by mu.
 	terminalCommunicateAccepted bool
-	// terminalNotificationCut is captured at the same acceptance boundary. It
-	// identifies exactly which durable terminal generations and in-memory queue
-	// entries existed before the terminal communicate, so a completion that
-	// lands before DrainJobTree enters cannot be mistaken for a leftover.
-	// Guarded by mu; queue sequence assignment is guarded separately by
-	// pendingJobNotifsMu.
-	terminalNotificationCut terminalNotificationCut
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
@@ -462,14 +493,17 @@ type Session struct {
 	// notifyFunc, when set by the server, kicks the drain; it stays nil here and a
 	// nil kick is a no-op.
 	//
-	// Guarded by its own mutex; never taken while holding sub.mu or the manager
-	// mutex.
+	// Guarded by its own mutex; never taken while holding sub.mu. Where it is
+	// held together with the job manager mutex, jm.mu is taken FIRST and this
+	// one second.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
-	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
-	// terminal acceptance cut snapshots this watermark while jm.mu prevents a
-	// finalizer from crossing its durable-pending/running-map boundary.
-	nextJobNotifSeq uint64
+	// jobNotifsDelivered counts the job notifications acceptNotificationInput
+	// has delivered to the model over the session's lifetime. The one-shot
+	// drain reads it across an undisposed-job announcement turn: growth means a
+	// completion rode that request, so the reply is an answer, not
+	// housekeeping. Guarded by pendingJobNotifsMu.
+	jobNotifsDelivered uint64
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -625,6 +659,7 @@ type Session struct {
 
 	// self-compaction state (compact tool)
 	pinnedNote          string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pinnedNoteGen       uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	pendingInstructions string // compaction_instructions awaiting the round-tail force
 	forceRequested      bool   // a compact tool call is pending this round
 	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
@@ -656,6 +691,21 @@ type Session struct {
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
 	rootAttentionRetry   notificationRetry
+	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
+	// round, promote it on settle, and read it at turn finish; the contract
+	// lives on stageRootDelegateAttentionCoverage and
+	// unionCoveredRootDelegateAttention. Reset at each turn start.
+	rootAttentionCoveredIDs map[string]struct{}
+	// rootAttentionStagedIDs is one round's candidate coverage: the attention
+	// the round's built request presents. The round loop promotes it into
+	// rootAttentionCoveredIDs only when the round's call settles, so a failed
+	// or filtered round never credits an item the model saw in no settled
+	// call. Every request build re-stages it.
+	rootAttentionStagedIDs map[string]struct{}
+	// rootAttentionPreTurnArmIDs snapshots rootAttentionWakeIDs at turn start
+	// (resetRootDelegateAttentionCoverage). Marking consults it to separate
+	// deliveries armed mid-turn from attention already owed a dedicated wake.
+	rootAttentionPreTurnArmIDs map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
@@ -693,6 +743,22 @@ type Session struct {
 	// and its turns are dropped rather than accumulated. Guarded by s.mu.
 	transcriptReady        bool
 	pendingTranscriptTurns []schema.Turn
+
+	// restoredTranscript holds the decoded transcript a RESUME read while
+	// validating the session it was asked to restore: the header (with its
+	// SessionID already checked against this session's id) and the retained
+	// entries. It exists so serve's app-identity projection can reuse that
+	// one strict decode instead of re-reading and re-decoding the whole
+	// append-only file; it is populated only on the restore path, after any
+	// delegate-delivery refresh, and is never updated after construction.
+	// Guarded by s.mu.
+	restoredTranscriptHeader transcript.Header
+	restoredTranscript       []transcript.Entry
+
+	// restoredTranscriptOpened is the ok flag RestoredTranscript reports:
+	// whether restore opened a transcript, captured at the open so a later
+	// refresh cannot flip it. Guarded by s.mu.
+	restoredTranscriptOpened bool
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -754,14 +820,34 @@ const (
 func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
-	s.assignJobNotificationSeqLocked(&n)
+	s.appendOrFoldJobNotificationLocked(n)
+}
+
+// appendOrFoldJobNotificationLocked appends n to the pending queue, or, for a
+// timer tick whose watch already has a pending non-terminal entry, adds its
+// fires to that entry instead. Non-timer notifications take the fast path.
+// The folded entry takes the UNION of both lineages: the notification turn
+// stamps the union of what it delivers, so keeping only the survivor's
+// provenance would narrow the turn's lineage every time a tick folded.
+// The caller holds pendingJobNotifsMu; this must never take jm.mu, because
+// the established order is jm.mu then pendingJobNotifsMu.
+func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
+	if n.WatchID != "" && !n.Terminal {
+		for i := range s.pendingJobNotifs {
+			p := &s.pendingJobNotifs[i]
+			if p.WatchID == n.WatchID && !p.Terminal {
+				p.Fires += n.Fires
+				p.Provenance = provenance.Union(p.Provenance, n.Provenance)
+				return
+			}
+		}
+	}
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
-	s.assignJobNotificationSeqLocked(&n)
-	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
+	s.appendOrFoldJobNotificationLocked(n)
 	held := s.notifyWakeHolds > 0
 	if held {
 		s.notifyWakeDeferred = true
@@ -820,20 +906,16 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
+	rest := s.pendingJobNotifs
+	s.pendingJobNotifs = nil
 	for i := range notifs {
-		s.assignJobNotificationSeqLocked(&notifs[i])
+		s.appendOrFoldJobNotificationLocked(notifs[i])
 	}
-	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
+	for i := range rest {
+		s.appendOrFoldJobNotificationLocked(rest[i])
+	}
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
-}
-
-func (s *Session) assignJobNotificationSeqLocked(n *jobNotification) {
-	if n == nil || n.queueSeq != 0 {
-		return
-	}
-	s.nextJobNotifSeq++
-	n.queueSeq = s.nextJobNotifSeq
 }
 
 func (s *Session) drainJobNotifications() []jobNotification {
@@ -852,6 +934,25 @@ func (s *Session) peekNotifications() int {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
 	return len(s.pendingJobNotifs)
+}
+
+// countJobNotificationsDelivered records n job notifications delivered to the
+// model by the turn that just accepted them.
+func (s *Session) countJobNotificationsDelivered(n int) {
+	if n <= 0 {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	s.jobNotifsDelivered += uint64(n)
+}
+
+// jobNotificationsDelivered reports the lifetime count of job notifications
+// delivered to the model.
+func (s *Session) jobNotificationsDelivered() uint64 {
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	return s.jobNotifsDelivered
 }
 
 // SetNotifyFunc registers the callback the server uses to wake an idle session
@@ -984,6 +1085,17 @@ func (s *Session) apiLogContext(ctx context.Context) context.Context {
 	return llm.WithAPILogContext(ctx, s.id)
 }
 
+// sessionContext returns the session's own context — the one Close cancels —
+// as the parent for work that must stop when the session closes. A Session
+// built without one (a bare test fixture) gets a background context, so every
+// caller can derive unconditionally.
+func (s *Session) sessionContext() context.Context {
+	if s.sessionCtx != nil {
+		return s.sessionCtx
+	}
+	return context.Background()
+}
+
 // The contextmgr.Host seam is satisfied by the ctxHost adapter (context_host.go),
 // not by *Session directly: contextmgr.Host requires exported Emit / Snapshot /
 // WithResponseSideEffects methods, and we do not want those on the public Session
@@ -1025,6 +1137,17 @@ func (s *Session) currentEnv() execenv.ExecutionEnvironment {
 // Client returns the session's LLM client.
 func (s *Session) Client() *llm.Client { return s.client }
 
+// CostFor is the $/Mtok cost of the instance/model reference ref, resolved on
+// the session's own registry (spec §7.5). Nil when ref does not resolve or the
+// row carries no cost — the caller renders nothing rather than a zero.
+func (s *Session) CostFor(ref string) *registry.Cost {
+	res, err := s.client.Resolve(ref)
+	if err != nil {
+		return nil
+	}
+	return res.Caps.Cost
+}
+
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
 func (s *Session) SetReasoningEffort(effort string) {
@@ -1033,8 +1156,8 @@ func (s *Session) SetReasoningEffort(effort string) {
 		s.mu.Unlock()
 		return
 	}
-	// Normalize disable-aliases (none/off/...) to "" so a runtime "none" omits
-	// reasoning effort rather than forwarding the literal to the provider, matching
+	// Normalize disable-aliases (off/false/...) to the canonical "none" so a
+	// runtime off stays an explicit off through buildModelRequest, matching
 	// the CLI resolver.
 	s.cfg.ReasoningEffort = llm.NormalizeReasoningEffort(effort)
 	normalized := s.cfg.ReasoningEffort
@@ -1057,6 +1180,9 @@ func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*pro
 			return nil, false, err
 		}
 		if resolved != nil {
+			if cheapModelRef := base.CheapModelRefString(); cheapModelRef != "" {
+				resolved = provider.WithCheapModel(resolved, cheapModelRef)
+			}
 			return resolved, true, nil
 		}
 	}
@@ -1065,14 +1191,19 @@ func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*pro
 
 // reapplyProviderSpecificTools updates the live tool registry when the session
 // switches between providers. Currently the only provider-specific function
-// tool is the Gemini web_search executor:
-//   - switching TO a google-tag profile: register the real web_search executor
-//   - switching AWAY from a google-tag profile: remove web_search from the
-//     registry so it doesn't collide with the adapter-injected server tool
-//     used by OpenAI/Anthropic native web search.
-func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
+// tool is the Gemini web_search executor, which exists because the google
+// builder cannot combine google_search with function declarations:
+//   - switching TO a google-protocol profile that serves web search: register
+//     the real web_search executor
+//   - switching AWAY from one: remove web_search from the registry so it
+//     doesn't collide with the adapter-injected server tool used by OpenAI's
+//     and Anthropic's native web search.
+func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.Profile) {
+	googleWebSearch := func(p *provider.Profile) bool {
+		return p.Protocol() == registry.ProtocolGoogle && p.SupportsWebSearch()
+	}
 	switch {
-	case newTag == "google" && oldTag != "google":
+	case googleWebSearch(newProfile) && !googleWebSearch(oldProfile):
 		// Switching to Gemini: wire the real web_search executor. It must apply
 		// the same net=off egress gate as the statically-registered web tools
 		// (registerWebTools) — a mid-session provider switch must not make web
@@ -1087,7 +1218,7 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 				return s.webSearch(ctx, query)
 			},
 		})
-	case oldTag == "google" && newTag != "google":
+	case googleWebSearch(oldProfile) && !googleWebSearch(newProfile):
 		// Switching away from Gemini: remove the function tool so non-Gemini
 		// providers can use their own native web-search mechanism.
 		s.reg.Remove("web_search")
@@ -1109,7 +1240,6 @@ func (s *Session) SetModel(model string) error {
 		return nil
 	}
 	oldProfile := s.profile
-	oldTag := s.profile.BehaviorTag()
 	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
@@ -1120,7 +1250,7 @@ func (s *Session) SetModel(model string) error {
 	}
 	// Unrepresentable-history preflight: reject before any state changes when
 	// the target can't faithfully carry content kinds already in history.
-	if kinds := unrepresentableHistoryKinds(s.history, nextProfile.BehaviorTag()); len(kinds) > 0 {
+	if kinds := unrepresentableHistoryKinds(s.history, nextProfile.Protocol()); len(kinds) > 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("cannot switch to %s: history contains content unrepresentable by that target (%s)", nextProfile.ID(), formatContentKinds(kinds))
 	}
@@ -1131,7 +1261,7 @@ func (s *Session) SetModel(model string) error {
 	// the membership preflight below (see resolveModelSwitchTarget) — this
 	// rejects before any state changes when the target instance can
 	// enumerate its models and the requested model isn't among them.
-	nextProfile, err = resolveModelSwitchTarget(client, nextProfile)
+	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout())
 	if err != nil {
 		return err
 	}
@@ -1141,7 +1271,6 @@ func (s *Session) SetModel(model string) error {
 		s.mu.Unlock()
 		return nil
 	}
-	newTag := nextProfile.BehaviorTag()
 	s.profile = nextProfile
 	// The namer's spent-allowance latch was learned against the profile being
 	// replaced, so it does not survive the swap (see
@@ -1151,7 +1280,7 @@ func (s *Session) SetModel(model string) error {
 		s.contextMgr.SetProfile(s.profile)
 	}
 	if crossProvider && s.reg != nil {
-		s.reapplyProviderSpecificTools(oldTag, newTag)
+		s.reapplyProviderSpecificTools(oldProfile, nextProfile)
 	}
 	s.rebuildToolDefsCache()
 	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh
@@ -1190,7 +1319,12 @@ func (s *Session) SetModel(model string) error {
 	// systemMessage by both projection paths and excluded from
 	// expandHistory. Must be appended (and thus visible to a replaying
 	// client) before the live-only EventModelChanged notification below.
-	s.appendTurn(schema.TurnModelSwitch, llm.System(markerText))
+	marker := schema.NewTurn(schema.TurnModelSwitch, llm.System(markerText))
+	marker.ModelSwitch = &schema.ModelSwitchInfo{
+		OldProvider: oldProfile.ID(), OldModel: oldProfile.Model(),
+		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
+	}
+	s.recordTurn(marker, marker)
 	s.emit(events.EventModelChanged, events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
@@ -1262,22 +1396,10 @@ func (s *Session) validateVisionModelRefLocked(ref string) error {
 	if ok && (prov == "" || model == "") {
 		return fmt.Errorf("invalid vision model ref %q: want \"model\" or \"provider/model\"", ref)
 	}
-	if ok && !strings.EqualFold(prov, s.profile.ID()) && !sessionClientHasProvider(s.client, prov) {
+	if ok && !strings.EqualFold(prov, s.profile.ID()) && !s.client.HasProvider(prov) {
 		return fmt.Errorf("vision model provider %q is not configured or has no credential (active provider %q)", prov, s.profile.ID())
 	}
 	return nil
-}
-
-func sessionClientHasProvider(client *llm.Client, name string) bool {
-	if client == nil {
-		return false
-	}
-	for _, p := range client.ProviderNames() {
-		if strings.EqualFold(p, name) {
-			return true
-		}
-	}
-	return false
 }
 
 // VisionModel returns the session's configured vision side-channel setting
@@ -1349,20 +1471,22 @@ func (s *Session) Rename(name string) {
 	s.maybeAutoSave()
 }
 
-func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.Request) {
+func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 	if req == nil {
 		return
 	}
-	openAIPromptCacheSupported := profile.BehaviorTag() == "openai" && openAIModelSupports24hPromptCache(req.Model)
+	// The prompt-cache fields go on every request: llm.ShapeRequest drops the
+	// ones the resolved row cannot send (spec §7.5, two independent Fields
+	// gates), so nothing here has to know which endpoint accepts which.
 	if strings.TrimSpace(s.id) != "" {
 		req.SessionID = s.id
 		req.ThreadID = s.id
-		if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheKey) == "" {
+		if strings.TrimSpace(req.PromptCacheKey) == "" {
 			req.PromptCacheKey = "evener-session-" + s.id
 		}
-	}
-	if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheRetention) == "" {
-		req.PromptCacheRetention = "24h"
+		if strings.TrimSpace(req.PromptCacheRetention) == "" {
+			req.PromptCacheRetention = "24h"
+		}
 	}
 	if strings.TrimSpace(s.installID) != "" {
 		if req.ClientMetadata == nil {
@@ -1370,18 +1494,6 @@ func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.
 		}
 		req.ClientMetadata[installid.CodexInstallationIDMetadataKey] = s.installID
 	}
-}
-
-func openAIModelSupports24hPromptCache(model string) bool {
-	model = strings.TrimSpace(model)
-	return openAIModelFamilyMatch(model, "gpt-5") || openAIModelFamilyMatch(model, "gpt-4.1")
-}
-
-func openAIModelFamilyMatch(model, family string) bool {
-	if model == family {
-		return true
-	}
-	return strings.HasPrefix(model, family+"-") || strings.HasPrefix(model, family+".")
 }
 
 // Communicated reports whether communicate was called during the most recent
@@ -1443,11 +1555,14 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 	return true
 }
 
-// extractOriginalPrompt returns the text of the first user input in the session history.
-// If compaction removed it, falls back to the SubagentTask from config.
+// extractOriginalPrompt returns a delegate's assignment or the first user
+// input of a root session. Inherited conversation does not redefine the task.
 func (s *Session) extractOriginalPrompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.isSubagentSession() && s.cfg.spawn.subagentTask != "" {
+		return s.cfg.spawn.subagentTask
+	}
 	for _, t := range s.history {
 		if t.Kind == schema.TurnUserInput {
 			return t.Message.Text()
@@ -1542,29 +1657,78 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 	s.recordTurn(t, persistedTurn)
 }
 
+// appendTurnAfterTranscriptWrite runs one durability-first history-append/
+// transcript-write pair atomically under attentionMu: write commits the
+// turn's transcript entry (attentionMu already held — use the Locked write
+// variants), and appendLocked appends it to s.history, plus any flags that
+// must travel with the append, under s.mu. Holding attentionMu across the
+// pair keeps it whole relative to a fold's publication transaction: the pair
+// lands either entirely before the publish — the turn is in the fold's
+// snapshot or merged tail, and its pre-marker entry
+// gets a post-marker copy — or entirely after it, where its entry follows
+// the markers on its own. A half-done pair could otherwise leave a
+// pre-marker entry for a turn the publish never saw (lost on restart) or a
+// post-marker entry racing the transaction's own tail rewrite (duplicated on
+// restart). On write error nothing is appended; the error returns for the
+// caller to report outside the locks.
+//
+// persisted is the exact transcript form write commits. It is recorded in
+// the session's pair log so a fold publication can re-append that same form
+// after its compaction markers — never the live turn, whose tool results
+// deliberately retain the private evidence the persisted projection replaces
+// with a placeholder.
+func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
+	s.attentionMu.Lock()
+	if err := write(); err != nil {
+		s.attentionMu.Unlock()
+		return err
+	}
+	s.mu.Lock()
+	appendLocked()
+	s.logPairPersistedLocked(persisted)
+	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	return nil
+}
+
+// logPairPersistedLocked records the persisted transcript form of one
+// append/write pair for publishFoldTransaction's post-marker rewrite.
+// Callers hold s.mu inside their pair's attentionMu hold; the transaction
+// prunes the log at every successful publication.
+func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
+	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
+}
+
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
-	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
+	err := s.appendTurnAfterTranscriptWrite(
+		persistedTurn,
+		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() { s.history = append(s.history, t) },
+	)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 // recordTurn adds a turn to the live model history and writes its persisted
-// counterpart to the durable transcript. The two differ only when a tool
-// exposes explicitly private evidence; every other caller passes the same turn
-// twice.
+// counterpart to the durable transcript — one atomic pair under attentionMu
+// (append first, then the entry), for the same publication-transaction
+// wholeness appendTurnAfterTranscriptWrite documents. The two turns differ
+// only when a tool exposes explicitly private evidence; every other caller
+// passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) {
+	s.attentionMu.Lock()
 	s.mu.Lock()
 	s.history = append(s.history, live)
+	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
-	if err := s.writeTranscript(persisted); err != nil {
+	err := s.writeTranscriptLocked(persisted)
+	s.attentionMu.Unlock()
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 }
@@ -1590,6 +1754,15 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 func (s *Session) writeTranscript(t schema.Turn) error {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	return s.writeTranscriptLocked(t)
+}
+
+// writeTranscriptLocked is writeTranscript for a caller already holding
+// attentionMu — the fold publication transaction commits the fold's own
+// entries under the same attentionMu hold that decided the publish, so no
+// other writer's entry can interleave between the publish and the fold's
+// compaction markers.
+func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 	if s.holdTurnUntilTranscriptReady(t) {
 		return nil
 	}
@@ -1600,6 +1773,13 @@ func (s *Session) writeTranscript(t schema.Turn) error {
 func (s *Session) writeTranscriptDurable(t schema.Turn) error {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	return s.writeTranscriptDurableLocked(t)
+}
+
+// writeTranscriptDurableLocked is writeTranscriptDurable for a caller
+// already holding attentionMu — an append/write pair
+// (appendTurnAfterTranscriptWrite) or the fold publication transaction.
+func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	if s.holdTurnUntilTranscriptReady(t) {
 		return nil
 	}
@@ -1703,19 +1883,21 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseRequestModel:            finalAttempt.RequestModel,
 		AttemptGroupID:                  finalAttempt.AttemptGroupID,
 		ResponseEndpointFamily:          finalAttempt.EndpointFamily,
+		ResponseProtocol:                finalAttempt.Protocol,
 		ResponseEndpoint:                finalAttempt.EndpointURL,
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 	}
-	if err := s.writeTranscriptDurable(t); err != nil {
+	err := s.appendTurnAfterTranscriptWrite(
+		t,
+		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() { s.history = append(s.history, t) },
+	)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 // maybeAutoSave persists the session metadata if StateDir is configured.
@@ -1725,13 +1907,15 @@ func (s *Session) maybeAutoSave() {
 	if s.stateDir == "" {
 		return
 	}
-	meta := s.Meta()
-	var err error
-	if fs := s.cfg.testOnly.metaFS; fs != nil {
-		err = schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
-	} else {
-		err = schema.SaveSessionMeta(s.stateDir, meta)
-	}
+	err := func() error {
+		s.metaSaveMu.Lock()
+		defer s.metaSaveMu.Unlock()
+		meta := s.Meta()
+		if fs := s.cfg.testOnly.metaFS; fs != nil {
+			return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+		}
+		return schema.SaveSessionMeta(s.stateDir, meta)
+	}()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
@@ -1752,4 +1936,30 @@ func (s *Session) TranscriptPath() string {
 		return ""
 	}
 	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+}
+
+// setRestoredTranscript installs the final restore-time transcript view. It
+// runs once, at the end of restore construction, with the entry list that any
+// delegate-delivery replay already refreshed from disk. opened reports
+// whether restore opened a transcript at all, independent of the entry
+// slice's emptiness.
+func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
+	s.mu.Lock()
+	s.restoredTranscriptHeader = header
+	s.restoredTranscript = entries
+	s.restoredTranscriptOpened = opened
+	s.mu.Unlock()
+}
+
+// RestoredTranscript returns the header and decoded entry list this resume
+// validated, for a caller (serve's app-identity projection) that would
+// otherwise re-read the transcript file. ok is true exactly when restore
+// opened a transcript, including a header-only one; the slice aliases
+// retained state and must be treated as read-only.
+func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, bool) {
+	s.mu.Lock()
+	header, entries := s.restoredTranscriptHeader, s.restoredTranscript
+	opened := s.restoredTranscriptOpened
+	s.mu.Unlock()
+	return header, entries, opened
 }

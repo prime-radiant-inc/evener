@@ -53,7 +53,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	target := hubcore.DeletionTarget{Ref: localAppRef(threadID), ThreadID: threadID}
 	record := hubcore.DeletionRecord{Targets: []hubcore.DeletionTarget{target}}
 	stateDirs := map[string]string{threadID: pe.StateDir}
-	release, ownerErr := s.acquireProjectDeletionOwnership(record, stateDirs)
+	release, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, stateDirs)
 	if ownerErr != nil {
 		var skipped []projectDeleteSkip
 		if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
@@ -78,9 +78,7 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	if err != nil {
 		decisionErrors = append(decisionErrors, "past index rebuild error: "+err.Error())
 	}
-	if s.cfg.Roster != nil {
-		hubRosterRefresh(s.cfg.Roster)
-	}
+	s.refreshRosterAfterDeletion(ctx)
 	if s.cfg.Inputs != nil {
 		s.cfg.Inputs.Bump()
 	}
@@ -123,10 +121,6 @@ func (s *WebServer) sessionDeleteResponse(
 	if s.navigation == nil {
 		return appwire.SessionDeleteResponse{}, appwire.Unavailable("navigation unavailable")
 	}
-	navigation, err := s.navigation.Refresh(ctx, hint)
-	if err != nil {
-		return appwire.SessionDeleteResponse{}, appwire.Unavailable(err.Error())
-	}
-	response.Navigation = navigation
+	response.Navigation = s.navigationAfterDeletion(ctx, hint)
 	return response, nil
 }

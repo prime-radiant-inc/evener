@@ -8,14 +8,13 @@ import (
 const devHelp = `Usage: evener-dev <subcommand> [flags]
 
 Subcommands:
-  dev                        Dev tooling (agent-shards, module-lint)
+  dev                        Dev tooling (agent-shards, covstmt, module-lint)
   module-lint              Run golangci-lint across workspace modules in parallel waves
   agent-shards             Run agent test shards in parallel
   fuzz-harvest             Harvest fuzz seed corpora from recorded traffic
   fuzzcov                  Static fuzz gap gate
   fuzzregistry             Audit the fuzz target registry
   internalcheck            Check public packages don't leak internal types
-  test-dev-tooling       Run dev-tooling selftest suites as a wave
   tomlcheck                Enforce TOML wire-format naming conventions
   transcript-v2-upgrade  Convert legacy transcript v1 files to v2
 `

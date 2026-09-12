@@ -47,7 +47,7 @@
 // instead of unconditionally clearing the attribute the way it used to.
 // The section's own help copy ("default follows your OS preference") is
 // what this makes true; before this, "system" always rendered dark
-// regardless of the OS. phoneDensity/fontSize
+// regardless of the OS. phoneDensity/fontSize/transcriptMeasure
 // get the same document-mirroring treatment the legacy's settings-
 // appearance.js gave them (onto document.body.dataset), and tokens.css now
 // keys off both: the type ramp scales off <body data-font-size> and the
@@ -86,6 +86,10 @@ import {
 export type ThemePref = "system" | "light" | "dark";
 export type PhoneDensityPref = "compact" | "comfortable";
 export type FontSizePref = "s" | "m" | "l" | "xl";
+// Settings -> Theme -> Transcript width: the conversation column's measure.
+// tokens.css keys --session-measure off <body data-transcript-measure>
+// (44rem reading, 64rem wide).
+export type TranscriptMeasurePref = "reading" | "wide";
 export type TranscriptStatusKey = "roundTimings" | "tokenCounts" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
 export type NotificationsLoudScopePref = "asks" | "all";
@@ -96,11 +100,26 @@ export interface PrefsStoreState {
   sidebarHidden: boolean;
   sidebarWidth: number;
   fontSize: FontSizePref;
+  transcriptMeasure: TranscriptMeasurePref;
   transcript: Record<TranscriptStatusKey, boolean>;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
   // match the PINNED evener.prefs.enterToSend / evener.prefs.showCost keys.
   enterToSend: boolean;
   showCost: boolean;
+  // Keybindings (Settings -> Keybindings): whether character-key triggers -
+  // today exactly the "?" cheatsheet-overlay trigger - are live. WCAG 2.1.4
+  // requires a way to turn single-character shortcuts off; default ON (the
+  // turn-off exists, per the p4 plan's Design decision 3). Browser-local by
+  // controller ruling: NOT a hub settings key.
+  characterKeyTriggers: boolean;
+  // The settings section the user last visited (a sections.ts id), so
+  // reopening Settings returns there instead of always landing on General.
+  // null = never visited (or cleared). Persisted as the RAW section-id
+  // string with no validation here - this store must not import the
+  // settings section inventory (layering), so an unrecognized stored value
+  // round-trips and the CONSUMER (Settings.tsx) falls back to the default
+  // section via isKnownSettingsSection.
+  lastSettingsSection: string | null;
   notifications: Record<NotificationKey, boolean>;
   notificationsLoudScope: NotificationsLoudScopePref;
 
@@ -109,9 +128,12 @@ export interface PrefsStoreState {
   setSidebarHidden(value: boolean): void;
   setSidebarWidth(value: number): void;
   setFontSize(value: FontSizePref): void;
+  setTranscriptMeasure(value: TranscriptMeasurePref): void;
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
   setEnterToSend(value: boolean): void;
   setShowCost(value: boolean): void;
+  setCharacterKeyTriggers(value: boolean): void;
+  setLastSettingsSection(value: string | null): void;
   setNotification(key: NotificationKey, value: boolean): void;
   setNotificationsLoudScope(value: NotificationsLoudScopePref): void;
 }
@@ -298,6 +320,7 @@ function readEnum<T extends string>(name: string, allowed: readonly T[], fallbac
 const THEME_VALUES: readonly ThemePref[] = ["system", "light", "dark"];
 const PHONE_DENSITY_VALUES: readonly PhoneDensityPref[] = ["compact", "comfortable"];
 const FONT_SIZE_VALUES: readonly FontSizePref[] = ["s", "m", "l", "xl"];
+const TRANSCRIPT_MEASURE_VALUES: readonly TranscriptMeasurePref[] = ["reading", "wide"];
 const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"];
 
 // Per-field localStorage key names for the two grouped record fields -
@@ -439,6 +462,10 @@ function applyFontSize(value: FontSizePref): void {
   document.body.dataset.fontSize = value;
 }
 
+function applyTranscriptMeasure(value: TranscriptMeasurePref): void {
+  document.body.dataset.transcriptMeasure = value;
+}
+
 // loadInitialState re-derives every field from localStorage (plus the
 // document side effects above) - shared by the store's own creator function
 // and resetPrefsStoreForTests(), so a test that seeds localStorage and then
@@ -450,27 +477,35 @@ function loadInitialState(): Omit<
   | "setSidebarHidden"
   | "setSidebarWidth"
   | "setFontSize"
+  | "setTranscriptMeasure"
   | "setTranscriptStatus"
   | "setEnterToSend"
   | "setShowCost"
+  | "setCharacterKeyTriggers"
+  | "setLastSettingsSection"
   | "setNotification"
   | "setNotificationsLoudScope"
 > {
   const theme = readEnum("theme", THEME_VALUES, "system");
   const phoneDensity = readEnum("phoneDensity", PHONE_DENSITY_VALUES, "compact");
   const fontSize = readEnum("fontSize", FONT_SIZE_VALUES, "m");
+  const transcriptMeasure = readEnum("transcriptMeasure", TRANSCRIPT_MEASURE_VALUES, "reading");
   applyTheme(theme);
   applyPhoneDensity(phoneDensity);
   applyFontSize(fontSize);
+  applyTranscriptMeasure(transcriptMeasure);
   return {
     theme,
     phoneDensity,
     sidebarHidden: readBool("sidebarHidden", false),
     sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
     fontSize,
+    transcriptMeasure,
     transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
     showCost: readBool("showCost", false),
+    characterKeyTriggers: readBool("characterKeyTriggers", true),
+    lastSettingsSection: readRaw("lastSettingsSection"),
     notifications: loadNotifications(),
     notificationsLoudScope: readEnum("notificationsLoudScope", LOUD_SCOPE_VALUES, "asks"),
   };
@@ -516,6 +551,12 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     set({ fontSize: value });
   },
 
+  setTranscriptMeasure(value) {
+    writeRaw("transcriptMeasure", value);
+    applyTranscriptMeasure(value);
+    set({ transcriptMeasure: value });
+  },
+
   setTranscriptStatus(key, value) {
     writeBool(TRANSCRIPT_KEY_NAMES[key], value);
     set((s) => ({ transcript: { ...s.transcript, [key]: value } }));
@@ -529,6 +570,22 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
   setShowCost(value) {
     writeBool("showCost", value);
     set({ showCost: value });
+  },
+
+  setCharacterKeyTriggers(value) {
+    writeBool("characterKeyTriggers", value);
+    set({ characterKeyTriggers: value });
+  },
+
+  setLastSettingsSection(value) {
+    // null is absence (never written as a literal), same contract as
+    // theme's "system".
+    if (value === null) {
+      removeRaw("lastSettingsSection");
+    } else {
+      writeRaw("lastSettingsSection", value);
+    }
+    set({ lastSettingsSection: value });
   },
 
   setNotification(key, value) {

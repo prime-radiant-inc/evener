@@ -47,21 +47,17 @@ func FuzzCredentialsStoreDecode(f *testing.F) {
 			return // rejected input (parse/type error) — nothing further to assert
 		}
 
-		// Read accessors a caller reaches for must never panic — across the
-		// well-known providers AND the names actually present in the loaded file,
-		// so the file-hit and env-fallback branches of each resolver are driven.
-		_ = s.List()
+		// Read accessors a caller reaches for must never panic — across names
+		// that are absent from the loaded file AND the names actually present
+		// in it, so both branches of the file-layer lookup are driven.
+		_ = s.Names()
+		_ = s.Path()
 		names := []string{"openai", "anthropic", "openai-compatible", "ollama"}
 		for name := range s.data.Providers {
 			names = append(names, name)
 		}
 		for _, name := range names {
-			_ = EnvVars(name)
 			_, _ = s.Get(name)
-			_, _ = s.Layers(name)
-			_, _ = s.InstanceLayers(name, "openai")
-			_, _ = s.ResolveKey(name, "openai")
-			_, _ = s.APIKeyFor(name)
 		}
 
 		// Round-trip through the real save encoder: re-save to a fresh 0600 file,

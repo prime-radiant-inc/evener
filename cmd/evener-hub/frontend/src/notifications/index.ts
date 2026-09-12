@@ -12,11 +12,13 @@
 // channel; attention.ts for the pure transition detection; leader.ts for the
 // Web-Locks-only election.
 
+import type { NavigationSessionSummary } from "../protocol/types.gen";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { selectLiveRows, selectNeedsYouRows } from "../stores/navigation/selectors";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore } from "../stores/prefs";
-import { type AttentionEntry, detectFires } from "./attention";
+import { type AttentionEntry, detectFires, snapshotFromNavigation } from "./attention";
 import { fireOsNotification, playTone } from "./channels";
 import { applyFavicon } from "./favicon";
 import { electLeader, isLeader } from "./leader";
@@ -37,12 +39,39 @@ function currentSummary() {
   return navigationStore.getState().attention.summary ?? null;
 }
 
+// Authoritative per-session attention for a reconnect rebaseline, built from
+// settled section rows rather than the delta payload: the hub's watcher emits
+// transitions only, so any transition missed during the disconnect is absent
+// from both the old map and the next `changed` array. Section pages are
+// demand-loaded (limit 50), so rows can be a prefix of the population — the
+// caller still applies the delta on top, with the delta winning for sessions
+// it mentions. Returns undefined when either section has no settled
+// (non-stale, error-free, current-generation) data, in which case the caller
+// falls back to the old map plus delta.
+function snapshotBaseline(state: ReturnType<typeof navigationStore.getState>): Map<string, AttentionEntry> | undefined {
+  const rows: NavigationSessionSummary[] = [];
+  for (const section of ["live", "needs_you"] as const) {
+    let settled = false;
+    for (const resource of state.resources.values()) {
+      if (resource.key.kind !== "section" || resource.key.section !== section) continue;
+      if (resource.data === null || resource.stale || resource.loading || resource.error !== null) return undefined;
+      if (resource.generationID !== state.clientGenerationID) return undefined;
+      settled = true;
+    }
+    if (!settled) return undefined;
+  }
+  rows.push(...selectLiveRows(state), ...selectNeedsYouRows(state));
+  return snapshotFromNavigation(rows);
+}
+
 function onNavigationAttention(): void {
   const state = navigationStore.getState();
   applyCounts();
-  if (state.mode !== "v1") return;
+  if (state.mode !== "v2") return;
   if (state.attention.changed.length === 0 && prevNavigationAttention === null) return;
-  const next = new Map(prevNavigationAttention);
+  const next = rebaselinePending
+    ? (snapshotBaseline(state) ?? new Map(prevNavigationAttention))
+    : new Map(prevNavigationAttention);
   for (const changed of state.attention.changed) {
     const level = changed.level === "error" || changed.level === "needs_you" ? changed.level : null;
     if (!level) {
@@ -58,6 +87,10 @@ function onNavigationAttention(): void {
   }
   if (prevNavigationAttention === null) {
     prevNavigationAttention = next;
+    // Establishing the baseline consumes a pending rebaseline: the flag's
+    // job was to silence this installation, and leaving it set would
+    // swallow the NEXT legitimate update as a second rebaseline.
+    rebaselinePending = false;
     return;
   }
   if (rebaselinePending) {
@@ -111,7 +144,7 @@ export function initNotifications(): void {
     navigationStore.subscribe((state, prev) => {
       if (state.attention !== prev.attention) onNavigationAttention();
       if (state.resources !== prev.resources) applyTitleNow();
-      if (prev.mode === "v1" && state.mode !== "v1") prevNavigationAttention = null;
+      if (prev.mode === "v2" && state.mode !== "v2") prevNavigationAttention = null;
     }),
   );
 

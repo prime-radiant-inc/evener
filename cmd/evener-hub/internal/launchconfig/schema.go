@@ -3,6 +3,7 @@ package launchconfig
 import (
 	"sync"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -53,17 +54,16 @@ const (
 	LaunchLayerLaunch  LaunchLayerSupport = "launch"
 )
 
-type LaunchOptionChoice struct {
-	Value    string `json:"value"`
-	Label    string `json:"label"`
-	Disabled bool   `json:"disabled,omitempty"`
-	Hint     string `json:"hint,omitempty"`
-}
+// A choice and an env fallback are the wire types themselves, so the schema
+// here and the evener/launch/schema response cannot drift: a field added in
+// appwire arrives on both sides at once instead of being dropped by a
+// field-by-field copy. LaunchOption below stays its own struct because it
+// types Group/Kind/PathKind/DefaultableLayers as this package's own enums,
+// which the builder and the resolver's validation use; appwire declares those
+// four as plain strings.
+type LaunchOptionChoice = appwire.LaunchOptionChoice
 
-type LaunchOptionEnvFallback struct {
-	Name   string `json:"name"`
-	Secret bool   `json:"secret,omitempty"`
-}
+type LaunchOptionEnvFallback = appwire.LaunchOptionEnvFallback
 
 type LaunchOption struct {
 	Field             string                   `json:"field"`
@@ -121,6 +121,7 @@ func buildLaunchOptionSchema() []LaunchOption {
 		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Description: "Extended thinking budget for models that support it. Higher effort increases cost and latency.", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERReasoningEffort.Name}, Choices: reasoningChoices(), DriverSupport: evenerOnly},
 		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Description: "Lightweight model for quick sub-tasks like file triage. Falls back to the primary model if unset.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultLabel: "primary model"},
 		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Description: "How evener manages context window pressure. compact prunes aggressively; session-log and ooda use alternative strategies.", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: evenerOnly, BuiltinDefault: "compact"},
+		{Field: "provider_idle_timeout", WireField: "providerIdleTimeout", Label: "Provider idle timeout", Description: "Maximum time without incoming response bytes, including heartbeat bytes. Positive Go duration (for example 10m or 45s); no total request duration limit. Explicit resume values override persisted settings.", Group: LaunchGroupLimits, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefault: "10m"},
 		{Field: "openai_responses_continuation", WireField: "openAIResponsesContinuation", Label: "OpenAI Responses continuation", Description: "Controls whether eligible OpenAI Responses sessions may use provider-side continuation. Values are off or auto; default off preserves full-history behavior. Launch settings override " + envvars.EVENEROpenAIResponsesContinuation.Name + " and explicit resume values override persisted snapshots. Future auto enablement may allow provider-side storage/retention and affect provider-token/cost behavior.", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENEROpenAIResponsesContinuation.Name}, Choices: openAIResponsesContinuationChoices(), DriverSupport: evenerOnly, BuiltinDefault: "off"},
 		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Description: "Hard cap on the number of model turns per session. The session ends with an error if the limit is reached.", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultInt: &builtinIntNeg1},
 		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Label: "Max subagent depth", Description: "How many levels of nested subagent spawns are allowed. 0 disables subagents entirely.", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultInt: &builtinInt2},
@@ -145,6 +146,7 @@ func buildLaunchOptionSchema() []LaunchOption {
 		{Field: "sandbox", WireField: "sandbox", Label: "Sandbox", Description: "Confine the session to a sandbox mode. off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential and secret paths, give a private temp dir, and confine spawned shell commands too. Network egress is a separate toggle (Sandbox network egress). Default off.", Group: LaunchGroupSandbox, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: sandboxChoices(), DriverSupport: evenerOnly, BuiltinDefault: "off"},
 		{Field: "sandbox_net", WireField: "sandboxNet", Label: "Sandbox network egress", Description: "Allow network egress when sandboxed. Default on. Has no effect unless a sandbox mode is set.", Group: LaunchGroupSandbox, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultBool: &builtinBoolTrue},
 		{Field: "verbose", WireField: "verbose", Label: "Verbose event log", Description: "Emit all internal events to the debug log. Useful for diagnosing unexpected behaviour.", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly, BuiltinDefaultBool: &builtinBoolFalse},
+		{Field: "api_log", WireField: "apiLog", Label: "Log API requests", Description: "Durably record every provider API request and response to the session's .api.jsonl for post-mortem inspection. Off by default: records include full request and response bodies and can grow large.", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly, BuiltinDefaultBool: &builtinBoolFalse},
 		{Field: "trace_file", WireField: "traceFile", Label: "Trace file", Description: "Write a structured execution trace to this file. Suitable for post-mortem analysis with evener trace tooling.", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly},
 		{Field: "cpu_profile", WireField: "cpuProfile", Label: "CPU profile", Description: "Write a Go pprof CPU profile to this path. Only useful when profiling evener itself.", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly},
 		{Field: "export_atif_path", WireField: "exportATIFPath", Label: "Export ATIF path", Description: "Write the session's agent-tool interaction format (ATIF) log to this file after the session ends.", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly},
@@ -154,10 +156,11 @@ func buildLaunchOptionSchema() []LaunchOption {
 
 func reasoningChoices() []LaunchOptionChoice {
 	// In layered launch config, "" ("(default)") means "no override → inherit the
-	// global/project default", whereas "none" overrides it to empty — the only
-	// way to CLEAR an inherited high/max from the launch UI. So both are kept and
-	// are genuinely distinct here (unlike the flat runtime path).
-	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (clear)"}}
+	// global/project default", whereas "none" overrides an inherited level and
+	// reaches the daemon as an explicit off (thinking disabled where the model
+	// allows it, the field omitted otherwise). So both are kept and are
+	// genuinely distinct here.
+	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (off where supported)"}}
 }
 
 func contextChoices() []LaunchOptionChoice {

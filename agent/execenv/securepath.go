@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/sandbox"
 )
@@ -45,9 +46,11 @@ var (
 // itself cannot redirect resolution.
 //
 // The file-operation methods are safe for concurrent use with each other. close()
-// is NOT — it releases the cached root fds and must run only at environment
-// teardown (Cleanup), after all file tools for the environment have returned; the
-// session lifecycle guarantees this ordering.
+// is NOT — it releases the cached root fds — so it never runs while an operation
+// holds the layer: the environment retires a layer it stops handing out (a
+// rebuild after the session scratch moved, a policy replacement, or teardown),
+// and the layer closes itself once retired AND drained, whichever of the two
+// comes last (retire, release).
 type sandboxFS struct {
 	policy *sandbox.ResolvedPolicy
 
@@ -64,6 +67,50 @@ type sandboxFS struct {
 
 	mu      sync.Mutex
 	rootFds map[string]int // canonical root path → cached O_DIRECTORY fd
+
+	// inUse counts the file-tool operations currently holding this layer: the
+	// environment acquires it for an operation under sbMu when it hands the
+	// layer out, and the operation releases it on completion. retired is set
+	// once the environment stops handing the layer out; the layer closes when
+	// it is both retired and drained, from whichever of retire and release
+	// observes that last. closed is set by close; the root fds are gone from
+	// then on.
+	inUse   atomic.Int32
+	retired atomic.Bool
+	closed  atomic.Bool
+}
+
+// acquire records an operation holding s; nil-safe so a caller can pair it
+// unconditionally with release. Only a layer the environment still hands out
+// is ever acquired (under sbMu), so a retired layer's count only falls.
+func (s *sandboxFS) acquire() {
+	if s != nil {
+		s.inUse.Add(1)
+	}
+}
+
+// release records the completion of an operation acquire counted, and closes
+// the layer if it was retired meanwhile and this was its last operation.
+func (s *sandboxFS) release() {
+	if s == nil {
+		return
+	}
+	if s.inUse.Add(-1) == 0 && s.retired.Load() {
+		s.close()
+	}
+}
+
+// retire takes s out of service: it closes now if no operation holds it, and
+// otherwise on the completing release. close is idempotent, so the retire and
+// the release that both observe "retired and drained" cannot double-free.
+func (s *sandboxFS) retire() {
+	if s == nil {
+		return
+	}
+	s.retired.Store(true)
+	if s.inUse.Load() == 0 {
+		s.close()
+	}
 }
 
 // isGranted reports whether abs is exactly this fs's single per-invocation granted

@@ -17,6 +17,7 @@ import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
+import { foldTurnEntries } from "./toolRuns";
 import { asTurnError } from "./turnFailure";
 import "./messages";
 import "./tools";
@@ -49,6 +50,8 @@ export interface TranscriptAnchorEntry {
   readonly sourceIndex: number;
   readonly index: number;
   readonly isMessage: boolean;
+  /** For a folded tool run: the entry ids it stands in for (toolRuns.ts). */
+  members?: readonly string[];
 }
 
 interface FlatEntry {
@@ -208,16 +211,58 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
   return rows;
 }
 
+// Anchors are registered from the SAME fold TurnBlock renders (toolRuns.ts's
+// foldTurnEntries): a folded run is one anchor under the run's id, carrying
+// its first entry's source index, because while the run is closed no element
+// carries the individual entry ids and a restore that looked for one would
+// find nothing (roborev on PR #947).
 export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[]): readonly TranscriptAnchorEntry[] {
   return rows.flatMap((row, index) => {
-    const entries = row.kind === "intentGroup" ? row.entries : row.turn.entries;
-    return entries.map((entry) => ({
-      id: entry.id,
-      sourceIndex: entry.sourceIndex,
-      index,
-      isMessage: entry.kind === "item" && entry.isMessage,
-    }));
+    if (row.kind === "intentGroup") {
+      return row.entries.map((entry) => ({
+        id: entry.id,
+        sourceIndex: entry.sourceIndex,
+        index,
+        isMessage: false,
+      }));
+    }
+    return foldTurnEntries(row.turn).flatMap((entry) => {
+      if (entry.kind === "run") {
+        const first = entry.entries[0];
+        return first
+          ? [
+              {
+                id: entry.id,
+                sourceIndex: first.sourceIndex,
+                index,
+                isMessage: false,
+                members: entry.entries.map((member) => member.id),
+              },
+            ]
+          : [];
+      }
+      return [
+        {
+          id: entry.id,
+          sourceIndex: entry.sourceIndex,
+          index,
+          isMessage: entry.kind === "item" && entry.isMessage,
+        },
+      ];
+    });
   });
+}
+
+// The disclosure ids ToolRunGroup mints (run:<first entry>) for the runs
+// TurnBlock will fold. The projector's eligibleDisclosureIds inventory only
+// knows source item ids, so without these the Full-view baseline could not
+// clear a run the reader closed before leaving Full and coming back
+// (roborev on PR #947): a stale explicit close would keep the run shut in a
+// view whose contract is "everything open".
+export function transcriptRunDisclosureIdsForRows(rows: readonly TranscriptBodyRow[]): readonly string[] {
+  return rows.flatMap((row) =>
+    row.kind === "turn" ? foldTurnEntries(row.turn).flatMap((entry) => (entry.kind === "run" ? [entry.id] : [])) : [],
+  );
 }
 
 export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptBodyRow[]): ReadonlyMap<string, number> {
@@ -244,6 +289,21 @@ export interface TranscriptBodyProps {
   listRef?: RefObject<VirtualListHandle | null>;
   onMeasurementsChange?: () => void;
   trailingContent?: ReactNode;
+  /**
+   * An extra row appended AFTER the last transcript row, inside the virtual
+   * list itself (unlike trailingContent, which sits beside the list and
+   * therefore stays pinned). This is the slot for an interactive surface
+   * that must scroll away with the transcript - the session pane's pending-
+   * questions dock (composer/askDock): anchored to the composer's footer it
+   * kept covering the bottom of the screen while the reader scrolled back
+   * for context. As a real row it gets the list's own stable keying (id),
+   * dynamic measurement, and end-anchored following: an arriving row follows
+   * the tail for a reader at the bottom and does NOT yank a scrolled-back
+   * reader. Virtual-list only - the preview surface (no virtual list) never
+   * renders it. Interactive state inside the row must live in a store, not
+   * component state: scrolling far enough away unmounts the row.
+   */
+  trailingRow?: { id: string; content: ReactNode };
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
   onAnnounceViewChange?: (summary: string) => void;
@@ -261,18 +321,25 @@ export function TranscriptBody({
   listRef,
   onMeasurementsChange,
   trailingContent,
+  trailingRow,
   viewId,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const focusFallbackRef = useRef<HTMLElement>(null);
   const projection = useMemo(() => projectThread(model, config), [model, config]);
   const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
+  // Source item ids from the projector plus the folded-run ids the rows will
+  // render, so the Full baseline reaches every disclosure on screen.
+  const eligibleDisclosureIds = useMemo(
+    () => [...projection.eligibleDisclosureIds, ...transcriptRunDisclosureIdsForRows(rows)],
+    [projection, rows],
+  );
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
   const agentLabel = modelLabel(model.modelProvider, model.model);
   const itemRenderFingerprint = [
     configFingerprint(config),
     JSON.stringify(projection.metadata),
-    projection.eligibleDisclosureIds.join("\0"),
+    eligibleDisclosureIds.join("\0"),
     surface,
     sessionRef,
     disclosureScope,
@@ -283,6 +350,7 @@ export function TranscriptBody({
       createTranscriptRenderContext({
         config,
         projection,
+        eligibleDisclosureIds,
         surface,
         sessionRef,
         disclosureScope,
@@ -297,7 +365,9 @@ export function TranscriptBody({
     viewKey: configFingerprint(config),
     listRef,
     anchorEntries: transcriptAnchorEntriesForRows(rows),
-    renderedRowCount: rows.length,
+    // Include the synthetic trailing row: following-bottom view restores
+    // target renderedRowCount - 1, which is the trailing row when present.
+    renderedRowCount: rows.length + (trailingRow === undefined ? 0 : 1),
     focusFallback: () => focusFallbackRef.current?.focus(),
     announce: onAnnounceViewChange,
   });
@@ -324,6 +394,9 @@ export function TranscriptBody({
             separatorTurn={row.separatorTurn}
             viewAnchorIndex={index}
             showSeenDivider={showSeenDivider && row.sourceTurnIds.includes(seenTurnId ?? "")}
+            sessionRef={sessionRef}
+            renderContext={itemRenderContext}
+            thread={model}
           />
         </div>
       );
@@ -351,6 +424,11 @@ export function TranscriptBody({
     return row;
   };
 
+  // The trailing row is index rows.length when present: one synthetic row
+  // past every transcript row, keyed by its own stable id so the list's
+  // append-following and measurement treat it like any other row.
+  const isTrailingRowIndex = (index: number) => trailingRow !== undefined && index === rows.length;
+
   const list = (
     <section
       ref={focusFallbackRef}
@@ -363,10 +441,18 @@ export function TranscriptBody({
         ref={listRef}
         dynamic
         anchorToEnd
-        count={rows.length}
+        count={rows.length + (trailingRow === undefined ? 0 : 1)}
         estimateSize={() => ESTIMATED_TURN_HEIGHT}
-        getItemKey={(index) => rowAt(index).id}
-        renderRow={(index) => renderRow(rowAt(index), index)}
+        getItemKey={(index) => (isTrailingRowIndex(index) && trailingRow ? trailingRow.id : rowAt(index).id)}
+        renderRow={(index) =>
+          isTrailingRowIndex(index) && trailingRow ? (
+            <div data-testid="transcript-row" data-row-id={trailingRow.id}>
+              {trailingRow.content}
+            </div>
+          ) : (
+            renderRow(rowAt(index), index)
+          )
+        }
         onChange={() => {
           try {
             onMeasurementsChange?.();
@@ -416,6 +502,7 @@ export function TranscriptBody({
     <TranscriptRenderProvider
       config={config}
       projection={projection}
+      eligibleDisclosureIds={eligibleDisclosureIds}
       surface={surface}
       sessionRef={sessionRef}
       disclosureScope={disclosureScope}

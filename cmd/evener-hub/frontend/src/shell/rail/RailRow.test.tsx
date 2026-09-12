@@ -6,15 +6,26 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
+import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
-import { Tree, type TreeRowInfo } from "../../widgets";
+import {
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  type ResourceKey,
+  type ResourceState,
+} from "../../stores/navigation/types";
+import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
+  CompletedJobsFoldRailNode,
   InactiveFoldRailNode,
+  JobRailNode,
   LoadingRailNode,
   OverflowRailNode,
   ProjectRailNode,
@@ -22,6 +33,7 @@ import type {
   RailSession,
   SessionRailNode,
 } from "./railNodes";
+import { RailRenderObserver } from "./railRenderObserver";
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
 // pin sections from the navigation store's bounded pin-catalog resource
@@ -51,7 +63,7 @@ function seedPinCatalogForPicker(): void {
     error: null,
     generationID: generation,
   };
-  navigationStore.setState({ mode: "v1", resources: new Map([[keyID(resource.key), resource]]) });
+  navigationStore.setState({ mode: "v2", resources: new Map([[keyID(resource.key), resource]]) });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 
@@ -153,6 +165,20 @@ function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
   return { id: "inactive:parent", kind: "inactiveFold", count, expanded: false, children: [] };
 }
 
+function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
+  return {
+    id: "job:parent:job-1",
+    kind: "job",
+    job: { job_id: "job-1", job_type: "shell", status: "running", row_id: "job:parent:job-1", ...overrides },
+    active: true,
+    children: [],
+  };
+}
+
+function completedJobsFoldRailNode(count: number): CompletedJobsFoldRailNode {
+  return { id: "completed-jobs:parent", kind: "completedJobsFold", count, expanded: false, children: [] };
+}
+
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
   return { depth: 0, expanded: false, hasChildren: false, toggle: vi.fn(), activate: vi.fn(), ...overrides };
 }
@@ -162,6 +188,7 @@ function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
     onOpenSessionPane: vi.fn(),
     onRenameSession: vi.fn().mockResolvedValue(undefined),
     onShutdownSession: vi.fn().mockResolvedValue(undefined),
+    onForceStopSession: vi.fn().mockResolvedValue(undefined),
     onPinSession: vi.fn().mockResolvedValue(undefined),
     onUnpinRequest: vi.fn().mockResolvedValue(undefined),
     onToggleArchiveSession: vi.fn().mockResolvedValue(undefined),
@@ -187,6 +214,85 @@ async function openMenu(name: RegExp | string) {
   await user.click(screen.getByRole("button", { name }));
   return user;
 }
+
+function normalizedRailResource(
+  key: Extract<ResourceKey, { kind: "project_page" | "pin_section" }>,
+  parentOverrides: Partial<RailSession> = {},
+  childOverrides: Partial<RailSession> = {},
+): NormalizedResource {
+  const parentKey = `${navigationViewScope(key)}/entity/${"1".repeat(64)}`;
+  const childKey = `${navigationViewScope(key)}/entity/${"2".repeat(64)}`;
+  return {
+    key,
+    graph: normalizedGraphFromSnapshot({
+      metadata: {},
+      entities: [
+        {
+          key: parentKey,
+          kind: "session",
+          value: apiNode({ ref: "parent", title: "Parent", children: [], ...parentOverrides }),
+        },
+        {
+          key: childKey,
+          kind: "session",
+          value: apiNode({ ref: "child", title: "Child", children: [], ...childOverrides }),
+        },
+      ],
+      containers: [
+        {
+          key: navigationRootContainerKey(key, "sessions"),
+          owner: { kind: "resource_root", slot: "sessions" },
+          children: [parentKey],
+        },
+        {
+          key: navigationOwnedContainerKey(parentKey, "children"),
+          owner: { kind: "entity", entityKey: parentKey, slot: "children" },
+          children: [childKey],
+        },
+        {
+          key: navigationOwnedContainerKey(childKey, "children"),
+          owner: { kind: "entity", entityKey: childKey, slot: "children" },
+          children: [],
+        },
+      ],
+    }),
+    version: { generationId: generation, revision: 1, etag: "v2" },
+    presence: "present",
+  };
+}
+
+test.each([
+  [
+    "archived project page",
+    { kind: "project_page", projectKey: "project", tier: "archived", offset: 0, limit: 50 },
+    { tier: "archived", project_key: "project" },
+    "Unarchive",
+  ],
+  [
+    "pinned section",
+    { kind: "pin_section", sectionId: "research", offset: 0, limit: 50 },
+    { pin_section_id: "research" },
+    "Unpin",
+  ],
+] as const)(
+  "normalized V2 %s preserves context through recursive rail projection and actions",
+  async (_name, key, context, action) => {
+    const resource = normalizedRailResource(key);
+    const model = selectRailModel(resource);
+    const parent = [...model.sessions.values()].find((session) => session.ref === "parent");
+    const child = [...model.sessions.values()].find((session) => session.ref === "child");
+    expect(parent).toMatchObject(context);
+    expect(child).toMatchObject(context);
+    if (!parent) throw new Error("expected projected parent session");
+
+    const acts = actions();
+    render(<RailRow node={sessionRailNode(parent)} info={info()} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: action }));
+    if (action === "Unarchive") expect(acts.onToggleArchiveSession).toHaveBeenCalledWith(parent);
+    else expect(acts.onUnpinRequest).toHaveBeenCalledWith(parent);
+  },
+);
 
 describe("cadenceStateFor", () => {
   test.each([
@@ -321,6 +427,14 @@ describe("activityGloss", () => {
       ),
     ).toBe("2 subagents working · fix/thing");
   });
+
+  test("reports active jobs alongside active subagents", () => {
+    const session = apiNode({ children: [apiNode({ state: "active" })] });
+    Object.assign(session, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+    });
+    expect(activityGloss(session)).toBe("1 subagent working · 1 job running");
+  });
 });
 
 describe("loading row", () => {
@@ -411,6 +525,79 @@ describe("inactive-subagent fold row", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*6px;[^}]*margin-left:\s*-10px;/);
+  });
+});
+
+describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
+  // shellguard's tap-target pass measures these in a real phone context; these
+  // source assertions pin the rules themselves (jsdom evaluates no cascade).
+  const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const coarseBlock = CSS.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/)?.[1] ?? null;
+
+  test("row action buttons meet the 44px floor in BOTH dimensions", () => {
+    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
+    const rule = coarseBlock!.match(/\.actions button\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("min-width: var(--tap-min)");
+    expect(rule![1]).toContain("min-height: var(--tap-min)");
+  });
+
+  test("the widened menu trigger centres its glyph instead of hugging an edge", () => {
+    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
+    const rule = coarseBlock!.match(/\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("padding: 0");
+    expect(rule![1]).toContain("justify-content: center");
+  });
+});
+
+describe("job rows", () => {
+  test("renders an active job label and green status", () => {
+    render(<RailRow node={jobRailNode({ command: "go test ./..." })} info={info()} actions={actions()} />);
+    expect(screen.getByText("go test ./...")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-job-status").className.split(" ")).toContain(railStyles.activityAlive);
+  });
+
+  test("the tooltip shows the command and the tool call's intent", () => {
+    render(
+      <RailRow
+        node={jobRailNode({
+          command: "go test ./...",
+          intent: "Running the package tests to find the failure",
+        })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTitle("go test ./... · Running the package tests to find the failure · running")).toBeTruthy();
+  });
+
+  test("the tooltip prefers the full command when the label was truncated", () => {
+    const long = "echo a".repeat(200);
+    render(
+      <RailRow
+        node={jobRailNode({
+          command: "echo a…",
+          full_command: long,
+        })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTitle(`${long} · running`)).toBeTruthy();
+  });
+
+  test("renders a separate completed-jobs disclosure", () => {
+    const toggle = vi.fn();
+    render(
+      <RailRow node={completedJobsFoldRailNode(3)} info={info({ hasChildren: true, toggle })} actions={actions()} />,
+    );
+    expect(screen.getByText("Completed jobs (3)")).toBeTruthy();
+    fireEvent.click(screen.getByText("Completed jobs (3)"));
+    expect(toggle).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -572,6 +759,16 @@ describe("session row", () => {
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("2 subagents working · fix/thing");
+  });
+
+  test("shows an active job on a quiet session as green working activity", () => {
+    const session = apiNode({ state: "idle" });
+    Object.assign(session, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").className.split(" ")).toContain(railStyles.activityAlive);
   });
 
   test("keeps a quiet row without active descendants one line", () => {
@@ -1086,7 +1283,7 @@ describe("session row", () => {
   // the menu itself withholds Delete for a non-local session rather than
   // relying solely on the server's own isLocalRouteID refusal.
   test("menu omits Delete for a remote-source session", async () => {
-    render(<RailRow node={sessionRailNode(apiNode({ host_id: "codex" }))} info={info()} actions={actions()} />);
+    render(<RailRow node={sessionRailNode(apiNode({ host_id: "remote" }))} info={info()} actions={actions()} />);
     await openMenu(/actions for/i);
     expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
   });
@@ -1140,6 +1337,7 @@ describe("session row", () => {
       "Pin this session…",
       "Archive",
       "Shut down",
+      "Force stop…",
       "Delete…",
     ]);
   });
@@ -1257,6 +1455,192 @@ describe("session row", () => {
 });
 
 describe("project row", () => {
+  test("descendant-only project changes do not invoke the project RailRow again", () => {
+    // This fails until RailRow's memo boundary compares project rows by the
+    // fields ProjectRow renders/captures instead of by ancestor node identity.
+    const observer = vi.fn();
+    const rowInfo = info({ hasChildren: true });
+    const rowActions = actions();
+    const firstSession = apiNode({ row_id: "project:p1:local:first", ref: "local:first", session_id: "first" });
+    const secondSession = apiNode({ row_id: "project:p1:local:second", ref: "local:second", session_id: "second" });
+    const firstProject = apiProject({ sessions: [firstSession] });
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={projectRailNode(firstProject, [sessionRailNode(firstSession)])}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={projectRailNode({ ...firstProject, sessions: [secondSession] }, [sessionRailNode(secondSession)])}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(0);
+  });
+
+  test.each([
+    ["node id", (node: ProjectRailNode) => ({ ...node, id: "projectnode:p1-replaced" })],
+    ["display name", (node: ProjectRailNode) => ({ ...node, displayName: "Decorated project" })],
+    ["resource error", (node: ProjectRailNode) => ({ ...node, resourceError: "load failed" })],
+    ["retry callback", (node: ProjectRailNode) => ({ ...node, retry: vi.fn() })],
+    ["project key", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, key: "p2" } })],
+    ["project name", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, name: "Renamed" } })],
+    [
+      "project working directory",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, working_dir: "/repo/next" } }),
+    ],
+    [
+      "project rollup state",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, rollup_state: "active" } }),
+    ],
+    ["project attention count", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, rollup_attn: 2 } })],
+    ["project favorite", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, favorite: true } })],
+    [
+      "project archive state",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, is_archived: true } }),
+    ],
+  ] as const)("%s changes still invoke the project RailRow", (_name, change) => {
+    const observer = vi.fn();
+    const rowInfo = info();
+    const rowActions = actions();
+    const firstNode = { ...projectRailNode(apiProject()), retry: vi.fn() };
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={firstNode} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={change(firstNode)} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
+  test("changed retry, spawn directory, and project action input replace captured project-row behavior", async () => {
+    window.history.replaceState({}, "", "/");
+    const observer = vi.fn();
+    const rowInfo = info();
+    const firstRetry = vi.fn();
+    const secondRetry = vi.fn();
+    const rowActions = actions();
+    const firstProject = apiProject({ working_dir: "/repo/first" });
+    const secondProject = { ...firstProject, key: "p2", working_dir: "/repo/next" };
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{ ...projectRailNode(firstProject), resourceError: "load failed", retry: firstRetry }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{
+            ...projectRailNode(secondProject),
+            id: "projectnode:p1",
+            resourceError: "load failed",
+            retry: secondRetry,
+          }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(firstRetry).not.toHaveBeenCalled();
+    expect(secondRetry).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "New session in Proj" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext");
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(rowActions.onToggleFavoriteProject).toHaveBeenCalledWith(secondProject);
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("changed TreeRowInfo and actions identities still invoke the project RailRow and replace handlers", async () => {
+    const observer = vi.fn();
+    const firstInfo = info({ hasChildren: true });
+    const secondInfo = info({ hasChildren: true });
+    const firstActions = actions();
+    const secondActions = actions();
+    const node = projectRailNode(apiProject(), [sessionRailNode(apiNode())]);
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={firstInfo} actions={firstActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={secondInfo} actions={firstActions} />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByText("Proj"));
+    expect(firstInfo.activate).not.toHaveBeenCalled();
+    expect(secondInfo.activate).toHaveBeenCalledTimes(1);
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={secondInfo} actions={secondActions} />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(firstActions.onToggleFavoriteProject).not.toHaveBeenCalled();
+    expect(secondActions.onToggleFavoriteProject).toHaveBeenCalledWith(node.project);
+  });
+
+  test("non-project rows retain default memo behavior for descendant-only node replacement", () => {
+    const observer = vi.fn();
+    const rowInfo = info();
+    const rowActions = actions();
+    const session = apiNode();
+    const firstNode = sessionRailNode(session);
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={firstNode} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{ ...firstNode, children: [sessionRailNode(apiNode({ row_id: "child", ref: "child" }))] }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
   test("renders the project's name and a Cadence reflecting its rollup state", () => {
     const project = apiProject({ name: "prime-radiant", rollup_state: "errored" });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
@@ -1599,9 +1983,14 @@ describe("shared right slot (RailRow.module.css)", () => {
     // revealed menu right-justifies to the timestamp's own edge (and the
     // shared cell narrows to the glyph's real width). Scoped by attribute
     // so a project row's "+" IconButton keeps its own square geometry.
-    const justifyRule = ruleFor('.actions button[aria-haspopup="menu"]');
+    //
+    // Anchored to the TOP-LEVEL rule (column 0): the same selector also
+    // appears inside @media (pointer: coarse), where the widened tap target
+    // centres the glyph instead - that override is the tap-floor describe's
+    // own assertion above, not this one's.
+    const justifyRule = /\n\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/.exec(CSS);
     expect(justifyRule, "the row must right-justify the menu trigger's glyph").not.toBeNull();
-    expect(justifyRule).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
+    expect(justifyRule![1]).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
   });
 
   // The signal dot keeps a FIXED width and refuses to flex: its outdent
@@ -1665,4 +2054,53 @@ describe("pin star follows the same scoping as the pin action", () => {
       expect(screen.queryByTestId("favorite-star")).toBeNull();
     });
   }
+});
+
+test("an incompatible daemon has an attention signal and restart instruction", () => {
+  renderRow({ state: "restartRequired", live: true, branch: "" });
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+  expect(screen.getByTestId("rail-row-activity").textContent).toContain("restart required");
+});
+
+test.each([
+  ["own activity", { state: "active" }, { state: "idle" }, "working"],
+  ["subagent activity", { state: "idle" }, { state: "active" }, "1 subagent working"],
+  [
+    "job activity",
+    { state: "idle", running_jobs: [{ job_id: "job-a", job_type: "shell", status: "running" }] },
+    { state: "idle" },
+    "1 job running",
+  ],
+] as const)("normalized navigation preserves %s in the rendered sidebar", (_name, parentState, childState, gloss) => {
+  const resource = normalizedRailResource(
+    { kind: "project_page", projectKey: "project", tier: "current", offset: 0, limit: 50 },
+    { ...parentState, running_jobs: "running_jobs" in parentState ? [...parentState.running_jobs] : [] },
+    childState,
+  );
+  const parent = [...selectRailModel(resource).sessions.values()].find((session) => session.ref === "parent");
+  if (!parent) throw new Error("missing parent");
+  render(<RailRow node={sessionRailNode(parent)} info={info()} actions={actions()} />);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+  expect(screen.getByTestId("rail-row-activity").textContent).toContain(gloss);
+});
+
+test("restart-required navigation disables daemon actions in the sidebar menu", async () => {
+  renderRow({ state: "restartRequired", rename: false, live: true });
+  await openMenu(/actions for/i);
+  expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
+});
+
+test.each(["subagent", "job"] as const)("restart explanation survives %s activity", (kind) => {
+  renderRow({
+    state: "restartRequired",
+    live: true,
+    branch: "",
+    children: kind === "subagent" ? [apiNode({ state: "active" })] : [],
+    running_jobs: kind === "job" ? [{ job_id: "job-a", job_type: "shell", status: "running" }] : [],
+  });
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+  const gloss = screen.getByTestId("rail-row-activity").textContent;
+  expect(gloss).toContain("restart required");
+  expect(gloss).toContain(kind === "subagent" ? "1 subagent working" : "1 job running");
 });

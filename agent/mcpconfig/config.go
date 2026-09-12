@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // ServerConfig describes a single MCP server connection.
@@ -333,13 +334,5 @@ func globalMCPConfigPath() string {
 }
 
 func globalMCPConfigPathWithHome(userHomeDir func() (string, error)) string {
-	dir := envvars.XDGConfigHome.Getenv()
-	if dir == "" {
-		home, err := userHomeDir()
-		if err != nil {
-			return ""
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "evener", "mcp.json")
+	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), userHomeDir), "mcp.json")
 }

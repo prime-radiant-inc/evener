@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { waitForHttp } from "./browserGuardCdp.mjs";
+import { createStartupDeadline, waitForHttp } from "./browserGuardCdp.mjs";
 import * as browserGuardProcess from "./browserGuardProcess.mjs";
 
 const { createBrowserProcessCleanup, findAvailablePort, startBrowserGuard } = browserGuardProcess;
@@ -21,6 +23,7 @@ class FakeChild extends EventEmitter {
     this.signalCode = null;
     this.signals = [];
     this.stderr = new EventEmitter();
+    this.stdout = new EventEmitter();
   }
 
   kill(signal) {
@@ -85,6 +88,9 @@ async function startFakeGuard(options = {}) {
     spawnProcess(command, args, spawnOptions) {
       const child = new FakeChild(command, args, spawnOptions);
       children.push(child);
+      if (command === process.execPath) {
+        queueMicrotask(() => child.stdout.emit("data", "  ➜  Local:   http://127.0.0.1:4173/\n"));
+      }
       return child;
     },
     ...options,
@@ -92,12 +98,113 @@ async function startFakeGuard(options = {}) {
   return { guard, children };
 }
 
+test("starts concurrent guards on Vite-owned ports and reaps their listeners", async (context) => {
+  const guards = [];
+  const viteChildren = [];
+  context.after(async () => {
+    await Promise.all(guards.map((guard) => guard.cleanup()));
+  });
+  const start = async () => {
+    const guard = await startBrowserGuard({
+      frontend: process.cwd(),
+      profilePrefix: "browser-guard-vite-test-",
+      chromeBinary: "/fake/chrome",
+      useProcessGroups: false,
+      spawnProcess(command, args, options) {
+        if (command === process.execPath) {
+          const child = spawn(command, args, options);
+          viteChildren.push(child);
+          return child;
+        }
+        const child = new FakeChild(command, args, options);
+        child.kill = (signal) => {
+          child.signals.push(signal);
+          queueMicrotask(() => child.exit(signal));
+          return true;
+        };
+        return child;
+      },
+    });
+    guards.push(guard);
+    return guard;
+  };
+  const results = await Promise.allSettled([start(), start()]);
+  for (const result of results) {
+    if (result.status === "rejected") {
+      context.diagnostic(
+        browserGuardProcess.describeBrowserStartupFailure({
+          error: result.reason,
+        }),
+      );
+      throw result.reason;
+    }
+  }
+  assert.equal(guards.length, 2);
+  assert.notEqual(guards[0].vitePort, guards[1].vitePort);
+  for (const guard of guards) {
+    const response = await fetch(`http://127.0.0.1:${guard.vitePort}/spawnguard.html`, {
+      signal: AbortSignal.timeout(30_000),
+    });
+    await response.text();
+    assert.equal(response.status, 200);
+  }
+  await Promise.all(guards.map((guard) => guard.cleanup()));
+  for (const child of viteChildren) {
+    assert.ok(child.exitCode !== null || child.signalCode !== null, "Vite listener process must exit");
+  }
+  for (const guard of guards) assert.equal(existsSync(guard.profileDir), false);
+});
+
+test("aborts Vite startup and removes its owned profile", async () => {
+  const controller = new AbortController();
+  const profilePrefix = `browser-guard-abort-${randomUUID()}-`;
+  const children = [];
+  let profileDir;
+  await assert.rejects(
+    startBrowserGuard({
+      frontend: process.cwd(),
+      profilePrefix,
+      chromeBinary: "/fake/chrome",
+      signal: controller.signal,
+      spawnProcess(command, args, options) {
+        const entry = readdirSync(tmpdir()).find((name) => name.startsWith(profilePrefix));
+        assert.ok(entry, "startup must own a profile before launching its child");
+        profileDir = path.join(tmpdir(), entry);
+        const child = new FakeChild(command, args, options);
+        child.kill = (signal) => {
+          child.signals.push(signal);
+          queueMicrotask(() => child.exit(signal));
+          return true;
+        };
+        children.push(child);
+        queueMicrotask(() => controller.abort(new Error("cancelled Vite startup")));
+        return child;
+      },
+    }),
+    /cancelled Vite startup/,
+  );
+  assert.deepEqual(
+    children.map((child) => child.signals),
+    [["SIGTERM"]],
+  );
+  assert.equal(existsSync(profileDir), false);
+});
+
 test("allocates distinct local ports", async () => {
   const first = await findAvailablePort();
   const second = await findAvailablePort([first]);
   assert.notEqual(first, second);
   assert.ok(first > 0);
   assert.ok(second > 0);
+});
+
+test("accepts Vite readiness only after a loopback listener announcement", () => {
+  assert.equal(browserGuardProcess.parseViteReadyAnnouncement("ready in 42ms"), null);
+  assert.deepEqual(browserGuardProcess.parseViteReadyAnnouncement("  ➜  Local:   http://127.0.0.1:4173/"), {
+    host: "127.0.0.1",
+    port: 4173,
+  });
+  assert.throws(() => browserGuardProcess.parseViteReadyAnnouncement("➜  Local: http://192.0.2.1:4173/"));
 });
 
 test("parses only valid loopback DevTools announcement lines", () => {
@@ -148,6 +255,34 @@ test("stores Chrome crash metadata inside the private browser profile", async ()
   const { guard, children } = await startFakeGuard();
   try {
     assert.equal(children[1].options.env?.BREAKPAD_DUMP_LOCATION, path.join(guard.profileDir, "Crashpad"));
+  } finally {
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+  }
+});
+
+test("spawns the Vite wrapper with its default config", async () => {
+  const { guard, children } = await startFakeGuard();
+  try {
+    assert.equal(children[0].command, process.execPath);
+    assert.deepEqual(children[0].args, ["scripts/browserguard-vite.mjs"]);
+  } finally {
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+  }
+});
+
+test("passes a guard's custom Vite config through to the wrapper", async () => {
+  const { guard, children } = await startFakeGuard({
+    viteConfigFile: "scripts/editorial-preview.vite.config.mjs",
+  });
+  try {
+    assert.deepEqual(children[0].args, [
+      "scripts/browserguard-vite.mjs",
+      "scripts/editorial-preview.vite.config.mjs",
+    ]);
   } finally {
     const cleanup = guard.cleanup();
     for (const child of children) child.exit();
@@ -616,8 +751,7 @@ test("does not signal a same-PID same-argv helper in a reused process group", as
     pgid: 300,
     databaseArg: "--database=/private/tmp/browser-profile/Crashpad",
   };
-  const reusedGroup =
-    "  510   777 /usr/bin/chrome_crashpad_handler --database=/private/tmp/browser-profile/Crashpad";
+  const reusedGroup = "  510   777 /usr/bin/chrome_crashpad_handler --database=/private/tmp/browser-profile/Crashpad";
 
   const signals = [];
   const lifecycle = browserGuardProcess.createBrowserProcessCleanup({
@@ -691,6 +825,7 @@ test("cleans Vite when Chrome startup throws", async () => {
     calls++;
     if (calls === 1) {
       const child = new FakeChild(command);
+      queueMicrotask(() => child.stdout.emit("data", "Local: http://127.0.0.1:4173/\n"));
       child.kill = (signal) => {
         killed.push([command, signal]);
         queueMicrotask(() => child.exit(signal));
@@ -710,7 +845,34 @@ test("cleans Vite when Chrome startup throws", async () => {
     }),
     /chrome startup failed/,
   );
-  assert.deepEqual(killed, [["./node_modules/.bin/vite", "SIGTERM"]]);
+  assert.deepEqual(killed, [[process.execPath, "SIGTERM"]]);
+});
+
+test("times out Vite startup and cleans its owned child", async () => {
+  const children = [];
+  await assert.rejects(
+    startBrowserGuard({
+      frontend: process.cwd(),
+      profilePrefix: "browser-guard-test-",
+      chromeBinary: "/fake/chrome",
+      startupTimeoutMs: 5,
+      spawnProcess(command) {
+        const child = new FakeChild(command);
+        child.kill = (signal) => {
+          child.signals.push(signal);
+          queueMicrotask(() => child.exit(signal));
+          return true;
+        };
+        children.push(child);
+        return child;
+      },
+    }),
+    /Vite readiness timed out after 5ms/,
+  );
+  assert.deepEqual(
+    children.map((child) => child.signals),
+    [["SIGTERM"]],
+  );
 });
 
 test("waits for every child to exit before removing the browser profile", async () => {
@@ -872,6 +1034,194 @@ test("the diagnostic blames vite for a vite failure and does not send the reader
   assert.match(message, /Chrome is not implicated/);
   assert.doesNotMatch(message, /install Chrome/);
 });
+
+// The Vite readiness poll only recently got a deadline of its own (every guard
+// runner arms one beside the Chrome phase's). What it produces when that
+// deadline fires has to keep reading as an environment problem and has to keep
+// pointing at Vite: a guard that told the reader to install Chrome because its
+// dev server never answered would send them to the wrong place with an
+// authoritative-looking checklist.
+/** A guard whose Chrome never announces, for the announcement-deadline path. */
+function silentChromeGuard(firstStderrDelay) {
+  return {
+    waitForChrome: ({ signal }) =>
+      new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    getChromeFirstStderrDelay: () => firstStderrDelay,
+    getChromeLaunchError: () => null,
+    getChromeFailure: () => new Promise(() => {}),
+    chromeBinary: "/usr/bin/google-chrome",
+    getChromeArgv: () => ["--headless=new"],
+    getChromeError: () => "[3036:3072:0911/063804.935306:ERROR:dbus/bus.cc:405] Failed to connect to the bus",
+    getViteError: () => "",
+  };
+}
+
+// Run 34570447477 died here and could not say so: no DevTools announcement
+// came, and the only thing the guard printed was "browser startup deadline
+// exceeded after 30000ms" - the same sentence the /json/version poll after it
+// would have printed. The phase has to name itself, and it has to say what
+// Chrome had managed to do, because "first stderr byte at 21s" is the number
+// that told us the browser was slow rather than broken.
+test("an announcement that never arrives names its phase and what Chrome had done", async () => {
+  const failure = await browserGuardProcess
+    .waitForBrowserReady(silentChromeGuard(21_004), { announcementTimeoutMs: 50 })
+    .then(
+      () => null,
+      (error) => error.message,
+    );
+
+  assert.match(failure, /environment problem, not a test case failure/);
+  assert.match(failure, /browser startup deadline exceeded after 50ms/);
+  assert.match(failure, /while waiting for Chrome's DevTools announcement on stderr/);
+  assert.match(failure, /Chrome's first stderr byte arrived 21004ms after launch/);
+});
+
+test("an announcement deadline on a Chrome that never said anything reports the silence", async () => {
+  const failure = await browserGuardProcess
+    .waitForBrowserReady(silentChromeGuard(null), { announcementTimeoutMs: 50 })
+    .then(
+      () => null,
+      (error) => error.message,
+    );
+
+  assert.match(failure, /Chrome had written nothing to stderr/);
+});
+
+// The delay above is only worth reporting if it is really measured off Chrome's
+// own output, so this takes it from a started guard rather than a stub.
+test("the first-stderr delay is measured from Chrome's own output", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+
+  assert.equal(guard.getChromeFirstStderrDelay(), null);
+  children[1].stderr.emit("data", "[3036:3072:0911/063804.935306:ERROR:dbus/bus.cc:405] Failed to connect to the bus\n");
+  assert.ok(
+    Number.isInteger(guard.getChromeFirstStderrDelay()) && guard.getChromeFirstStderrDelay() >= 0,
+    `expected a measured delay, got ${guard.getChromeFirstStderrDelay()}`,
+  );
+});
+
+// The readiness handoff every guard runner used to carry a verbatim copy of.
+// All five now call this, so it holds the shape they depend on: the announced
+// endpoint comes back, and neither of its two deadlines is left armed - a guard
+// ends by setting process.exitCode, so a live timer is a guard that will not
+// exit until it fires.
+test("waitForBrowserReady returns the announced endpoint and leaves no deadline armed", async (context) => {
+  const answered = [];
+  const server = createServer((request, response) => {
+    answered.push(request.url);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end("{}");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const endpoint = { url: `ws://127.0.0.1:${server.address().port}/devtools/browser/fixture` };
+  const announcementSignals = [];
+  const guard = {
+    waitForChrome: ({ signal }) => {
+      announcementSignals.push(signal);
+      return Promise.resolve(endpoint);
+    },
+    getChromeFirstStderrDelay: () => 12,
+    getChromeLaunchError: () => null,
+    getChromeFailure: () => new Promise(() => {}),
+    chromeBinary: "/fake/chrome",
+    getChromeArgv: () => [],
+    getChromeError: () => "",
+    getViteError: () => "",
+  };
+  const before = process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+
+  assert.equal(await browserGuardProcess.waitForBrowserReady(guard), endpoint);
+
+  assert.deepEqual(answered, ["/json/version"]);
+  assert.equal(announcementSignals.length, 1);
+  assert.equal(announcementSignals[0].aborted, false);
+  assert.ok(
+    process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length <= before,
+    "a startup deadline outlived the phase it was bounding",
+  );
+});
+
+test("a vite readiness poll that runs out of deadline still frames as a vite environment problem", async () => {
+  const deadline = createStartupDeadline(300);
+  const error = await waitForHttp("http://127.0.0.1:1/", "vite dev server", () => null, {
+    signal: deadline.signal,
+  }).then(
+    () => null,
+    (rejection) => rejection,
+  );
+  deadline.clear();
+
+  assert.match(error.message, /browser startup deadline exceeded after 300ms/);
+  assert.match(error.message, /vite dev server/);
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error,
+    subsystem: "vite",
+    viteStderr: "",
+  });
+  assert.match(message, /environment problem, not a test case failure/);
+  assert.match(message, /Chrome is not implicated/);
+  assert.doesNotMatch(message, /install Chrome/);
+});
+
+for (const scenario of [
+  { name: "Vite exit", reason: null },
+  { name: "primitive cancellation", reason: "fixture cancellation" },
+  { name: "frozen cancellation", reason: Object.freeze(new Error("fixture cancellation")) },
+]) {
+  test(`retains startup diagnostics and cleanup after ${scenario.name}`, async (context) => {
+    const vite = new FakeChild(process.execPath);
+    vite.kill = (signal) => {
+      vite.signals.push(signal);
+      queueMicrotask(() => vite.exit(signal));
+      return true;
+    };
+    const controller = new AbortController();
+    const profilePrefix = `browser-guard-failure-${randomUUID()}-`;
+    const stderr = "fixture-vite-startup-stderr";
+    let profileDir;
+    let spawnCount = 0;
+    context.after(() => {
+      vite.exit();
+      if (profileDir) rmSync(profileDir, { recursive: true, force: true });
+    });
+    const startup = startBrowserGuard({
+      frontend: process.cwd(),
+      profilePrefix,
+      chromeBinary: "/fake/chrome",
+      signal: controller.signal,
+      spawnProcess() {
+        spawnCount++;
+        const entry = readdirSync(tmpdir()).find((name) => name.startsWith(profilePrefix));
+        assert.ok(entry, "startup must create its owned profile");
+        profileDir = path.join(tmpdir(), entry);
+        return vite;
+      },
+    });
+    vite.stderr.emit("data", stderr);
+    if (scenario.reason === null) vite.exit();
+    else controller.abort(scenario.reason);
+    await assert.rejects(startup, (error) => {
+      assert.equal(error.browserGuardSubsystem, "vite");
+      assert.equal(error.browserGuardViteStderr, stderr);
+      if (scenario.reason !== null) {
+        assert.equal(error.cause, scenario.reason);
+        assert.equal(error.message, "fixture cancellation");
+      } else {
+        assert.ok(error.cause instanceof Error);
+      }
+      const message = browserGuardProcess.describeBrowserStartupFailure({ error, subsystem: "launch" });
+      assert.ok(message.includes(stderr), "diagnostic must retain the captured Vite failure");
+      return true;
+    });
+    assert.equal(spawnCount, 1, "Chrome must not start after Vite startup failed");
+    if (scenario.reason !== null) assert.deepEqual(vite.signals, ["SIGTERM"]);
+    assert.equal(existsSync(profileDir), false, "startup must remove its owned profile before rejecting");
+  });
+}
 
 test("a browser binary that could not be resolved says nothing was spawned", () => {
   const message = browserGuardProcess.describeBrowserStartupFailure({
@@ -1097,9 +1447,7 @@ test("cleans up through the announced endpoint host", async (context) => {
   const cleanup = guard.cleanup();
   for (const child of children) child.exit();
   await cleanup;
-  assert.deepEqual(endpoints, [
-    { url: "ws://[::1]:43214/devtools/browser/cleanup", host: "[::1]", port: 43214 },
-  ]);
+  assert.deepEqual(endpoints, [{ url: "ws://[::1]:43214/devtools/browser/cleanup", host: "[::1]", port: 43214 }]);
 });
 
 test("requestBrowserClose uses the announced host and port", async () => {
@@ -1132,7 +1480,10 @@ test("requestBrowserClose uses the announced host and port", async () => {
     FakeWebSocket,
   );
   assert.deepEqual(requests, ["http://[::1]:43215/json/version"]);
-  assert.deepEqual(sockets.map((socket) => socket.url), ["ws://[::1]:43215/devtools/browser/close"]);
+  assert.deepEqual(
+    sockets.map((socket) => socket.url),
+    ["ws://[::1]:43215/devtools/browser/close"],
+  );
 });
 
 test("fails the readiness handoff immediately when Chrome start fails", async (context) => {
@@ -1184,7 +1535,11 @@ test("a real non-executable Chrome is named by the diagnostic and still gets cle
       // is about Chrome's launch, and booting a dev server to prove it would
       // cost seconds and prove nothing extra.
       if (calls === 1) {
-        const child = spawn("/bin/sleep", ["30"], options);
+        const child = spawn(
+          process.execPath,
+          ["-e", "console.log('Local: http://127.0.0.1:4173/'); setTimeout(() => {}, 30_000);"],
+          options,
+        );
         viteStandIn.push(child);
         return child;
       }

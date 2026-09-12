@@ -1,6 +1,10 @@
 package appwire
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
 
 // TestWireErrorConstructors asserts each constructor's code (against the literal
 // JSON-RPC number, so a mutated CodeX constant is caught), evenerErrorInfo tag, and
@@ -42,5 +46,42 @@ func TestWireErrorConstructors(t *testing.T) {
 				t.Errorf("EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, c.wantInfo)
 			}
 		})
+	}
+}
+
+func TestTranscriptItemCursorError(t *testing.T) {
+	const opaqueCursor = "opaque-cursor-bytes-MUST-NOT-LEAK"
+	err := TranscriptItemCursorStale()
+	if err.Code != CodeInvalidParams {
+		t.Fatalf("Code = %d, want %d", err.Code, CodeInvalidParams)
+	}
+	if err.Message != "transcript item cursor is stale; refresh the thread" {
+		t.Fatalf("Message = %q", err.Message)
+	}
+	data, ok := err.Data.(ErrorData)
+	if !ok {
+		t.Fatalf("Data = %T, want ErrorData", err.Data)
+	}
+	if data.EvenerErrorInfo != ErrorTranscriptItemCursorStale {
+		t.Fatalf("EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, ErrorTranscriptItemCursorStale)
+	}
+	if data.RetryDisposition != RetryDispositionAutomatic {
+		t.Fatalf("RetryDisposition = %q, want %q", data.RetryDisposition, RetryDispositionAutomatic)
+	}
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("marshal WireError: %v", marshalErr)
+	}
+	if bytes.Contains(encoded, []byte(opaqueCursor)) {
+		t.Fatalf("serialized WireError echoes opaque cursor bytes: %s", encoded)
+	}
+	mutant := err
+	mutant.Data = map[string]any{"evenerErrorInfo": ErrorTranscriptItemCursorStale, "cursor": opaqueCursor}
+	mutated, marshalErr := json.Marshal(mutant)
+	if marshalErr != nil {
+		t.Fatalf("marshal mutated WireError: %v", marshalErr)
+	}
+	if !bytes.Contains(mutated, []byte(opaqueCursor)) {
+		t.Fatalf("serialized-byte assertion is not mutation-sensitive: %s", mutated)
 	}
 }

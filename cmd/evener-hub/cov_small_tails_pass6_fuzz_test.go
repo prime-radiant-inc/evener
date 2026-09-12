@@ -93,7 +93,7 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		entry := hubcore.PastEntry{StateDir: root, Meta: schema.SessionMeta{ID: "01PAST", Model: "gpt-5"}}
 		_ = os.MkdirAll(filepath.Join(root, "sessions"), 0o755)
 		_ = os.WriteFile(filepath.Join(root, "sessions", "01PAST.transcript.jsonl"), []byte("bad\n"), 0o600)
-		_, _ = pastEntryTurns(entry)
+		_, _ = pastEntryTurns(hubcore.WebConfig{}, entry)
 		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{}}}}}, map[string]string{})
 		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult}}}}, map[string]string{})
 

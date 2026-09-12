@@ -7,7 +7,8 @@ the Finding is a loop that climbed until the machinery had to cut it.
 
 ## HEALTHY
 
-- No watch has a `runaway` drop. `evener doctor watches --self-loops` reports
+- No watch has a `runaway` drop. `doctor_evener` `watches` with `self_loops:
+  true` reports
   **no watches** (it surfaces only watches whose fuse FIRED).
 - Self-influenced deliveries with a **bounded** `self_influence_depth` are fine —
   the sidecar saw its own echo, was informed by the depth-gradient line, and
@@ -20,18 +21,20 @@ Take the target session id from the runbook invocation — never hardcode one.
 
 ```
 # Watches whose runaway fuse FIRED on the session (empty output ⇒ healthy):
-evener doctor watches <selector> --self-loops --json
+doctor_evener watches, selector: <selector>, self_loops: true
+# (human reproduction: evener doctor watches <selector> --self-loops --json)
 
 # Optional: enumerate observer sessions feeding this worker, to widen the sweep:
-evener doctor tree <selector> --observers
+doctor_evener tree, selector: <selector>, observers: true
+# (human reproduction: evener doctor tree <selector> --observers)
 ```
 
-For a fleet sweep, run the `--self-loops` check for each session the tree
+For a fleet sweep, run the `self_loops` check for each session the tree
 surfaces.
 
 ## CLASSIFY
 
-- For each watch in the `--self-loops` output, `runaway_drops > 0` is the
+- For each watch in the `self_loops` output, `runaway_drops > 0` is the
   **Finding** — the fuse fired, so a real runaway loop was bounded by the
   machinery (sends at `self_influence_depth >= 8` were dropped with
   `diagnostic_reason: "runaway"`). Emit one Finding:
@@ -39,14 +42,15 @@ surfaces.
   - `severity`: `high`
   - `signature`: `watch_runaway:<sessionID>:<watchID>`
   - `evidence`: `watchIds` = the watch, `deliveryIds` = the dropped-send delivery
-    ids, `doctorCommand` = the `evener doctor watches … --self-loops` invocation.
+    ids, `doctorCommand` = the `evener doctor watches … --self-loops` line that
+    reproduces the same check for a human.
     Put `max_self_influence_depth` and `runaway_drops` in the `description`.
   - `suggestedFix.type`: `diagnosis` (a runaway that the fuse had to cut is a
     sidecar/watch-topology problem in evener, not in the doctor's machinery —
     report it).
 - A watch that is self-influenced but **bounded** (`runaway_drops == 0`, any
   `max_self_influence_depth`) is **not** a Finding — the inform+breaker design
-  expects it. `--self-loops` will not list it.
-- Empty `--self-loops` output (no watches) ⇒ **PASS, emit nothing.**
+  expects it. The `self_loops` filter will not list it.
+- Empty `self_loops` output (no watches) ⇒ **PASS, emit nothing.**
 
 A run where no fuse fired is the expected, correct outcome.

@@ -310,20 +310,20 @@ func TestCovSessionRunningJobIDs_NilSession(t *testing.T) {
 // (session_tools_jobs.go line 345).
 func TestCovDecodeDelegateArgs(t *testing.T) {
 	// sandbox_net non-bool.
-	_, err := decodeDelegateArgs(map[string]any{"sandbox_net": "yes"})
+	_, err := decodeDelegateArgs(map[string]any{"prompt": "p", "sandbox_net": "yes"})
 	if err == nil || !strings.Contains(err.Error(), "sandbox_net must be a JSON boolean") {
 		t.Fatalf("expected sandbox_net error, got %v", err)
 	}
 
 	// Negative delegation_allowance.
-	_, err = decodeDelegateArgs(map[string]any{"delegation_allowance": -1})
+	_, err = decodeDelegateArgs(map[string]any{"prompt": "p", "delegation_allowance": -1})
 	if err == nil || !strings.Contains(err.Error(), "delegation_allowance must be non-negative") {
 		t.Fatalf("expected delegation_allowance error, got %v", err)
 	}
 
 	// Valid args.
 	args, err := decodeDelegateArgs(map[string]any{
-		"task":                 "do stuff",
+		"prompt":               "do stuff",
 		"agent_type":           "coder",
 		"model":                "gpt-5",
 		"reasoning_effort":     "high",
@@ -340,25 +340,25 @@ func TestCovDecodeDelegateArgs(t *testing.T) {
 	if args.Task != "do stuff" || args.AgentType != "coder" || args.Model != "gpt-5" ||
 		args.ReasoningEffort != "high" || !args.WatchParent || args.Isolation != "worktree" ||
 		args.Sandbox != "off" || args.SandboxNet == nil || !*args.SandboxNet ||
-		args.DelegationAllowance != 3 || args.ResultSchema == nil {
+		args.DelegationAllowance == nil || *args.DelegationAllowance != 3 || args.ResultSchema == nil {
 		t.Fatalf("args = %+v", args)
 	}
 
 	// sandbox_net = false explicitly.
-	args, err = decodeDelegateArgs(map[string]any{"sandbox_net": false})
+	args, err = decodeDelegateArgs(map[string]any{"prompt": "p", "sandbox_net": false})
 	if err != nil || args.SandboxNet == nil || *args.SandboxNet {
 		t.Fatalf("sandbox_net=false: args=%+v, err=%v", args, err)
 	}
 
 	// sandbox_net omitted → nil (inherit).
-	args, err = decodeDelegateArgs(map[string]any{})
+	args, err = decodeDelegateArgs(map[string]any{"prompt": "p"})
 	if err != nil || args.SandboxNet != nil {
 		t.Fatalf("sandbox_net omitted: args=%+v, err=%v", args, err)
 	}
 
-	// delegation_allowance = 0 → unset.
-	args, err = decodeDelegateArgs(map[string]any{"delegation_allowance": 0})
-	if err != nil || args.DelegationAllowance != 0 {
+	// delegation_allowance = 0 → an explicit leaf, distinct from absent.
+	args, err = decodeDelegateArgs(map[string]any{"prompt": "p", "delegation_allowance": 0})
+	if err != nil || args.DelegationAllowance == nil || *args.DelegationAllowance != 0 {
 		t.Fatalf("delegation_allowance=0: args=%+v, err=%v", args, err)
 	}
 }

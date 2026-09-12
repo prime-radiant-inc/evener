@@ -255,10 +255,10 @@ func (m *hubModel) addAuthErrorNotice(title string, err error) {
 	m.addNotice(noticePanel{
 		Title:      title,
 		Category:   "auth",
-		Summary:    "OpenAI authentication failed.",
+		Summary:    "Provider authentication failed.",
 		Source:     m.sourceLabelForNotice(),
 		Reason:     err.Error(),
-		NextAction: "Retry /auth openai or check Hub auth configuration.",
+		NextAction: "Retry /auth <instance> or check the hub's credentials.",
 	})
 }
 

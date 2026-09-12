@@ -1,4 +1,4 @@
-import { cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
@@ -14,11 +14,12 @@ function connectFakeClient(): FakeClient {
 
 const ONE_INSTANCE: InstanceEntry = {
   name: "work",
-  type: "anthropic",
-  apiStyle: "",
-  baseUrl: "",
+  providerId: "openai-codex",
+  protocol: "openai-responses",
+  auth: "oauth-openai-codex",
   isDefault: true,
-  authModes: ["apiKey", "oauth"],
+  implicit: false,
+  authModes: ["oauth"],
   activeSource: "oauth",
   hasStoredFile: false,
   hasStoredOAuth: true,
@@ -29,7 +30,10 @@ const ONE_INSTANCE: InstanceEntry = {
 
 const LIST_RESPONSE: InstanceListResponse = {
   instances: [ONE_INSTANCE],
-  availableTypes: ["anthropic", "openai"],
+  availableProviders: [
+    { id: "anthropic", protocol: "anthropic", auth: "bearer", implicit: true },
+    { id: "openai-codex", protocol: "openai-responses", auth: "oauth-openai-codex", implicit: true },
+  ],
 };
 
 beforeEach(() => {
@@ -43,19 +47,76 @@ afterEach(() => {
 });
 
 describe("fetch", () => {
+  test("a late read cannot overwrite credentials from a newer refresh", async () => {
+    const client = connectFakeClient();
+    let resolveOld: (value: InstanceListResponse) => void = () => {};
+    const oldResponse = new Promise<InstanceListResponse>((resolve) => {
+      resolveOld = resolve;
+    });
+    client.on("evener/instance/list", () => oldResponse);
+    const oldRead = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    client.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    resolveOld({ instances: [], availableProviders: [] });
+    await oldRead;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+  test("disconnecting releases an interrupted fetch and ready reloads the list", async () => {
+    const fake = connectFakeClient();
+    let finishOld!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishOld = resolve;
+        }),
+    );
+    const old = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    fake.emitStateChange("reconnecting");
+    expect(credentialsStore.getState().loading).toBe(false);
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.emitReady();
+    await Promise.resolve();
+    await Promise.resolve();
+    finishOld({ instances: [], availableProviders: [] });
+    await old;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    expect(credentialsStore.getState().loading).toBe(false);
+  });
+
   test("throws if no client is connected", async () => {
     await expect(credentialsStore.getState().fetch()).rejects.toThrow(/no client connected/);
   });
 
-  test("populates instances/availableTypes from evener/instance/list on success", async () => {
+  test("populates instances/availableProviders/diagnostics/writesRefused from evener/instance/list on success", async () => {
     const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/instance/list", () => ({
+      ...LIST_RESPONSE,
+      diagnostics: ['providers.toml: unexpected key "type"'],
+      userLayer: "user layer: /home/x/.config/evener/providers.toml",
+      writesRefused: true,
+    }));
     await credentialsStore.getState().fetch();
     const state = credentialsStore.getState();
     expect(state.instances).toEqual([ONE_INSTANCE]);
-    expect(state.availableTypes).toEqual(["anthropic", "openai"]);
+    expect(state.availableProviders).toEqual(LIST_RESPONSE.availableProviders);
+    expect(state.diagnostics).toEqual(['providers.toml: unexpected key "type"']);
+    expect(state.userLayer).toBe("user layer: /home/x/.config/evener/providers.toml");
+    expect(state.writesRefused).toBe(true);
     expect(state.loading).toBe(false);
     expect(state.error).toBeNull();
+  });
+
+  test("defaults diagnostics/userLayer/writesRefused when the response omits them", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE); // no diagnostics/userLayer/writesRefused keys
+    await credentialsStore.getState().fetch();
+    const state = credentialsStore.getState();
+    expect(state.diagnostics).toEqual([]);
+    expect(state.userLayer).toBe("");
+    expect(state.writesRefused).toBe(false);
   });
 
   test("sets loading true for the duration of the request", async () => {
@@ -93,32 +154,158 @@ describe("fetch", () => {
 });
 
 describe("mutations returning the updated instance list", () => {
+  test.each(["replacement", "reconnect", "same connection"])(
+    "a delayed mutation cannot overwrite a %s refresh",
+    async (change) => {
+      const old = connectFakeClient();
+      let finishMutation!: (value: InstanceListResponse) => void;
+      old.on(
+        "evener/instance/remove",
+        () =>
+          new Promise<InstanceListResponse>((resolve) => {
+            finishMutation = resolve;
+          }),
+      );
+      const mutation = credentialsStore.getState().remove("work");
+      await Promise.resolve();
+      const current = change === "replacement" ? connectFakeClient() : old;
+      if (change === "reconnect") {
+        old.emitStateChange("reconnecting");
+        old.emitReady();
+      }
+      let finishRead!: (value: InstanceListResponse) => void;
+      current.on(
+        "evener/instance/list",
+        () =>
+          new Promise<InstanceListResponse>((resolve) => {
+            finishRead = resolve;
+          }),
+      );
+      const refresh = credentialsStore.getState().fetch();
+      await Promise.resolve();
+      finishMutation({ instances: [], availableProviders: [] });
+      await mutation;
+      expect(credentialsStore.getState().loading).toBe(true);
+      finishRead(LIST_RESPONSE);
+      await refresh;
+      expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    },
+  );
+
+  test("a newer mutation wins when mutation responses arrive out of order", async () => {
+    const fake = connectFakeClient();
+    let finishOld!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishOld = resolve;
+        }),
+    );
+    const older = credentialsStore.getState().remove("work");
+    await Promise.resolve();
+    fake.on("evener/instance/create", () => LIST_RESPONSE);
+    await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
+    finishOld({ instances: [], availableProviders: [] });
+    await older;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
+  test("a failed mutation releases loading from a superseded read", async () => {
+    const fake = connectFakeClient();
+    let finishRead!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const read = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    fake.on("evener/instance/remove", () => {
+      throw new Error("write refused");
+    });
+    await expect(credentialsStore.getState().remove("work")).rejects.toThrow("write refused");
+    finishRead(LIST_RESPONSE);
+    await read;
+    expect(credentialsStore.getState().loading).toBe(false);
+  });
+
+  test("an authoritative mutation completes loading and supersedes an older read", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: ((response: InstanceListResponse) => void) | undefined;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    fake.on("evener/instance/create", () => LIST_RESPONSE);
+    const read = credentialsStore.getState().fetch();
+    expect(credentialsStore.getState().loading).toBe(true);
+    await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
+    expect(credentialsStore.getState().loading).toBe(false);
+    expect(credentialsStore.getState().error).toBeNull();
+    resolveRead?.({ instances: [], availableProviders: [] });
+    await read;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
   test("create() calls evener/instance/create and applies the returned list", async () => {
     const fake = connectFakeClient();
-    const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableTypes: ["anthropic"] };
+    const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableProviders: [] };
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" });
+      expect(params).toEqual({ name: "work", base: "openai-codex", baseUrl: "" });
       return created;
     });
-    await credentialsStore.getState().create({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" });
+    await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
 
   test("edit() calls evener/instance/edit and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", apiStyle: "responses", baseUrl: "https://x" });
+      expect(params).toEqual({ name: "work", baseUrl: "https://x" });
       return LIST_RESPONSE;
     });
-    await credentialsStore.getState().edit({ name: "work", apiStyle: "responses", baseUrl: "https://x" });
+    await credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" });
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
+  // The listing an edit answers with is only the truth if the store kept it.
+  // A caller that steers a view on the strength of its own save has to hear
+  // that verdict: a response a newer request superseded is a document the
+  // store already threw away.
+  test("edit() reports whether the store applied its response", async () => {
+    const fake = connectFakeClient();
+    let finishEdit!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/edit",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishEdit = resolve;
+        }),
+    );
+    const superseded = credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" });
+    await Promise.resolve();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    finishEdit({ instances: [], availableProviders: [] });
+    expect(await superseded).toBe(false);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+
+    fake.on("evener/instance/edit", () => ({ instances: [], availableProviders: [] }));
+    expect(await credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" })).toBe(true);
+    expect(credentialsStore.getState().instances).toEqual([]);
   });
 
   test("remove() calls evener/instance/remove and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "work" });
-      return { instances: [], availableTypes: ["anthropic"] };
+      return { instances: [], availableProviders: [] };
     });
     await credentialsStore.getState().remove("work");
     expect(credentialsStore.getState().instances).toEqual([]);
@@ -140,7 +327,7 @@ describe("mutations returning the updated instance list", () => {
       throw new Error("name already exists");
     });
     await expect(
-      credentialsStore.getState().create({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" }),
+      credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" }),
     ).rejects.toThrow("name already exists");
     expect(credentialsStore.getState().instances).toEqual([]);
   });
@@ -166,12 +353,23 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({ provider: "work", value: "sk-secret" });
-      return { provider: "work", supported: true, signedIn: true, activeSource: "file", hasStoredOAuth: false };
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     const result = await credentialsStore.getState().setApiKey("work", "sk-secret");
-    expect(result.activeSource).toBe("file");
+    expect(result.activeSource).toBe("store");
     // Never stored on the store itself - never-echo invariant.
     expect(JSON.stringify(credentialsStore.getState())).not.toContain("sk-secret");
+  });
+
+  test("clearStoredKey() calls evener/auth/apiKey/clear and returns its response", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "work" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    const result = await credentialsStore.getState().clearStoredKey("work");
+    expect(result.activeSource).toBe("oauth");
+    expect(result.hasStoredOAuth).toBe(true);
   });
 
   test("logout() calls evener/auth/logout", async () => {
@@ -180,7 +378,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
       expect(params).toEqual({ provider: "work" });
       return {
         removed: true,
-        status: { provider: "work", supported: true, signedIn: false, activeSource: "absent", hasStoredOAuth: false },
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
       };
     });
     const result = await credentialsStore.getState().logout("work");
@@ -242,7 +440,9 @@ describe("useCredentialsStore", () => {
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     const { result } = renderHook(() => useCredentialsStore((s) => s.instances.length));
     expect(result.current).toBe(0);
-    await credentialsStore.getState().fetch();
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
     expect(result.current).toBe(1);
   });
 
@@ -268,7 +468,7 @@ describe("notification-triggered refetch", () => {
     await credentialsStore.getState().fetch(); // initial load; also wires notification handling
     const updated: InstanceListResponse = {
       instances: [{ ...ONE_INSTANCE, hasStoredOAuth: false }],
-      availableTypes: [],
+      availableProviders: [],
     };
     fake.on("evener/instance/list", () => updated);
 
@@ -286,6 +486,21 @@ describe("notification-triggered refetch", () => {
     await vi.advanceTimersByTimeAsync(250);
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
+
+  test.each(["replacement", "reset"])(
+    "%s removes old notification subscriptions and scheduled refreshes",
+    async (change) => {
+      const old = connectFakeClient();
+      old.emitNotification({ method: "evener/auth/updated", params: {} });
+      const current = change === "replacement" ? connectFakeClient() : old;
+      if (change === "reset") resetCredentialsStoreForTests();
+      const list = vi.fn(() => LIST_RESPONSE);
+      current.on("evener/instance/list", list);
+      old.emitNotification({ method: "evener/auth/updated", params: {} });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(list).not.toHaveBeenCalled();
+    },
+  );
 
   test("an irrelevant notification does not trigger a refetch", async () => {
     const fake = connectFakeClient();

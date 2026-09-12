@@ -13,16 +13,16 @@ function SessionsIcon() {
 }
 
 export interface TreeDrawerProps {
-  onOpen: () => void;
+  onToggle: () => void;
 }
 
-export function TreeDrawer({ onOpen }: TreeDrawerProps) {
+export function TreeDrawer({ onToggle }: TreeDrawerProps) {
   const navigation = useNavigationStore();
   const needsYou = useMemo(() => selectNeedsYouCount(navigation), [navigation]);
 
   return (
     <span className={styles.triggerWrap}>
-      <IconButton label="Sessions" icon={<SessionsIcon />} variant="quiet" onClick={onOpen} />
+      <IconButton label="Sessions" icon={<SessionsIcon />} variant="quiet" onClick={onToggle} />
       {needsYou > 0 && (
         <span className={styles.badgeOverlay}>
           <Badge count={needsYou} tone="attention" />

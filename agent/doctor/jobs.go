@@ -132,12 +132,105 @@ func buildJobReport(paths Paths, events []jobstore.Event, opts JobOpts) JobRepor
 	return report
 }
 
-func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
-	rootSessionID := paths.SessionID
-	if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil && strings.TrimSpace(meta.JobTreeRootSessionID) != "" {
-		rootSessionID = strings.TrimSpace(meta.JobTreeRootSessionID)
+// delegateJournalRead is the delegate-journal read seam. Production code
+// never assigns it; tests swap it to count reads (the shared-root refold
+// regression). It mirrors the openDoctorTranscriptFile hook convention.
+var delegateJournalRead = func(path string) {}
+
+// delegateCacheEntry is one cached root-session delegates read: the folded
+// state plus the diagnostics from the single read that produced it.
+type delegateCacheEntry struct {
+	state       delegatestore.State
+	diagnostics []string
+}
+
+// delegateCache memoizes stableDoctorDelegates per (bucket dir, resolved root
+// session id) for the lifetime of one sweeping call (ListSessions, RunAudit,
+// Tree). Child sessions in one job tree share a root and therefore a
+// delegates.jsonl — without the cache a sweep re-reads and re-folds that
+// journal once per child (measured 18 redundant folds of one 1.7MB journal on
+// a real state root). The bucket dir is part of the key because Tree walks
+// across buckets with one cache; a root id alone would collide across buckets
+// (locateAcrossBuckets resolves the same sid in only one bucket, but the cache
+// must not depend on that invariant). The cache is per-invocation and never
+// persisted: reads stay pure, and a fresh call re-reads the journal, so a
+// mutating writer between two calls is always observed.
+type delegateCache map[delegateCacheKey]delegateCacheEntry
+
+// delegateCacheKey is the (bucketDir, rootSessionID) pair a cache entry keys on.
+type delegateCacheKey struct {
+	bucketDir     string
+	rootSessionID string
+}
+
+// cachedDoctorDelegates resolves the session's delegates state through the
+// cache. A root's entry is computed at most once per cache; errors are never
+// cached — a failed read is retried on the next session that needs the same
+// root, matching the uncached behavior where each session sees the error.
+// The root is resolved once here (not again inside stableDoctorDelegates for
+// the miss path): the miss path calls stableDoctorDelegatesForRoot directly.
+// Callers holding the session's meta already (ListSessions does) can skip the
+// per-session meta read with getForRoot.
+func (c delegateCache) get(paths Paths) (string, delegatestore.State, []string, error) {
+	return c.getForRoot(paths.BucketDir, resolveDelegateRoot(paths))
+}
+
+// getForRoot is get with a pre-resolved root — the caller already read the
+// session's meta and knows its job-tree root, so the cache lookup needs no
+// further I/O.
+func (c delegateCache) getForRoot(bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
+	key := delegateCacheKey{bucketDir: bucketDir, rootSessionID: rootSessionID}
+	if entry, ok := c[key]; ok {
+		return delegateJournalPath(bucketDir, rootSessionID), entry.state, entry.diagnostics, nil
 	}
-	path := filepath.Join(paths.BucketDir, "sessions", rootSessionID, "delegates.jsonl")
+	path, state, diagnostics, err := stableDoctorDelegatesForRoot(bucketDir, rootSessionID)
+	if err != nil {
+		return path, nil, nil, err
+	}
+	c[key] = delegateCacheEntry{state: state, diagnostics: diagnostics}
+	return path, state, diagnostics, nil
+}
+
+// resolveDelegateRoot returns the session id whose delegates.jsonl is the
+// lifecycle authority for this session: the meta's JobTreeRootSessionID when
+// set, else the session itself. It reads the session's meta from disk; callers
+// that already hold the meta (e.g. ListSessions' sweep) should call
+// delegateRootFromMeta and getForRoot instead.
+func resolveDelegateRoot(paths Paths) string {
+	if meta, err := schema.LoadSessionMeta(paths.BucketDir, paths.SessionID); err == nil {
+		return delegateRootFromMeta(meta, paths.SessionID)
+	}
+	return paths.SessionID
+}
+
+// delegateRootFromMeta is the single encoding of "who owns this session's
+// delegates journal": the meta's JobTreeRootSessionID when set, else the
+// session itself. resolveDelegateRoot (disk read) and sessionRow (meta in
+// hand) both go through it so the two paths cannot diverge.
+func delegateRootFromMeta(meta schema.SessionMeta, self string) string {
+	if root := strings.TrimSpace(meta.JobTreeRootSessionID); root != "" {
+		return root
+	}
+	return self
+}
+
+func delegateJournalPath(bucketDir, rootSessionID string) string {
+	return filepath.Join(bucketDir, "sessions", rootSessionID, "delegates.jsonl")
+}
+
+// stableDoctorDelegates resolves the root session (meta.JobTreeRootSessionID
+// override, else the session itself) and reads that root's delegates.jsonl.
+func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
+	return stableDoctorDelegatesForRoot(paths.BucketDir, resolveDelegateRoot(paths))
+}
+
+// stableDoctorDelegatesForRoot reads one resolved root's delegates.jsonl
+// through the read-only event reader and folds it — the stable delegate
+// lifecycle authority. Reads are pure: this never opens an append-capable
+// store.
+func stableDoctorDelegatesForRoot(bucketDir, rootSessionID string) (string, delegatestore.State, []string, error) {
+	path := delegateJournalPath(bucketDir, rootSessionID)
+	delegateJournalRead(path)
 	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
 	if err != nil {
 		return path, nil, nil, err

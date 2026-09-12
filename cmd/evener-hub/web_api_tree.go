@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ var (
 var _ = hubTreeAttentionRank
 
 type navigationSnapshot struct {
+	ownershipErr        error
 	metas               []schema.SessionMeta
 	live                []hubcore.LiveEntry
 	projects            map[string]identifier.Project
@@ -197,7 +199,6 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 		if entry.SessionID != "" {
 			for _, alias := range favoriteSessionAliases(entry.SessionID) {
 				liveBySession[alias] = true
-				renameable[alias] = isLocalRouteID(alias)
 			}
 		}
 	}
@@ -230,6 +231,19 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 			indexRenameable(rows)
 		}
 	}
+	// Live daemon constraints override every persisted navigation copy.
+	for _, entry := range live {
+		if entry.SessionID == "" || entry.Crashed {
+			continue
+		}
+		aliases := favoriteSessionAliases(entry.SessionID)
+		if entry.WorkspaceRef != "" {
+			aliases = append(aliases, favoriteSessionAliases(entry.WorkspaceRef)...)
+		}
+		for _, alias := range aliases {
+			renameable[alias] = isLocalRouteID(alias) && entry.Status != appwire.ThreadStatusRestartRequired
+		}
+	}
 	return navigationBuildInputs{
 		GenerationID:     generationID,
 		Revision:         revision,
@@ -248,8 +262,12 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 
 func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnapshot {
 	var live []hubcore.LiveEntry
+	var unconfirmedOwnership bool
+	var ownershipErr error
 	if s.cfg.Roster != nil {
+		ownershipErr = s.cfg.Roster.OwnershipError()
 		live = s.cfg.Roster.List()
+		unconfirmedOwnership = len(s.cfg.Roster.UnconfirmedEntries()) > 0
 	}
 	var metas []schema.SessionMeta
 	var pastEntries []hubcore.PastEntry
@@ -259,6 +277,32 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		for _, entry := range pastEntries {
 			metas = append(metas, entry.Meta)
 		}
+	}
+	// Healthy navigation snapshots need no persisted ownership scan.
+	if unconfirmedOwnership || slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
+		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
+	}) {
+		// Persisted delegates have no rendezvous of their own. Preserve the
+		// authenticated owner's restart restriction in every navigation projection.
+		for _, past := range pastEntries {
+			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
+			if err != nil {
+				if ownershipErr == nil {
+					ownershipErr = err
+				}
+				continue
+			}
+			if !incompatible || owner.SessionID == past.Meta.ID || localSpawnWorkspaceRef(owner.Entry) == localAppRef(past.Meta.ID) {
+				continue
+			}
+			entry := owner.Entry
+			entry.ThreadID = past.Meta.ID
+			entry.WorkspaceRef = localAppRef(past.Meta.ID)
+			entry.WorkingDir = hubcore.EffectiveWorkingDir(past.Meta)
+			child := hubcore.LiveEntry{Entry: entry, SessionID: past.Meta.ID, Status: owner.Status}
+			live = append(live, child)
+		}
+
 	}
 	fetch := s.remoteThreadFetch(ctx)
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
@@ -324,6 +368,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		}
 	}
 	return navigationSnapshot{
+		ownershipErr:        ownershipErr,
 		metas:               metas,
 		live:                live,
 		projects:            projects,
@@ -416,7 +461,6 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 	if s.sources == nil {
 		return remoteThreadFetch{complete: true, sources: map[string]hubcore.RemoteSourceSnapshot{}}
 	}
-	s.ensureManagedCodexSources(ctx)
 	var threads []appwire.Thread
 	complete := true
 	sources := make(map[string]hubcore.RemoteSourceSnapshot)
@@ -552,10 +596,6 @@ func (s *WebServer) storeLastGoodThreads(sourceID string, threads []appwire.Thre
 	s.lastGoodThreads[sourceID] = append([]appwire.Thread(nil), threads...)
 }
 
-func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
-	_ = ensureManagedCodexSources(ctx, s.cfg, s.sources, appwire.ThreadListParams{})
-}
-
 func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.LiveEntry, bool) {
 	ref, ok := appThreadTreeRef(thread)
 	if !ok {
@@ -606,7 +646,15 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		Status:    thread.Status.Type,
 		Project:   project,
 	}
+	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
 	return meta, entry, true
+}
+
+func diagnosticsJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJobInfo {
+	if diagnostics == nil {
+		return nil
+	}
+	return diagnostics.Jobs
 }
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the
@@ -695,9 +743,7 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 
 func (s *WebServer) isLive(sessionID string) bool {
 	if !isLocalRouteID(sessionID) {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
+		_, err := sourceForThreadWithDeletionFence(s.cfg, s.sources, appRefFromRouteID(sessionID), "")
 		return err == nil
 	}
 	if s.cfg.Roster == nil {
@@ -1041,7 +1087,7 @@ func favoriteProjectSourceClaim(id string, snapshot navigationSnapshot) string {
 
 // rowRenameable reports whether a tree row exposes the rename menu item. Local
 // rows are always renameable (ended via the hub meta-edit path, live via the
-// daemon method); Codex-bridged rows are not. Derived from the ref's host, not
+// daemon method); non-local rows are not. Derived from the ref's host, not
 // a per-thread probe.
 func (s *WebServer) rowRenameable(id string) bool { return isLocalRouteID(id) }
 

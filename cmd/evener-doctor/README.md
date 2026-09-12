@@ -10,6 +10,11 @@ runtime's snapshot types are unexported, so `mutations` mirrors the persisted
 shape and refuses anything it does not recognize rather than reporting a journal
 it could not fully decode.
 
+The same data plane is exposed in-process to agent sessions as the
+`doctor_evener` tool (registered read-only; state root defaults to the
+session's own), so the bundled doctoring-evener skill never needs to shell
+out to this CLI. The CLI remains the human and script interface.
+
 This is the home of evener's session/transcript diagnostics. The terminal-bench eval
 scripts that used to live in `tools/` were removed (they only served the benchmark);
 the one capability worth keeping — API-call analysis — became the `apilog`

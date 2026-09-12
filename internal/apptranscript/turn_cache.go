@@ -1,6 +1,8 @@
 package apptranscript
 
 import (
+	"context"
+	"errors"
 	"os"
 	"sync"
 	"time"
@@ -10,14 +12,13 @@ import (
 
 const defaultTurnCacheSize = 32
 
-// TurnCache memoizes TurnsFromFile by path and authoritative file metadata.
+// TurnCache memoizes native item transcript projections by path and
+// authoritative file metadata.
 // Transcript files are append-only, so matching object identity, size, mtime,
 // and platform change time means the parse is unchanged — a cache hit returns
 // the previously parsed turns without re-reading and re-projecting the file.
 //
-// The returned slice is shared and MUST be treated as read-only by callers
-// (WindowTurns/PageTurns slice it without mutating elements). A cache instance
-// assumes a single EntryProjector, so give each call site its own cache.
+// The returned slice is shared and MUST be treated as read-only by callers.
 type TurnCache struct {
 	mu      sync.Mutex
 	indexMu sync.Mutex // serializes suffix advancement and journal appends
@@ -56,41 +57,98 @@ func NewTurnCache() *TurnCache {
 	return &TurnCache{entries: map[string]turnCacheEntry{}, max: defaultTurnCacheSize}
 }
 
-// TurnsFromFile returns the cached turns for path when its size and modtime
-// match the cached entry, otherwise parses via the package TurnsFromFile and
-// caches the result.
-func (c *TurnCache) TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	return c.load(path, func() ([]appwire.Turn, error) {
-		return TurnsFromFile(path, maxLineBytes, project)
+// scanMemoKey is the file identity a memoized full-transcript scan (the usage
+// total, the failed-tool-call count, or the combined derived totals) is valid
+// for. It mirrors the turn cache's own parse-validity gate (object identity,
+// size, mtime, platform change time) and adds the divergence ordinal, since
+// two ordinals over one file are two different answers. mtime is held as nanos
+// so the key stays comparable with == (a time.Time compares its
+// monotonic/location fields too, which would spuriously miss).
+type scanMemoKey struct {
+	size           int64
+	modUnixNano    int64
+	fileIdentity   string
+	changeIdentity string
+	fromOrdinal    int
+}
+
+// scanMemoIdentity builds the scanMemoKey for one stat result and divergence
+// ordinal. All three full-transcript scan memos key on exactly this, so the
+// combined memo can never outlive the two it consolidates.
+func scanMemoIdentity(info os.FileInfo, fromEntryOrdinal int) scanMemoKey {
+	return scanMemoKey{
+		size:           info.Size(),
+		modUnixNano:    info.ModTime().UnixNano(),
+		fileIdentity:   fileIdentity(info),
+		changeIdentity: fileChangeIdentity(info),
+		fromOrdinal:    fromEntryOrdinal,
+	}
+}
+
+// ItemTurnsFromFile returns the cached logical item turns for path when its
+// authoritative file metadata matches the cached entry, otherwise parses via
+// the package ItemTurnsFromFile and caches the result.
+func (c *TurnCache) ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	return c.itemTurnsFromFileContext(context.Background(), path, maxLineBytes, project)
+}
+
+func (c *TurnCache) itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	return c.loadItemProjectionContext(ctx, path, func() ([]appwire.Turn, error) {
+		return itemTurnsFromFileContext(ctx, path, maxLineBytes, project)
 	})
 }
 
-// load is the cache core, split out so tests can supply a counting parse fn.
-func (c *TurnCache) load(path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
+// loadItemProjection is the cache core, split out so tests can supply a
+// counting parse function.
+func (c *TurnCache) loadItemProjection(path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
+	return c.loadItemProjectionContext(context.Background(), path, parse)
+}
+
+func (c *TurnCache) loadItemProjectionContext(ctx context.Context, path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		// Without a stable identity we can't cache safely; parse uncached.
 		return parse()
 	}
 	c.mu.Lock()
-	if e, ok := c.entries[path]; ok && e.full && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) &&
-		e.fileIdentity == fileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) {
-		c.touch(path)
-		turns := e.turns
+	if err := ctx.Err(); err != nil {
 		c.mu.Unlock()
-		return turns, nil
+		return nil, err
+	}
+	if e, ok := c.entries[path]; ok && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) &&
+		e.fileIdentity == fileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) &&
+		e.full {
+		c.touch(path)
+		c.mu.Unlock()
+		return e.turns, nil
 	}
 	c.mu.Unlock()
 
 	// Parse outside the lock so a slow read doesn't block other sessions.
 	turns, err := parse()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
-		c.invalidate(path)
+		if !isContextError(err) {
+			c.invalidate(path)
+		}
 		return nil, err
 	}
 
 	c.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
 	entry := c.entries[path]
+	if entry.size != fi.Size() || !entry.mod.Equal(fi.ModTime()) || entry.fileIdentity != fileIdentity(fi) || entry.changeIdentity != fileChangeIdentity(fi) {
+		entry.turns = nil
+		entry.full = false
+	}
 	entry.size = fi.Size()
 	entry.mod = fi.ModTime()
 	entry.fileIdentity = fileIdentity(fi)
@@ -102,6 +160,10 @@ func (c *TurnCache) load(path string, parse func() ([]appwire.Turn, error)) ([]a
 	c.evictLocked()
 	c.mu.Unlock()
 	return turns, nil
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (c *TurnCache) invalidate(path string) {

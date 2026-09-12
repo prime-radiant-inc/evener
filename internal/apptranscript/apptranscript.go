@@ -3,6 +3,7 @@ package apptranscript
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,12 +14,13 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
 )
 
 // EntryProjector converts one already-decoded transcript turn into AppWire
-// items. The caller (TurnsFromFile, the turn index's scan/range readers) has
+// items. The caller (the item reader or turn index's scan/range readers) has
 // already decoded the entry's raw JSON once — for its own Usage/Timestamp/
 // failure stamping — so the projector receives that same schema.Turn directly
 // rather than decoding the entry a second time (kata j13r).
@@ -152,13 +154,27 @@ func EchoesAssistantText(shown, message string) bool {
 }
 
 // ToolIntentFromArguments extracts a compact tool-call description from the
-// "intent" field.
+// "intent" field, falling back to "purpose" — the field's name before the
+// 2026-08-29 rename (7512a736e) — so transcripts recorded before that
+// rename still surface the tool-intent line on reload (issue #709). This is
+// a reader-side rule: the model-facing tool schema and every write path
+// still emit "intent" exclusively. Every other transcript/projector reader
+// that extracts this field applies the same rule independently rather than
+// sharing this function — agent/transcript_render.go's toolIntent,
+// agent/doctor's toolIntentFromArguments, and the TUI's toolsummary and
+// msgrender packages — since each lives in a different Go module or is a
+// standalone binary that cannot import this one.
 func ToolIntentFromArguments(raw json.RawMessage) string {
 	var args map[string]any
 	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
 		return ""
 	}
 	if value, ok := args["intent"].(string); ok {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	if value, ok := args["purpose"].(string); ok {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
 			return trimmed
 		}
@@ -271,6 +287,19 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
 func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
+	// A persisted message has the entry's recorded instant, not a duration.
+	defer func() {
+		if turn.Timestamp.IsZero() {
+			return
+		}
+		for i := range out {
+			if out[i].Type == "userMessage" || out[i].Type == "agentMessage" || (out[i].Type == "steering" && out[i].Source == "user") {
+				ms := turn.Timestamp.UnixMilli()
+				out[i].StartedAt = &ms
+			}
+		}
+	}()
+
 	if imageProjector == nil {
 		imageProjector = DefaultImageProjector
 	}
@@ -402,6 +431,17 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			ClientMutationID:     turn.ClientMutationID,
 		}}
 	case schema.TurnSteering:
+		if turn.GoalContinuation != nil {
+			return []appwire.ThreadItem{{
+				Type:                 "systemMessage",
+				ID:                   fmt.Sprintf("item_goal_continuation_%d", turnIndex),
+				TurnID:               turnID,
+				TranscriptEntryIndex: turnIndex,
+				Description:          "Goal",
+				Text:                 turn.GoalContinuation.Text,
+				Status:               appwire.TurnStatusCompleted,
+			}}
+		}
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
 		text := turn.Message.Text()
 		if text == "" && len(images) > 0 {
@@ -649,60 +689,80 @@ func ImagesFromContent(parts []llm.ContentPart, imageProjector ImageProjector) [
 	return images
 }
 
-// TurnsFromFile projects a semantic transcript-v2 JSONL file into AppWire turns.
-func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	var turns []appwire.Turn
-	preludeEmitted := false
+// ItemTurnProjection is a persisted logical-turn projection plus the absolute
+// ordinal the next live turn must reserve. NextEntry counts the optional
+// prelude and every logical group, including groups that emitted no items and
+// therefore do not appear in Turns.
+type ItemTurnProjection struct {
+	Turns     []appwire.Turn
+	NextEntry uint64
+}
+
+// ItemTurnProjectionFromFile projects a transcript and returns both its
+// visible logical turns and the absolute next entry ordinal.
+func ItemTurnProjectionFromFile(path string, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
+	return itemTurnProjectionFromFileContext(context.Background(), path, maxLineBytes, project)
+}
+
+func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
+	var acc logicalTurnAccumulator
 	entryIndex := 0
-	header, err := ScanPrelude(path, maxLineBytes)
-	if err != nil {
-		return nil, err
-	}
-	emitPrelude := func() {
-		if preludeEmitted {
-			return
-		}
-		preludeEmitted = true
-		if prelude := PreludeTurn(header); prelude != nil {
-			turns = append(turns, *prelude)
-		}
-	}
-	_, err = scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
-		emitPrelude()
-		entryIndex++
-		// A malformed entry decodes to neither a projection nor a stamp: skip it
-		// (matching the pre-fix behavior, where a projector's own internal decode
-		// of the same malformed bytes would likewise fail and yield no items)
-		// rather than aborting the whole read over one bad line.
+	header, err := scanSemanticTranscriptContext(ctx, path, maxLineBytes, func(raw json.RawMessage) error {
 		entry, decodeErr := transcript.DecodeEntry(raw)
 		if decodeErr != nil {
-			return nil //nolint:nilerr // skip a malformed entry rather than aborting the whole read over one bad line
+			// The scanner already strictly validated every entry it admits,
+			// so this cannot arise from durable bytes. Returning the error
+			// (rather than skipping the entry) keeps a partial read from
+			// silently dropping history.
+			return fmt.Errorf("decode transcript entry: %w", decodeErr)
 		}
-		turnID := persistedTurnID(entry.Turn, entryIndex)
-		var items []appwire.ThreadItem
-		if project != nil {
-			items = project(entry.Turn, turnID, entryIndex)
-		}
-		if len(items) == 0 {
-			return nil
-		}
-		turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		StampTurnFailure(&turn, entry.Turn)
-		if !entry.Turn.Timestamp.IsZero() {
-			startedAt := entry.Turn.Timestamp.UnixMilli()
-			turn.StartedAt = &startedAt
-		}
-		if usage := appwire.EvenerUsageFromLLM(entry.Turn.Usage); usage != nil {
-			turn.Usage = usage
-		}
-		turns = append(turns, turn)
-		return nil
+		entryIndex++
+		appendProjectedEntry(&acc, project, entry.Turn, entryIndex)
+		return ctx.Err()
 	})
 	if err != nil {
-		return nil, err
+		return ItemTurnProjection{}, err
 	}
-	emitPrelude()
-	return turns, nil
+	if err := ctx.Err(); err != nil {
+		return ItemTurnProjection{}, err
+	}
+	projection, err := groupedAppTurnProjection(&acc, header)
+	if ctx.Err() != nil {
+		return ItemTurnProjection{}, ctx.Err()
+	}
+	return projection, err
+}
+
+// ItemTurnsFromFile projects a transcript into the logical turns used by item
+// paging. Continuation entries share the opener's turn identity and one
+// item-position entry ordinal. Callers that resume live projection should use
+// ItemTurnProjectionFromFile for NextEntry.
+func ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	projection, err := ItemTurnProjectionFromFile(path, maxLineBytes, project)
+	return projection.Turns, err
+}
+
+func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	projection, err := itemTurnProjectionFromFileContext(ctx, path, maxLineBytes, project)
+	return projection.Turns, err
+}
+
+// ItemTurnProjectionFromEntries is the already-decoded form of
+// ItemTurnProjectionFromFile. The header and entries must come from the same
+// transcript.
+func ItemTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) (ItemTurnProjection, error) {
+	var acc logicalTurnAccumulator
+	for i := range entries {
+		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
+	}
+	return groupedAppTurnProjection(&acc, header)
+}
+
+// ItemTurnsFromEntries is the compatible turn-only form of
+// ItemTurnProjectionFromEntries.
+func ItemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
+	projection, err := ItemTurnProjectionFromEntries(header, entries, project)
+	return projection.Turns, err
 }
 
 // persistedTurnID names the turn one persisted entry projects into.
@@ -713,9 +773,8 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 // would rename it onto an unrelated entry's turn. Entry-index numbering is the
 // fallback for every entry that carries no reserved id.
 //
-// Both readers resolve an entry's id here — the full TurnsFromFile and the
-// bounded turn index — so one session answers with one set of turn ids however
-// it is read.
+// Every reader resolves an entry's persisted identity here. Item-mode grouping
+// subsequently assigns continuation items to the opener's resolved identity.
 func persistedTurnID(turn schema.Turn, entryIndex int) string {
 	if turn.StableTurnID != "" {
 		return turn.StableTurnID
@@ -723,7 +782,28 @@ func persistedTurnID(turn schema.Turn, entryIndex int) string {
 	return fmt.Sprintf("turn_%d", entryIndex)
 }
 
+func positionProjectedItemsAt(items []appwire.ThreadItem, turnID string, entryOrdinal uint64) ([]appwire.ThreadItem, error) {
+	if uint64(len(items)) > uint64(^uint32(0)) {
+		return nil, fmt.Errorf("projected item count for entry ordinal %d exceeds uint32", entryOrdinal)
+	}
+	positioned := make([]appwire.ThreadItem, len(items))
+	for i, item := range items {
+		position := appwire.ThreadItemPosition{Entry: entryOrdinal, Item: uint32(i)}
+		item.Position = &position
+		item.TranscriptKey = appitempaging.TranscriptItemKey(turnID, position)
+		positioned[i] = item
+	}
+	return positioned, nil
+}
+
 func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
+	return scanSemanticTranscriptContext(context.Background(), path, maxLineBytes, visit)
+}
+
+func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
+	if err := ctx.Err(); err != nil {
+		return transcript.Header{}, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return transcript.Header{}, fmt.Errorf("open transcript: %w", err)
@@ -736,6 +816,9 @@ func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMe
 	var header transcript.Header
 	headerRead := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return transcript.Header{}, err
+		}
 		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
 		if readErr != nil {
 			return transcript.Header{}, readErr

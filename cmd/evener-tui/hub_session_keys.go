@@ -189,6 +189,18 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The live-nav chords are global session-view bindings: they must fire
+	// even while a child transcript view has the viewport, or they are
+	// unreachable there (roborev PR #1044 round-13 low 4). The switch they
+	// would otherwise reach (below the transcriptView early return) never
+	// sees them.
+	switch msg.String() {
+	case "alt+shift+right":
+		return m.switchToAdjacentLiveSession(1)
+	case "alt+shift+left":
+		return m.switchToAdjacentLiveSession(-1)
+	}
+
 	if m.transcriptView != nil {
 		switch msg.String() {
 		case "esc", "i", "q":
@@ -240,6 +252,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "i", "q":
 			m.exitSessionBrowse()
+		// The alt+shift live-session chords are dispatched in the early
+		// global switch above, before any view or mode early return - so
+		// they stay live in browse and scroll modes (roborev PR #1044
+		// round-4 low) without a per-mode case here.
 		case "up", "down", "left", "right":
 			return m.updateSessionBrowseComposerKey(msg)
 		case "k":
@@ -275,7 +291,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.authLoginProvider = ""
 			m.authLoginFlowID = ""
 			m.session.resetInput()
-			m.addSessionSystem("OpenAI login cancelled.")
+			m.addSessionSystem("Sign-in cancelled.")
 			return m, nil
 		case "enter":
 			redirectURL := strings.TrimSpace(m.session.input.Value())
@@ -285,7 +301,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			provider := m.authLoginProvider
 			flowID := m.authLoginFlowID
 			m.session.resetInput()
-			m.addSessionSystem("Finishing OpenAI login...")
+			m.addSessionSystem("Finishing sign-in for " + authStatusInstanceName(authStatus{Provider: provider}) + "...")
 			return m, completeHubAuthLogin(m.client, provider, flowID, redirectURL)
 		}
 	}
@@ -335,6 +351,8 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	// The alt+shift live-session chords live in the early global switch
+	// above; reaching this switch means they already had their chance.
 	case "ctrl+c":
 		now := time.Now()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= hubCtrlCQuitWindow {

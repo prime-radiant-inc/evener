@@ -4,18 +4,21 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, onTestFinished, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
+import { hydrateThread } from "../../../../protocol/reducer";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import {
+  putThreadModel,
   readMutationPersistence,
   resetThreadsStoreForTests,
   subscribeMutationPersistence,
   threadsStore,
 } from "../../../../stores/threads";
-import { AskDock } from "./AskDock";
+import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
+import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
 afterEach(() => {
@@ -147,6 +150,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
+  resetComposerFocusStoreForTests();
 });
 
 test("renders nothing when there is no pending ask for this ref", async () => {
@@ -187,12 +191,23 @@ test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
   expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
-test("sizes the dock from its pane allocation and scrolls a tall batch internally", () => {
+// The dock is the transcript's trailing virtual row now (Session.tsx passes
+// it as TranscriptBody's trailingRow): it must size to its content so the
+// list's measureElement can measure it - a max-height or overflow of its own
+// would clip the batch behind an internal scrollbar and lie to the
+// measurement, and any flex-basis sizing belongs to a footer slot it no
+// longer occupies. It centers on the transcript's --session-measure reading measure
+// (turnblock.module.css's --session-measure).
+test("the dock sizes to its content as a transcript row, with no internal scroll boundary", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  expect(css).toContain("flex: 0 1 auto");
-  expect(css).toContain("min-height: 0");
-  expect(css).toContain("max-height: 100%");
-  expect(css).toContain("overflow-y: auto");
+  const rule = css.match(/\.dock\s*\{([^}]*)\}/);
+  expect(rule, "askdock.module.css must declare a .dock rule").not.toBeNull();
+  const body = rule![1]!;
+  expect(body).toContain("max-width: var(--session-measure)");
+  expect(body).toContain("margin-inline: auto");
+  expect(body).not.toContain("max-height");
+  expect(body).not.toContain("overflow");
+  expect(body).not.toContain("flex:");
 });
 
 test("renders the pending question's header and question text once acked", async () => {
@@ -249,25 +264,42 @@ test("Send is enabled even with nothing answered - an unresolved question compos
 });
 
 test("clicking Send composes and submits through the plain send() path, then the settled batch disappears", async () => {
-  const user = userEvent.setup();
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
 
   const persisted = nextMutationPersistence("ref_a");
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
-  await persisted;
+  const sendBatch = vi.spyOn(askDockStore.getState(), "sendBatch");
+  try {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+      await persisted;
 
-  const [record] = (await readMutationPersistence("ref_a")).outbox;
-  expect(record?.payload).toMatchObject({
-    ref: "ref_a",
-    input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
-  });
+      const [record] = (await readMutationPersistence("ref_a")).outbox;
+      expect(record?.payload).toMatchObject({
+        ref: "ref_a",
+        input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
+      });
+      // Persistence is announced before sendBatch removes the submitted batch.
+      // Observe the click's real completion, without issuing another send.
+      const result = sendBatch.mock.results[0];
+      if (result?.type !== "return") throw new Error("Send did not return a batch submission");
+      await result.value;
+    });
+  } finally {
+    sendBatch.mockRestore();
+  }
   await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
   expect(screen.queryByText("Deploy?")).toBeNull();
 });
 
+// Escape is a documented NO-OP on the ask dock, not a missing feature:
+// parity-m5-composer.md:120 ("the dock is the one canonical response surface
+// and there is no alternate 'collapse' state to escape to") and
+// contracts-composer-queue-pending.md's test-ask-card.js row both record it
+// as deliberate. AskDock installs no Escape handler at all - this test and
+// the one at the end of this file pin the no-op so it stays deliberate.
 test("Escape does not dismiss the dock or clear any in-progress selection", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -628,8 +660,10 @@ test("Mod+Enter on the batch invokes the primary action (send) for a single-ques
   render(<AskDock ref="ref_a" />);
 
   const persisted = nextMutationPersistence("ref_a");
-  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true });
-  await persisted;
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true });
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
@@ -642,8 +676,10 @@ test("Mod+Enter with ctrlKey also invokes the primary action", async () => {
   render(<AskDock ref="ref_a" />);
 
   const persisted = nextMutationPersistence("ref_a");
-  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", ctrlKey: true });
-  await persisted;
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", ctrlKey: true });
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
@@ -665,6 +701,113 @@ test("Mod+Enter advances rather than sends when another question is still unansw
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
 });
 
+test("Mod+Enter on the last question with the walk unfinished does not bypass the disabled Send button", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // Answer q1, advance to q2. q2 is the LAST question and still unanswered:
+  // the footer Send button is disabled in this state, so the keyboard chord
+  // must be too (roborev PR #884) - submitting here would send the batch
+  // with q2 implicitly skipped.
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
+  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter", metaKey: true });
+  expect(screen.getByText("q2")).toBeTruthy();
+
+  const sendButton = screen.getByRole("button", { name: /send/i });
+  expect(sendButton).toHaveProperty("disabled", true);
+  fireEvent.keyDown(sendButton, { key: "Enter", metaKey: true });
+
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("Alt+Enter in the free-text answer input does not invoke the primary action", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // Bare Enter in this input is a submit chord; Alt+Enter is NOT - the
+  // bare-Enter path requires every modifier clear (roborev PR #884 round 2).
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
+  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter", altKey: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("modified arrows in the tab strip keep their global meaning - no tab move, no preventDefault", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  // Alt+Arrow* and Alt+Home/End are the global transcript scroll/jump chords;
+  // from a tab BUTTON the dispatcher's editable test does not shield them, so
+  // the walk must leave modified events alone entirely (roborev PR #884).
+  const firstTab = screen.getByRole("tab", { name: /1\. First/ });
+  firstTab.focus();
+  const notPrevented = fireEvent.keyDown(firstTab, { key: "ArrowRight", altKey: true });
+
+  expect(notPrevented).toBe(true);
+  expect(firstTab.getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByText("q1")).toBeTruthy();
+  expect(screen.queryByText("q2")).toBeNull();
+});
+
+test("Shift+Arrow still moves tabs - no global binding claims it (the round-2 guard's regression)", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  const firstTab = screen.getByRole("tab", { name: /1\. First/ });
+  firstTab.focus();
+  const prevented = fireEvent.keyDown(firstTab, { key: "ArrowRight", shiftKey: true });
+
+  expect(prevented).toBe(false); // the walk consumed it
+  expect(screen.getByRole("tab", { name: /2\. Second/ }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByText("q2")).toBeTruthy();
+});
+
+test("a consumed Mod+Enter does not propagate to window-level listeners", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // The dock consumes the chord; a window-level binding that ignores
+  // defaultPrevented (rail.toggle) remapped onto Mod+Enter must not also
+  // fire. stopPropagation, not just preventDefault (roborev PR #884).
+  const seen: string[] = [];
+  const listener = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", listener);
+  try {
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true });
+    expect(seen).toEqual([]);
+  } finally {
+    window.removeEventListener("keydown", listener);
+  }
+});
+
+test("a consumed batch-jump chord does not propagate to window-level listeners", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake); // renders the dock itself
+
+  const seen: string[] = [];
+  const listener = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", listener);
+  try {
+    fireEvent.keyDown(screen.getAllByRole("radio", { name: "Yes" })[0]!, { key: "PageDown", altKey: true });
+    expect(seen).toEqual([]);
+  } finally {
+    window.removeEventListener("keydown", listener);
+  }
+});
+
 test("plain Enter in the free-text answer input invokes the primary action", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -676,8 +819,10 @@ test("plain Enter in the free-text answer input invokes the primary action", asy
   await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
 
   const persisted = nextMutationPersistence("ref_a");
-  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter" });
-  await persisted;
+  await act(async () => {
+    fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter" });
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
@@ -705,4 +850,558 @@ test("Mod+Enter is ignored while an IME composition is in progress", async () =>
 
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("an IME commit reported only through keyCode 229 (no isComposing) does not submit", async () => {
+  // Some browsers report the composition-confirm keydown solely through the
+  // legacy keyCode 229: without that fallback the commit Enter would submit
+  // or advance the batch (roborev PR #884 round 7). The dock shares the
+  // dispatcher's isIMECompositionKeydown guard.
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  const radio = screen.getByRole("radio", { name: "Yes" });
+  fireEvent.keyDown(radio, { key: "Enter", keyCode: 229, metaKey: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+// The dock is the transcript's trailing virtual row (Session.tsx), so
+// scrolling far away UNMOUNTs it and scrolling back remounts it. Activation
+// auto-focus must fire once per pending set, not once per mount: a remount
+// of an already-pending dock must leave focus wherever the reader put it
+// (roborev PR #854). The edge therefore lives in askDockStore, not in a
+// component ref that resets on every mount.
+test("a virtualized remount of an already-pending dock does not steal focus", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+
+  const first = render(<AskDock ref="ref_a" />);
+  // The initial activation contract is unchanged: first appearance focuses
+  // the first answer control.
+  const firstDock = document.querySelector("[data-ask-response-dock]");
+  expect(firstDock?.contains(document.activeElement)).toBe(true);
+  first.unmount();
+
+  // The reader has scrolled away and put focus elsewhere.
+  const elsewhere = render(
+    <button type="button" data-testid="elsewhere">
+      x
+    </button>,
+  );
+  elsewhere.getByTestId("elsewhere").focus();
+
+  render(<AskDock ref="ref_a" />);
+
+  expect(document.activeElement).toBe(elsewhere.getByTestId("elsewhere"));
+});
+
+test("a fresh pending set after a fully resolved one re-activates auto-focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  const first = render(<AskDock ref="ref_a" />);
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
+  first.unmount();
+
+  // A second, genuinely new question arrives after everything resolved.
+  startTurn(fake, "ref_a", "turn_2");
+  ackAskUserCall(fake, "ref_a", "turn_2", "item_2", "call_2");
+  render(<AskDock ref="ref_a" />);
+
+  const dock = document.querySelector("[data-ask-response-dock]");
+  await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+});
+
+// The dock is a virtual row now: it can mount in the list's overscan while
+// the reader is scrolled away, and a focus() there would move the reader's
+// context to an off-screen control (roborev PR #854). Activation focus is
+// therefore gated on the dock intersecting the viewport at all - and once
+// it IS visible, plain focus() is intentional: the browser reveals the
+// focused control, which is exactly what a tall dock whose first control
+// sits above the fold needs (the pill's jump aligns the dock's END, so the
+// first control of a tall batch can still be off-screen without it).
+// jsdom performs no scrolling, so the scroll half is the browser's to own;
+// what this pins is the gate: NO focus call while off-screen, one once
+// visible (the round-5 test pins the same gate from the store side).
+test("activation focus waits for visibility, then lets the browser reveal the control", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
+  try {
+    render(<AskDock ref="ref_a" />);
+    const observer = ControlledIntersectionObserver.instances.at(-1);
+    if (!observer) throw new Error("the dock did not install an IntersectionObserver");
+
+    observer.report(false);
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    act(() => observer.report(true));
+    const dock = document.querySelector("[data-ask-response-dock]");
+    await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+    expect(focusSpy).toHaveBeenCalled();
+  } finally {
+    focusSpy.mockRestore();
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
+  }
+});
+
+// --- visibility-gated activation focus + externalized live region ---------
+// (roborev PR #854 round 5)
+
+// Scriptable IntersectionObserver: instances collect observed elements and
+// report() drives the callback, so tests decide when the dock is "visible".
+class ControlledIntersectionObserver {
+  static instances: ControlledIntersectionObserver[] = [];
+  private observed = new Set<Element>();
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    ControlledIntersectionObserver.instances.push(this);
+  }
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+  report(isIntersecting: boolean): void {
+    this.callback(
+      [...this.observed].map((target) => ({ target, isIntersecting }) as IntersectionObserverEntry),
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
+// preventScroll stops the SCROLL, not the theft: a dock mounting in the
+// list's overscan while the reader is scrolled away would still pull focus
+// to an off-screen control. Activation focus is therefore gated on the dock
+// actually intersecting the viewport - which also composes with the
+// new-content pill: its jump brings the dock into view, and the
+// intersection is what lands focus in the first control.
+test("activation while off-screen steals no focus; becoming visible focuses the first control", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
+  try {
+    render(<AskDock ref="ref_a" />);
+    const observer = ControlledIntersectionObserver.instances.at(-1);
+    if (!observer) throw new Error("the dock did not install an IntersectionObserver");
+
+    observer.report(false);
+    expect(document.activeElement).toBe(document.body);
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted ?? false).toBe(false);
+
+    act(() => observer.report(true));
+    const dock = document.querySelector("[data-ask-response-dock]");
+    await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
+  }
+});
+
+// The dock's row is virtualized: any aria-live region inside it re-inserts
+// on every scroll-away/scroll-back remount and re-announces unchanged text.
+// The row's own text (the prompt caption, the answered count) is visual
+// only; the ONE live region is AskDockAnnouncements, mounted outside the
+// virtual list by Session.tsx.
+test("the dock row carries no live regions", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  const dock = await screen.findByText("Ship now?");
+  const root = dock.closest("[data-ask-response-dock]");
+  expect(root?.querySelector("[aria-live]")).toBeNull();
+  expect(root?.querySelector('[role="status"]')).toBeNull();
+});
+
+describe("AskDockAnnouncements (the one live region, mounted outside the virtual list)", () => {
+  test("announces the prompt when a pending set arrives, and clears when it resolves", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/start", () => new Promise(() => {}));
+    await hydrateWithOneAsk(fake);
+    render(<AskDockAnnouncements ref="ref_a" />);
+
+    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+
+    await act(async () => {
+      const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
+      if (batchId === undefined) throw new Error("batch did not reconcile");
+      await askDockStore.getState().sendBatch("ref_a", batchId);
+    });
+    await waitFor(() => expect(screen.getByTestId("ask-dock-announcements").textContent).toBe(""));
+  });
+
+  test("announces answered-count transitions while pending", async () => {
+    const fake = connectFakeClient();
+    await hydrateWithTwoAsk(fake);
+    render(<AskDockAnnouncements ref="ref_a" />);
+    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+
+    const firstKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
+    if (firstKey === undefined) throw new Error("batch did not reconcile");
+    act(() => {
+      askDockStore.getState().setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("1 of 2 questions answered"),
+    );
+  });
+
+  test("a dock row remount never re-announces: the announcements component owns the only live region", async () => {
+    const fake = connectFakeClient();
+    await hydrateWithOneAsk(fake);
+    render(
+      <>
+        <AskDockAnnouncements ref="ref_a" />
+        <AskDock ref="ref_a" />
+      </>,
+    );
+    const region = screen.getByTestId("ask-dock-announcements");
+    expect(region.textContent).toBe("Answer the agent’s questions.");
+    // The region's content is stable across anything the row does - the row
+    // holds no live region at all (the sibling test above pins that), so a
+    // virtualized remount has nothing to re-announce with.
+    expect(region.getAttribute("aria-live")).toBe("polite");
+  });
+});
+
+test("a session ref change re-announces the new session's pending prompt", async () => {
+  // Session panes are reused across refs (a sidebar click swaps the ref on a
+  // persistent pane - useTranscriptScroll's refForInitRef comment), so the
+  // announcements component must treat a ref change as a fresh activation
+  // even when both sessions' pending counts are identical (roborev PR #854).
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake, "ref_a");
+  await hydrateWithOneAsk(fake, "ref_b");
+
+  const { rerender } = render(<AskDockAnnouncements ref="ref_a" />);
+  const region = screen.getByTestId("ask-dock-announcements");
+  const firstNode = region.firstChild;
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+
+  rerender(<AskDockAnnouncements ref="ref_b" />);
+
+  // Identical text, but a NEW announcement node: a live region announces
+  // content mutations, and unchanged text is no mutation - the transition
+  // must remount the content to be heard at all.
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expect(region.firstChild).not.toBe(firstNode);
+});
+
+test("an atomic pending-set replacement with an identical count re-announces the prompt", async () => {
+  // The answered count is the announcements component's only in-set signal;
+  // a replacement whose new set has the SAME count (e.g. both carry a
+  // recommended pre-seeded answer) changes neither pending nor count, so
+  // without the activation epoch no announcement would fire for the new
+  // question (roborev PR #854).
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake); // recommended option pre-seeds an answer
+  render(<AskDockAnnouncements ref="ref_a" />);
+  const region = screen.getByTestId("ask-dock-announcements");
+  const firstNode = region.firstChild;
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+
+  // One snapshot resync: call_1 answered (user message after it), call_2
+  // pending after that message - one reconcile swaps the batch set.
+  const thread = {
+    ...readResponse("ref_a").thread,
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          { type: "userMessage", id: "u1", turnId: "turn_1", text: "hi", status: "completed" },
+          {
+            type: "commandExecution",
+            id: "item_1",
+            turnId: "turn_1",
+            toolName: "ask_user",
+            callId: "call_1",
+            status: "completed",
+            argumentsJson: askArgs(ONE_QUESTION),
+          },
+          { type: "userMessage", id: "u2", turnId: "turn_1", text: "[answers] yes", status: "completed" },
+          {
+            type: "commandExecution",
+            id: "item_2",
+            turnId: "turn_1",
+            toolName: "ask_user",
+            callId: "call_2",
+            status: "completed",
+            argumentsJson: askArgs(ONE_QUESTION),
+          },
+        ],
+      },
+    ],
+  };
+  act(() => {
+    putThreadModel("ref_a", hydrateThread({ thread } as never, "ref_a", Date.now()));
+  });
+
+  await waitFor(() => expect(region.textContent).toBe("Answer the agent’s questions."));
+  expect(region.firstChild).not.toBe(firstNode);
+});
+
+// --- Phase 3 keyboard operation -------------------------------------------
+//
+// Three pins on top of the walk/submit keys above:
+//
+// - Escape STAYS a no-op (parity-m5-composer.md:120 documents the no-dismiss
+//   behavior as deliberate) - and pressing it inside the dock must not leak
+//   into anything else either (no send, no cleared answer/note). The only
+//   window-level Escape consumers are SelectionQuote's selection clear (which
+//   reads no dock state) and the settings scope's close (pushed only while
+//   Settings is open); the composer has no Escape-to-clear at all.
+// - Alt+PageDown/Alt+PageUp jump focus between question BATCHES directly
+//   (the tab strip's ArrowLeft/Right walk only moves within one batch).
+//   Alt+Page* is chosen over Alt+Arrow* because the Phase 3 transcript
+//   scroll bindings own Alt+ArrowUp/Down with allowInEditable: false - and
+//   the dispatcher's editable test only covers INPUT/TEXTAREA/SELECT, so
+//   from the dock's tab/send BUTTONS those chords would scroll the
+//   transcript. Bare PageUp/PageDown keep their native meaning (the dock is
+//   its own overflow-y scroller). No registered chord or native text-editing
+//   meaning uses Alt+PageUp/Down.
+// - A send that empties the dock requests composer focus through
+//   composerFocus.ts's requestComposerFocus seam (the same one ⌘I drives);
+//   a send with batches still pending moves focus to the next batch's entry
+//   control instead, because the composer input row is still hidden/inert.
+
+const SECOND_ASK = [{ header: "Later", question: "q_later", options: [{ label: "later-opt", detail: "d" }] }];
+
+// renderTwoBatches drives the REAL two-batch route (reconcileBatches.ts: a
+// batch mid-send is frozen, so the late ask_user call mints a sibling batch
+// instead of joining the open one). Determinism lives in the ordering, not
+// in any timing: the click and the ack run in ONE synchronous block (act's
+// callback executes synchronously), and send() can only resolve after its
+// durable outbox write - an IndexedDB round trip that cannot complete inside
+// a synchronous block - so the ack is guaranteed to land while batch 1 is
+// still sending. turn/start stays parked so nothing else settles the batch.
+async function renderTwoBatches(
+  fake: FakeClient,
+  secondQuestions: Array<Record<string, unknown>> = SECOND_ASK,
+): Promise<void> {
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2", secondQuestions);
+  });
+  expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(2);
+}
+
+test("Escape inside the dock sends nothing and preserves both the answer and a typed note", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("radio", { name: "Yes" }));
+  const note = screen.getByPlaceholderText(/note \(optional\)/i);
+  await user.type(note, "keep me");
+  await user.keyboard("{Escape}");
+
+  expect(screen.getByText("Deploy?")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Yes" })).toHaveProperty("checked", true);
+  expect((note as HTMLInputElement).value).toBe("keep me");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("Alt+PageDown/Alt+PageUp jump focus between batches, wrapping at both ends", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake);
+
+  // Batch 1 is mid-send, so its editing controls are disabled (roborev PR
+  // #884 round 10): the jump into it lands on the batch CONTAINER
+  // (focusBatchEntry's fallback) rather than a dead disabled radio.
+  const openRadio = screen.getByRole("radio", { name: "later-opt" });
+  const sendingContainer = document.querySelector('[data-ask-batch="ask-batch-1"]');
+  if (!(sendingContainer instanceof HTMLElement)) throw new Error("batch 1 container missing");
+
+  openRadio.focus();
+  // Past the last batch: wrap to the first - the mid-send one.
+  fireEvent.keyDown(openRadio, { key: "PageDown", altKey: true });
+  expect(document.activeElement).toBe(sendingContainer);
+
+  // Before the first batch: wrap back to the last - the open one.
+  fireEvent.keyDown(sendingContainer, { key: "PageUp", altKey: true });
+  expect(document.activeElement).toBe(openRadio);
+});
+
+test("batch jump lands on the target batch's selected tab when it has a tab strip", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake, [
+    { header: "Alpha", question: "q_alpha", options: [{ label: "alpha-opt", detail: "" }] },
+    { header: "Beta", question: "q_beta", options: [{ label: "beta-opt", detail: "" }] },
+  ]);
+
+  const batch1Radio = screen.getByRole("radio", { name: "Yes" });
+  batch1Radio.focus();
+  fireEvent.keyDown(batch1Radio, { key: "PageDown", altKey: true });
+
+  const selectedTab = screen.getByRole("tab", { name: /1\. Alpha/ });
+  expect(selectedTab.getAttribute("aria-selected")).toBe("true");
+  expect(document.activeElement).toBe(selectedTab);
+});
+
+test("a mid-send batch's editing controls are disabled while the open batch stays editable", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake);
+
+  // The successful send REMOVES the batch, so an edit made mid-flight would
+  // be silently discarded - every editing control of the sending batch
+  // disables until the send settles (roborev PR #884 round 10).
+  const sending = document.querySelector('[data-ask-batch="ask-batch-1"]');
+  const open = document.querySelector('[data-ask-batch="ask-batch-2"]');
+  if (!(sending instanceof HTMLElement) || !(open instanceof HTMLElement)) throw new Error("batch containers missing");
+  for (const control of sending.querySelectorAll("input, button")) {
+    // The footer's Send is long-since disabled mid-send; the new part is the
+    // answer controls.
+    expect(control).toHaveProperty("disabled", true);
+  }
+  expect(open.querySelector('input[type="radio"]')).toHaveProperty("disabled", false);
+
+  // The store boundary refuses the same writes (the UI is not the contract).
+  const sendingKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
+  const openKey = askDockStore.getState().byRef.get("ref_a")?.batches[1]?.questions[0]?.key;
+  if (sendingKey === undefined || openKey === undefined) throw new Error("question keys missing");
+  askDockStore.getState().setAnswer("ref_a", sendingKey, { kind: "option", labels: ["Yes"] });
+  askDockStore.getState().setNote("ref_a", sendingKey, "mid-flight edit");
+  expect(askDockStore.getState().byRef.get("ref_a")?.answers[sendingKey]?.resolution ?? null).toBeNull();
+  expect(askDockStore.getState().byRef.get("ref_a")?.answers[sendingKey]?.note ?? "").toBe("");
+  act(() => askDockStore.getState().setNote("ref_a", openKey, "fine here"));
+  expect(askDockStore.getState().byRef.get("ref_a")?.answers[openKey]?.note).toBe("fine here");
+});
+
+test("plain PageUp/PageDown keep their native meaning - no batch jump without Alt", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake);
+
+  const batch1Radio = screen.getByRole("radio", { name: "Yes" });
+  batch1Radio.focus();
+  fireEvent.keyDown(batch1Radio, { key: "PageDown" });
+  expect(document.activeElement).toBe(batch1Radio);
+  fireEvent.keyDown(batch1Radio, { key: "PageUp" });
+  expect(document.activeElement).toBe(batch1Radio);
+});
+
+test("a send that empties the dock requests composer focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
+  // The composerFocus store's only read seam is its hook (composerFocus.ts),
+  // so the assertion renders a probe over it rather than reaching into the
+  // module's private store.
+  function Probe() {
+    return <span>{useComposerFocusRequest("ref_a") ? "requested" : "none"}</span>;
+  }
+  render(
+    <>
+      <AskDock ref="ref_a" />
+      <Probe />
+    </>,
+  );
+
+  const persisted = nextMutationPersistence("ref_a");
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await persisted;
+
+  await waitFor(() => expect(screen.getByText("requested")).toBeTruthy());
+});
+
+test("post-send focus lands on the first NON-sending remaining batch when several sends are in flight", async () => {
+  // Two batches mid-send with an open batch behind them: batch 1's send
+  // resolving must move focus to batch 3 (editable), not batch 2 (disabled
+  // mid-flight controls) (roborev PR #884 round 13). Settlement timing is
+  // controlled by stubbing threadsStore.send with parked promises.
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  render(<AskDock ref="ref_a" />);
+  const sendResolvers: Array<() => void> = [];
+  const realSend = threadsStore.getState().send;
+  threadsStore.setState({ send: () => new Promise<void>((resolve) => sendResolvers.push(resolve)) });
+  onTestFinished(() => threadsStore.setState({ send: realSend }));
+
+  // Batch 1 sends; the late ask mints batch 2 beside it.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2", SECOND_ASK);
+  });
+  expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(2);
+
+  // Answer and send batch 2; the next late ask mints batch 3.
+  const THIRD_ASK = [{ header: "Third", question: "q_third", options: [{ label: "third-opt", detail: "d" }] }];
+  await act(async () => {
+    fireEvent.click(screen.getByRole("radio", { name: "later-opt" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: /send answers/i })[1]!);
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_3", "call_3", THIRD_ASK);
+  });
+  expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(3);
+
+  // Batch 1's send resolves with batch 2 still in flight and batch 3 open.
+  const settle = sendResolvers[0];
+  if (settle === undefined) throw new Error("batch 1's send never started");
+  await act(async () => {
+    settle();
+  });
+
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "third-opt" })));
+});
+
+test("a send with another batch still pending moves focus to the remaining batch, not the composer", async () => {
+  const fake = connectFakeClient();
+  function Probe() {
+    return <span>{useComposerFocusRequest("ref_a") ? "requested" : "none"}</span>;
+  }
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(
+    <>
+      <AskDock ref="ref_a" />
+      <Probe />
+    </>,
+  );
+  // Focus lives in batch 1; its send starts (parked turn/start) and the
+  // late ask mints batch 2 while batch 1 is genuinely mid-send - one
+  // synchronous block, so the send cannot settle first (renderTwoBatches's
+  // own comment has the determinism argument).
+  screen.getByRole("radio", { name: "Yes" }).focus();
+  const persisted = nextMutationPersistence("ref_a");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2", SECOND_ASK);
+  });
+  expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(2);
+
+  await persisted;
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(1));
+
+  // Batch 1 unmounted with the focus in it; focus lands on the remaining
+  // batch's first answer control, and the still-hidden composer is NOT
+  // asked for focus.
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "later-opt" })));
+  expect(screen.getByText("none")).toBeTruthy();
 });

@@ -13,7 +13,8 @@ import {
   RECONNECT_MAX_MS,
 } from "./client";
 import { ConnectionClosedError } from "./errors";
-import { FakeSocket } from "./testing/fakeSocket";
+import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
+import type { InitializeResponse } from "./types.gen";
 
 function sentFrames(fake: FakeSocket): Array<Record<string, unknown>> {
   return fake.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>);
@@ -54,6 +55,57 @@ function socketAt(sockets: FakeSocket[], index: number): FakeSocket {
 
 function latestSocket(sockets: FakeSocket[]): FakeSocket {
   return socketAt(sockets, sockets.length - 1);
+}
+
+interface NavigationHandshake {
+  version: number;
+  generationId: string;
+  sequence: number;
+  readVersions: number[];
+}
+
+function reconnectHarness(): {
+  client: AppwireClient;
+  connect: (handshake: NavigationHandshake) => Promise<InitializeResponse>;
+  reconnect: (handshake: NavigationHandshake) => Promise<void>;
+} {
+  const sockets: FakeSocket[] = [];
+  let nextHandshake: NavigationHandshake | null = null;
+  const factory = () => {
+    if (!nextHandshake) throw new Error("expected a scripted initialize result");
+    const handshake = nextHandshake;
+    nextHandshake = null;
+    const result: InitializeResponse = {
+      ...FAKE_INITIALIZE_RESULT,
+      navigation: {
+        version: handshake.version,
+        generationId: handshake.generationId,
+        sequence: handshake.sequence,
+        readVersions: handshake.readVersions,
+      },
+    };
+    const socket = new FakeSocket({ autoInitialize: true, initializeResult: result });
+    sockets.push(socket);
+    return socket;
+  };
+  const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+
+  return {
+    client,
+    async connect(handshake) {
+      nextHandshake = handshake;
+      const connecting = client.connect();
+      latestSocket(sockets).open();
+      return connecting;
+    },
+    async reconnect(handshake) {
+      nextHandshake = handshake;
+      latestSocket(sockets).closeFromServer(1006);
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      latestSocket(sockets).open();
+      await flushUntil(() => client.state === "ready");
+    },
+  };
 }
 
 // connectReady drives the first-dialed socket through open() and returns the
@@ -291,6 +343,18 @@ describe("AppwireClient heartbeat", () => {
 });
 
 describe("AppwireClient reconnect", () => {
+  test("reconnect delivers generation B instead of cached generation A", async () => {
+    const harness = reconnectHarness();
+    const generations: string[] = [];
+    harness.client.onReady((value) => generations.push(value.navigation?.generationId ?? "missing"));
+    await harness.connect({ version: 1, generationId: "a", sequence: 0, readVersions: [1, 2] });
+    await harness.reconnect({ version: 1, generationId: "b", sequence: 0, readVersions: [1, 2] });
+    expect(generations).toEqual(["a", "b"]);
+    const latest = (await harness.client.connect()).navigation;
+    expect(latest?.generationId).toBe("b");
+    expect(latest?.readVersions).toEqual([1, 2]);
+  });
+
   test("backs off 250ms, 500ms, 1000ms, 2000ms, 4000ms, then caps at 5000ms, re-dialing every attempt", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });

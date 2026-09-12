@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -89,6 +90,11 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 	archive := releaseArchive(t, "evener_linux_amd64")
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			sum := sha256.Sum256(archive)
+			_, _ = fmt.Fprintf(w, "%x  evener_linux_amd64.tar.gz\n", sum)
+			return
+		}
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(archive)
@@ -156,6 +162,11 @@ func TestUpgradeReleaseChannelUsesLatestDownloadURL(t *testing.T) {
 	archive := releaseArchive(t, "evener_linux_amd64")
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			sum := sha256.Sum256(archive)
+			_, _ = fmt.Fprintf(w, "%x  evener_linux_amd64.tar.gz\n", sum)
+			return
+		}
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(archive)
@@ -200,6 +211,87 @@ func TestUpgradeRejectsUnsupportedPlatform(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported platform darwin-amd64") {
 		t.Fatalf("error = %q, want unsupported platform", err.Error())
+	}
+}
+
+func TestStageExecutableLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("binary body"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	tmp, err := stageExecutable(t.Context(), src, dir, "evener")
+	if err != nil {
+		t.Fatalf("stageExecutable: %v", err)
+	}
+
+	body, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatalf("read staged: %v", err)
+	}
+	if string(body) != "binary body" {
+		t.Fatalf("staged = %q, want %q", string(body), "binary body")
+	}
+	info, err := os.Stat(tmp)
+	if err != nil {
+		t.Fatalf("stat staged: %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("staged mode = %v, want 0755", info.Mode().Perm())
+	}
+	_ = os.Remove(tmp)
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.stage"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temp files left behind: %v", leftovers)
+	}
+}
+
+// Concurrent stages (a hub self-update and an `evener upgrade` in another
+// process) must not share one temp path and interleave writes: each stages
+// a complete file of its own under a unique name.
+func TestStageExecutableConcurrentStagesNeverMix(t *testing.T) {
+	dir := t.TempDir()
+	first := strings.Repeat("A", 1<<20)
+	second := strings.Repeat("B", 1<<20)
+	srcA := filepath.Join(dir, "srcA")
+	srcB := filepath.Join(dir, "srcB")
+	if err := os.WriteFile(srcA, []byte(first), 0o644); err != nil {
+		t.Fatalf("write srcA: %v", err)
+	}
+	if err := os.WriteFile(srcB, []byte(second), 0o644); err != nil {
+		t.Fatalf("write srcB: %v", err)
+	}
+	tmps := make([]string, 2)
+	for j, src := range []string{srcA, srcB} {
+		var err error
+		tmps[j], err = stageExecutable(t.Context(), src, dir, "evener")
+		if err != nil {
+			t.Fatalf("stageExecutable: %v", err)
+		}
+	}
+	if tmps[0] == tmps[1] {
+		t.Fatalf("both stages share temp path %q", tmps[0])
+	}
+	for j, want := range []string{first, second} {
+		body, err := os.ReadFile(tmps[j])
+		if err != nil {
+			t.Fatalf("read staged: %v", err)
+		}
+		if string(body) != want {
+			t.Fatalf("staged %d has unexpected content (len %d)", j, len(body))
+		}
+		_ = os.Remove(tmps[j])
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.stage"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temp files left behind: %v", leftovers)
 	}
 }
 

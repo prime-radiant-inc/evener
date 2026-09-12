@@ -124,7 +124,10 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
+	var reported int
+	var reportedCalled bool
+	ctx := WithPostFoldInjectionCallback(context.Background(), func(n int) { reported = n; reportedCalled = true })
+	err := ooda.ManageContext(ctx, &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -132,6 +135,11 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 	// Should add an orient message at the end.
 	if len(history) != 3 {
 		t.Fatalf("expected 3 turns (including orient message), got %d", len(history))
+	}
+	// No pre-existing orient turn, no compaction (thresholds forced to 0.99):
+	// net +1 turn appended purely by the orient injection.
+	if !reportedCalled || reported != 1 {
+		t.Errorf("expected post-fold injection report of 1, got %d (called=%v)", reported, reportedCalled)
 	}
 
 	// Last turn should be the orient message.

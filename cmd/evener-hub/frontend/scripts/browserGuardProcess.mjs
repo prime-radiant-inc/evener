@@ -3,6 +3,9 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { stripVTControlCharacters } from "node:util";
+
+import { createStartupDeadline, devtoolsHttpURL, waitForHttp } from "./browserGuardCdp.mjs";
 
 const CHROME_CANDIDATES = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -14,11 +17,49 @@ const CHROME_CANDIDATES = [
 const CHILD_EXIT_GRACE_MS = 2_000;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
+const VITE_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * How long Chrome gets to print "DevTools listening" before the guard calls it
+ * an environment failure. Deliberately FAR larger than the 30s an endpoint gets
+ * to answer once announced, because the two waits fail for different reasons.
+ *
+ * Measured on the GitHub runner that failed run 34570447477: Chrome's first
+ * stderr byte arrived 21s after launch and it still had not announced at 30s,
+ * with its dbus retries running to 27s - a browser making progress, on a cold
+ * page cache, on a loaded two-core VM. The four guards after it on the SAME
+ * runner came up in seconds. 30s was simply under the cold-start floor.
+ *
+ * This is a tripwire and nothing else depends on its value: a Chrome that
+ * CANNOT start never reaches it, because the exit and spawn-error handlers
+ * below reject the readiness promise the moment either fires. What it bounds is
+ * the one case where the process is alive and silent, and four times the
+ * observed floor is the margin chosen for it.
+ */
+const CHROME_ANNOUNCEMENT_DEADLINE_MS = 120_000;
+const VITE_LOCAL_ANNOUNCEMENT = /Local:\s+http:\/\/(\[[^\]]+\]|[^/:\s]+):(\d+)(?:\/\s*)?$/;
 
 function isLoopbackHost(hostname) {
   if (hostname === "localhost" || hostname === "[::1]") return true;
   const octets = hostname.split(".");
-  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => /^(0|[1-9]\d*)$/.test(octet) && Number(octet) <= 255);
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((octet) => /^(0|[1-9]\d*)$/.test(octet) && Number(octet) <= 255)
+  );
+}
+
+/** Parse Vite's local URL announcement after it has bound its listening socket. */
+export function parseViteReadyAnnouncement(line) {
+  const normalized = stripVTControlCharacters(line).trim();
+  const match = normalized.match(VITE_LOCAL_ANNOUNCEMENT);
+  if (!match) return null;
+  const hostname = match[1];
+  const port = Number(match[2]);
+  if (!isLoopbackHost(hostname) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`invalid Vite local announcement: ${normalized}`);
+  }
+  return { host: hostname, port };
 }
 
 /** Parse one complete Chrome stderr announcement, or ignore an unrelated line. */
@@ -86,17 +127,16 @@ export function describeBrowserStartupFailure({
   viteStderr = "",
 }) {
   const message = error instanceof Error ? error.message : String(error);
-  const lines = [
-    `browser guard startup failed (environment problem, not a test case failure): ${message}`,
-    "",
-  ];
+  const effectiveSubsystem = error?.browserGuardSubsystem ?? subsystem;
+  const effectiveViteStderr = error?.browserGuardViteStderr ?? viteStderr;
+  const lines = [`browser guard startup failed (environment problem, not a test case failure): ${message}`, ""];
   // Name the subsystem that actually failed. One try now covers the launch,
   // Vite and Chrome, and remediation aimed at the wrong one is worse than none:
   // a dead Vite told to "install Chrome" sends the reader looking in the wrong
   // place with an authoritative-looking checklist.
-  if (subsystem === "vite") {
+  if (effectiveSubsystem === "vite") {
     lines.push(
-      `vite stderr: ${viteStderr.trim() || "(none)"}`,
+      `vite stderr: ${effectiveViteStderr.trim() || "(none)"}`,
       "",
       "To fix:",
       "  1. Read the vite stderr above - a port clash, a failed transform and a",
@@ -120,7 +160,7 @@ export function describeBrowserStartupFailure({
     `Chrome binary: ${chromeBinary || "(none found)"}`,
     `Chrome argv: ${chromeArgv.join(" ")}`,
     `chrome stderr: ${chromeStderr.trim() || "(none)"}`,
-    `vite stderr: ${viteStderr.trim() || "(none)"}`,
+    `vite stderr: ${effectiveViteStderr.trim() || "(none)"}`,
     "",
     "To fix:",
     `  1. Confirm the binary above exists and runs: "${chromeBinary}" --version`,
@@ -129,6 +169,66 @@ export function describeBrowserStartupFailure({
     "     library, a sandbox denial and an unwritable profile all report there.",
   );
   return lines.join("\n");
+}
+
+/**
+ * Take a started guard from "processes are running" to "there is a browser to
+ * drive", and frame anything that goes wrong as the environment problem it is.
+ *
+ * Every guard runner had a verbatim copy of this. It is one function because
+ * the two waits inside it have to be reasoned about together: the announcement
+ * and the endpoint answering are different failures with different causes, so
+ * they get SEPARATE budgets. Sharing one, as the copies did, let a cold Chrome
+ * that took 25 seconds to announce hand the endpoint wait five - the poll would
+ * then die of a deadline that had already been spent by the phase before it.
+ */
+export async function waitForBrowserReady(guard, { announcementTimeoutMs = CHROME_ANNOUNCEMENT_DEADLINE_MS } = {}) {
+  const announcement = createStartupDeadline(announcementTimeoutMs);
+  let endpointAnswer = null;
+  try {
+    let endpoint;
+    try {
+      endpoint = await guard.waitForChrome({ signal: announcement.signal });
+    } catch (error) {
+      // Name the phase, and say what the browser had managed to do. Run
+      // 34570447477 printed "browser startup deadline exceeded after 30000ms"
+      // and nothing else - the same sentence the endpoint poll after it would
+      // have printed - and which of the two had stalled had to be argued out
+      // of microtask ordering rather than read.
+      if (error !== announcement.signal.reason) throw error;
+      const firstStderr = guard.getChromeFirstStderrDelay();
+      throw new Error(
+        `${error.message} while waiting for Chrome's DevTools announcement on stderr ` +
+          `(${
+            firstStderr === null
+              ? "Chrome had written nothing to stderr"
+              : `Chrome's first stderr byte arrived ${firstStderr}ms after launch`
+          })`,
+      );
+    }
+    endpointAnswer = createStartupDeadline();
+    await waitForHttp(
+      devtoolsHttpURL(endpoint, "/json/version"),
+      "chrome devtools endpoint",
+      guard.getChromeLaunchError,
+      { signal: endpointAnswer.signal, failure: guard.getChromeFailure() },
+    );
+    return endpoint;
+  } catch (error) {
+    throw new Error(
+      describeBrowserStartupFailure({
+        error,
+        subsystem: "chrome",
+        chromeBinary: guard.chromeBinary,
+        chromeArgv: guard.getChromeArgv(),
+        chromeStderr: guard.getChromeError(),
+        viteStderr: guard.getViteError(),
+      }),
+    );
+  } finally {
+    announcement.clear();
+    endpointAnswer?.clear();
+  }
 }
 
 export function chromeProfileIsolationArgs(platform = process.platform) {
@@ -223,7 +323,7 @@ export function listSystemProcesses({ processCommand = ["/bin/ps"] } = {}) {
   // than pgrep's comm name, also works on Linux where comm is truncated to 15
   // bytes and would miss chrome_crashpad_handler.
   const filter =
-    "{ line=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, \"\", line); " +
+    '{ line=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "", line); ' +
     // Keep the filter narrow, but leave argv0 validation to the JS parser. The
     // second condition rejects an absolute path appearing after an unrelated
     // argv0 while still allowing the spaces in a normal macOS Chrome path.
@@ -680,17 +780,44 @@ export async function startBrowserGuard({
   processTarget = process,
   scheduleEscalation = setTimeout,
   cancelEscalation = clearTimeout,
+  signal = null,
+  startupTimeoutMs = VITE_READY_TIMEOUT_MS,
+  // A guard that must serve a different Vite config (the editorial preview's
+  // fixture-only config) hands it to the wrapper here; the wrapper owns config
+  // resolution, so the path is frontend-relative.
+  viteConfigFile = null,
 }) {
   const resolvedChrome = chromeBinary ?? findChrome();
-  const vitePort = await findAvailablePort();
+  const vitePort = 0;
+  let actualVitePort = vitePort;
   const profileDir = mkdtempSync(path.join(tmpdir(), profilePrefix));
   let vite = null;
   let chrome = null;
   let viteErr = "";
   let chromeErr = "";
   let viteLaunchError = null;
+  let viteReadySettled = false;
+  let viteReadySucceeded = false;
+  let resolveViteReady;
+  let rejectViteReady;
+  const viteReady = new Promise((resolve, reject) => {
+    resolveViteReady = (address) => {
+      if (viteReadySettled) return;
+      viteReadySettled = true;
+      resolve(address);
+    };
+    rejectViteReady = (error) => {
+      if (viteReadySettled) return;
+      viteReadySettled = true;
+      reject(error);
+    };
+  });
+  viteReady.catch(() => {});
+  let viteLineBuffer = "";
   let chromeLaunchError = null;
   let chromeArgv = [];
+  let chromeSpawnedAt = 0;
+  let chromeFirstStderrAfterMs = null;
   let chromeEndpoint = null;
   let chromeLineBuffer = "";
   let resolveChromeReady;
@@ -734,21 +861,11 @@ export async function startBrowserGuard({
   });
 
   try {
-    vite = spawnProcess(
-      "./node_modules/.bin/vite",
-      [
-        "--config",
-        "scripts/browserguard.vite.config.mjs",
-        "--port",
-        String(vitePort),
-        "--strictPort",
-        "--host",
-        "127.0.0.1",
-        "--clearScreen",
-        "false",
-      ],
-      { cwd: frontend, stdio: ["ignore", "ignore", "pipe"], detached: useProcessGroups },
-    );
+    vite = spawnProcess(process.execPath, ["scripts/browserguard-vite.mjs", ...(viteConfigFile ? [viteConfigFile] : [])], {
+      cwd: frontend,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: useProcessGroups,
+    });
     lifecycle.addChild(vite, {
       processGroupId: useProcessGroups && Number.isInteger(vite.pid) ? vite.pid : null,
     });
@@ -765,10 +882,53 @@ export async function startBrowserGuard({
     // dead Chrome is never blamed on a healthy Vite.
     vite.on("error", (error) => {
       viteLaunchError ??= error;
+      rejectViteReady(error);
+    });
+    vite.once("exit", (code, signal) => {
+      if (!viteReadySettled) {
+        const error = new Error(`Vite exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`);
+        viteLaunchError ??= error;
+        rejectViteReady(error);
+      }
+    });
+    vite.stdout?.on("data", (chunk) => {
+      viteLineBuffer += chunk.toString();
+      const lines = viteLineBuffer.split(/\r\n|\r|\n/);
+      viteLineBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        let address;
+        try {
+          address = parseViteReadyAnnouncement(line);
+        } catch (error) {
+          viteLaunchError ??= error;
+          rejectViteReady(error);
+          continue;
+        }
+        if (address) resolveViteReady(address);
+      }
     });
     vite.stderr?.on("data", (chunk) => {
       viteErr += chunk;
     });
+    let viteReadyTimer;
+    try {
+      const viteAddress = await withAbort(
+        Promise.race([
+          viteReady,
+          new Promise((_, reject) => {
+            viteReadyTimer = setTimeout(
+              () => reject(new Error(`Vite readiness timed out after ${startupTimeoutMs}ms`)),
+              startupTimeoutMs,
+            );
+          }),
+        ]),
+        signal,
+      );
+      actualVitePort = viteAddress.port;
+      viteReadySucceeded = true;
+    } finally {
+      clearTimeout(viteReadyTimer);
+    }
     chromeArgv = [
       "--headless=new",
       "--disable-gpu",
@@ -783,23 +943,21 @@ export async function startBrowserGuard({
       ...chromeArgs,
       "about:blank",
     ];
-    chrome = spawnProcess(
-      resolvedChrome,
-      chromeArgv,
-      {
-        // Chrome's stderr is the only thing that says WHY it would not start (a
-        // missing dylib, a sandbox denial, a profile it cannot write).
-        // Discarding it left a failed launch looking like a bare 30s
-        // waitForHttp timeout beside an irrelevant Vite log (kata 3htx).
-        stdio: ["ignore", "ignore", "pipe"],
-        env: chromeProfileEnvironment(profileDir),
-        detached: useProcessGroups,
-      },
-    );
+    chromeSpawnedAt = Date.now();
+    chrome = spawnProcess(resolvedChrome, chromeArgv, {
+      // Chrome's stderr is the only thing that says WHY it would not start (a
+      // missing dylib, a sandbox denial, a profile it cannot write).
+      // Discarding it left a failed launch looking like a bare 30s
+      // waitForHttp timeout beside an irrelevant Vite log (kata 3htx).
+      stdio: ["ignore", "ignore", "pipe"],
+      env: chromeProfileEnvironment(profileDir),
+      detached: useProcessGroups,
+    });
     chrome.on("error", (error) => {
       failChrome(error);
     });
     chrome.stderr?.on("data", (chunk) => {
+      chromeFirstStderrAfterMs ??= Date.now() - chromeSpawnedAt;
       chromeErr += chunk;
       chromeLineBuffer += chunk.toString();
       const lines = chromeLineBuffer.split(/\r\n|\r|\n/);
@@ -817,9 +975,7 @@ export async function startBrowserGuard({
         // endpoint invalidates startup rather than making listener order decide
         // which browser to measure or close.
         if (chromeEndpoint && chromeEndpoint.url !== endpoint.url) {
-          const error = new Error(
-            `conflicting DevTools announcements: ${chromeEndpoint.url} and ${endpoint.url}`,
-          );
+          const error = new Error(`conflicting DevTools announcements: ${chromeEndpoint.url} and ${endpoint.url}`);
           failChrome(error);
           continue;
         }
@@ -840,11 +996,17 @@ export async function startBrowserGuard({
     });
   } catch (error) {
     await lifecycle.cleanup();
+    if (!viteReadySucceeded) {
+      const startupError = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+      startupError.browserGuardSubsystem = "vite";
+      startupError.browserGuardViteStderr = viteErr;
+      throw startupError;
+    }
     throw error;
   }
 
   return {
-    vitePort,
+    vitePort: actualVitePort,
     getChromeEndpoint: () => chromeEndpoint,
     profileDir,
     getViteError: () => viteErr,
@@ -854,10 +1016,15 @@ export async function startBrowserGuard({
     getChromeFailure: () => chromeFailure,
     chromeBinary: resolvedChrome,
     getChromeArgv: () => chromeArgv,
-    // This promise is the process/devtools readiness handoff. The runner owns
-    // its single startup deadline and passes its abort signal through both the
-    // announcement and /json/version phases.
+    // This promise is the process/devtools readiness handoff. It rejects with
+    // the caller's own abort reason; waitForBrowserReady, which arms the
+    // announcement budget, is what says which phase that reason belongs to.
     waitForChrome: ({ signal } = {}) => withAbort(chromeReady, signal, chromeFailure),
+    // How long after launch Chrome first wrote ANYTHING, or null if it never
+    // did. The number that separates a browser which is slow from one which is
+    // not running: 21000ms of silence and then dbus retries, in run
+    // 34570447477, is a cold page cache, not a broken install.
+    getChromeFirstStderrDelay: () => chromeFirstStderrAfterMs,
     cleanup: lifecycle.cleanup,
   };
 }

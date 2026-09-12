@@ -3,8 +3,24 @@ package plugins
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
+
+// bundledStoreEntries is what the bundled cache holds apart from the lock file
+// publishers keep there. No assertion about published copies, set-aside slots
+// or staging is about that file, and it exists in any store a publish or a
+// preview has touched.
+func bundledStoreEntries(t *testing.T, store string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.DeleteFunc(entries, func(e os.DirEntry) bool {
+		return e.Name() == bundledLockName
+	})
+}
 
 func writePlugin(t *testing.T, dir, name string, extra map[string]string) {
 	t.Helper()

@@ -6,13 +6,13 @@
 .call {
   display: flex;
   flex-direction: column;
-  padding: var(--space-2) 0;
+  padding: var(--rhythm-item) 0;
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
- * implements. A purpose-bearing row wraps onto two lines (italic purpose
+ * implements. An intent-bearing row wraps onto two lines (italic intent
  * above, quiet verb/target below) via the demoted line's flex-basis rule
- * further down; without a purpose it stays on one.
+ * further down; without an intent it stays on one.
  *
  * row-gap vs column-gap, split deliberately: the column gap separates the
  * glyph/status/text on one line; the row gap is the rationale-to-call
@@ -25,7 +25,7 @@
   align-items: baseline;
   column-gap: var(--space-2);
   /* No row gap at all: the rationale-to-call coupling comes from the two
-   * lines' own tightened line-height (see .purpose/.demoted) alone, so the
+   * lines' own tightened line-height (see .intent/.demoted) alone, so the
    * gap between a description and its call reads clearly tighter than the
    * 2x8px .call padding between separate calls. */
   row-gap: 0;
@@ -60,16 +60,64 @@
   cursor: pointer;
 }
 
-.row[data-purpose="true"] .trigger {
+.row[data-intent="true"] .trigger {
   flex: 1 1 100%;
 }
 
-/* data-purpose-trailing marks a purpose-only row whose trailing affordance
- * rides the disclosure line (ToolRow.tsx's grammar): the trigger gives up
- * the full-width basis the rule above assigns, so trigger and control share
- * line 1, the trigger's own grow springing the control to the line's end. */
-.row[data-purpose-trailing="true"] .trigger {
-  flex: 1 1 auto;
+.intentTriggerContent {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  min-width: 0;
+  pointer-events: none;
+}
+
+/* One semantic disclosure button still owns the full intent-only line,
+ * including the chevron after Open. Its visible siblings ignore pointer input;
+ * the Open slot opts back in below and already stopPropagates. */
+.intentOverlayTrigger {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* data-intent-trailing marks an intent-only row whose trailing Open affordance
+ * rides the disclosure line (ToolRow.tsx's grammar). The visible content is a
+ * sibling of the overlay trigger so its valid DOM order can be text, Open,
+ * chevron. flex: 0 1 auto, NOT flex: 1 1 0: the control belongs immediately
+ * AFTER the intent text, and growing this content springs it to the line's far
+ * end. The max-width reserves Open, the 14px chevron, and both column gaps:
+ * flex line-breaking uses hypothetical main sizes (the base size CLAMPED by
+ * max-width), so a long intent wraps INSIDE this content and all three items
+ * share line 1 (delegate-open-widget-inline pins both regressions). */
+.row[data-intent-trailing="true"] .intentTriggerContent {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - var(--space-2) - var(--space-2));
+}
+
+/* data-intent-trailing is also set when ONLY the two-level body chevron
+ * shares the intent line (ToolRow.tsx's bodyTriggerOnIntentLine; the intent
+ * row then renders the PLAIN trigger, not the overlay). That trigger must not
+ * keep the [data-intent] rule's flex: 1 1 100% - a full-width basis wraps the
+ * body chevron onto its own line. Same mechanism as the content rule above:
+ * constrained basis, and a max-width reserving the 14px chevron plus the gap.
+ * The overlay trigger is absolute (out of flow), so :not() excludes it from a
+ * rule it would otherwise match. */
+.row[data-intent-trailing="true"] > .trigger:not(.intentOverlayTrigger) {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 14px - var(--space-2));
+}
+
+/* When the body chevron ALSO rides an intent line that carries Open, the
+ * reservation grows by its 14px and one more column gap. */
+.row[data-intent-trailing="true"][data-body-trigger-intent="true"] .intentTriggerContent {
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - 14px - var(--space-2) - var(--space-2) - var(--space-2));
 }
 
 .summaryLine {
@@ -79,16 +127,16 @@
   min-width: 0;
 }
 
-.row[data-purpose="true"] .summaryLine {
+.row[data-intent="true"] .summaryLine {
   flex: 1 1 100%;
 }
 
-/* A purpose-less row keeps its visible summary and inline actions as siblings
+/* An intent-less row keeps its visible summary and inline actions as siblings
  * of the disclosure button. The button still owns the whole visual row: its
  * transparent box sits under the summary line, while real links/buttons opt
  * back into pointer hit testing. This restores the old full-row disclosure
  * target without nesting interactive controls. */
-.row:not([data-purpose="true"]) .trigger {
+.row:not([data-intent="true"]) .trigger {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -96,17 +144,17 @@
   justify-content: flex-end;
 }
 
-.row:not([data-purpose="true"]) .summaryLine {
+.row:not([data-intent="true"]) .summaryLine {
   position: relative;
   z-index: var(--z-raised);
   pointer-events: none;
 }
 
-.row:not([data-purpose="true"]) .summaryLine a,
-.row:not([data-purpose="true"]) .summaryLine button,
-.row:not([data-purpose="true"]) .summaryLine input,
-.row:not([data-purpose="true"]) .summaryLine select,
-.row:not([data-purpose="true"]) .summaryLine textarea {
+.row:not([data-intent="true"]) .summaryLine a,
+.row:not([data-intent="true"]) .summaryLine button,
+.row:not([data-intent="true"]) .summaryLine input,
+.row:not([data-intent="true"]) .summaryLine select,
+.row:not([data-intent="true"]) .summaryLine textarea {
   pointer-events: auto;
 }
 
@@ -126,14 +174,40 @@
   border-radius: var(--radius-control);
 }
 
+.bodyTrigger {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  appearance: none;
+  cursor: pointer;
+}
+
+.bodyTrigger:hover {
+  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
+  border-radius: var(--radius-control);
+}
+
+.bodyTrigger:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
 /* The agent's stated reason for the call - the one part of the row written for
  * a human, so it gets the sans face, the full-contrast ink, and (Jesse's
  * review call) italics: a rationale reads as commentary on the call, set off
  * from the machine text below it without a colour or size of its own.
  *
  * overflow-wrap:anywhere so long machine text can still break when the
- * purpose itself is the long part. */
-.purpose {
+ * intent itself is the long part. */
+.intent {
   flex: 1 1 0;
   min-width: 0;
   font-family: var(--font-sans);
@@ -150,9 +224,9 @@
 /* verb + target + meta, the descriptor's own summary() string: the sans
  * face (Jesse's review call - fixed-width everywhere made every tool read
  * like a terminal; mono is now reserved for shell, whose summary IS a
- * command - see .mono). flex-basis 0 for the same reason .purpose has it -
- * see there. overflow-wrap:anywhere serves the purpose-less one-line case;
- * with a purpose present the .demoted override below replaces it with
+ * command - see .mono). flex-basis 0 for the same reason .intent has it -
+ * see there. overflow-wrap:anywhere serves the intent-less one-line case;
+ * with an intent present the .demoted override below replaces it with
  * nowrap + the middle-truncation split on the second line. */
 .summary {
   flex: 1 1 0;
@@ -170,11 +244,27 @@
   font-family: var(--font-mono);
 }
 
+/* The status dot rides inline with the text on the first line.  Like
+ * .rowIcon, it uses align-self: flex-start + height: 1lh so it pins to
+ * line 1 no matter how the row wraps, and font-size/line-height match
+ * .intent so the dot's 1lh box matches the text's first line.  Without
+ * this, an inline-flex element with no text has its baseline at its
+ * bottom edge, so baseline alignment seats the dot too low. */
 .status {
   flex: none;
   display: inline-flex;
+  align-self: flex-start;
+  height: 1lh;
+  font-size: var(--font-size-ui);
   align-items: center;
   gap: var(--space-1);
+}
+
+/* On intent-bearing rows the first line is the rationale text, whose
+ * line-height is --line-height-title (tighter than the body's). See the
+ * matching override on .rowIcon. */
+.row[data-intent="true"] .status {
+  line-height: var(--line-height-title);
 }
 
 /* The tool-KIND glyph in the RAIL beside the rationale line (Jesse's review
@@ -183,11 +273,18 @@
  * --speaker-avatar-size wide so the glyph centres on the same column the
  * speaker avatars occupy; align-self flex-start + 1lh pins it to line 1
  * (the rationale) no matter how the rest of the row wraps. Below the
- * breakpoint there is no gutter, so it simply leads the line inline. */
+ * breakpoint there is no gutter, so it simply leads the line inline.
+ *
+ * font-size matches .intent: 1lh is the computed line-height of THIS
+ * element, so without matching the text's font-size the icon box is a
+ * different height than the first text line and the glyph sits off the
+ * text's centre. The line-height override below narrows the box to match
+ * the rationale's tightened line-height on intent-bearing rows. */
 .rowIcon {
   flex: none;
   align-self: flex-start;
   height: 1lh;
+  font-size: var(--font-size-ui);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -203,6 +300,15 @@
   color: var(--ink-mid);
 }
 
+/* On intent-bearing rows the first line is the rationale text, whose
+ * line-height is --line-height-title (tighter than the body's). Without this
+ * override 1lh inherits the body's 1.6, so the icon box is taller than the
+ * text line and the glyph sits low. Match the title line-height so the glyph
+ * centres on the first line of text even when the intent wraps. */
+.row[data-intent="true"] .rowIcon {
+  line-height: var(--line-height-title);
+}
+
 /* Above the breakpoint the row sits inside runContent's --speaker-gutter of
  * reserved padding: pulling the icon one gutter to the left seats it in the
  * rail while the row's text stays at the content edge. The negative margin
@@ -214,24 +320,64 @@
   }
 }
 
-/* With a purpose above it the summary is a glanceable detail, not the story:
+/* With an intent above it the summary is a glanceable detail, not the story:
  * it takes the whole next line, dimmer. flex-basis 100% is what forces the
  * line break inside the wrapping row. The row's affordances (e.g. "Open
  * beside") ride THIS line now - rendered inline at the end of the summary
  * text by ToolRow, not as flex items of the row - so no order trick is
  * needed to keep the row at two lines. */
 /* kata rdry: this line is a tool RESULT ("Wrote fizzbuzz.py"), shown on every
- * purpose-bearing row in every transcript - not a placeholder/disabled/
- * timestamp, --ink-low's documented job (design-system.md). --ink-low measured
- * 2.97:1 dark / 3.64:1 light against --surface-1, under the 4.5:1 AA floor for
- * body text; --ink-mid clears it at 6.86/6.56. Same fix as usermessageitem's
- * .tag. There is no longer a hover override to --ink-mid - resting state
- * already reads it. */
+ * intent-bearing row in every transcript - not a placeholder/disabled/
+ * timestamp, --ink-low's documented job (design-system.md). When this was
+ * moved --ink-low sat under the 4.5:1 AA floor; it clears it since the
+ * 2026-09-06 raise (4.72:1 dark / 4.76:1 light on --surface-1), but a result
+ * a reader actually reads still takes --ink-mid (6.51 / 5.84). There is no
+ * longer a hover override to --ink-mid - resting state already reads it. */
 .demoted {
   flex: 0 0 100%;
   color: var(--ink-mid);
-  /* Same tightened line box as the rationale above it - see .purpose. */
+  /* Same tightened line box as the rationale above it - see .intent. */
   line-height: var(--line-height-title);
+}
+
+/* When a .bodyTrigger chevron shares the summary line (two-level disclosure at
+   tools/activity/full), the chevron rides INLINE at the end of the summary
+   text (ToolRow's bodyChevronInline) and the button is an empty OVERLAY, so
+   the demoted summary can keep its full basis: nothing else needs a share of
+   the line. The overlay is absolute (out of flow) and takes no width. */
+.summaryLine[data-body-trigger="true"] {
+  position: relative;
+}
+
+/* The body chevron rides INLINE at the end of the summary text (ToolRow's
+   bodyChevronInline). Inside the collapsed line's .clamped flex row it is a
+   flex-none item that never shrinks - the head's ellipsis absorbs the
+   pressure, the same seat .summaryTrailing takes. Scoped by [data-open]
+   (every .chevron carries it) so specificity does not descend below the
+   .chevron base rule. */
+.clamped [data-open] {
+  flex: none;
+}
+
+.summaryLine[data-body-trigger="true"] .bodyTrigger {
+  position: absolute;
+  inset: 0;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.summaryLine[data-body-trigger="true"] .summary {
+  position: relative;
+  z-index: var(--z-raised);
+  pointer-events: none;
+}
+
+.summaryLine[data-body-trigger="true"] .summary a,
+.summaryLine[data-body-trigger="true"] .summary button,
+.summaryLine[data-body-trigger="true"] .summary input,
+.summaryLine[data-body-trigger="true"] .summary select,
+.summaryLine[data-body-trigger="true"] .summary textarea {
+  pointer-events: auto;
 }
 
 /* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a
@@ -246,15 +392,15 @@
  * full. */
 .clamped {
   display: flex;
-  /* Center, not the default stretch: the trailing affordance (the 28px "Open
-   * beside" IconButton) is the line's tallest item, and under stretch the
-   * head/tail text spans fill that height with their text top-aligned while
-   * the button sits align-self:center - measured 4.5px of downward offset
-   * between the icon's center and the text's center. Centering every item
-   * puts the text and the button on one axis; with no trailing control the
-   * items are all one text line and centering is invisible. */
+  /* Center, not the default stretch: keeps the text spans and the trailing
+   * affordance on one axis when their heights differ. */
   align-items: center;
-  overflow: hidden;
+  /* clip with a margin, NOT hidden: the open affordance's touch target
+   * (openbutton.module.css's .inline) overhangs the line box by design, and
+   * a hard clip would amputate its hit area. The head/tail spans keep their
+   * own overflow:hidden + ellipsis, so text clipping is unchanged. */
+  overflow: clip;
+  overflow-clip-margin: 16px;
   white-space: nowrap;
 }
 
@@ -291,11 +437,13 @@
   margin-left: var(--space-2);
 }
 
-/* The disclosure-line trailing slot (a purpose-only row's affordance - see
- * the [data-purpose-trailing] rule above): a plain flex-none item of the row,
+/* The disclosure-line trailing slot (an intent-only row's affordance - see
+ * the [data-intent-trailing] rule above): a plain flex-none item of the row,
  * baseline-aligned with the rationale like every other line-mate; the row's
  * own column-gap separates it from the trigger. */
-.purposeTrailing {
+.intentTrailing {
+  position: relative;
+  z-index: var(--z-raised);
   display: inline-flex;
   flex: none;
 }
@@ -355,7 +503,30 @@
   transform: rotate(90deg);
 }
 
-/* The expanded body: hairline-framed, --surface-1, no heavy fill. */
+/* The .bodyTrigger button's chevron has no preceding text, so the default
+ * margin-left (designed for chevrons after inline text) is removed to
+ * prevent the button from adding 8px to the row's width. */
+.bodyTrigger .chevron {
+  margin-left: 0;
+}
+
+.row[data-intent-trailing="true"] > .chevron {
+  position: relative;
+  flex: none;
+  margin-left: 0;
+  pointer-events: none;
+}
+
+/* The two-level body chevron can share the intent line with the absolute
+ * overlay trigger (bodyTriggerOnIntentLine). Without its own raised layer -
+ * the same one .intentTrailing gets - the overlay swallows its clicks and
+ * toggles the wrong disclosure (roborev). */
+.row[data-intent-trailing="true"] > .bodyTrigger {
+  position: relative;
+  z-index: var(--z-raised);
+}
+
+/* Flat evidence wrapper; native renderers own useful output boundaries. */
 .body {
   margin-top: var(--space-1);
 }

@@ -29,9 +29,11 @@ const (
 	EventAssistantTextDelta EventKind = "ASSISTANT_TEXT_DELTA"
 	// EventAssistantTextEnd marks the end of an assistant text response.
 	EventAssistantTextEnd EventKind = "ASSISTANT_TEXT_END"
-	// EventAssistantTextReset discards the in-progress assistant message: a model
-	// call retried after streaming partial output emits this so the retry's
+	// EventAssistantTextReset discards the in-progress output a retried model
+	// call streamed: a retry after partial output emits this so the retry's
 	// output replaces, rather than appends to, the partial that was shown.
+	// It covers both streamed item kinds — assistant text and reasoning —
+	// because a failed attempt typically streamed both.
 	EventAssistantTextReset EventKind = "ASSISTANT_TEXT_RESET"
 	// EventCommunicatePreviewStart opens a call-scoped provisional communicate item.
 	EventCommunicatePreviewStart EventKind = "COMMUNICATE_PREVIEW_START"

@@ -57,10 +57,10 @@ func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseHandler) }) }
 	defer release()
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		close(handlerStarted)
 		<-releaseHandler
-		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_held"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer httpServer.Close()
@@ -91,7 +91,7 @@ func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		result <- err
 	}()
 	select {
@@ -101,21 +101,37 @@ func TestServeWebSocketPingsIdleReaderWhileBusyRPCHandlerRuns(t *testing.T) {
 	}
 
 	// Drive the actual ServeWebSocket keepalive goroutine while HandleMessage is
-	// held busy in a handler goroutine. Concurrent dispatch keeps the receive
-	// loop reading, so the gate observes an available reader and the keepalive
-	// pings even while the RPC handler is still held. The decision is emitted
-	// only after the gate has been consulted, so release is not time-based.
-	ticker.Tick()
-	select {
-	case attempted := <-decision:
-		if !attempted {
-			t.Fatal("keepalive did not attempt a ping while the receive loop was free and the RPC handler was busy")
+	// held busy in a handler goroutine. A slow read dispatches on its own
+	// goroutine, which keeps the receive loop reading, so the gate observes an
+	// available reader and the keepalive pings even while the RPC handler is
+	// still held.
+	//
+	// The receive loop's transition back to an available reader is not ordered
+	// against the handler goroutine reaching handlerStarted: dispatchMessage
+	// runs a slow-read handler on its own goroutine, so a tick can land while
+	// the loop is still between readerUnavailable() and its next
+	// readerAvailable(). Each tick reports one gate decision, so the condition
+	// under test is the first attempted decision, not the decision from the
+	// first tick. The receive loop deterministically parks in Recv with the
+	// reader available while the handler is held, so this wait terminates
+	// rather than polling a window.
+	busyPingDeadline := time.NewTimer(time.Minute)
+	defer busyPingDeadline.Stop()
+	released := false
+	for !released {
+		ticker.Tick()
+		select {
+		case attempted := <-decision:
+			if attempted {
+				release()
+				released = true
+			}
+		case <-idlePingSeen:
+			release()
+			released = true
+		case <-busyPingDeadline.C:
+			t.Fatal("keepalive never attempted a ping while the receive loop was free and the RPC handler was busy")
 		}
-		release()
-	case <-idlePingSeen:
-		release()
-	case <-time.After(time.Second):
-		t.Fatal("keepalive did not report the available-reader decision")
 	}
 
 	select {
@@ -201,5 +217,62 @@ func TestServeWebSocketPushesNotificationsToSubscribedThread(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for notification")
+	}
+}
+
+func TestServeWebSocketUnsubscribeStopsThreadDelivery(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		Subscribe(ctx, "th_1")
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1"}}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+		Unsubscribe(ctx, params.ThreadID)
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer transport.Close()
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if server.SubscriberCount("th_1") != 1 {
+		t.Fatalf("subscriber count after read = %d, want 1", server.SubscriberCount("th_1"))
+	}
+
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: "th_1"}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if server.SubscriberCount("th_1") != 0 {
+		t.Fatalf("subscriber count after unsubscribe = %d, want 0", server.SubscriberCount("th_1"))
+	}
+
+	// After the unsubscribe the connection must no longer receive the
+	// thread's notifications.
+	server.Broadcast("th_1", appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID: "th_1",
+		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+	})
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after unsubscribe: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Unsubscribe is idempotent: a second call still succeeds.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: "th_1"}); err != nil {
+		t.Fatalf("second ThreadUnsubscribe: %v", err)
 	}
 }

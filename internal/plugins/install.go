@@ -29,6 +29,27 @@ var (
 
 func registryKey(plugin, marketplace string) string { return plugin + "@" + marketplace }
 
+// loadRegistry and saveRegistry are the only ways this package reaches
+// installed_plugins.json. Both derive the path through storePath, so a caller
+// that never takes the store lock — List, and the update sweeps, which
+// enumerate the registry before they lock anything — is refused an unresolved
+// root by construction rather than by remembering to ask.
+func (m *Manager) loadRegistry() (Registry, error) {
+	path, err := m.storePath(registryFileName)
+	if err != nil {
+		return Registry{}, err
+	}
+	return installLoadRegistry(path)
+}
+
+func (m *Manager) saveRegistry(reg Registry) error {
+	path, err := m.storePath(registryFileName)
+	if err != nil {
+		return err
+	}
+	return installSaveRegistry(path, reg)
+}
+
 // catalogPlugin finds a named plugin's entry + its marketplace ref, lazily
 // fetching a seeded-but-unfetched marketplace first. Callers (Install/Upgrade)
 // already hold m.lockPath(), which ensureFetched requires.
@@ -95,7 +116,7 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 
 // Install installs plugin from marketplace, enabled.
 func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
-	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, err
 	}
@@ -149,12 +170,12 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		Source:       cp.Source,
 		Note:         note,
 	}
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return InstallEntry{}, err
 	}
 	reg.Plugins[registryKey(plugin, marketplace)] = []InstallEntry{entry}
-	if err := installSaveRegistry(m.registryPath(), reg); err != nil {
+	if err := m.saveRegistry(reg); err != nil {
 		return InstallEntry{}, err
 	}
 	return entry, nil
@@ -171,7 +192,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 // The auto-upgrade daemon uses upgradeAuto instead, which re-checks the flag
 // under the same lock immediately before acting — see upgradeLocked.
 func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
-	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, err
 	}
@@ -206,7 +227,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	}
 
 	key := registryKey(plugin, marketplace)
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
@@ -256,20 +277,20 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	prev.Source = cp.Source
 	prev.Note = note
 	reg.Plugins[key] = []InstallEntry{prev}
-	if err := installSaveRegistry(m.registryPath(), reg); err != nil {
+	if err := m.saveRegistry(reg); err != nil {
 		return InstallEntry{}, false, false, err
 	}
 	return prev, true, false, nil
 }
 
-func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)) error {
-	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
+func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, fn func(*InstallEntry)) error {
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return err
 	}
@@ -280,27 +301,27 @@ func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)
 	e := entries[0]
 	fn(&e)
 	reg.Plugins[key] = []InstallEntry{e}
-	return installSaveRegistry(m.registryPath(), reg)
+	return m.saveRegistry(reg)
 }
 
-func (m *Manager) SetEnabled(plugin, marketplace string, enabled bool) error {
-	return m.mutateEntry(plugin, marketplace, func(e *InstallEntry) { e.Enabled = enabled })
+func (m *Manager) SetEnabled(ctx context.Context, plugin, marketplace string, enabled bool) error {
+	return m.mutateEntry(ctx, plugin, marketplace, func(e *InstallEntry) { e.Enabled = enabled })
 }
 
-func (m *Manager) SetAutoUpgrade(plugin, marketplace string, on bool) error {
-	return m.mutateEntry(plugin, marketplace, func(e *InstallEntry) { e.AutoUpgrade = on })
+func (m *Manager) SetAutoUpgrade(ctx context.Context, plugin, marketplace string, on bool) error {
+	return m.mutateEntry(ctx, plugin, marketplace, func(e *InstallEntry) { e.AutoUpgrade = on })
 }
 
 // Remove deletes the registry entry and its cache dir. A plugin referenced in
 // place (directory-source marketplace) leaves the source untouched.
-func (m *Manager) Remove(plugin, marketplace string) error {
-	release, err := installAcquireLock(m.lockPath(), 30*time.Second)
+func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error {
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return err
 	}
@@ -315,7 +336,7 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 		}
 	}
 	delete(reg.Plugins, key)
-	return installSaveRegistry(m.registryPath(), reg)
+	return m.saveRegistry(reg)
 }
 
 type ListItem struct {
@@ -338,8 +359,19 @@ func splitKey(key string) (plugin, marketplace string) {
 	return key, ""
 }
 
-func (m *Manager) List() ([]ListItem, error) {
-	reg, err := installLoadRegistry(m.registryPath())
+// List returns every installed plugin. It reads the registry without the
+// store lock, and splitKey parses each key at its last '@', so it runs behind
+// the migration barrier (loadMigratedMarketplaces) like the marketplace
+// listing does: in a store that still records "foo@bar", the key
+// widget@foo@bar reads as plugin "widget@foo" from marketplace "bar" until
+// the migration has renamed that marketplace. The marketplaces themselves are
+// none of this listing's business, so the barrier's lock is released again
+// before the registry is read.
+func (m *Manager) List(ctx context.Context) ([]ListItem, error) {
+	if _, err := m.loadMigratedMarketplaces(ctx, installAcquireLock); err != nil {
+		return nil, err
+	}
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +411,10 @@ func (m *Manager) List() ([]ListItem, error) {
 // sources are inherently current and skipped). Failures are collected but do
 // not stop the others.
 func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
-	reg, err := installLoadRegistry(m.registryPath())
+	if err := m.migrateStore(ctx); err != nil {
+		return nil, err
+	}
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}

@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/server"
 )
 
@@ -39,6 +38,9 @@ func newStopParkAdapter() *stopParkAdapter {
 func (a *stopParkAdapter) Name() string { return "openai" }
 
 func (a *stopParkAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	a.mu.Lock()
 	a.calls++
 	n := a.calls
@@ -74,15 +76,11 @@ func startStopParkDaemon(t *testing.T) *stopParkDaemon {
 	adapter := newStopParkAdapter()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default:   "openai",
-			Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}

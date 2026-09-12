@@ -15,13 +15,11 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -92,14 +90,7 @@ func FuzzExactTails(f *testing.F) {
 		_, _, _ = prepareResolvedForSpawn(t.TempDir(), appendInline)
 		spawnWriteFile, spawnRemoveAll = oldWriteFile, oldRemoveAll
 
-		store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		oldOAuth := openAIStoredOAuthUsableForLaunch
-		openAIStoredOAuthUsableForLaunch = func([]string) bool { return true }
-		_ = validateProviderCredentials("openai", store, nil, "")
-		openAIStoredOAuthUsableForLaunch = oldOAuth
+		_ = validateProviderCredentials("openai", nil)
 
 		canceled, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -117,7 +108,7 @@ func FuzzExactTails(f *testing.F) {
 		// Transcript projection tails: malformed JSON, usage cost stamping,
 		// empty input images, and default output-image media type.
 		entry := hubcore.PastEntry{StateDir: t.TempDir(), Meta: schema.SessionMeta{ID: "missing", Model: "gpt-5"}}
-		_, _ = pastEntryTurns(entry)
+		_, _ = pastEntryTurns(hubcore.WebConfig{}, entry)
 		state := filepath.Join(t.TempDir(), "state")
 		if err := os.MkdirAll(filepath.Join(state, "sessions"), 0o755); err != nil {
 			t.Fatal(err)
@@ -136,7 +127,7 @@ func FuzzExactTails(f *testing.F) {
 			t.Fatal(err)
 		}
 		if pe, ok := past.Find("past"); ok {
-			_, _ = pastEntryTurns(pe)
+			_, _ = pastEntryTurns(hubcore.WebConfig{}, pe)
 		}
 		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Kind: schema.TurnUserInput, Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentImage, Image: &llm.ImageData{}},
@@ -156,7 +147,6 @@ func FuzzExactTails(f *testing.F) {
 		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Evener: appwire.EvenerThread{Ref: "local:id"}}
 		_ = workspaceDataFromAppThread(thread)
 		web := NewWebServer(hubcore.WebConfig{})
-		_ = NewWebServer(hubcore.WebConfig{CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex"}}})
 		web.sources = appsource.NewRegistry()
 		_ = web.workspaceData("remote:id")
 		data := WorkspaceData{}
@@ -168,13 +158,6 @@ func FuzzExactTails(f *testing.F) {
 		reg.Add(src)
 		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadListParams{Limit: 1})
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadTranscriptListParams{})
-
-		oldManagedList := ensureManagedCodexSourcesForList
-		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {
-			return errors.New("managed source")
-		}
-		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadListParams{})
-		ensureManagedCodexSourcesForList = oldManagedList
 
 		// Project deletion's second liveness check can race with a resume.
 		deleteWeb := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})

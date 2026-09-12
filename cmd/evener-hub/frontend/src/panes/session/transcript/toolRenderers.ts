@@ -37,7 +37,7 @@ export interface ToolSummaryContext {
 
 export interface ToolRendererDescriptor {
   match: string | ((toolName: string) => boolean); // exact name or predicate (job_* family)
-  summary(item: ItemModel, ctx?: ToolSummaryContext): string; // one-line purpose-first summary
+  summary(item: ItemModel, ctx?: ToolSummaryContext): string; // one-line intent-first summary
   // The tool-FAMILY glyph riding inline at the start of the row's tool-use
   // line (widgets/toolicon), so the kind of work - shell vs file read vs
   // edit vs web - is scannable down a run of calls without reading the
@@ -49,7 +49,30 @@ export interface ToolRendererDescriptor {
   // review call: fixed-width everywhere made every tool read like a
   // terminal); shell opts in because its summary IS a command.
   monoSummary?: boolean;
+  // How this tool behaves when a settled turn's tool calls are folded into a
+  // single run row (toolRuns.ts):
+  //   "never"         - a card the reader must always see on its own: a
+  //                     delegate, an ask, a task list, a skill, a job. It
+  //                     breaks the run around it rather than joining one;
+  //   "consequential" - a mutating step (an edit, a shell command, a
+  //                     worktree change). It folds, and it is what a folded
+  //                     run's summary names;
+  //   "quiet"         - a read-only step (a read, a search, a web fetch). It
+  //                     folds and only ever contributes to the count;
+  //   unset           - does not fold. Folding is opt-in per descriptor: an
+  //                     unregistered tool (every MCP tool inherits
+  //                     DEFAULT_DESCRIPTOR) may have side effects the reader
+  //                     must see, so it breaks a run exactly like "never".
+  fold?: "never" | "quiet" | "consequential";
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
+  // hasBody answers per-item whether the body would render anything.
+  // ToolCallItem keys the row's expandability off body presence today, so a
+  // descriptor whose body returns null for some items (a summary-only
+  // rendering) would offer a disclosure that opens to nothing. Absence keeps
+  // today's behavior: any registered body means expandable. The one case
+  // today is job_watch, whose clear and terminal catch-up summaries ARE the
+  // rendering.
+  hasBody?(item: ItemModel): boolean;
   // outputImageSize sizes the generic output-images gallery ToolCallItem
   // renders after the body: undefined keeps the default 96px thumbnails,
   // "large" displays each image whole at up to 600px square. The one case
@@ -107,6 +130,19 @@ export interface ToolRendererDescriptor {
   // reason as openBesidePath: the descriptor declares WHAT it targets,
   // ToolCallItem owns the control that opens it.
   openTranscriptRef?(item: ItemModel): string | undefined;
+  // openTranscriptInline moves the "open transcript" control from the END of
+  // the summary to INLINE, right after the target text inside it - the one
+  // case today is delegate_send, whose summary names the delegate target
+  // before the status meta ("Sent a message to delegate <id> · <status>"), so
+  // the control lands between the delegate it opens and the running-state
+  // words that describe it. Returns the COMPLETE PREFIX of summary()'s own
+  // text up to and including the anchor (e.g. "Sent a message to delegate
+  // <id>") - ToolRow verifies this with summary.startsWith(...), never
+  // searches for it, following the openBesideInline contract. Undefined means
+  // no inline anchor; a value that isn't a literal prefix of summary() falls
+  // back to the end placement (the same "never a dead anchor" contract as
+  // summaryLink).
+  openTranscriptInline?(item: ItemModel): string | undefined;
   // summarySuffix appends extra text to the collapsed row's summary, computed
   // from the FULL thread model rather than just this item - the one case
   // today is ask_user's "— answered: ..." recap (kata h70z), which lives in
@@ -116,14 +152,16 @@ export interface ToolRendererDescriptor {
   // updates the moment the answer arrives without item itself needing a new
   // identity.
   summarySuffix?(item: ItemModel, model: ThreadModel | undefined): string | undefined;
-  // summaryHiddenWhenExpanded drops the row's summary line while the row is
+  // summaryWhenExpanded replaces the row's summary TEXT while the row is
   // open. The one case today is shell: its summary IS the raw one-line
   // command, and the expanded body already renders that same command
-  // pretty-printed (ShellCommandBlock), so an open row would show the call
-  // twice - the collapsed row keeps the summary, where it is the only glance
-  // at the command. Undefined (every other tool) renders the summary in both
+  // pretty-printed (ShellCommandBlock), so an open row showing the raw line
+  // would show the call twice. The summary line itself stays - hiding it
+  // (the old shape of this field) lifted the disclosure chevron off the line
+  // it rides, onto the intent line or adrift on an intent-less row - so only
+  // the text swaps. Undefined (every other tool) renders summary() in both
   // states, as before.
-  summaryHiddenWhenExpanded?: boolean;
+  summaryWhenExpanded?: string;
   // summaryLink, if present, is a URL that appears verbatim inside this
   // row's own summary() text and should render as a real, clickable link
   // rather than plain text - kata xw3t, the collapsed-row counterpart to
@@ -132,10 +170,9 @@ export interface ToolRendererDescriptor {
   // see that field's own kata for why). A parallel field rather than
   // widening summary()'s own return type to ReactNode: summary is ALSO
   // consumed as a plain string by summarySuffix's own concatenation above
-  // and by ToolCallCluster's "N steps · ..." template, and ToolRow's
-  // collapsed-state truncation (middleSplit) operates on summary as raw
-  // characters, not markup - widening the whole contract would touch every
-  // one of those for a link only one descriptor has today. Undefined (every
+  // and ToolRow's collapsed-state truncation (middleSplit) operates on summary
+  // as raw characters, not markup - widening the whole contract would touch
+  // every one of those for a link only one descriptor has today. Undefined (every
   // descriptor but web_fetch) renders the row exactly as before. When the
   // returned URL is not literally found inside summary(item)'s own text,
   // ToolRow renders the plain text unchanged - never a link pointing

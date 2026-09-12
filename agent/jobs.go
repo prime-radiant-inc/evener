@@ -100,13 +100,6 @@ type jobManager struct {
 	// self-influence depth metric consults so a coalesced-away (never delivered)
 	// predecessor cannot inflate depth. Guarded by jm.mu.
 	deliveredWatchSendIDs map[string]struct{}
-	// watchLineage remembers, per watch key, the watchID lineage of configs
-	// that ENDED in that slot (cleared/replaced/expired) so the next install
-	// for the same key inherits it and a clear-and-recreate loop cannot reset
-	// the runaway fuse. Bounded (watchLineageKeyCap keys, oldest evicted);
-	// in-memory like the volume-budget counter. Guarded by jm.mu.
-	watchLineage      map[watchKey][]string
-	watchLineageOrder []watchKey
 	// watchesLostAtRestore holds the durable records of the watches this restore
 	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
 	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read
@@ -520,12 +513,9 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
-	// TerminalGen is the exact durable terminal generation represented by a
-	// terminal notification. queueSeq is its in-memory queue identity. Together
-	// they let terminal acceptance distinguish a pre-cut leftover from a later
-	// completion even if a job ID appears in both sets.
+	// TerminalGen is the exact durable terminal generation this terminal
+	// notification represents.
 	TerminalGen      string
-	queueSeq         uint64
 	ExhaustionBudget string
 	ExhaustionLimit  int
 	Resumable        *bool
@@ -539,6 +529,27 @@ type jobNotification struct {
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
 	WatchSend *watchSendToken
+	// Watch fields (in-memory only). WatchID identifies the firing timer so
+	// the session can fold repeated ticks; Fires is how many folded into this
+	// entry; IntervalSeconds and Terminal carry what the timer block needs.
+	// Note is the watch's own prose payload and rides every fire, timer or not.
+	// Only the timer fire path stamps WatchID, and the session drops a
+	// non-terminal entry whose watch key no longer resolves (an orphaned tick).
+	WatchID         string
+	Fires           int
+	Note            string
+	IntervalSeconds int
+	Terminal        bool
+	// OriginWatchID is the watch that produced this notification, carried for
+	// display only (rendered as the watch_id frame attribute so a reader can
+	// identify which watch to inspect or clear). It is NEVER consulted by
+	// delivery gating: unlike WatchID above — which the session's orphan-tick
+	// drop reads, and which only the timer path may stamp because only a
+	// timer's key slot reconstructs from its id — stamping a timer-identity
+	// field on a condition fire or teardown would swallow that notice as an
+	// orphaned tick once its watch detaches. Job-targeted fires, teardown
+	// notices, and send-rail diagnostics stamp this; timer fires keep WatchID.
+	OriginWatchID string
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a
@@ -558,6 +569,7 @@ func (n jobNotification) isWatch() bool {
 
 type createShellOpts struct {
 	Command     string
+	Intent      string
 	Description string
 }
 
@@ -622,7 +634,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		watches:               make(map[watchKey]*watchConfig),
 		lastFedOffset:         make(map[string]int64),
 		deliveredWatchSendIDs: make(map[string]struct{}),
-		watchLineage:          make(map[watchKey][]string),
 		appendEvent:           store.Append,
 		appendEvents:          store.AppendBatch,
 		createOutput:          createOutput,
@@ -895,6 +906,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		Type:             jobstore.JobShell,
 		Status:           jobstore.StatusRunning,
 		Command:          opts.Command,
+		Intent:           opts.Intent,
 		Description:      opts.Description,
 		OwnerSessionID:   jm.sessionID,
 		VisibleToSession: jm.sessionID,
@@ -927,6 +939,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		JobID:            rec.JobID,
 		Type:             rec.Type,
 		Command:          rec.Command,
+		Intent:           rec.Intent,
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,

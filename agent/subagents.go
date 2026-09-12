@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
@@ -108,7 +110,7 @@ type subagent struct {
 	stableDescriptor      *delegatestore.Descriptor // immutable committed identity/config for stable terminal evidence
 	closed                bool                      // session torn down; record retained as terminal history
 	closeTimedOut         bool                      // session-close wait exceeded its bound; close not confirmed
-	driving               bool                      // a drive-down notification turn (§3) is in flight on this idle child
+	driving               bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
 	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
 	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
@@ -118,12 +120,6 @@ type subagent struct {
 	// or resume that raced ahead wins and the gate is refused. Reversed on every
 	// pre-eviction dispose refusal/failure exit.
 	disposeGated bool
-	// ownsEnv is true when prepareSubagentRun built the child a FRESH execution env
-	// (a working-dir re-root and/or a per-delegate sandbox) rather than sharing the
-	// parent's. Such an env may own a sandbox scratch dir + file-tool fds that the
-	// parent's env cleanup does not reach. Unadopted setup failures dispose it;
-	// normal teardown retains its scratch until the explicit disposal operation.
-	ownsEnv bool
 }
 
 type preparedSubagentRun struct {
@@ -158,28 +154,160 @@ type preparedSubagentRun struct {
 	treeSlot *treeReservation
 }
 
-// disposeUnadoptedSubagentSession tears down a child that never became a
-// tracked/adopted delegate. Normal session cleanup retains sandbox scratch for
-// the human handoff, but an unadopted fresh environment has no owner left to
-// perform that handoff, so its scratch is rolled back here.
-func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
+// disposeUnadoptedScratch drops every per-session scratch directory env
+// provisioned — the sandbox-owned one and the one an unsandboxed environment
+// mints on its first command — releasing each lease with its directory. Every
+// caller is a path that provisioned an environment and then failed before any
+// session adopted it: both releases belong to a session's own teardown, so
+// without this nothing ever runs them and each failure leaves a directory and a
+// live lease behind. A no-op for an environment with no scratch to drop,
+// including one that is not local. It must run only on an environment built for
+// the failed thing, never on a shared parent's, whose scratch the parent is
+// still working in.
+func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		local.DisposeUnadoptedScratch()
+	}
+}
+
+// childScratchDisposition says what becomes of the scratch a child's owned
+// environment provisioned when the child is torn down.
+type childScratchDisposition int
+
+const (
+	// retainChildScratch releases the leases and keeps the directories: the
+	// child finished something a human may still want to inspect, the handoff
+	// every normal session teardown makes.
+	retainChildScratch childScratchDisposition = iota
+	// disposeChildScratch drops the directories with their leases: the child
+	// was never adopted or is being discarded, so no one is left to hand
+	// anything to.
+	disposeChildScratch
+)
+
+// teardownChildSession closes a child session and settles what it owned. It is
+// the one teardown every child takes — the parent's own close, the eviction of
+// a retained terminal child, the stable controller's reclamation of a retained
+// runtime, the disposal of a child that never became a tracked delegate, and
+// the disposal of an isolation lane — so every path makes the same two
+// decisions.
+//
+// Invariant: a session runs Cleanup only on an environment whose process table
+// it constructed, at its own close, and never on a child's. A child's
+// environment is the parent's own (a delegate with neither a working dir nor a
+// box of its own), a WithWorkingDirectory clone built for it at spawn, or — a
+// delegate on the parent's own environment can still build one mid-life by
+// entering a worktree — a clone the child built for itself later. Every clone
+// shares the process table it was cloned from by pointer, so Cleanup on one
+// signals that table's live owner. A child's own processes end without it: its
+// job manager stops its shells and cancellation ends its tool commands at
+// close, and whatever survives is reaped when the table's owner closes. What a
+// child owns outright is its clone's scratch — the sandbox-provisioned dir, the
+// one an unsandboxed clone minted on its first command, and the one a
+// shared-environment child minted after entering a worktree — and that is
+// released here, both kinds together, per scratch: retained on a handoff,
+// disposed when the child is dropped. The parent's own environment is left
+// untouched in every respect: the parent is still working in it. Which
+// environment (if any) a teardown settles is Session.environmentOwnedAtTeardown's
+// decision, so a teardown reaching a child no parent bookkeeping names still
+// settles it correctly.
+func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
 	if sess == nil {
 		return
 	}
-	sess.Close()
-	if !ownsEnv {
+	sess.close(ctx, closeOptions{})
+	// Every entry is a clone the child built for itself by entering or switching
+	// worktrees and then swapped away from: no child close runs the cleanupEnv
+	// block that drains sess.abandonedEnvs, so this is the only teardown that
+	// reaches them. They take the same disposition as the environment the child
+	// still holds, and neither settlement touches a process table. The parent's
+	// own object can never be in this list (recordAbandonedEnvironmentLocked
+	// excludes it by construction).
+	sess.settleAbandonedEnvironmentScratch(scratch)
+	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown(), scratch)
+}
+
+// sameEnvironment reports whether a and b are the same execution environment.
+// Identity is what every ownership decision here asks, and each environment a
+// session runs on is a pointer, so `==` answers it — with one trap: `==` on two
+// interfaces holding the same NON-comparable dynamic type panics at runtime
+// instead of answering, and an environment is an interface a struct value may
+// satisfy. A value nothing else can alias is not the same environment as
+// anything, which is the answer this returns where `==` would end the process.
+func sameEnvironment(a, b execenv.ExecutionEnvironment) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ta := reflect.TypeOf(a)
+	if ta != reflect.TypeOf(b) || !ta.Comparable() {
+		return false
+	}
+	return a == b
+}
+
+// environmentOwnedAtTeardown returns the environment this session's own
+// teardown settles, or nil when the session is still holding the one its live
+// parent works in. Ownership is not frozen at spawn: a child handed its
+// parent's own environment builds one of its own the moment it enters a
+// worktree, and that clone's scratch is the child's — nothing else will ever
+// reach it. The parent's object is the one thing this never names.
+func (s *Session) environmentOwnedAtTeardown() execenv.ExecutionEnvironment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ownsEnv {
+		return s.env
+	}
+	if s.parentSharedEnv == nil || sameEnvironment(s.env, s.parentSharedEnv) {
+		return nil
+	}
+	return s.env
+}
+
+// releaseOwnedChildEnvironment is teardownChildSession's environment step on
+// its own, for the one child close that is not a close(): a restore candidate
+// nothing adopted is discarded by discardRestoredCandidate, which settles the
+// candidate's own resources and then makes exactly this decision for its env.
+// env is nil when the child is still holding its parent's own environment —
+// there is nothing for this teardown to settle.
+func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, scratch childScratchDisposition) {
+	if env == nil {
 		return
 	}
-	if le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-		le.DisposeSandboxScratch()
+	if scratch == disposeChildScratch {
+		disposeUnadoptedScratch(env)
+		return
 	}
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		local.RetainSessionScratch()
+	}
+}
+
+// recordEnvironmentOwnership records whether env was built FOR this child
+// (ownsFresh) or is the live parent's own object it was handed instead. A
+// child that does not own env keeps a reference to it in parentSharedEnv so a
+// later teardown — including one that finds env swapped for a clone the child
+// built for itself mid-life — knows which environment, if either, is its own
+// to settle. Both call sites write this before the session is published
+// anywhere else reachable, so no lock is needed.
+func (s *Session) recordEnvironmentOwnership(env execenv.ExecutionEnvironment, ownsFresh bool) {
+	s.ownsEnv = ownsFresh
+	if !ownsFresh {
+		s.parentSharedEnv = env
+	}
+}
+
+// disposeUnadoptedSubagentSession tears down a child that never became a
+// tracked/adopted delegate: the create-path twin of discardRestoredCandidate.
+// No owner is left to hand anything to, so its owned scratch goes with it.
+func disposeUnadoptedSubagentSession(sess *Session) {
+	teardownChildSession(context.Background(), sess, disposeChildScratch)
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {
 	if p == nil || p.sub == nil {
 		return
 	}
-	disposeUnadoptedSubagentSession(p.sub.sess, p.sub.ownsEnv)
+	disposeUnadoptedSubagentSession(p.sub.sess)
 }
 
 func hasString(items []string, want string) bool {
@@ -261,6 +389,17 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		// automatic compaction to run unsteered. The untyped surface already
 		// keeps it (deny-list path), so listing tools: must not take it away.
 		allowed = appendUniqueStrings(allowed, "compact_context")
+		// Root-only job and delegation tools in a typed role's list are
+		// allowance-gated: granted, the role keeps them and gains job_watch
+		// to supervise its delegates; a leaf loses them, on every spawn
+		// path, exactly as the untyped surface does.
+		if canDelegate {
+			if hasString(allowed, "delegate") {
+				allowed = appendUniqueStrings(allowed, "job_watch")
+			}
+		} else {
+			allowed = removeRootOnlySubagentTools(allowed)
+		}
 		return false, allowed, nil
 	default:
 		if canDelegate {
@@ -585,11 +724,11 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 ) (*preparedSubagentRun, error) {
 	return s.prepareSubagentRunFromSelection(
 		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
-		parentTasks, grantTools, selection, nil,
+		parentTasks, grantTools, selection, nil, nil,
 	)
 }
 
-func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection) (*preparedSubagentRun, error) {
+func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
 	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
 		actual := "<nil>"
 		if selection.profile != nil {
@@ -612,7 +751,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 	selection.agent = nil
 	return s.prepareSubagentRunFromSelection(
 		ctx, descriptor.Task, descriptor.WorkingDir, 0, descriptor.AgentType, descriptor.Config.ReasoningEffort,
-		nil, nil, selection, &descriptor,
+		nil, nil, selection, &descriptor, inheritedContext,
 	)
 }
 
@@ -635,6 +774,9 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.ExportATIFPath = parentCfg.ExportATIFPath
 	subCfg.ExportATIFProviderHandles = parentCfg.ExportATIFProviderHandles
 	subCfg.ResolveProfile = parentCfg.ResolveProfile
+	// The personal doc belongs to whoever is running the tree now — the hub's
+	// root — so a delegate reads the same file its live parent does.
+	subCfg.AgentsDocPath = parentCfg.AgentsDocPath
 	subCfg.testOnly = parentCfg.testOnly
 	subCfg.TurnEndsProcess = parentCfg.TurnEndsProcess
 	subCfg.ForceRealIO = parentCfg.ForceRealIO
@@ -654,10 +796,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 	grantTools []string,
 	selection subagentModelSelection,
 	frozen *delegatestore.Descriptor,
+	inheritedContext []transcript.Entry,
 ) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
-	allowance := s.delegationAllowance
 	parentCfg := s.cfg
 	subscriberCount := s.subscriberCountFn
 	s.mu.Unlock()
@@ -692,6 +834,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
+	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
@@ -820,7 +963,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
 		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
-		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, allowance > 0)
+		// The policy follows the CHILD's granted allowance, not this session's:
+		// a leaf spawned by a coordinator must not inherit the coordinator's
+		// job-supervision tools.
+		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, childCanDelegate)
 		if subCfg.spawn.parentWatchGranted && !allTools {
 			if len(allowedTools) > 0 {
 				allowedTools = appendUniqueStrings(allowedTools, "job_watch")
@@ -919,17 +1065,20 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if err != nil {
 		// A fresh environment that failed before session adoption never reaches the
-		// session cleanup path, so dispose any scratch it provisioned. A worktree-only
-		// re-root has no owned scratch, making this safe when reqSandbox is nil.
+		// session cleanup path, so dispose every scratch it provisioned: the
+		// sandbox-owned one AND the one an unsandboxed environment mints on its
+		// first command, which the construction above reaches through its own git
+		// snapshot. A prepared environment belongs to whoever prepared it.
 		if ownsFreshEnv && !hasPreparedEnv {
-			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-				le.DisposeSandboxScratch()
-			}
+			disposeUnadoptedScratch(subEnv)
 		}
 		return nil, err
 	}
+	// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
+	// per-delegate sandbox; otherwise subEnv is the shared parent env.
+	subSess.recordEnvironmentOwnership(subEnv, ownsFreshEnv)
 	disposeUnadopted := func() {
-		disposeUnadoptedSubagentSession(subSess, ownsFreshEnv)
+		disposeUnadoptedSubagentSession(subSess)
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
@@ -992,7 +1141,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 			return nil, err
 		}
 		for _, ev := range evicted {
-			ev.sess.Close()
+			teardownChildSession(context.Background(), ev.sess, retainChildScratch)
 		}
 	}
 
@@ -1032,9 +1181,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		agentType:    agentType,
 		createdAt:    now,
 		startedAt:    now,
-		// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
-		// per-delegate sandbox; otherwise subEnv is the shared parent env.
-		ownsEnv: ownsFreshEnv,
 	}
 	if frozen != nil {
 		descriptor := cloneDelegateStartDescriptor(*frozen)
@@ -1718,8 +1864,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		break
 	}
-	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
-
 	a.sess.mu.Lock()
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
@@ -1740,16 +1884,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.running = false
 	a.turnsUsed = turns
 	a.endedAt = &finalizeTime
-	switch {
-	case a.cancelRequested && errors.Is(err, context.Canceled):
-		a.status = SubagentCancelled
-	case budgetExhausted:
-		a.status = SubagentExhausted
-		a.err = exhaustion
-	case err != nil:
-		a.status = SubagentFailed
-	default:
-		a.status = SubagentCompleted
+	runEnd := classifyRunEnd(err, a.cancelRequested)
+	a.status = runEnd.status
+	// The payload is non-nil exactly when the run published Exhausted
+	// (classifier contract), so its presence alone is the overwrite decision.
+	if runEnd.exhaustion != nil {
+		a.err = runEnd.exhaustion
 	}
 	done := a.done
 	a.endEmitted = true
@@ -1819,25 +1959,66 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	return result, parentDriveNotify, nil
 }
 
+// runEndClass is the shared classification of a delegate run's terminal error.
+type runEndClass struct {
+	mode   delegateSettlementMode
+	fatal  bool
+	status SubagentStatus
+	// exhaustion is non-nil exactly when status == SubagentExhausted; its
+	// presence is the caller's decision to replace the run error, so a
+	// cancelled run whose error also carries a budget component never sees it.
+	exhaustion *budgetExhaustionError
+}
+
+// classifyRunEnd maps a run error plus the local cancel request onto the
+// settlement-mode, fatality, and status projections in one pattern-match over
+// the run-end taxonomy. It is pure: no locking, I/O, Session, or controller
+// access. Load-bearing pins:
+//
+//   - Settlement mode is terminal when cancelRequested regardless of err,
+//     while SubagentCancelled additionally requires errors.Is(err,
+//     context.Canceled): "this runtime can no longer settle ordinarily" vs
+//     "the user stopped this run".
+//   - Budget exhaustion is tested BEFORE the bare-text/empty-response
+//     sentinels (so Join(bareText, exhaustion) settles terminally), and a
+//     joined exhaustion+Canceled under cancel still publishes Cancelled with
+//     no exhaustion payload — the error is kept verbatim there.
+//   - context.Canceled is never fatal even when cancelRequested is false —
+//     a host interrupt, not a user stop.
+//   - errors.Is/errors.As semantics are preserved for wrapped and joined
+//     (errors.Join) error values.
+func classifyRunEnd(err error, cancelRequested bool) runEndClass {
+	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
+	ordinary := !budgetExhausted && (err == nil ||
+		errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
+	nonFatal := ordinary || budgetExhausted || errors.Is(err, context.Canceled)
+	var cls runEndClass
+	if !cancelRequested && ordinary {
+		cls.mode = delegateSettlementOrdinary
+	} else {
+		cls.mode = delegateSettlementTerminal
+	}
+	cls.fatal = !nonFatal
+	switch {
+	case cancelRequested && errors.Is(err, context.Canceled):
+		cls.status = SubagentCancelled
+	case budgetExhausted:
+		cls.status = SubagentExhausted
+		cls.exhaustion = exhaustion
+	case err != nil:
+		cls.status = SubagentFailed
+	default:
+		cls.status = SubagentCompleted
+	}
+	return cls
+}
+
 func delegateSettlementModeForRun(err error, cancelRequested bool) delegateSettlementMode {
-	if cancelRequested {
-		return delegateSettlementTerminal
-	}
-	if _, exhausted := budgetExhaustionFromError(err); exhausted {
-		return delegateSettlementTerminal
-	}
-	if err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
-		return delegateSettlementOrdinary
-	}
-	return delegateSettlementTerminal
+	return classifyRunEnd(err, cancelRequested).mode
 }
 
 func stableDelegateFatalRun(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
-		return false
-	}
-	_, exhausted := budgetExhaustionFromError(err)
-	return !exhausted
+	return classifyRunEnd(err, false).fatal
 }
 
 func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {

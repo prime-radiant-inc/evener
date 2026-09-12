@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
@@ -31,6 +32,40 @@ func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
 		t.Fatalf("appTurnsFromTranscriptFile: %v", err)
 	}
 	return turns
+}
+
+func dialServerAppWire(t *testing.T, srv *Server) *appwire.Client {
+	t.Helper()
+	httpServer := httptest.NewServer(srv)
+	t.Cleanup(httpServer.Close)
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+httpServer.URL[len("http"):]+"/rpc", httpServer.Client())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	client := appwire.NewClient(transport)
+	client.Start(context.Background())
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	return client
+}
+
+func TestServerAppWireRealWireReadUnsubscribeAliases(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	installProjectedMutationCallbacksForTest(srv)
+	client := dialServerAppWire(t, srv)
+	ctx := context.Background()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+		t.Fatalf("ref-only subscribe read: %v", err)
+	}
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: "th_1"}); err != nil {
+		t.Fatalf("mixed-alias unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after mixed aliases = %d, want 0", got)
+	}
 }
 
 func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
@@ -172,8 +207,10 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 	if !ok {
 		t.Fatalf("read response=%T", read.Response.Result)
 	}
-	if len(out.Thread.Turns) < 2 {
-		t.Fatalf("thread turns=%d, want the seeded transcript turns", len(out.Thread.Turns))
+	// The seeded user+assistant pair is one logical turn; the reserved live
+	// id is deliberately absent from turns.
+	if len(out.Thread.Turns) != 1 {
+		t.Fatalf("thread turns=%d, want the one seeded logical turn", len(out.Thread.Turns))
 	}
 	for _, turn := range out.Thread.Turns {
 		if turn.Status == appwire.TurnStatusInProgress {
@@ -396,7 +433,7 @@ func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
 		t.Fatalf("turns=%+v", data.Thread.Turns)
 	}
 	turn := data.Thread.Turns[0]
-	if turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != "full" {
+	if turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != appwire.TurnItemsViewFragment {
 		t.Fatalf("turn=%+v", turn)
 	}
 	if len(turn.Items) != 2 {
@@ -610,6 +647,22 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 	}
 	if agentMessages != 1 || communicateTools != 0 {
 		t.Fatalf("items=%+v, want one agent message and no communicate tool", data.Thread.Turns[0].Items)
+	}
+}
+
+func TestServerAppWireInitializeReportsBuildVersion(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	conn := srv.AppServer().NewConnection("test")
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.InitializeResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if strings.TrimSpace(data.ServerInfo.Version) == "" {
+		t.Fatal("initialize must report a build version so strict AppWire clients can connect")
 	}
 }
 
@@ -1179,14 +1232,12 @@ func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T)
 	insideCommit := make(chan struct{})
 	release := make(chan struct{})
 	var parked sync.Once
-	srv.mu.Lock()
-	srv.insideAppProjectionCommit = func() {
+	setInsideAppProjectionCommitHook(t, func() {
 		parked.Do(func() {
 			close(insideCommit)
 			<-release
 		})
-	}
-	srv.mu.Unlock()
+	})
 
 	taskDone := make(chan struct{})
 	go func() {
@@ -1727,16 +1778,25 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 }
 
 // TestServerAppWireThreadReadIncludesCostTotal verifies the live producer
-// stamps EvenerThread.Cost from the pulled cumulative usage at the session
-// model's price — the session-level dollar total kept current across
-// snapshots exactly as WorkMillis/Usage are — and omits it when the model is
-// uncataloged (absent-vs-zero honesty).
+// stamps EvenerThread.Cost from the pulled cumulative usage at the cost the
+// session's registry resolves for its instance/model (spec §7.5) — the
+// session-level dollar total kept current across snapshots exactly as
+// WorkMillis/Usage are — and omits it when the row carries no cost
+// (absent-vs-zero honesty).
 func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
-	readEvener := func(model string) appwire.EvenerThread {
+	var lookedUp []string
+	readEvener := func(profile, model string) appwire.EvenerThread {
 		t.Helper()
 		srv := NewServer(ServerConfig{})
+		srv.SetCostLookupFunc(func(ref string) *registry.Cost {
+			lookedUp = append(lookedUp, ref)
+			if ref != "anthropic/claude-opus-4-5" {
+				return nil
+			}
+			return &registry.Cost{Input: 5, Output: 25}
+		})
 		srv.SetAppIdentity("local", "th_1")
-		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model})
+		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
 		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 			e.workMillis = 4200
 			e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
@@ -1752,16 +1812,39 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 		return data.Thread.Evener
 	}
 
-	priced := readEvener("claude-opus-4-5")
-	if want := appwire.EstimateCost("claude-opus-4-5", priced.Usage); priced.Cost != want || want == "" {
-		t.Fatalf("cost=%q, want non-empty %q", priced.Cost, want)
+	// 100_000/1e6*5 + 20_000/1e6*25 = 0.50 + 0.50 = 1.00
+	priced := readEvener("anthropic", "claude-opus-4-5")
+	if priced.Cost != "~$1.00" {
+		t.Fatalf("cost=%q, want ~$1.00", priced.Cost)
 	}
-	if !strings.HasPrefix(priced.Cost, "~$") {
-		t.Fatalf("cost=%q, want ~$ prefix", priced.Cost)
+	if len(lookedUp) == 0 || lookedUp[0] != "anthropic/claude-opus-4-5" {
+		t.Fatalf("cost lookup refs=%v, want the instance/model reference first", lookedUp)
 	}
 
-	if uncataloged := readEvener("totally-unknown-model-xyz"); uncataloged.Cost != "" {
-		t.Fatalf("uncataloged cost=%q, want \"\" (absent, not ~$0.00)", uncataloged.Cost)
+	if priceless := readEvener("mycompany", "totally-unknown-model-xyz"); priceless.Cost != "" {
+		t.Fatalf("priceless cost=%q, want \"\" (absent, not ~$0.00)", priceless.Cost)
+	}
+}
+
+// TestServerAppWireThreadReadOmitsCostWithoutLookup pins the flag-day rule
+// (spec §14.1): a daemon with no cost source reports usage and no cost at all
+// rather than falling back to a bundled pricing table.
+func TestServerAppWireThreadReadOmitsCostWithoutLookup(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+	})
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if evener := data.Thread.Evener; evener.Usage == nil || evener.Cost != "" {
+		t.Fatalf("evener usage=%+v cost=%q, want usage present and cost absent", evener.Usage, evener.Cost)
 	}
 }
 
@@ -1816,16 +1899,17 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	}
 
 	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 2 || len(turns[0].Items) != 1 || len(turns[1].Items) != 1 {
+	// The assistant call and its tool result are one logical turn with one
+	// merged command-execution item carrying the call and result fields.
+	if len(turns) != 1 || len(turns[0].Items) != 1 {
 		t.Fatalf("turns=%+v", turns)
 	}
-	start := turns[0].Items[0]
-	done := turns[1].Items[0]
-	if start.CallID != "call_read" || start.ArgumentsJSON == "" || !strings.Contains(start.ArgumentsJSON, "/tmp/example.txt") {
-		t.Fatalf("start item=%+v", start)
+	merged := turns[0].Items[0]
+	if merged.CallID != "call_read" || merged.ArgumentsJSON == "" || !strings.Contains(merged.ArgumentsJSON, "/tmp/example.txt") {
+		t.Fatalf("merged item=%+v", merged)
 	}
-	if done.CallID != "call_read" || done.Output != "line 1\nline 2\n" {
-		t.Fatalf("done item=%+v", done)
+	if merged.Output != "line 1\nline 2\n" {
+		t.Fatalf("merged item=%+v", merged)
 	}
 }
 
@@ -1920,16 +2004,18 @@ func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T)
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	if len(resp.Thread.Turns) != 3 {
-		t.Fatalf("turns=%v, want the 2 seeded turns plus the live one", turnIDs(resp.Thread.Turns))
+	// The seeded user+assistant pair is one logical turn; the live turn
+	// (user input + assistant reply) is another, so the thread has 2 turns.
+	if len(resp.Thread.Turns) != 2 {
+		t.Fatalf("turns=%v, want the seeded logical turn plus the live one", turnIDs(resp.Thread.Turns))
 	}
 	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
-		t.Fatalf("first turn text=%q, want the seeded head", got)
+		t.Fatalf("seeded turn head text=%q, want the user input", got)
 	}
-	if got := resp.Thread.Turns[1].Items[0].Text; got != "second" {
-		t.Fatalf("second turn text=%q, want the seeded tail", got)
+	if len(resp.Thread.Turns[0].Items) < 2 || resp.Thread.Turns[0].Items[1].Text != "second" {
+		t.Fatalf("seeded turn items=%+v, want user input then assistant reply", resp.Thread.Turns[0].Items)
 	}
-	live := resp.Thread.Turns[2]
+	live := resp.Thread.Turns[1]
 	if len(live.Items) == 0 || live.Items[0].Text != "tail" {
 		t.Fatalf("live turn items=%+v, want the live user input", live.Items)
 	}
@@ -2050,6 +2136,145 @@ func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for root and child deltas; received %v", wantRefs)
 		}
+	}
+}
+
+// thread/unsubscribe drops one connection's subscription to a thread — the
+// same registry entry a subscribed thread/read created — and is idempotent.
+// The hub-facing counterpart (relay teardown) rides on this count reaching 0.
+func TestServerAppWireThreadUnsubscribeDropsSubscription(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+		t.Fatalf("thread read: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 1 {
+		t.Fatalf("subscriber count after subscribe = %d, want 1", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("thread unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe = %d, want 0", got)
+	}
+
+	// Unsubscribed, the connection no longer receives this thread's events.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "post-unsubscribe"}})
+	select {
+	case notification := <-client.Notifications():
+		t.Fatalf("notification delivered after unsubscribe: %+v", notification)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Idempotent: unsubscribing again succeeds quietly.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("second thread unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after second unsubscribe = %d, want 0", got)
+	}
+}
+
+// Across a replace/clear identity swap, a subscriber registered under the
+// STABLE REF must be removable by an unsubscribe naming that ref after the
+// swap advanced the session: the resolution path maps the ref to the current
+// session and back to the stable ref — the same key the subscribe used.
+func TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_old")
+	prepared, err := PrepareAppIdentityForRef("local", "th_new", "local:th_stable", "")
+	if err != nil {
+		t.Fatalf("prepare replacement identity: %v", err)
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_stable", Subscribe: true}); err != nil {
+		t.Fatalf("subscribed read via stable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_new"); got != 1 {
+		t.Fatalf("subscriber count after subscribe via stable ref = %d, want 1", got)
+	}
+
+	// The unsubscribe names the SAME stable ref, after the swap.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_stable"}); err != nil {
+		t.Fatalf("unsubscribe via stable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_new"); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe via stable ref = %d, want 0", got)
+	}
+}
+
+// An unsubscribe for a ref the daemon no longer resolves (the pre-swap ref)
+// quietly succeeds and still clears the raw key the subscribe could have
+// used — teardown finding nothing is a success, and a lingering key must
+// not outlive the client's interest.
+func TestServerAppWireThreadUnsubscribeUnresolvedRefCleansRawKeys(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_live")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	// Subscribe to the live thread by its bare id (one raw key form).
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: "th_live", Subscribe: true}); err != nil {
+		t.Fatalf("subscribed read by bare id: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 1 {
+		t.Fatalf("subscriber count after subscribe = %d, want 1", got)
+	}
+
+	// A ref this daemon never served: quiet success, nothing removed.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: "local:th_never_served"}); err != nil {
+		t.Fatalf("unsubscribe for unresolvable ref: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 1 {
+		t.Fatalf("unrelated unsubscribe changed the live count = %d, want 1", got)
+	}
+
+	// The same connection unsubscribes its own bare-id key.
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: "th_live"}); err != nil {
+		t.Fatalf("unsubscribe by thread id: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_live"); got != 0 {
+		t.Fatalf("subscriber count after bare-id unsubscribe = %d, want 0", got)
 	}
 }
 
@@ -2547,13 +2772,33 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	if len(resp.Thread.Turns) != 2 {
-		t.Fatalf("turns=%v, want the 2 seeded turns from the descendant's transcript", turnIDs(resp.Thread.Turns))
+	// The descendant's user+assistant pair is one logical turn.
+	if len(resp.Thread.Turns) != 1 {
+		t.Fatalf("turns=%v, want the seeded logical turn from the descendant's transcript", turnIDs(resp.Thread.Turns))
 	}
 	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
-		t.Fatalf("first turn text=%q, want the seeded head", got)
+		t.Fatalf("first item text=%q, want the seeded head", got)
 	}
-	if got := resp.Thread.Turns[1].Items[0].Text; got != "second" {
-		t.Fatalf("second turn text=%q, want the seeded tail", got)
+	if len(resp.Thread.Turns[0].Items) < 2 || resp.Thread.Turns[0].Items[1].Text != "second" {
+		t.Fatalf("second item text missing, want the seeded tail in the same logical turn")
+	}
+}
+
+// A cancelled input that never reached the projector has no SessionEnd event.
+func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.SetProcessingTurn("durable-turn")
+	before := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"})
+	if before.Thread.Evener.ActiveTurnID != "durable-turn" {
+		t.Fatalf("reserved active turn = %q", before.Thread.Evener.ActiveTurnID)
+	}
+	srv.SetProcessing(false)
+	after := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"})
+	if after.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("unincorporated active turn = %q", after.Thread.Evener.ActiveTurnID)
+	}
+	if after.Thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("unincorporated status = %q", after.Thread.Status.Type)
 	}
 }

@@ -1,11 +1,13 @@
 package hubcore
 
 import (
+	"slices"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // The Live tier used to build flat, parentless TreeNode values: a live
@@ -52,6 +54,43 @@ func TestBuildTreeLiveNestsActiveSubagentUnderParent(t *testing.T) {
 	// the same color every other section uses for an active subagent.
 	if child.State != "active" {
 		t.Errorf("child.State = %q, want active (the working/active color)", child.State)
+	}
+}
+
+func TestBuildTreeCarriesSessionJobsForNavigation(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	live := []LiveEntry{{
+		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle,
+		RunningJobs:   []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
+		CompletedJobs: []appwire.EvenerJobInfo{{JobID: "job-completed", JobType: "shell", Status: "completed"}},
+	}}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	if len(tree.Live) != 1 {
+		t.Fatalf("Live tier has %d rows, want one parent", len(tree.Live))
+	}
+	parent := tree.Live[0]
+	if len(parent.RunningJobs) != 1 || parent.RunningJobs[0].JobID != "job-running" {
+		t.Fatalf("running jobs = %+v", parent.RunningJobs)
+	}
+	if len(parent.CompletedJobs) != 1 || parent.CompletedJobs[0].JobID != "job-completed" {
+		t.Fatalf("completed jobs = %+v", parent.CompletedJobs)
+	}
+	if len(tree.Projects) != 1 || !tree.Projects[0].Expanded || tree.Projects[0].RollupLive != 1 {
+		t.Fatalf("project job rollup = %+v, want expanded with one live task", tree.Projects)
+	}
+}
+
+func TestBuildTreeNeedsYouCarriesSessionJobs(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	tree := BuildTreeAt(metas, []LiveEntry{{
+		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusAwaiting,
+		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
+	}}, nil, now)
+	if len(tree.NeedsYou) != 1 || len(tree.NeedsYou[0].RunningJobs) != 1 || tree.NeedsYou[0].RunningJobs[0].JobID != "job-running" {
+		t.Fatalf("needs-you job projection = %+v, want active job", tree.NeedsYou)
 	}
 }
 
@@ -171,4 +210,82 @@ func TestBuildTreeLiveSubagentStateMatchesProjectRow(t *testing.T) {
 	if liveChild.State != "active" {
 		t.Errorf("subagent state = %q, want active", liveChild.State)
 	}
+}
+
+// A crashed daemon stays in the roster for the crash-retention window carrying
+// the in-process children it last reported, and Roster.List hands those records
+// to the tree unfiltered. Nothing is running those delegates, so the sidebar
+// must say so — the same answer Roster.SubagentState now gives the thread read
+// and workspace projections. The parent's own crash marker is untouched.
+func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1001,
+		Address:   "127.0.0.1:50001",
+		SessionID: "01PARENT",
+		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
+	})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:             "01PARENT",
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{"01CHILD"},
+		RunningSubagentStates: map[string]string{"01CHILD": appwire.ThreadStatusActive},
+		OK:                    true,
+	}}
+	r := NewRoster(dir, prober)
+	r.procAlive = func(int) bool { return true }
+	r.Refresh()
+
+	metas := []schema.SessionMeta{
+		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01CHILD", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	if got := treeNodeState(t, BuildTreeAt(metas, r.List(), nil, now), "01CHILD"); got != "active" {
+		t.Fatalf("child state while the parent daemon is alive = %q, want active", got)
+	}
+
+	// kill -9 the parent: its probe fails and the process is confirmed gone.
+	prober.result = ProbeResult{}
+	r.procAlive = func(int) bool { return false }
+	r.Refresh()
+	parent, ok := r.Find("01PARENT")
+	if !ok || !parent.Crashed || !slices.Contains(parent.RunningSubagentIDs, "01CHILD") {
+		t.Fatalf("parent entry=%+v ok=%v, want a retained crashed record still listing the child", parent, ok)
+	}
+
+	tree := BuildTreeAt(metas, r.List(), nil, now)
+	if got := treeNodeState(t, tree, "01CHILD"); got != "ended" {
+		t.Fatalf("child state after the parent crashed = %q, want ended", got)
+	}
+	if got := treeNodeState(t, tree, "01PARENT"); got != "errored" {
+		t.Fatalf("crashed parent state = %q, want errored", got)
+	}
+}
+
+// treeNodeState finds one session's row anywhere in a tree and returns its
+// display state. Which tier a row lands in is not what these tests are about.
+func treeNodeState(t *testing.T, tree Tree, id string) string {
+	t.Helper()
+	var found *TreeNode
+	var walk func(nodes []TreeNode)
+	walk = func(nodes []TreeNode) {
+		for i := range nodes {
+			if nodes[i].ID == id && found == nil {
+				found = &nodes[i]
+			}
+			walk(nodes[i].Children)
+		}
+	}
+	walk(tree.NeedsYou)
+	walk(tree.Live)
+	for _, project := range slices.Concat(tree.Projects, tree.ArchivedProjects) {
+		walk(project.Current)
+		walk(project.Recent)
+		walk(project.Archived)
+	}
+	if found == nil {
+		t.Fatalf("session %s has no row anywhere in the tree", id)
+	}
+	return found.State
 }

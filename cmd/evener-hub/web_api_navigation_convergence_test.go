@@ -35,7 +35,7 @@ func TestAppWireArchiveNavigationTicketConvergesWithPublisherBroadcast(t *testin
 	// Prime the retained snapshot, then make the real archive handler observe
 	// a changed navigation source. No scheduler or wall-clock synchronization
 	// is involved: Refresh owns the ticket and publication atomically.
-	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &navigationPublisherRecorder{seen: make(chan struct{}, 2)}
@@ -87,7 +87,7 @@ func TestAppWireArchiveNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	})
 	web.navigation = newTestNavigationService(t, source)
 	web.appRPC = newHubAppServerWithNavigation(web.cfg, web.sources, web.navigation, web.resolveTopLevelSessionRef)
-	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	initialGeneration := web.navigation.Capability().GenerationID

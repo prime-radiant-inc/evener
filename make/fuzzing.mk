@@ -1,4 +1,4 @@
-.PHONY: test-fuzz mutation-floor fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-drive fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens fuzz-corpus-scan
+.PHONY: test-fuzz mutation-floor fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-drive fuzz-bisect fuzz-oracle-audit fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens fuzz-corpus-scan
 
 # Fuzz replay is a deterministic evidence gate: never inherit a developer's
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
@@ -68,6 +68,13 @@ fuzz-seeds:
 # (primeradiant.com/evener/invariant) are live: a tripped invariant panics and the
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
+# Steps 2-4 run every NON-Fuzz test, skipping the FuzzXxx corpus: the
+# FUZZ_SEED_REPLAY step below replays exactly that set (proven by
+# `go test -tags evenerfuzz --list '^Fuzz'` per module — the replay list is
+# identical to the skipped set), so running it twice would double the ~144s
+# native replay at no added coverage. The skip keeps each survivor:
+# invariant's TestFuzzBuildEnforces, the fuzz toolkit's 55 TestXxx, and the
+# fuzzcov/harvest CLIs' 40 TestXxx.
 ## Replay every native FuzzXxx target's seed corpus plus saved crashers, and
 ## every registered Rapid property surface, as ordinary deterministic tests
 ## — the CI fuzz gate.
@@ -84,9 +91,9 @@ fuzz-seeds:
 ##   nonzero.
 fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd agent && go test -run "^$$" -tags evenerfuzz -count=1 ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd invariant && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd invariant && go test -skip "^Fuzz" -tags evenerfuzz -count=1 ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd fuzz && go test -skip "^Fuzz" -tags evenerfuzz -count=1 ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'go test -skip "^Fuzz" ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
 	@scripts/fuzz/rapid-replay.sh
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c "go test -run '^Test.*Golden\$$' ./appwire"
@@ -97,11 +104,16 @@ fuzz:
 # silently alters a decoder's output (no panic, round-trip still holds) fails the
 # `make fuzz` golden check; run this ONLY after an INTENDED decoder change, then
 # commit the diff. See docs/developing-evener/fuzzing.md ("Choosing an oracle").
-## Regenerate the decode SNAPSHOT goldens from the current decoders. Run
-## ONLY after an intended decoder change, then commit the diff.
+# The third line is the same idea one layer up: the hub's recorded credential-
+# wire answers, which the TUI and the React pane decode instead of hand-building
+# InstanceEntry/AuthStatusResponse values of their own.
+## Regenerate the decode SNAPSHOT goldens from the current decoders, and the
+## hub credential-wire fixtures its clients decode. Run ONLY after an intended
+## change, then commit the diff.
 fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
+	@sh -c "go test -run '^TestAuthWireFixtures' ./cmd/evener-hub -update-authwire"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
@@ -162,19 +174,6 @@ mutation-floor:
 fuzz-bisect:
 	@scripts/fuzz/fuzz-bisect.sh $(FUZZ_ARGS)
 
-# fuzz-bisect-selftest verifies bisection end-to-end against a throwaway git repo
-# whose fuzz target crashes only after a known commit (real git bisect + replay).
-## Verify bisection end-to-end against a throwaway git repo whose fuzz
-## target crashes only after a known commit.
-## proves: fuzz-bisect names the correct commit using real git bisect and
-##   real replay; only the registry source (run-fuzz.sh --list) is stubbed.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; builds a real throwaway git history.
-## fails-when: fuzz-bisect fails to name the known-bad commit. Leftover
-##   files fail only under the test-dev-tooling wave, which owns that check.
-fuzz-bisect-selftest:
-	@scripts/fuzz/fuzz-bisect-selftest.sh
-
 # fuzz-oracle-audit proves every fuzz oracle reddens on its bug class (Phase 9 W1):
 # each mutation in fuzz/mutations/ reintroduces a known fault in a throwaway
 # worktree and the audit asserts the target FAILS. `FUZZ_ARGS=--gap-only` lists
@@ -190,22 +189,6 @@ fuzz-bisect-selftest:
 ##   target fails to build under audit.
 fuzz-oracle-audit:
 	@scripts/fuzz/fuzz-oracle-audit.sh $(FUZZ_ARGS)
-
-# fuzz-oracle-audit-selftest verifies the audit's caught/blind/rot/build-failure
-# classification against a throwaway module (real worktree + go test, stubbed
-# registry).
-## Verify the oracle audit's caught/blind/rot/build-failure classification
-## against a throwaway module.
-## proves: The audit correctly classifies each outcome (caught, blind, rot,
-##   build-failure) using a real worktree and go test, with only the
-##   registry stubbed.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; a real throwaway module.
-## fails-when: The audit's classification diverges from the fixture's
-##   expected verdict. Leftover files fail only under the test-dev-tooling
-##   wave, which owns that check.
-fuzz-oracle-audit-selftest:
-	@scripts/fuzz/fuzz-oracle-audit-selftest.sh
 
 # fuzz-mutation-score (Phase 10 W5) measures detection sufficiency with gremlins:
 # the per-package kill rate, and the surviving (LIVED) mutants are the weak-oracle

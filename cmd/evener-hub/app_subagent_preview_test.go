@@ -1,10 +1,30 @@
 package hub
 
 import (
+	"encoding/json"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 )
+
+func TestSubagentPreviewEmptyItemsAreAJSONList(t *testing.T) {
+	resp := subagentPreviewFromThread(appwire.Thread{}, "local:empty", 0)
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	items, ok := wire["items"].([]any)
+	if !ok || len(items) != 0 {
+		t.Fatalf("items must be an empty JSON array, got %#v", wire["items"])
+	}
+	if wire["ref"] != "local:empty" || wire["truncated"] != false {
+		t.Fatalf("invalid empty preview metadata: %#v", wire)
+	}
+}
 
 func TestSubagentPreviewBoundsLatestDirectItems(t *testing.T) {
 	resp := subagentPreviewFromThread(appwire.Thread{

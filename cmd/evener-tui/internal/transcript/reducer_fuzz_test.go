@@ -25,7 +25,7 @@ func FuzzApplyThreadItem(f *testing.F) {
 		{"reasoning", "", "", "", ""},
 		{"userMessage", "", "", "", ""},
 		{"systemMessage", "", "", "", ""},
-		{"commandExecution", `{"job_id":"j1","type":"delegate","status":"running"}`, "", "delegate", `{"task":"x"}`},
+		{"commandExecution", `{"job_id":"j1","type":"delegate","status":"running"}`, "", "delegate", `{"prompt":"x"}`},
 		{"commandExecution", `{"delegate_id":"d1","status":"completed","task":"t"}`, "", "delegate", ""},
 		{"commandExecution", "", `{"job_id":"j2","type":"shell"}`, "shell", `{"command":"ls"}`},
 		{"commandExecution", `{"current_job_id":"c","total_bytes":42}`, "", "delegate_send", `{"to":"d"}`},

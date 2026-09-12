@@ -126,7 +126,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			s := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}), withoutGitSnapshot())
 			base := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 			next := base.WithWorkingDirectory(t.TempDir())
-			s.swapEnvAndRefresh(next)
+			s.swapEnvAndRefresh(next, nil)
 		case 16:
 			s := newSession(t)
 			s.contextMgr.CheckpointThreshold = 1
@@ -159,7 +159,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			runGitCmd(t, repo, "add", "tracked")
 			runGitCmd(t, repo, "commit", "-m", "seed")
 			base := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-			s.swapEnvAndRefresh(base.WithWorkingDirectory(repo))
+			s.swapEnvAndRefresh(base.WithWorkingDirectory(repo), nil)
 		}
 	})
 }

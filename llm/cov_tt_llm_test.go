@@ -23,9 +23,6 @@ func TestConfigurationErrorSatisfiesErrorContract(t *testing.T) {
 	if e.Provider() != "" {
 		t.Fatalf("Provider() = %q, want empty", e.Provider())
 	}
-	if e.BehaviorTag() != "" {
-		t.Fatalf("BehaviorTag() = %q, want empty", e.BehaviorTag())
-	}
 	if e.StatusCode() != 0 {
 		t.Fatalf("StatusCode() = %d, want 0", e.StatusCode())
 	}
@@ -113,7 +110,7 @@ func TestIntFromAny(t *testing.T) {
 // TestReasoningBudget covers every recognized effort level and the default.
 func TestReasoningBudget(t *testing.T) {
 	tests := map[string]int{
-		"minimal": 512, "low": 1024, "medium": 8192, "high": 32768,
+		"minimal": 1024, "low": 1024, "medium": 8192, "high": 32768,
 		"xhigh": 131072, "max": 131072, "unknown": 0, "": 0,
 	}
 	for effort, want := range tests {
@@ -349,33 +346,6 @@ func TestStreamAccumulatorNilReceiver(t *testing.T) {
 	}
 }
 
-// TestModelCatalogLookups covers the nil-receiver guards, the duplicate-ID
-// skip in buildIndex, and the file-read error arm of the LiteLLM loader.
-func TestModelCatalogLookups(t *testing.T) {
-	var nilCatalog *ModelCatalog
-	if nilCatalog.GetModelInfo("x") != nil {
-		t.Fatal("nil ModelCatalog GetModelInfo != nil")
-	}
-	if nilCatalog.LookupModelInfo("x") != nil {
-		t.Fatal("nil ModelCatalog LookupModelInfo != nil")
-	}
-
-	cat := &ModelCatalog{Models: []ModelInfo{
-		{ID: "dup", ContextWindow: 100},
-		{ID: "dup", ContextWindow: 999}, // duplicate ID: must be ignored
-	}}
-	mi := cat.GetModelInfo("dup")
-	if mi == nil || mi.ContextWindow != 100 {
-		t.Fatalf("duplicate-ID entry not resolved to first: %+v", mi)
-	}
-
-	if _, err := LoadModelCatalogFromLiteLLMJSON(filepath.Join(t.TempDir(), "missing.json")); err == nil {
-		t.Fatal("LoadModelCatalogFromLiteLLMJSON(missing) error = nil, want read failure")
-	}
-}
-
-// TestEstimateInputTokensCountsResponseFormat covers the response-format
-// accounting arm of EstimateInputTokens.
 func TestEstimateInputTokensCountsResponseFormat(t *testing.T) {
 	rf := &ResponseFormat{Type: "json_object"}
 	withRF := EstimateInputTokens(Request{Model: "m", Messages: []Message{User("hi")}, ResponseFormat: rf})

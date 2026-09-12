@@ -70,10 +70,41 @@ func TestReasoningEffortRank(t *testing.T) {
 	}
 }
 
+// VouchedEffort is the gate for fields that spell the effort NAME. It is
+// distinct from ClampReasoningEffort: an empty ladder or unrankable vocabulary
+// yields "" (omit), because evener never writes an effort name the resolved
+// row cannot vouch for. Budget-shaped rows do not use it.
+func TestVouchedEffort(t *testing.T) {
+	cases := []struct {
+		name      string
+		requested string
+		levels    []string
+		want      string
+	}{
+		{"empty ladder vouches for nothing", "high", nil, ""},
+		{"empty ladder vouches for nothing even when unset", "", nil, ""},
+		{"listed level is returned", "high", []string{"low", "high"}, "high"},
+		{"unlisted level clamps into the ladder", "xhigh", []string{"low", "high"}, "high"},
+		{"unrankable vocabulary is dropped", "turbo", []string{"low", "high"}, ""},
+		{"case-insensitive match", "HIGH", []string{"low", "high"}, "high"},
+		{"the off sentinel is not an effort name", "none", []string{"low", "high"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := VouchedEffort(tc.requested, tc.levels); got != tc.want {
+				t.Errorf("VouchedEffort(%q, %v) = %q, want %q", tc.requested, tc.levels, got, tc.want)
+			}
+		})
+	}
+}
+
+// The disable aliases normalize to the canonical "none", not to "" — an
+// explicit off must stay distinguishable from "nothing configured" so the
+// session's default effort never overrides a user who turned thinking off.
 func TestNormalizeReasoningEffort(t *testing.T) {
 	cases := map[string]string{
-		"none": "", "null": "", "off": "", "false": "", "0": "",
-		"NONE": "", "  none  ": "",
+		"none": "none", "null": "none", "off": "none", "false": "none", "0": "none",
+		"NONE": "none", "  none  ": "none",
 		"minimal": "minimal", "HIGH": "high", "xhigh": "xhigh", "": "",
 		"turbo": "turbo",
 	}
@@ -81,6 +112,15 @@ func TestNormalizeReasoningEffort(t *testing.T) {
 		if got := NormalizeReasoningEffort(in); got != want {
 			t.Errorf("NormalizeReasoningEffort(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestValidateReasoningEffort_AcceptsNone(t *testing.T) {
+	if err := ValidateReasoningEffort("none"); err != nil {
+		t.Fatalf("ValidateReasoningEffort(none) = %v, want nil (explicit off is a valid configured value)", err)
+	}
+	if err := ValidateReasoningEffort("off"); err == nil {
+		t.Fatal("ValidateReasoningEffort(off) = nil, want error (aliases are normalized before validation)")
 	}
 }
 

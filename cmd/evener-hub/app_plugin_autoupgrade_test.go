@@ -100,7 +100,7 @@ func autoUpgradeFixture(t *testing.T) (mgr *plugins.Manager, pluginRepo string, 
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := mgr.SetAutoUpgrade("widget", "acme", true); err != nil {
+	if err := mgr.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 	return mgr, pluginRepo, first.InstallPath
@@ -131,7 +131,7 @@ func TestRunPluginAutoUpgradeTick_UpgradesAutoUpgradeEnabledPlugin(t *testing.T)
 		t.Fatal("old sha-dir was deleted; the daemon must never delete")
 	}
 
-	items, err := mgr.List()
+	items, err := mgr.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

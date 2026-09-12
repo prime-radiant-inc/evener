@@ -5,12 +5,8 @@
  * ancestor. Thinking blocks are the one caller that overrides it; the rest
  * (doc pane, notifications, agent messages) take the --ink-hi default.
  *
- * font-size is the same hook, for the same reason, one step up the ramp:
- * agent prose is the transcript's hero (docs/web-ui/decisions.md topic 04),
- * and StreamingText's own .root exposes the identical --prose-font-size
- * property, so AgentMessageItem can set it ONCE, on the ancestor its live
- * and settled children already share - the two can never disagree on size.
- * Every other caller takes the --font-size-body default, unchanged. */
+ * --prose-font-size remains a caller override for live/settled parity.
+ * The default reading surface uses the shared, body-scaled prose token. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
   /* Long unbreakable tokens (paths, URLs) wrap at any point rather than
@@ -18,8 +14,8 @@
    * decision 5) - anywhere, not break-word, so the token also stops counting
    * toward min-content sizing inside fit-content bubbles. */
   overflow-wrap: anywhere;
-  font-family: var(--font-sans);
-  font-size: var(--prose-font-size, var(--font-size-body));
+  font-family: var(--font-prose);
+  font-size: var(--prose-font-size, var(--font-size-prose));
   line-height: var(--line-height-body);
 }
 
@@ -94,7 +90,7 @@
 }
 
 .root a {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .root a:focus-visible {
@@ -106,18 +102,71 @@
  * classes (imported directly in index.tsx) so they're visually identical
  * to the standalone CodeBlock widget - nothing to style here for those. */
 
-/* All four "assistant hero" mockup alternatives agreed on this rule even
- * where they disagreed on everything else (docs/web-ui/decisions.md topic
- * 04): inline code is a quiet underline, never a filled chip - a chip reads
- * as UI stippled through prose, on every line it appears. Sized relative to
- * the surrounding text rather than a fixed ramp token, slightly tighter
- * than body so it sits inside the line - inline code now appears inside
- * prose at more than one size (agent messages render it at
- * --font-size-pane-title via --prose-font-size, everywhere else stays at
- * --font-size-body), and only a relative size tracks both correctly. */
+/* Inline machine text stays mono, underlined rather than chipped, and
+ * scales with the surrounding prose even when a caller overrides its size. */
 .inlineCode {
   font-family: var(--font-mono);
   font-size: 0.86em;
   color: var(--ink-hi);
   border-bottom: 1px solid var(--edge);
+}
+
+/* GFM tables are operational evidence inside a reading surface: Inter,
+ * tabular figures and fine rules rather than a tinted header band. The
+ * sanitized semantic table and its alignment attributes remain unchanged;
+ * long header tokens wrap instead of widening the surrounding document. */
+.root :where(table) {
+  margin: 0 0 var(--space-3);
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.root :where(thead th) {
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border-bottom: 1px solid var(--edge);
+  color: var(--ink-mid);
+  font-weight: var(--font-weight-semibold);
+  text-align: left;
+  white-space: normal;
+}
+
+.root :where(tbody td) {
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-hi);
+  text-align: left;
+  vertical-align: top;
+}
+
+.root :where(tbody tr) {
+  border-bottom: 1px solid var(--edge);
+}
+
+.root :where(tbody tr:last-child) {
+  border-bottom: none;
+}
+
+.root :where(tbody tr:hover) {
+  background: var(--hover-1);
+}
+
+/* GFM column alignment: marked emits the legacy align="left|center|right"
+ * attribute on each <th>/<td> for the :---/:---:/---: delimiter syntax. It's
+ * allowlisted through DOMPurify (not a style attribute) and carries no script
+ * surface, so these attribute selectors honor author alignment without
+ * widening the allowlist to `style`. The bare th/td text-align above is the
+ * default; an explicit align attribute wins by specificity. */
+.root :where(th[align="center"], td[align="center"]) {
+  text-align: center;
+}
+
+.root :where(th[align="right"], td[align="right"]) {
+  text-align: right;
+}
+
+.root :where(th[align="left"], td[align="left"]) {
+  text-align: left;
 }

@@ -196,7 +196,7 @@ func TestConformanceGolden(t *testing.T) {
 // name a known provider and carry at least one frame. It keeps a malformed
 // corpus from masquerading as a decode regression.
 func TestConformanceFixturesWellFormed(t *testing.T) {
-	known := map[string]bool{"anthropic": true, "google": true, "openai": true, "openaicompat": true}
+	known := map[string]bool{"anthropic": true, "google": true, "responses": true, "chatcompletions": true}
 	seen := map[string]bool{}
 	for _, fix := range conformanceFixtures {
 		if !known[fix.provider] {
@@ -300,7 +300,7 @@ var conformanceFixtures = []sseFixture{
 	// ---- OpenAI Responses API (event stream) ----
 	{
 		name:     "openai_text",
-		provider: "openai",
+		provider: "responses",
 		source:   "llm/providers/openai/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
 		frames: []sseFrame{
 			{"response.output_text.delta", `{"type":"response.output_text.delta","delta":"Hel"}`},
@@ -310,7 +310,7 @@ var conformanceFixtures = []sseFixture{
 	},
 	{
 		name:     "openai_reasoning_summary",
-		provider: "openai",
+		provider: "responses",
 		source:   "llm/providers/openai/adapter_test.go TestAdapter_Stream_EmitsReasoningSummaryDeltas",
 		frames: []sseFrame{
 			{"response.reasoning_summary_part.added", `{"type":"response.reasoning_summary_part.added","summary_index":0}`},
@@ -324,7 +324,7 @@ var conformanceFixtures = []sseFixture{
 	},
 	{
 		name:     "openai_toolcall",
-		provider: "openai",
+		provider: "responses",
 		source:   "llm/providers/openai/adapter_test.go TestAdapter_Stream_TranslatesToolCalls",
 		frames: []sseFrame{
 			{"response.function_call_arguments.delta", `{"type":"response.function_call_arguments.delta","call_id":"call_1","name":"get_weather","delta":"{\"n\":1}"}`},
@@ -336,7 +336,7 @@ var conformanceFixtures = []sseFixture{
 	// ---- OpenAI-compatible Chat Completions (data: only, [DONE]-terminated) ----
 	{
 		name:     "openaicompat_text",
-		provider: "openaicompat",
+		provider: "chatcompletions",
 		source:   "llm/providers/openaicompat/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
 		frames: []sseFrame{
 			{"", `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`},
@@ -348,7 +348,7 @@ var conformanceFixtures = []sseFixture{
 	},
 	{
 		name:     "openaicompat_toolcall",
-		provider: "openaicompat",
+		provider: "chatcompletions",
 		source:   "llm/providers/openaicompat/adapter_test.go TestAdapter_Stream_ToolCalls",
 		frames: []sseFrame{
 			{"", `{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`},

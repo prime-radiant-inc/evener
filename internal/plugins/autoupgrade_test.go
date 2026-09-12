@@ -104,7 +104,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	}
 
 	// Now opt in — the next pass must upgrade it.
-	if err := m.SetAutoUpgrade("widget", "acme", true); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 	updated, err = m.UpdateAutoUpgrade(context.Background())
@@ -124,7 +124,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	// Opt back out — a plugin that WAS auto-upgrade-enabled must stop being
 	// touched the moment the flag flips back off, not just when it was never
 	// enabled in the first place.
-	if err := m.SetAutoUpgrade("widget", "acme", false); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "acme", false); err != nil {
 		t.Fatalf("SetAutoUpgrade(false): %v", err)
 	}
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v3")
@@ -155,7 +155,7 @@ func TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated(t *testing.T) {
 	if _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := m.SetAutoUpgrade("widget", "acme", true); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 
@@ -184,7 +184,7 @@ func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
 	if _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := m.SetAutoUpgrade("widget", name, true); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "widget", name, true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	if _, err := m.Install(context.Background(), "broken", "acme"); err != nil {
 		t.Fatalf("Install broken: %v", err)
 	}
-	if err := m.SetAutoUpgrade("broken", "acme", true); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "broken", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade broken: %v", err)
 	}
 	advanceGitRepo(t, brokenRepo, "extra.txt", "v2")
@@ -225,7 +225,7 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install healthy: %v", err)
 	}
-	if err := m.SetAutoUpgrade("healthy", "acme", true); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "healthy", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade healthy: %v", err)
 	}
 	advanceGitRepo(t, healthyRepo, "extra.txt", "v2")
@@ -288,14 +288,14 @@ func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := m1.SetAutoUpgrade("widget", "acme", true); err != nil {
+	if err := m1.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
 
 	// Hold the lock ourselves so sweep B (started below) is guaranteed to
 	// block on its own upgrade attempt until we release it.
-	release, err := acquireLock(m1.lockPath(), 5*time.Second)
+	release, err := acquireLock(context.Background(), m1.lockPath(), 5*time.Second)
 	if err != nil {
 		t.Fatalf("acquireLock: %v", err)
 	}

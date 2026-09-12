@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -95,31 +96,74 @@ func canonicalScratchRoot(root string) (string, error) {
 	return canonical, nil
 }
 
+// sessionScratchBase returns the base a new session allocates in, and stops at
+// the first one that serves: a session start must not wait on the cache
+// filesystem, which may be slow or unavailable, once the temp dir has answered.
 func sessionScratchBase(requested, workspaceRoot string) (string, error) {
-	first := requested
-	if strings.TrimSpace(first) == "" {
-		first = sessionScratchTempDir()
+	if base, ok := validSessionScratchBase(preferredSessionScratchCandidate(requested), workspaceRoot); ok {
+		return base, nil
 	}
-	candidates := []string{first}
-	if cache, err := sessionScratchUserCacheDir(); err == nil && strings.TrimSpace(cache) != "" {
+	if cache, err := sessionScratchUserCacheDir(); err == nil {
+		if base, ok := validSessionScratchBase(cache, workspaceRoot); ok {
+			return base, nil
+		}
+	}
+	return "", noSessionScratchBaseError(workspaceRoot)
+}
+
+// sessionScratchBases lists, in allocation-preference order, every base a
+// session on this workspace may end up in: the requested base (or the temp dir)
+// and the user cache dir, each canonical and listed once. Allocation stops at
+// the first; a reclaim has to visit them all, because a workspace that contains
+// the temp dir sends its own sessions to the cache dir instead.
+func sessionScratchBases(requested, workspaceRoot string) []string {
+	candidates := []string{preferredSessionScratchCandidate(requested)}
+	if cache, err := sessionScratchUserCacheDir(); err == nil {
 		candidates = append(candidates, cache)
 	}
+	var bases []string
 	for _, candidate := range candidates {
-		absolute, err := filepath.Abs(candidate)
-		if err != nil || pathWithin(absolute, workspaceRoot) {
-			continue
+		base, ok := validSessionScratchBase(candidate, workspaceRoot)
+		if ok && !slices.Contains(bases, base) {
+			bases = append(bases, base)
 		}
-		info, err := os.Stat(absolute)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		canonical, err := filepath.EvalSymlinks(absolute)
-		if err != nil || pathWithin(canonical, workspaceRoot) {
-			continue
-		}
-		return canonical, nil
 	}
-	return "", fmt.Errorf("sandbox: no session scratch base outside workspace %q", workspaceRoot)
+	return bases
+}
+
+// preferredSessionScratchCandidate is the base a caller asked for, or the temp
+// dir when it asked for none.
+func preferredSessionScratchCandidate(requested string) string {
+	if strings.TrimSpace(requested) == "" {
+		return sessionScratchTempDir()
+	}
+	return requested
+}
+
+// validSessionScratchBase reports the canonical form of candidate when Evener
+// may keep session scratch there: an existing directory, outside the workspace
+// both as named and as resolved.
+func validSessionScratchBase(candidate, workspaceRoot string) (string, bool) {
+	if strings.TrimSpace(candidate) == "" {
+		return "", false
+	}
+	absolute, err := filepath.Abs(candidate)
+	if err != nil || pathWithin(absolute, workspaceRoot) {
+		return "", false
+	}
+	info, err := os.Stat(absolute)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil || pathWithin(canonical, workspaceRoot) {
+		return "", false
+	}
+	return canonical, true
+}
+
+func noSessionScratchBaseError(workspaceRoot string) error {
+	return fmt.Errorf("sandbox: no session scratch base outside workspace %q", workspaceRoot)
 }
 
 func pathWithin(path, root string) bool {
@@ -151,14 +195,45 @@ func (s *SessionScratch) Cleanup() error {
 	return errors.Join(releaseErr, os.RemoveAll(dir))
 }
 
+// SweepCrashedSessionScratch reclaims the session scratch directories left in
+// every base a session on workspaceRoot may allocate from. A session releases
+// its lease and keeps its directory at close and on handoff, so nothing else
+// ever removes those: this is what makes retention safe rather than a permanent
+// leak. It sweeps all the allocation bases rather than the one this workspace
+// would pick, because a workspace containing the temp dir allocates from the
+// cache dir instead, and it skips a base inside workspaceRoot for the same
+// reason allocation refuses one: nothing Evener owns is ever written there. It
+// reports only the failures an operator can act on — an unreadable base, a
+// directory it owned but could not remove — so it is best called once at
+// process start, off the startup path.
+func SweepCrashedSessionScratch(workspaceRoot string) error {
+	canonicalWorkspace, err := canonicalScratchRoot(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	bases := sessionScratchBases("", canonicalWorkspace)
+	if len(bases) == 0 {
+		return noSessionScratchBaseError(workspaceRoot)
+	}
+	var failures []error
+	for _, base := range bases {
+		if err := sweepCrashedSessionScratch(base); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
-// lease is currently acquirable. Errors leave the candidate untouched.
-func sweepCrashedSessionScratch(base string) {
+// lease is currently acquirable. A candidate whose lease is held, or whose age
+// cannot be read, is left untouched and is not an error: it is someone else's.
+func sweepCrashedSessionScratch(base string) error {
 	entries, err := sessionScratchReadDir(base)
 	if err != nil {
-		return
+		return fmt.Errorf("sandbox: read session scratch base %q: %w", base, err)
 	}
 	cutoff := time.Now().Add(-crashedSessionScratchMaxAge)
+	var failures []error
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
 			continue
@@ -175,6 +250,9 @@ func sweepCrashedSessionScratch(base string) {
 		if err := lease.Release(); err != nil {
 			continue
 		}
-		_ = os.RemoveAll(dir)
+		if err := os.RemoveAll(dir); err != nil {
+			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
+		}
 	}
+	return errors.Join(failures...)
 }

@@ -12,7 +12,7 @@ import (
 type promptData struct {
 	// Resolution context
 	NonInteractive           bool
-	Provider                 string // "openai", "anthropic", "gemini"
+	Provider                 string // the provider INSTANCE name, e.g. "openai-codex", "work-ant" (session_prompts.go assigns s.profile.ID())
 	Agent                    string // public agent name, e.g. "default", "explorer", "coordinator"
 	BaseInstructionsOverride string
 	RolePromptOverride       string

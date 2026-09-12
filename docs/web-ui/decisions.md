@@ -1,7 +1,88 @@
 # Web UI: the design decisions, and whether they are still true
 
-Status: **current**. This is the blessed design's provenance — what we chose,
-out of what alternatives, and whether the code does it today.
+Status: **historical decision record**. This records what we chose, from which
+alternatives, and what source review found at the time. The current
+[design system](design-system.md#design-model-an-editorial-instrument) governs new work;
+dated verdicts below are not a competing current mandate.
+
+## 2026-09-11 the reasoning placeholder is content-free, on Loader's grid
+
+Turning the Reasoning content flag off still streamed a live thought open and
+then folded it away: the projector escalated any in-progress reasoning item to
+a critical row regardless of the flag, and the reasoning renderer streams an
+in-progress item open as the turn's current thought. The escalation is gone.
+Jesse asked that a live thought instead show a content-free "Thinking…" and
+picked the catalog `Loader`'s pulsing pixel grid as its motion.
+
+The projector now emits a distinct `thinking` entry for the turn's live current
+reasoning item when the flag is off (transcriptDisplay/projector.ts). It
+carries the source item only for a length estimate and never any rendered text,
+so the row cannot leak the thought. The renderer draws just
+`<Loader label=…>`: the label plus an approximate token figure
+(characters/4, marked "~" - the wire carries no live token accounting for a
+reasoning stream, so a real count would be fabricated). The placeholder
+disappears the moment the thought stops being the turn's current activity.
+
+A critical reasoning row (a failed or interrupted turn, still projected as
+critical so the turn explains itself) renders redacted: a neutral "Thought
+failed" / "Thought not shown" summary, with no thought body, preview, or
+disclosure. This narrows the 2026-08-25 "preserve terminal transcript failures"
+behavior for reasoning specifically - a broken turn still explains itself, but
+not by showing content the reader disabled. The projector no longer derives a
+reasoning critical entry's summary from the item's own text.
+
+This is the one approved exception to the motion budget's ban on pulses and
+shimmer on live data (design-system.md §5). The grid pulses while the
+placeholder is shown and, unlike Cadence, is not gated on deltas actually
+arriving, so it keeps pulsing if the stream stalls; Cadence's decaying trace
+stays the honest liveness signal. Every other idle pulse or shimmer remains
+banned, and `widgets/loader`'s own doc note no longer claims its motion is
+reserved away from agent liveness.
+
+## Editorial instrument (2026-09-09)
+
+The user approved a comprehensive Tufte-inspired editorial direction and the
+`editorial-instrument` / `tools-and-collaborators` studies. The governing
+[specification](../superpowers/specs/2026-09-09-tufte-webui-design.md) supersedes the
+Beautiful UI aesthetic mandate, **not** its interaction contracts, widget APIs,
+semantic attention law, accessibility requirements or MIT attribution.
+
+**Implemented foundations:** warm paper/ink neutrals; Source Serif 4 for reading and
+editorial headings alongside Inter operations and JetBrains Mono evidence; shared
+`--font-prose` and body-scaled 18px `--font-size-prose`; structural card shadow none;
+3px chip / 4px control and overlay radii; flat Card/InspectorCard/PaneScaffold;
+sentence-case fine-rule tables; visibly bounded fields. Dark default, all preferences,
+44/64rem measures and shared phone sizing contracts remain. Nested navigation and focus
+repairs are behavior changes, not merely styling. Source Serif 4
+5.3.0 is self-hosted with real italic under OFL-1.1, not loaded from a CDN.
+
+Contrast is a constraint, not an aesthetic vote: the warm light ground required darker
+alive/danger/accent `-ink` colors and re-derived diff washes. Original pairing, thresholds
+and grayscale comparisons remain intact. Historical palette/header-band assertions changed
+only to match this explicit approval. Vitest and coverage-v8 moved together from 4.1.10 to
+4.1.11 to address GHSA-82fw-gwwq-j7x9; this is an explicit dependency repair, not visual work.
+
+The canonical [guide](design-system.md#inline-tools-and-delegates) now documents the
+implemented inline tool/delegate grammar, including owner-derived lifecycle, separate
+launch receipts, truthful unknown state and retained child-authored words on resumption.
+[Source coverage](design-system.md#editorial-source-coverage) includes direct shell,
+form, composer and ledger work and distinguishes surfaces inheriting shared styling.
+The editorial rationale is [durable design law](design-system.md#design-model-an-editorial-instrument),
+not just a new font and spacing prescription: evidence stays near claims, distinct facts retain
+their provenance, and inspection preserves context. The guide's separate
+[acceptance snapshot](design-system.md#acceptance-and-limits) records automation, panel review
+and remaining limits; source implementation alone does not establish browser acceptance.
+Dated decisions below describe their period and remain useful for interaction intent,
+not as competing current palette/type law.
+
+## Directory selection (2026-09-05)
+
+Jesse approved the session-start directory dialog and its use for every web
+directory picker. The authoritative [directory-selection contract](design-system.md#directory-selection-one-shared-interaction)
+requires shared widgets, explicit confirmation, cancellation that preserves the
+committed value, and inline child-directory creation on desktop and mobile.
+Older immediate-commit directory popovers are retired. File selection retains its
+file-specific behavior.
 
 It exists because the record was scattered. Between 2026-06 and 2026-07 a
 visual-brainstorming pass produced 23 mockups, each presenting four labelled
@@ -24,10 +105,10 @@ what survived, so the gap between the two is a work list instead of a feeling.
 
 ## How to read a verdict
 
-- **LIVE** — the rule holds in the React app today, with a citation.
+- **LIVE** — the rule held at the recorded review, with a citation.
 - **CHANGED** — something related shipped, but the rule differs. The note says
   how, and whether the difference was reasoned.
-- **ABSENT** — no trace in the current code.
+- **ABSENT** — no trace in the code reviewed then.
 
 A CHANGED or ABSENT verdict is not automatically a defect. Several are
 documented, reasoned departures where the implementer hit something the
@@ -45,16 +126,17 @@ closed questions, not work. The ones with no such reasoning are the work list.
   `history/examples/direction-{a,b,c}-*.html`.
 - **The brief every direction had to render**:
   `history/examples/_mockup-brief.md`. Its eight non-negotiable principles are
-  reproduced below, because they are the actual design law and outlived the
-  mockups that tested them.
+  reproduced below as the historical starting point. Later decisions and the
+  canonical guide identify departures.
 - **Which alternative shipped**: the commit subjects cited in the tables
   below. `git log --oneline --all -- docs/web-ui` finds the rest.
 
 ## The eight principles
 
-Reproduced from `_mockup-brief.md`. Every direction and every mockup had to
-honour these; they are upstream of any individual A/B/C/D choice, and none of
-them has been retired.
+Reproduced from `_mockup-brief.md`. Every original direction and mockup had to
+honour these. They are historical, not eight unchanged current mandates: later
+decisions supersede parts of them, including steering emphasis and typography.
+The current system uses serif for reading, sans for operations and mono for machine evidence.
 
 1. **Conversation-first.** User and assistant prose are the loudest, most
    readable thing. Tool calls are visually subordinate.
@@ -141,7 +223,7 @@ decision, since every alternative agreed on it.
 | Part | Verdict | Where it stands |
 | --- | --- | --- |
 | A — four meanings, done recedes, colour is scarce | LIVE | `styles/token-contract.test.ts:SEMANTIC_USE_ALLOWLIST` enforces it in CI; `widgets/statusdot:.neutral` gives idle/ended no hue at all. **By design:** the mockup's single blue covered both "live" and "interactive"; shipped tokens split it into `--alive` (agent working) and `--accent` (focus/selection/links only). One meaning per hue — a refinement, not a break. |
-| C — dimmest tone is hairline-and-chrome, never body text | LIVE | `transcript/toolcallitem.module.css:.demoted` carries the measured numbers: `--ink-low` is 2.97:1 dark / 3.64:1 light, under the 4.5:1 floor; `--ink-mid` clears it at 6.86/6.56. The same reasoning is repeated at `usermessageitem:.tag` and `chrome/taskspanel:.staleHint`. |
+| C — dimmest tone is hairline-and-chrome, never body text | LIVE | `transcript/toolcallitem.module.css:.demoted` carries the measured numbers: `--ink-low` is 2.97:1 dark / 3.64:1 light, under the 4.5:1 floor; `--ink-mid` clears it at 6.86/6.56. The same reasoning is repeated at `usermessageitem:.tag` and `chrome/taskspanel:.staleHint`. The rule is unchanged, but those ratios are pre-2026-09-06: `--ink-low` was raised to clear AA that day (see the 2026-09-06 entry below) and the stylesheet comments quoted here still carry the old numbers. |
 | B — every state glyph-paired, colourblind-safe | **CHANGED, unexplained** | Half-shipped, and the half that shipped is the transcript's. `widgets/failureglyph` is a real distinct-shape marker rendered beside any single failed tool call (`ToolRow.tsx`) and any turn-failure notice (`SystemNoticeItem:FailureLine`), as well as beside the status row's failure count — so *failure* is genuinely glyph-paired wherever it appears in the transcript. The gap is everywhere else: `widgets/cadence` draws one dot shape for every state, varying only hue, with an `aria-label` as the sole non-colour signal, and no `FailureGlyph` appears anywhere under `shell/rail/`. So the navigator — the app's primary triage surface — is colour-only for idle / working / needs-you / ended. |
 
 **02 · Chrome & labels** — chose A (sans, sentence-case, hairline) plus D's
@@ -259,7 +341,7 @@ mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
 
 | Part | Verdict | Where it stands |
 | --- | --- | --- |
-| A — a run of finished calls folds to one summary line naming the consequential step | **ABSENT, unexplained** | There is no cluster concept at all. `TurnBlock` renders items one at a time via `itemRendererFor`, and `toolRowGrammar.test.tsx` pins "exactly one per call." A run of read/grep/edit/test calls is a column of individually-collapsible rows. This is also principle 2 of the brief, so its absence is a gap against the design law, not only against one mockup. |
+| A — a run of finished calls folds to one summary line naming the consequential step | **ABSENT, unexplained**. Landed 2026-09-06: see below. | There is no cluster concept at all. `TurnBlock` renders items one at a time via `itemRendererFor`, and `toolRowGrammar.test.tsx` pins "exactly one per call." A run of read/grep/edit/test calls is a column of individually-collapsible rows. This is also principle 2 of the brief, so its absence is a gap against the design law, not only against one mockup. Landed 2026-09-06 as `transcript/toolRuns.ts` + `ToolRunGroup.tsx`; the fold rule is written up in the 2026-09-06 typography, measure and rhythm entry below. |
 | D — peek / ride / drop tri-state | CHANGED | **By design.** The anti-lying principle survives — `tools/helpers.ts:tailFold` and `widgets/codeblock` never offer an "expand" over bytes that are gone, and say so inline. The explicit three-state vocabulary is gone; the state is prose, not a labelled UI state. |
 
 **07 · System churn & silent success** — chose A (quiet one-liner) + B
@@ -755,3 +837,182 @@ the field; real update detection is a backend feature, not a presentation
 choice, and was not smuggled into this redesign. The implementation
 screenshots beside the mockups in the assets directory record what
 actually shipped, in the app's default theme.
+
+## 2026-09-06 typography, measure and rhythm
+
+The pass came out of a measured critique of the running app at 1440x900 and
+375x812 in both themes,
+`docs/web-ui/typography-spacing-critique-2026-09-06.md`; the implementation is
+`docs/superpowers/plans/2026-09-06-webui-typography-spacing.md`, on branch
+`claude/evener-webui-typography-spacing-3d4fd4`. Each paragraph below is one
+decision, and three of them revise decisions recorded earlier in this file.
+
+**The ramp is 12 / 13 / 15 / 18 / 22 / 28, with three line-heights.** The old
+12/13/14/16/20 at 1.5 body / 1.3 title had a ratio of about 1.08 between
+steps, which is one size with rounding error rather than a scale: 340 of 382
+explicit `font-size` declarations picked caption or ui, so nearly everything
+on screen was 12 or 13px and the eye had no landmarks to find. Body is 15
+because Inter at 14 on a 1440 display is a settings-dialog size, and the
+reading products that also carry code sit at 15 to 16. Body is 16 below 900px
+for a second, harder reason: iOS Safari zooms into any focused field under
+16px, and the body size IS the field size (the shared textarea takes it).
+`--line-height-ui` (1.4) is new, for the dense chrome rows 1.6 was too loose
+for. `src/styles/measure.test.ts` pins the six steps and the phone body off
+disk.
+
+**The reading measure is 44rem, with a wide preference.** `--session-measure`
+was a 76rem literal on `.turn`, hand-copied into `session.module.css`. 76rem
+is 1216px, which at a 1440 window is wider than the pane itself, so the column
+was effectively full bleed and a plain agent paragraph measured **149
+characters per line**. The comfortable range is 45 to 75, and the chat
+products that must also show code settle around 90 to 100. 44rem is 704px:
+about 90 characters at 15px, with room for a 100-column code block. It is now
+one token declared on `<body>` that the transcript column, composer, cold
+start, spawn form and settings content all read, so they can no longer drift
+apart. Settings → Theme → Transcript width raises it to 64rem via
+`<body data-transcript-measure="wide">` for readers who want the window back.
+The new layoutguard case `transcript-measure` pins 100 characters per line and
+a centred column at 1440 and 1920; it is mutation-verified, and putting the
+76rem literal back fails it at 126 and 157 characters per line respectively.
+
+**Vertical rhythm is four named steps, which REVISES the 2026-07-30 "no dead
+air" ruling recorded in topic 03.** `--rhythm-line` (4px, inside one item),
+`--rhythm-item` (8px, between items in a run), `--rhythm-group` (16px, between
+a run and the next speaker header, and above a turn footer),
+`--rhythm-exchange` (24px, above a user message). The transcript previously
+had exactly one deliberate step, 4px message padding against 8px tool-call
+padding, because the 2026-07-30 ruling had removed the larger one at exchange
+boundaries as dead air. That ruling was correct for the layout it was made in:
+lines ran 149 characters and every row sat 4px from its neighbour, so added
+margin was air with nothing to separate. With the column bounded to
+`--session-measure`, 24px above a user message reads as a paragraph break, and
+it is what lets the eye find the next exchange in a long session without
+hunting for a 24px avatar. The full reasoning is in
+`usermessageitem.module.css`'s header, which is where the old ruling lived;
+`src/styles/rhythm.test.ts` pins each step to the site that names it.
+
+**Speaker headers are semibold.** At body size, a medium weight beside regular
+prose is a landmark only for a reader already looking for one, and the speaker
+header is the transcript's one structural landmark per exchange. Its meta line
+moved at the same time, from caption-size `--ink-low` to ui-size `--ink-mid`,
+since a model name and a clock time are things a reader actually reads.
+
+**Pane titles are headings, SUPERSEDING the 2026-08-13 micro-label port for
+panes.** The Beautiful UI adoption brought the micro-label across (11.5 to
+12px, uppercase, 0.08em tracking, `--ink-mid`) and made it the PaneScaffold
+title. On a dashboard card that pattern labels a container sitting inside a
+page that has a real heading; here the pane IS the page, so the page's title
+became its smallest text ("START AN AGENT", "GENERAL", "THEME"), and once a
+session had a title, that title was the user's whole prompt rendered as an
+uppercase sentence, which design-system.md §6 already forbade in as many
+words. A PaneScaffold title is now sentence-case `--font-size-pane-title`,
+semibold, `--ink-hi`; a session title is never transformed at all. The
+micro-label keeps its real job under a single name, next.
+
+**One eyebrow recipe, and the rename it forced.** The app had 21
+`text-transform: uppercase` rules spread across four tracking values. There is
+now one token, `--tracking-eyebrow` (0.06em), and one recipe: caption size,
+medium or semibold weight, `--ink-mid` or darker, uppercase, at most two
+words, only ever titling a container inside a page (InspectorCard's header
+band, RecommendationCard's kicker, Table headers, the rail's section titles,
+the settings cluster headers). The two-word cap is a real constraint rather
+than a guideline, and it forced a rename: the settings cluster "Agents &
+models" is now **"Agent setup"**.
+
+**Tool-run folding lands principle 2 and topic 06's Alt A**, the row this
+document has carried as "ABSENT, unexplained". In a settled turn, three or
+more consecutive completed, non-failed tool calls whose renderer has opted
+in collapse into one `<details>` row labelled
+`N steps · <last consequential summary>`. Folding is opt-in per descriptor:
+`fold: "quiet"` (the reads, searches, web fetches and transcript reads)
+folds and only counts; `fold: "consequential"` (the edit tools, shell,
+worktree) folds and marks the mutations a label may name, since that is
+what a run amounted to; `fold: "never"` (delegate, ask_user, task_list,
+use_skill, the `job_*` tools) and any descriptor with no policy at all,
+which is every unregistered or MCP tool, never fold away, because a tool the
+UI does not know may have had a side effect the reader must see. One more
+row never folds, by projection rather than policy: a settled call with no
+stated intent (`description`) projects as a `critical` entry at the tool-call
+levels (`projector.ts`'s `decisionFor`, so the neutral summary reaches the
+renderer), and only `item` entries fold. Runs of intent-less calls therefore
+stay unfolded; extending the fold to `critical` entries is a small separate
+change if a model that omits intents makes it matter. A live turn never folds at
+all, because while the agent is working each call appearing IS the progress
+signal, and a failure, a call still in flight, an auto-expanding card or any
+non-tool entry breaks the run rather than being spanned by it, so a folded row
+can never gather calls the reader saw separated by an answer. Three is the
+threshold because two folded rows save one row and cost a click.
+`transcript/toolRuns.ts` decides what a run is; `ToolRunGroup.tsx` renders it,
+with its disclosure state in the shared store.
+
+**`--ink-low` was raised until it clears AA, and then mostly stopped being
+used for reading.** The token is documented for placeholders, disabled
+controls and timestamps, and it was nonetheless the colour of 96 text rules,
+most of them at 12px too, so the two demotions compounded. Dark went to
+`#8A8E95` (4.72:1 on `--surface-1`, 5.40:1 on `--surface-0`) and light to
+`#6F737A` (4.76:1 on white, 4.57:1 on `--surface-0`), and
+`token-contract.test.ts` now pins both. The most-read of those sites (speaker
+meta, thought summaries, the liveness line, rail section titles) moved up to
+`--ink-mid` anyway, which is what topic 01's "dimmest tone is
+hairline-and-chrome, never body text" rule said all along.
+
+**Mono discipline, principle 7, applied to the chrome people look at most.**
+The model chip, the status row's percent/clock/queue figures, the rail's
+relative ages and the turn footer are sans with
+`font-variant-numeric: tabular-nums`, which buys the column alignment that was
+the reason to reach for mono in the first place. Mono stays for code, paths,
+shell summaries, diffs and the identifiers in Details.
+`src/styles/faces.test.ts` pins those four rules off disk.
+
+**The rail's three text glyphs became SVG icons.** `global.css` subsets Inter
+to Latin, so the gear, magnifier and sidebar toggle set as characters were
+rendering from whatever system fallback happened to carry them, at whatever
+stroke weight it had, beside the app's own SVG chevrons and open-box icon.
+`shell/rail/railIcons.tsx` draws all three now, the same reasoning that made
+`SteeringGlyph` an SVG.
+
+**The viewport meta no longer locks zoom.** `index.html` carried
+`maximum-scale=1, user-scalable=no` to stop iOS Safari zooming into the 13px
+composer field, which disabled pinch-zoom for the entire app (WCAG 1.4.4
+resize text). The 16px phone body removed the reason for the lock, so the lock
+is gone, and `src/styles/viewport-pin.test.ts` fails if it comes back.
+
+**Agent prose is the document; the user's words keep the bubble.** The
+2026-07-30 chat-bubbles decision put every agent fragment in a neutral ink
+wash hugging its content. With the column bounded to `--session-measure` that
+wash stopped doing any work and read as a slab behind every paragraph, so
+`agentmessageitem.module.css`'s `.bubble` is now only the prose's layout box:
+full column width, one `--rhythm-line` step of padding, no fill, no radius.
+Continuation fragments take one `--rhythm-item` step above them instead of a
+uniform radius. The user's own message keeps its `--accent-bg` wash
+(`usermessageitem.module.css`), which a short line benefits from. This
+reverses the bubble decision for the agent side only, and it is the one
+2026-09-06 change that is taste rather than measurement; it is the shape
+both major chat assistants converged on for long technical answers.
+
+## 2026-09-07 detail sheets are editors
+
+The provider instance sheet shipped as an inspector: a stack of quiet
+buttons whose "Edit" opened a one-field dialog (Base URL), and nothing could
+rename an instance or change its api_key_env or credential header after
+creation. Jesse called the whole pattern out. The rule in design-system.md
+§10 now reads: a detail sheet is the item's editor. Editable facts are
+prefilled form fields in place with a dirty-gated Save in the footer;
+rename is editing the name field; dialogs are reserved for write-only
+secret entry and multi-step flows. `InstanceSheet` is the reference
+implementation (spec
+`docs/superpowers/specs/2026-09-07-settings-sheet-editors-and-agents-doc-design.md`);
+the marketplaces list follows in its own slice, and the installed-plugin
+sheet already edited its two switches in place and is unchanged.
+
+Two consequences ride along. Protocol and surface are exposed on both the
+sheet and the Add form as selects over the registry's four-value
+vocabularies, with an "inherit from base" empty option. From the sheet
+that option sends the new clear flag; the Add form's create params have no
+clear flags, so it just omits the field. And the wire's instance entry now
+carries the authored api_key_env and credential header (never a secret:
+`registry.CheckCredentialHeaderValue`, the rule both authoring surfaces
+share, takes $VARIABLE references with at most one auth scheme word ahead
+of them, and the hub omits from the entry any header that rule refuses —
+the loader itself would accept a hand-written literal) so the form can
+prefill them.

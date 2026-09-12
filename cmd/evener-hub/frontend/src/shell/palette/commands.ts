@@ -21,9 +21,11 @@ import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
+import { effortLabel, effortOptionLevels } from "../reasoningEffort";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
+import { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 import { commandScore } from "./commandScore";
 import { focusedModel, hasActiveTurn, type OnPage, type PaletteContext } from "./paletteContext";
 import { readRecentCommandIds } from "./recentCommands";
@@ -463,13 +465,16 @@ export function buildCommands(): Command[] {
         // Snapshot-based (the focused model's own reasoningEffortLevels /
         // supportsReasoning), not a separate catalog request - the live
         // surface shouldn't need it (floor §2.5). A non-reasoning model yields ZERO options, not
-        // just "(default)". "none" is omitted from a non-empty ladder: it
-        // normalizes to "" (same as default), so it isn't a distinct option.
+        // just "(default)". "none" is a distinct explicit-off option where the
+        // ladder lists it, labelled so it can't be mistaken for the default.
         source: (ctx) => {
           const model = focusedModel(ctx.sessionRef);
-          const levels = model?.supportsReasoning ? model.reasoningEffortLevels.filter((l) => l !== "none") : [];
+          const levels = model?.supportsReasoning ? model.reasoningEffortLevels : [];
           if (!levels.length) return [];
-          return [{ id: "", label: "(default)" }, ...levels.map((l) => ({ id: l, label: l }))];
+          return effortOptionLevels(levels, model?.reasoningEffort ?? "").map((l) => ({
+            id: l,
+            label: effortLabel(l, levels),
+          }));
         },
         run: (ctx, item) => {
           if (!ctx.sessionRef) return undefined;
@@ -665,41 +670,7 @@ export function sessionScopedHandoffMatch(rawFilter: string, catalog: CommandDes
   return [...builtinIds, ...catalogNames].some((name) => name.startsWith(firstToken));
 }
 
-// slashCommandInvocation is the one place that decides what a user actually
-// types to invoke a catalog command: a plugin-sourced command with a known
-// pluginName needs the qualified "/plugin:name" form (unqualified "/name"
-// only resolves the FIRST plugin registering that name - see app_rpc.go's
-// own dispatch), everything else (user commands, and plugin commands
-// without a pluginName, e.g. a stub catalog entry in a test) is unambiguous
-// as bare "/name". Shared verbatim by catalogCommands below (what the
-// palette's activateCommand inserts, via the stored field on Command) and
-// composer/Composer.tsx's commitSlashCompletion (the inline "/" menu's
-// insert) - a single source of truth for the qualification rule, so the two
-// insertion paths can never drift back out of sync the way they did before
-// this fix (the inline menu inserted bare "/name" even for plugin
-// commands, which the hub dispatch cannot resolve for anything but the
-// FIRST-registered plugin using that name).
-export function slashCommandInvocation(command: Pick<CommandDescriptor, "name" | "source" | "pluginName">): string {
-  return command.source === "plugin" && command.pluginName
-    ? `/${command.pluginName}:${command.name}`
-    : `/${command.name}`;
-}
-
-// The command catalog is global, but plugin commands are only valid in a
-// session that loaded their plugin. Keep this filter at the palette boundary:
-// the store remains the complete catalog for other consumers, and the
-// no-session state deliberately keeps its global view.
-export function visibleCatalogCommands(
-  commands: CommandDescriptor[],
-  activePluginNames: ReadonlySet<string> | null | undefined,
-): CommandDescriptor[] {
-  if (activePluginNames === undefined) return commands;
-  return commands.filter(
-    (command) =>
-      command.source !== "plugin" ||
-      (activePluginNames !== null && command.pluginName !== undefined && activePluginNames.has(command.pluginName)),
-  );
-}
+export { slashCommandInvocation, visibleCatalogCommands };
 
 function catalogCommands(catalog: CommandDescriptor[]): Command[] {
   return catalog.map((command) => ({

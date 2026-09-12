@@ -49,6 +49,10 @@ func TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent(t *testing.T) {
 		t.Fatalf("ProcessInputKind(EntryContinuation): %v", err)
 	}
 
+	// ProcessInputKind finishes the turn before the asynchronous consumer
+	// necessarily sees its events. Join the drain before inspecting them.
+	s.Close()
+	<-drained
 	mu.Lock()
 	defer mu.Unlock()
 	if len(continuations) != 1 {

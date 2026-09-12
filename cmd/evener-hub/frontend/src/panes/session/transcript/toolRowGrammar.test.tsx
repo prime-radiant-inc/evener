@@ -7,12 +7,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
-import { statedPurposeOf, ToolRow } from "./ToolRow";
+import { statedIntentOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 // The failure-glyph and exit-code tests below drive the REAL shell descriptor
 // (its failed()/detail() hooks are the whole point of A2), so this file has to
@@ -40,6 +43,20 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
 
+// At activity level (the default config when no provider is used),
+// expandByDefault is now true — bodies auto-expand. Tests that need a
+// collapsed-by-default row use a tools-level config where expandByDefault
+// is false.
+const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function renderTools(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="trg:tools">
+      {node}
+    </TranscriptRenderProvider>,
+  );
+}
+
 // --- A1: one row grammar, composed not copied -----------------------------
 
 test("a non-expandable row renders the summary in the shared row element", () => {
@@ -49,11 +66,11 @@ test("a non-expandable row renders the summary in the shared row element", () =>
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran ls");
 });
 
-test("a purpose-bearing row stacks: purpose on line 1, demoted summary on line 2 - never one composed line", () => {
+test("an intent-bearing row stacks: intent on line 1, demoted summary on line 2 - never one composed line", () => {
   render(
     <ToolRow
       summary="npm test -- src/foo"
-      purpose="Running the foo tests"
+      intent="Running the foo tests"
       failed={false}
       expandable
       expanded={false}
@@ -65,16 +82,16 @@ test("a purpose-bearing row stacks: purpose on line 1, demoted summary on line 2
   // one-line compose was tried in tiered density and reverted on review).
   expect(row.textContent).toBe("Running the foo testsnpm test -- src/foo");
   // The demoted second line ellipsis-clamps, so the full summary rides the
-  // hover title; the unclamped purpose needs none.
+  // hover title; the unclamped intent needs none.
   expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe("npm test -- src/foo");
-  expect(screen.getByTestId("tool-row-purpose").getAttribute("title")).toBe(null);
+  expect(screen.getByTestId("tool-row-intent").getAttribute("title")).toBe(null);
 });
 
 test("an expanded row has the same stacked grammar - open vs collapsed differs only in the body below", () => {
   render(
     <ToolRow
       summary="npm test -- src/foo"
-      purpose="Running the foo tests"
+      intent="Running the foo tests"
       failed={false}
       expandable
       expanded
@@ -94,7 +111,7 @@ test("a collapsed row splits the summary into a clampable head and an always-ful
   render(
     <ToolRow
       summary={summary}
-      purpose="Merging the redesign"
+      intent="Merging the redesign"
       failed={false}
       expandable
       expanded={false}
@@ -116,7 +133,7 @@ test("a collapsed row splits the summary into a clampable head and an always-ful
 test("an expanded row drops the clamp entirely - the full call wraps, no head/tail split", () => {
   const summary = "Ran cd ~/prime-radiant/toil-suite/evener && git merge --no-ff transcript-view-design";
   render(
-    <ToolRow summary={summary} purpose="Merging the redesign" failed={false} expandable expanded onToggle={() => {}} />,
+    <ToolRow summary={summary} intent="Merging the redesign" failed={false} expandable expanded onToggle={() => {}} />,
   );
   expect(screen.queryByTestId("tool-row-summary-head")).toBe(null);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
@@ -134,7 +151,7 @@ test("the collapsed head/tail split never leaves whitespace at a span boundary -
   render(
     <ToolRow
       summary={summary}
-      purpose="Running the tests"
+      intent="Running the tests"
       failed={false}
       expandable
       expanded={false}
@@ -170,7 +187,7 @@ test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the cla
   expect(demoted![1]).not.toContain("nowrap");
 });
 
-test("a purpose-less row is a single line: summary text followed by its disclosure button", () => {
+test("an intent-less row is a single line: summary text followed by its disclosure button", () => {
   render(<ToolRow summary="npm test" failed={false} expandable expanded={false} onToggle={() => {}} />);
   const row = screen.getByTestId("tool-row");
   expect(row.textContent).toBe("npm test");
@@ -191,7 +208,7 @@ test("an expandable row renders as a real button with no interactive descendants
   );
 });
 
-test("a purpose-less disclosure button covers the visible summary while sibling controls stay outside it", () => {
+test("an intent-less disclosure button covers the visible summary while sibling controls stay outside it", () => {
   const css = rowCss();
   render(
     <ToolRow
@@ -209,9 +226,9 @@ test("a purpose-less disclosure button covers the visible summary while sibling 
   expect(trigger.parentElement).toBe(row);
   expect(trigger.contains(screen.getByRole("link"))).toBe(false);
   expect(trigger.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(false);
-  expect(css).toMatch(/\.row:not\(\[data-purpose="true"\]\) \.trigger\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0/);
-  expect(css).toMatch(/\.row:not\(\[data-purpose="true"\]\) \.summaryLine\s*\{[^}]*pointer-events:\s*none/);
-  expect(css).toMatch(/\.row:not\(\[data-purpose="true"\]\) \.summaryLine a,[\s\S]*pointer-events:\s*auto/);
+  expect(css).toMatch(/\.row:not\(\[data-intent="true"\]\) \.trigger\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0/);
+  expect(css).toMatch(/\.row:not\(\[data-intent="true"\]\) \.summaryLine\s*\{[^}]*pointer-events:\s*none/);
+  expect(css).toMatch(/\.row:not\(\[data-intent="true"\]\) \.summaryLine a,[\s\S]*pointer-events:\s*auto/);
 });
 
 test("native Enter and Space activation toggle disclosure exactly once", async () => {
@@ -305,56 +322,56 @@ test("every tool renderer's row comes from ToolRow - ToolCallItem renders exactl
   expect(screen.getAllByTestId("tool-row")).toHaveLength(1);
 });
 
-// --- A1b: the agent's stated purpose comes back ---------------------------
+// --- A1b: the agent's stated intent comes back ---------------------------
 
-test("the row renders item.description as the call's stated purpose", () => {
-  registerToolRenderer({ match: "trg_purpose", summary: () => "Ran ls -la" });
+test("the row renders item.description as the call's stated intent", () => {
+  registerToolRenderer({ match: "trg_intent", summary: () => "Ran ls -la" });
   render(
     <ToolCallItem
-      item={item({ toolName: "trg_purpose", description: "Check the working directory." })}
+      item={item({ toolName: "trg_intent", description: "Check the working directory." })}
       turn={turn}
       live={false}
     />,
   );
-  expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Check the working directory.");
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Check the working directory.");
 });
 
-test("the purpose LEADS the verb/target summary in document order", () => {
-  registerToolRenderer({ match: "trg_purpose_order", summary: () => "Ran ls -la" });
+test("the intent LEADS the verb/target summary in document order", () => {
+  registerToolRenderer({ match: "trg_intent_order", summary: () => "Ran ls -la" });
   render(
     <ToolCallItem
-      item={item({ toolName: "trg_purpose_order", description: "Check the working directory." })}
+      item={item({ toolName: "trg_intent_order", description: "Check the working directory." })}
       turn={turn}
       live={false}
     />,
   );
   const row = screen.getByTestId("tool-row");
-  const purpose = screen.getByTestId("tool-row-purpose");
+  const intent = screen.getByTestId("tool-row-intent");
   const summary = screen.getByTestId("tool-row-summary");
   const children = Array.from(row.querySelectorAll("[data-testid]"));
-  expect(children.indexOf(purpose)).toBeLessThan(children.indexOf(summary));
+  expect(children.indexOf(intent)).toBeLessThan(children.indexOf(summary));
 });
 
-test("no description means no purpose element at all - no placeholder, no empty separator", () => {
-  registerToolRenderer({ match: "trg_no_purpose", summary: () => "Ran ls" });
-  render(<ToolCallItem item={item({ toolName: "trg_no_purpose" })} turn={turn} live={false} />);
-  expect(screen.queryByTestId("tool-row-purpose")).toBe(null);
+test("no description means no intent element at all - no placeholder, no empty separator", () => {
+  registerToolRenderer({ match: "trg_no_intent", summary: () => "Ran ls" });
+  render(<ToolCallItem item={item({ toolName: "trg_no_intent" })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-row-intent")).toBe(null);
 });
 
-test("a whitespace-only description is absence, not a purpose", () => {
-  registerToolRenderer({ match: "trg_blank_purpose", summary: () => "Ran ls" });
-  render(<ToolCallItem item={item({ toolName: "trg_blank_purpose", description: "   " })} turn={turn} live={false} />);
-  expect(screen.queryByTestId("tool-row-purpose")).toBe(null);
+test("a whitespace-only description is absence, not an intent", () => {
+  registerToolRenderer({ match: "trg_blank_intent", summary: () => "Ran ls" });
+  render(<ToolCallItem item={item({ toolName: "trg_blank_intent", description: "   " })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-row-intent")).toBe(null);
 });
 
 // The subagent activity feed reads the SAME field with a very different
 // presentation; the two must at least agree on when it exists, which is what
 // this shared helper is for (see its doc comment).
-test("statedPurposeOf is the one absent-vs-present rule both surfaces share", () => {
-  expect(statedPurposeOf({ description: "  Check the tree.  " })).toBe("Check the tree.");
-  expect(statedPurposeOf({ description: "   " })).toBeUndefined();
-  expect(statedPurposeOf({ description: "" })).toBeUndefined();
-  expect(statedPurposeOf({})).toBeUndefined();
+test("statedIntentOf is the one absent-vs-present rule both surfaces share", () => {
+  expect(statedIntentOf({ description: "  Check the tree.  " })).toBe("Check the tree.");
+  expect(statedIntentOf({ description: "   " })).toBeUndefined();
+  expect(statedIntentOf({ description: "" })).toBeUndefined();
+  expect(statedIntentOf({})).toBeUndefined();
 });
 
 // --- A2: failure is a glyph on the left; success costs no space -----------
@@ -382,10 +399,10 @@ test("a clean call with nothing to open leads with its summary - no chevron, no 
 });
 
 // The chevron rides INLINE at the end of the headline text (see ToolRow.tsx's
-// grammar): inside the purpose when there is one, otherwise inside the
+// grammar): inside the intent when there is one, otherwise inside the
 // summary. It is never a flex item of the row, so nothing can justify it a
 // column of whitespace away from the words it opens.
-test("the chevron rides inline at the end of the purpose text when a purpose exists", () => {
+test("the chevron rides inline at the end of the intent text when an intent exists", () => {
   registerToolRenderer({ match: "trg_chev_inline", summary: () => "Ran ls", body: () => <div>more</div> });
   render(
     <ToolCallItem
@@ -394,10 +411,10 @@ test("the chevron rides inline at the end of the purpose text when a purpose exi
       live={false}
     />,
   );
-  expect(screen.getByTestId("tool-row-purpose").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  expect(screen.getByTestId("tool-row-intent").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
-test("the chevron rides inline at the end of the summary when there is no purpose", () => {
+test("the chevron rides inline at the end of the summary when there is no intent", () => {
   registerToolRenderer({ match: "trg_chev_trail", summary: () => "Ran ls", body: () => <div>more</div> });
   render(<ToolCallItem item={item({ toolName: "trg_chev_trail" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-row-trigger").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
@@ -493,22 +510,22 @@ test("a descriptor with an icon puts it in the RAIL as the row's first flex item
     />,
   );
   const row = screen.getByTestId("tool-row");
-  const purpose = screen.getByTestId("tool-row-purpose");
+  const intent = screen.getByTestId("tool-row-intent");
   const summary = screen.getByTestId("tool-row-summary");
   const icon = screen.getByTestId("tool-row-icon");
   expect(row.firstElementChild).toBe(icon);
-  expect(purpose.contains(icon)).toBe(false);
+  expect(intent.contains(icon)).toBe(false);
   expect(summary.contains(icon)).toBe(false);
 });
 
-test("a summary-less row (a delegate's purpose-only row) also rails the icon beside its rationale line", () => {
+test("a summary-less row (a delegate's intent-only row) also rails the icon beside its rationale line", () => {
   render(
-    <ToolRow summary="" purpose="Scout the repo" icon="delegate" failed={false} expandable={false} expanded={false} />,
+    <ToolRow summary="" intent="Scout the repo" icon="delegate" failed={false} expandable={false} expanded={false} />,
   );
   const row = screen.getByTestId("tool-row");
   const icon = screen.getByTestId("tool-row-icon");
   expect(row.firstElementChild).toBe(icon);
-  expect(screen.getByTestId("tool-row-purpose").contains(icon)).toBe(false);
+  expect(screen.getByTestId("tool-row-intent").contains(icon)).toBe(false);
 });
 
 test("a descriptor WITHOUT an icon renders no icon element - the icon-less grammar is unchanged", () => {
@@ -574,7 +591,9 @@ test("a descriptor's monoSummary flag puts its summary in fixed-width - shell's 
 
 test("an expandable row exposes aria-expanded reflecting its state", () => {
   registerToolRenderer({ match: "trg_aria", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "trg_aria" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to test the
+  // collapsed→expanded transition.
+  renderTools(<ToolCallItem item={item({ toolName: "trg_aria" })} turn={turn} live={false} />);
   const trigger = screen.getByTestId("tool-row-trigger");
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(trigger);
@@ -599,7 +618,9 @@ test("an expandable row shows a disclosure chevron; a non-expandable row shows n
 
 test("the chevron reports its open state for the stylesheet's rotation, and is hidden from AT", () => {
   registerToolRenderer({ match: "trg_chev_state", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "trg_chev_state" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to test the
+  // collapsed→expanded chevron state transition.
+  renderTools(<ToolCallItem item={item({ toolName: "trg_chev_state" })} turn={turn} live={false} />);
   const chevron = screen.getByTestId("tool-row-chevron");
   expect(chevron.getAttribute("aria-hidden")).toBe("true");
   expect(chevron.getAttribute("data-open")).toBe("false");
@@ -624,15 +645,15 @@ test("the row hover is an ink wash, not a surface token that can match the pane"
   expect(hover![1]).not.toMatch(/var\(--surface-/);
 });
 
-// A1: with a purpose present the summary demotes onto its own line, and the
+// A1: with an intent present the summary demotes onto its own line, and the
 // affordances ride THAT line - the tool call they act on - not the rationale
 // line. Rendered inline at the end of the summary text (same idiom as the
 // chevron on the headline line), so the row still never wraps to three.
-test("with a purpose, a trailing affordance rides the tool-call line, not the rationale line", () => {
+test("with an intent, a trailing affordance rides the tool-call line, not the rationale line", () => {
   render(
     <ToolRow
       summary="Read a.ts"
-      purpose="Check the source."
+      intent="Check the source."
       failed={false}
       expandable={false}
       expanded={false}
@@ -641,17 +662,17 @@ test("with a purpose, a trailing affordance rides the tool-call line, not the ra
   );
   const button = screen.getByRole("button", { name: "Open beside" });
   expect(screen.getByTestId("tool-row-summary").contains(button)).toBe(true);
-  expect(screen.getByTestId("tool-row-purpose").contains(button)).toBe(false);
+  expect(screen.getByTestId("tool-row-intent").contains(button)).toBe(false);
 });
 
-// A purpose-only row (the delegate card: purpose, no summary) has no
+// An intent-only row (the delegate card: intent, no summary) has no
 // tool-call line, so its affordance rides the disclosure line (ToolRow's
 // grammar). Regression guard: it used to drop onto a second line of its own.
-test("a purpose-only row trails its affordance on the disclosure line, not a line of its own", () => {
+test("an intent-only row trails its affordance on the disclosure line, not a line of its own", () => {
   render(
     <ToolRow
       summary=""
-      purpose="Proving family scheduler quiescence"
+      intent="Proving family scheduler quiescence"
       failed={false}
       expandable
       expanded={false}
@@ -661,27 +682,42 @@ test("a purpose-only row trails its affordance on the disclosure line, not a lin
   );
   const row = screen.getByTestId("tool-row");
   const button = screen.getByRole("button", { name: "Open transcript" });
-  // Exactly one rendering, in the purpose-line slot, outside the trigger.
+  // Exactly one rendering, in the intent-line slot, outside the trigger.
   expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-purpose-trailing").contains(button)).toBe(true);
-  expect(screen.getByTestId("tool-row-trigger").contains(button)).toBe(false);
+  expect(screen.getByTestId("tool-row-intent-trailing").contains(button)).toBe(true);
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const intent = screen.getByTestId("tool-row-intent");
+  const chevron = screen.getByTestId("tool-row-chevron");
+  expect(trigger.contains(button)).toBe(false);
+  expect(trigger.contains(chevron)).toBe(false);
+  // Valid sibling controls in binding visual order: intent text, Open,
+  // aria-hidden chevron. The overlay trigger still owns disclosure semantics.
+  expect(intent.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(button.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
   // No second line at all: nothing renders a summary element or summaryLine.
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
-  expect(row.getAttribute("data-purpose-trailing")).toBe("true");
-  // The stylesheet keeps trigger and control on one line: the trigger gives
-  // up the full-width flex basis a purpose-bearing row otherwise assigns.
+  expect(row.getAttribute("data-intent-trailing")).toBe("true");
+  // The stylesheet keeps visible intent content, control, and chevron on one
+  // line: the content's max-width reserves both trailing items and both gaps,
+  // flex line-breaking is decided on hypothetical main sizes (the base size
+  // CLAMPED by max-width), so a long intent wraps inside the trigger instead
+  // of the control wrapping to its own line - the regression a layoutguard
+  // geometry case (delegate-open-widget-inline) pins, since jsdom computes
+  // no cascade and can't see the wrap.
   const css = rowCss();
-  expect(css).toMatch(/\.row\[data-purpose-trailing="true"\] \.trigger\s*\{[^}]*flex:\s*1 1 auto/);
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\] \.intentTriggerContent\s*\{[^}]*flex:\s*0 1 auto/);
 });
 
-// Without an affordance a purpose-only row changes shape not at all: no
+// Without an affordance an intent-only row changes shape not at all: no
 // slot, no data attribute, and the (empty) summaryLine stays as it was.
-test("a purpose-only row with no affordance renders no purpose-line trailing slot", () => {
+test("an intent-only row with no affordance renders no intent-line trailing slot", () => {
   render(
-    <ToolRow summary="" purpose="Just a rationale." failed={false} expandable expanded={false} onToggle={() => {}} />,
+    <ToolRow summary="" intent="Just a rationale." failed={false} expandable expanded={false} onToggle={() => {}} />,
   );
-  expect(screen.queryByTestId("tool-row-purpose-trailing")).toBeNull();
-  expect(screen.getByTestId("tool-row").getAttribute("data-purpose-trailing")).toBe(null);
+  expect(screen.queryByTestId("tool-row-intent-trailing")).toBeNull();
+  expect(screen.getByTestId("tool-row").getAttribute("data-intent-trailing")).toBe(null);
 });
 
 // --- trailingAfter: the affordance rides INLINE mid-summary (read_file's
@@ -695,12 +731,12 @@ test("a purpose-only row with no affordance renders no purpose-line trailing slo
 // literal prefix of `summary` keeps the default end-of-line placement (same
 // "never a dead anchor" contract as summaryLink). ---------------------------------------
 
-test("trailingAfter places the control between the anchor text and the meta on a collapsed purpose-bearing row", () => {
+test("trailingAfter places the control between the anchor text and the meta on a collapsed intent-bearing row", () => {
   const summary = "Read cmd/evener-hub/frontend/src/widgets/sheet/sheet.test.tsx · lines 1-260";
   render(
     <ToolRow
       summary={summary}
-      purpose="Reviewing Sheet tests before adding size coverage"
+      intent="Reviewing Sheet tests before adding size coverage"
       failed={false}
       expandable
       expanded={false}
@@ -733,7 +769,7 @@ test("trailingAfter with a short path (anchor inside the clamped head) keeps the
   render(
     <ToolRow
       summary={summary}
-      purpose="Check the source"
+      intent="Check the source"
       failed={false}
       expandable
       expanded={false}
@@ -760,7 +796,7 @@ test("trailingAfter on an expanded row splits the full summary around the contro
   render(
     <ToolRow
       summary={summary}
-      purpose="Check the source"
+      intent="Check the source"
       failed={false}
       expandable
       expanded
@@ -782,7 +818,7 @@ test("a trailingAfter anchor NOT present at all in the summary falls back to the
   render(
     <ToolRow
       summary="Read a.ts · lines 1-3"
-      purpose="Check the source"
+      intent="Check the source"
       failed={false}
       expandable
       expanded={false}
@@ -808,7 +844,7 @@ test("a trailingAfter anchor that is present but NOT a prefix of the summary als
   render(
     <ToolRow
       summary="Read a.ts · lines 1-3"
-      purpose="Check the source"
+      intent="Check the source"
       failed={false}
       expandable
       expanded={false}
@@ -841,7 +877,7 @@ test("an ambiguous bare anchor that also recurs LATER in the summary (the meta-s
   render(
     <ToolRow
       summary={summary}
-      purpose="Check the source"
+      intent="Check the source"
       failed={false}
       expandable
       expanded={false}
@@ -867,7 +903,7 @@ test("an ambiguous bare anchor whose real target is the EARLIER occurrence does 
   render(
     <ToolRow
       summary={summary}
-      purpose="Check the source"
+      intent="Check the source"
       failed={false}
       expandable
       expanded={false}
@@ -892,7 +928,7 @@ test("the complete prefix anchors correctly even when the bare target text recur
   render(
     <ToolRow
       summary={summary}
-      purpose="Check the source"
+      intent="Check the source"
       failed={false}
       expandable
       expanded
@@ -915,26 +951,25 @@ test("the complete prefix anchors correctly even when the bare target text recur
 test("the rationale-to-call gap is tightened to line-leading only, still tighter than the gap between calls", () => {
   const css = rowCss();
   expect(css).toMatch(/\.row\s*\{[^}]*row-gap:\s*0/);
-  expect(css).toMatch(/\.purpose\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
+  expect(css).toMatch(/\.intent\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
   expect(css).toMatch(/\.demoted\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
-  expect(call![1]).toContain("padding: var(--space-2) 0");
+  expect(call![1]).toContain("padding: var(--rhythm-item) 0");
 });
 
-// The purpose is the agent's stated rationale for the call - commentary on
+// The intent is the agent's stated rationale for the call - commentary on
 // the machine text, set off in italics rather than a colour or size of its
 // own (Jesse's review call on the tiered-density follow-up).
-test("the stated purpose renders in italics", () => {
-  expect(rowCss()).toMatch(/\.purpose\s*\{[^}]*font-style:\s*italic/);
+test("the stated intent renders in italics", () => {
+  expect(rowCss()).toMatch(/\.intent\s*\{[^}]*font-style:\s*italic/);
 });
 
 // kata rdry: the demoted line is a tool-RESULT ("Wrote fizzbuzz.py"), not a
-// placeholder/disabled/timestamp - --ink-low's documented job (design-system.md)
-// - and measures 2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor for body
-// text. Same precedent as usermessageitem's .tag (moved off --ink-low for the
-// same reason). --ink-mid clears AA at 6.86/6.56 in both themes.
-test("the demoted summary line is readable text (--ink-mid), not the sub-AA --ink-low", () => {
+// placeholder/disabled/timestamp - --ink-low's documented job (design-system.md).
+// --ink-low clears AA since the 2026-09-06 raise (4.72:1 dark / 4.76:1 light
+// on --surface-1), but text a reader reads takes --ink-mid (6.51 / 5.84).
+test("the demoted summary line is readable text (--ink-mid), not the placeholder --ink-low", () => {
   const demoted = /\.demoted\s*\{([^}]*)\}/.exec(rowCss());
   expect(demoted).not.toBeNull();
   expect(demoted![1]).toMatch(/var\(--ink-mid\)/);
@@ -1023,15 +1058,15 @@ test("no summaryLink means the summary renders exactly as before - every descrip
 // The clamped state middle-truncates on raw character position (ToolRow's
 // own middleSplit) and can cut a URL mid-way, or split it across the two
 // independently-ellipsis-clamped head/tail spans - there is no sound "which
-// half is clickable" answer there, so the collapsed+purpose state stays
+// half is clickable" answer there, so the collapsed+intent state stays
 // plain text; opening the row (one click, the same chevron already on the
 // row) shows the summary in full, with the link.
-test("a collapsed row WITH a purpose keeps the clamped plain-text split - no link inside the ellipsis-truncated head/tail", () => {
+test("a collapsed row WITH an intent keeps the clamped plain-text split - no link inside the ellipsis-truncated head/tail", () => {
   render(
     <ToolRow
       summary="Fetched https://example.com/page · 4096 bytes"
       summaryLink="https://example.com/page"
-      purpose="Read the docs"
+      intent="Read the docs"
       failed={false}
       expandable
       expanded={false}
@@ -1042,12 +1077,12 @@ test("a collapsed row WITH a purpose keeps the clamped plain-text split - no lin
   expect(screen.getByTestId("tool-row-summary-head")).toBeTruthy();
 });
 
-test("the SAME purpose-bearing row, expanded, drops the clamp and shows the real link", () => {
+test("the SAME intent-bearing row, expanded, drops the clamp and shows the real link", () => {
   render(
     <ToolRow
       summary="Fetched https://example.com/page · 4096 bytes"
       summaryLink="https://example.com/page"
-      purpose="Read the docs"
+      intent="Read the docs"
       failed={false}
       expandable
       expanded
@@ -1101,13 +1136,13 @@ test("clicking the linkified URL does not toggle the sibling disclosure trigger"
   expect(onToggle).toHaveBeenCalledTimes(1);
 });
 
-// #93: an expanded row whose descriptor hides the summary while open (shell's
-// summaryHiddenWhenExpanded) and carries no purpose either renders NOTHING but
-// the aria-hidden chevron inside the disclosure trigger - the disclosure has
-// no accessible name at all. The fix must not resurrect the hidden summary text
-// (that suppression is deliberate, ToolCallItem.tsx:259); it needs a stable
-// label of its own.
-test("an expanded summary-less, purpose-less row's disclosure trigger still has a nonempty accessible name", () => {
+// #93: an expanded row that renders no summary (a delegate row - ToolCallItem
+// hands delegates an empty summary - or any summary-less row) and carries no
+// intent either renders NOTHING but the aria-hidden chevron inside the
+// disclosure trigger - the disclosure has no accessible name at all. The fix
+// must not resurrect the hidden summary text (that suppression is
+// deliberate); it needs a stable label of its own.
+test("an expanded summary-less, intent-less row's disclosure trigger still has a nonempty accessible name", () => {
   render(<ToolRow summary="" failed={false} expandable expanded onToggle={() => {}} />);
   const trigger = screen.getByTestId("tool-row-trigger");
   expect(trigger.tagName).toBe("BUTTON");
@@ -1223,4 +1258,480 @@ test("ToolCallItem renders no transcript button when the descriptor has no openT
   });
   render(<ToolCallItem item={item({ toolName: "trg_no_opentranscript" })} turn={turn} live={false} />);
   expect(screen.queryByRole("button", { name: "Open transcript" })).toBeNull();
+});
+
+// --- two-level disclosure: intent button controls summaryOpen, body chevron
+//     controls expanded -----------------------------------------------------
+//
+// When onToggleSummary is provided, ToolRow splits its single disclosure into
+// two: the intent button toggles `summaryOpen` (whether the summary line is
+// shown), and a separate `.bodyTrigger` chevron button toggles `expanded` (the
+// body below). Intent-less rows are unchanged - the overlay pattern keeps one
+// trigger controlling the body. The opt-in is the prop itself: callers that
+// do not pass onToggleSummary get the legacy single-level behavior exactly.
+
+test("two-level: summaryOpen=false expanded=false renders only the intent button, aria-expanded=false", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  // The intent button controls the summary, so it reflects summaryOpen.
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  // No summary line and no body chevron render yet.
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+});
+
+test("two-level: summaryOpen=true expanded=false renders the summary line and body chevron, intent expanded, body collapsed", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  // The summary line renders...
+  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+  // ...and the body chevron renders, collapsed.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("two-level: summaryOpen=true expanded=true renders summary line and body chevron, both expanded", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+});
+
+test("two-level: summaryOpen=false expanded=true (auto-expand) puts the body chevron on the intent line with data-intent-trailing=true", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  // The summary is hidden, so the body chevron shares the intent line.
+  expect(row.getAttribute("data-intent-trailing")).toBe("true");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
+  // The intent button reports summaryOpen=false (summary not visible).
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("two-level: clicking the intent button calls onToggleSummary, not onToggle", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen={false}
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  await user.click(screen.getByTestId("tool-row-trigger"));
+  expect(onToggleSummary).toHaveBeenCalledTimes(1);
+  expect(onToggle).not.toHaveBeenCalled();
+});
+
+test("two-level: clicking the body chevron calls onToggle, not onToggleSummary", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  await user.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+  expect(onToggleSummary).not.toHaveBeenCalled();
+});
+
+test("two-level: the intent button controls the summary region via aria-controls", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const summaryRegionId = trigger.getAttribute("aria-controls");
+  expect(summaryRegionId).toBeTruthy();
+  // The summary div carries that id.
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  expect(summaryEl.closest("div")?.getAttribute("id")).toBe(summaryRegionId);
+});
+
+test("two-level: the body chevron controls the body region via aria-controls", () => {
+  const bodyId = "body-region-1";
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      bodyId={bodyId}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-controls")).toBe(bodyId);
+});
+
+test("two-level: the body chevron has an accessible name from the summary label", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect((bodyTrigger.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
+test("two-level: a failed row's body chevron label starts with 'Failed'", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-label")).toBe("Failed npm test -- src/foo");
+});
+
+test("two-level: the summary line carries the chevron span inside the intent button, not a separate body chevron, when expanded and summary visible", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  // The intent button still carries the inline chevron (chrome)...
+  expect(screen.getByTestId("tool-row-intent").contains(screen.getByTestId("tool-row-chevron"))).toBe(true);
+  // ...and a separate body-trigger chevron renders too.
+  expect(screen.getByTestId("tool-row-body-trigger")).toBeTruthy();
+});
+
+test("two-level: intent-less rows keep the unchanged overlay pattern - onToggleSummary is ignored", () => {
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  // Intent-less rows keep the overlay: one trigger controls the body, aria-expanded=expanded.
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  // No separate body chevron renders for intent-less rows.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+});
+
+test("two-level: an intent-less row's overlay trigger calls onToggle, not onToggleSummary", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  await user.click(screen.getByTestId("tool-row-trigger"));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+  expect(onToggleSummary).not.toHaveBeenCalled();
+});
+
+test("two-level: without onToggleSummary, an intent row keeps the legacy single-level behavior", () => {
+  // The opt-in is the prop: callers that do not pass onToggleSummary get the
+  // old behavior - the intent button controls `expanded` directly.
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  // No separate body chevron renders in the legacy single-level mode.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+});
+
+test("two-level: the summary div gets id={summaryRegionId} when rendered", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const summaryRegionId = trigger.getAttribute("aria-controls");
+  expect(summaryRegionId).toBeTruthy();
+  // The summary line wrapper div carries the region id.
+  const summaryLine = screen.getByTestId("tool-row-summary").parentElement;
+  expect(summaryLine?.getAttribute("id")).toBe(summaryRegionId);
+});
+
+test("two-level: when the summary line is collapsed the intent button drops aria-controls (no region to point at)", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  // The summary line is not rendered, so no summary region exists to control.
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(trigger.getAttribute("aria-controls")).toBeFalsy();
+});
+
+test("two-level: the body chevron's chevron span rotates with expanded state", () => {
+  const { rerender } = render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  // The chevron rides inline in the summary, not inside the overlay button.
+  const chevron = screen.getByTestId("tool-row-body-chevron");
+  expect(chevron.getAttribute("data-open")).toBe("false");
+  rerender(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const chevronOpen = screen.getByTestId("tool-row-body-chevron");
+  expect(chevronOpen.getAttribute("data-open")).toBe("true");
+});
+
+test("two-level: the body chevron rides inline at the end of the summary text, not in the overlay button", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  // The chevron span is a child of the summary (inline at the end of the
+  // text)...
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.contains(screen.getByTestId("tool-row-body-chevron"))).toBe(true);
+  // ...and the overlay button is empty - it carries the click target only.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.querySelector("[data-open]")).toBeNull();
+});
+
+test("two-level: a summary-less line keeps the body chevron inside the button", () => {
+  render(
+    <ToolRow
+      summary=""
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.querySelector("[data-open]")?.getAttribute("data-open")).toBe("false");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+});
+
+// --- the intent-trailing control and the clamp's clip ------------------------
+
+const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "toolcallitem.module.css"), "utf8");
+
+test("the intent-trailing content reserves Open and chevron instead of growing past them", () => {
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s+\.intentTriggerContent\s*\{[^}]*flex:\s*0 1 auto/);
+  expect(css).toMatch(
+    /\.row\[data-intent-trailing="true"\]\s+\.intentTriggerContent\s*\{[^}]*max-width:\s*calc\(100% - var\(--tap-min, 28px\) - 14px - var\(--space-2\) - var\(--space-2\)\)/,
+  );
+});
+
+test("the collapsed summary line clips with a margin, so the open control's hit area survives", () => {
+  expect(css).toMatch(/\.clamped\s*\{[^}]*overflow:\s*clip/);
+  expect(css).toMatch(/\.clamped\s*\{[^}]*overflow-clip-margin:\s*16px/);
+});
+
+test("the intent-only overlay trigger describes itself with the row's status", () => {
+  // The overlay branch renders the visible status as a SIBLING of the trigger
+  // (valid DOM order text/Open/chevron); aria-describedby keeps the state
+  // ("Working", "Needs you") announced on focus, as it was when the trigger
+  // contained the status.
+  render(
+    <ToolRow
+      summary=""
+      intent="Delegate on the parser"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      status={<span>Working</span>}
+      trailing={<button type="button" aria-label="Open transcript" />}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const status = screen.getByTestId("tool-row-status");
+  expect(status.id).not.toBe("");
+  expect(trigger.getAttribute("aria-describedby")).toBe(status.id);
+});
+
+test("the body-trigger-on-intent-line row marks itself, and the stylesheet constrains the plain trigger", () => {
+  // Two-level row with the summary hidden and the body expanded: the body
+  // chevron rides the intent line. The plain trigger must keep a constrained
+  // basis - the [data-intent] rule's flex: 1 1 100% would wrap the chevron
+  // onto its own line - and the Open-plus-chevron reservation widens by one
+  // more chevron and gap when both ride the line.
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("data-intent-trailing")).toBe("true");
+  expect(row.getAttribute("data-body-trigger-intent")).toBe("true");
+  expect(css).toMatch(
+    /\.row\[data-intent-trailing="true"\]\s*>\s*\.trigger:not\(\.intentOverlayTrigger\)\s*\{[^}]*flex:\s*0 1 auto/,
+  );
+  expect(css).toMatch(/\[data-body-trigger-intent="true"\]\s+\.intentTriggerContent\s*\{[^}]*max-width/);
+});
+
+test("a body chevron sharing the intent line is raised above the overlay trigger", () => {
+  // Without its own layer the absolute overlay swallows the body trigger's
+  // clicks and toggles the wrong disclosure (roborev).
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s*>\s*\.bodyTrigger\s*\{[^}]*z-index:\s*var\(--z-raised\)/);
 });

@@ -2,10 +2,12 @@ package apptranscript
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,13 +15,118 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-func requireTurnsFromFile(t testing.TB, path string, maxLineBytes int, project EntryProjector) []appwire.Turn {
-	t.Helper()
-	turns, err := TurnsFromFile(path, maxLineBytes, project)
-	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+// These adapters keep legacy index tests focused while the production API is
+// item-only. They deliberately materialize the native item projection before
+// applying the old test coordinates; no saved numeric-window API remains.
+func latestFromFileForTest(cache *TurnCache, path string, maxLineBytes int, limit int, project BoundedEntryProjector) ([]appwire.Turn, string, error) {
+	return latestFromFileForTestContext(context.Background(), cache, path, maxLineBytes, limit, project)
+}
+
+func latestFromFileForTestContext(ctx context.Context, cache *TurnCache, path string, maxLineBytes int, limit int, project BoundedEntryProjector) ([]appwire.Turn, string, error) {
+	if limit <= 0 {
+		all, err := cache.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
+		if err != nil {
+			return nil, "", err
+		}
+		turns, cursor := latestGroupedTurns(all, limit)
+		return turns, cursor, nil
 	}
-	return turns
+	var turns []appwire.Turn
+	var olderCursor string
+	_, stats, err := cache.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, func(index turnIndexDisk, stats *ReadStats) error {
+		count := index.logicalTurnCount()
+		lo := max(count-limit, 0)
+		if lo > 0 {
+			olderCursor = strconv.Itoa(lo)
+		}
+		selected, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, count, project, stats)
+		if err != nil {
+			if !isContextError(err) {
+				cache.invalidate(path)
+			}
+			return err
+		}
+		turns = selected
+		stats.ProjectedTurns = projected
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	observeIndexRead(stats)
+	return turns, olderCursor, nil
+}
+
+func pageFromFileForTest(cache *TurnCache, path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
+	return pageFromFileForTestContext(context.Background(), cache, path, maxLineBytes, cursor, limit, project)
+}
+
+func pageFromFileForTestContext(ctx context.Context, cache *TurnCache, path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
+	if limit <= 0 {
+		all, err := cache.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
+		if err != nil {
+			return FilePage{}, err
+		}
+		page := pageGroupedTurns(all, cursor, limit)
+		return FilePage{Turns: page.Data, NextCursor: page.NextCursor}, nil
+	}
+	var page FilePage
+	_, stats, err := cache.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, func(index turnIndexDisk, stats *ReadStats) error {
+		hi := index.logicalTurnCount()
+		if cursor != "" {
+			if parsed, parseErr := strconv.Atoi(cursor); parseErr == nil {
+				hi = parsed
+			}
+		}
+		hi = min(max(hi, 0), index.logicalTurnCount())
+		lo := max(hi-limit, 0)
+		next := ""
+		if lo > 0 {
+			next = strconv.Itoa(lo)
+		}
+		turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, hi, project, stats)
+		if err != nil {
+			if !isContextError(err) {
+				cache.invalidate(path)
+			}
+			return err
+		}
+		stats.ProjectedTurns = projected
+		page = FilePage{Turns: turns, NextCursor: next}
+		return nil
+	})
+	if err != nil {
+		return FilePage{}, err
+	}
+	observeIndexRead(stats)
+	return page, nil
+}
+
+func latestGroupedTurns(all []appwire.Turn, limit int) ([]appwire.Turn, string) {
+	if limit <= 0 || len(all) <= limit {
+		return all, ""
+	}
+	lo := len(all) - limit
+	return all[lo:], strconv.Itoa(lo)
+}
+
+func pageGroupedTurns(all []appwire.Turn, cursor string, limit int) appwire.ThreadTurnsListResponse {
+	if limit <= 0 {
+		limit = 30
+	}
+	hi := len(all)
+	if cursor != "" {
+		if parsed, err := strconv.Atoi(cursor); err == nil {
+			hi = parsed
+		}
+	}
+	hi = min(max(hi, 0), len(all))
+	lo := max(hi-limit, 0)
+	next := ""
+	if lo > 0 {
+		next = strconv.Itoa(lo)
+	}
+	return appwire.ThreadTurnsListResponse{Data: all[lo:hi], NextCursor: next}
 }
 
 func TestSemanticReadersRejectUnknownTranscriptFields(t *testing.T) {
@@ -41,10 +148,10 @@ func TestSemanticReadersRejectUnknownTranscriptFields(t *testing.T) {
 			if _, err := ScanPrelude(path, 1<<20); err == nil {
 				t.Fatal("ScanPrelude accepted an unknown field")
 			}
-			if turns, err := TurnsFromFile(path, 1<<20, nil); err == nil || turns != nil {
-				t.Fatalf("TurnsFromFile = (%v, %v), want no turns and an error", turns, err)
+			if turns, err := ItemTurnsFromFile(path, 1<<20, nil); err == nil || turns != nil {
+				t.Fatalf("ItemTurnsFromFile = (%v, %v), want no turns and an error", turns, err)
 			}
-			if turns, cursor, err := NewTurnCache().LatestFromFile(path, 1<<20, 1, boundedTestProjector); err == nil || turns != nil || cursor != "" {
+			if turns, cursor, err := latestFromFileForTest(NewTurnCache(), path, 1<<20, 1, boundedTestProjector); err == nil || turns != nil || cursor != "" {
 				t.Fatalf("LatestFromFile = (%v, %q, %v), want no turns and an error", turns, cursor, err)
 			}
 		})
@@ -65,10 +172,10 @@ func TestSemanticFullAndIndexedReadersShareLineFraming(t *testing.T) {
 		if _, err := ScanPrelude(path, maxLineBytes); err != nil {
 			t.Fatalf("ScanPrelude: %v", err)
 		}
-		if _, err := TurnsFromFile(path, maxLineBytes, nil); err != nil {
-			t.Fatalf("TurnsFromFile: %v", err)
+		if _, err := ItemTurnsFromFile(path, maxLineBytes, nil); err != nil {
+			t.Fatalf("ItemTurnsFromFile: %v", err)
 		}
-		if _, _, err := NewTurnCache().LatestFromFile(path, maxLineBytes, 1, boundedTestProjector); err != nil {
+		if _, _, err := latestFromFileForTest(NewTurnCache(), path, maxLineBytes, 1, boundedTestProjector); err != nil {
 			t.Fatalf("LatestFromFile: %v", err)
 		}
 	})
@@ -82,7 +189,7 @@ func TestSemanticFullAndIndexedReadersShareLineFraming(t *testing.T) {
 		if _, err := ScanPrelude(path, maxLineBytes); err == nil {
 			t.Fatal("ScanPrelude accepted a max+1 complete record")
 		}
-		if _, _, err := NewTurnCache().LatestFromFile(path, maxLineBytes, 1, boundedTestProjector); err == nil {
+		if _, _, err := latestFromFileForTest(NewTurnCache(), path, maxLineBytes, 1, boundedTestProjector); err == nil {
 			t.Fatal("LatestFromFile accepted a max+1 complete record")
 		}
 	})
@@ -109,7 +216,7 @@ func TestLegacyV7IndexCannotMaskStrictTranscriptErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			cache := NewTurnCache()
-			if _, _, err := cache.LatestFromFile(path, 1<<20, 1, boundedTestProjector); err != nil {
+			if _, _, err := latestFromFileForTest(cache, path, 1<<20, 1, boundedTestProjector); err != nil {
 				t.Fatalf("build valid sidecar: %v", err)
 			}
 			index, err := readTurnIndex(path + ".appwire-index.json")
@@ -126,7 +233,7 @@ func TestLegacyV7IndexCannotMaskStrictTranscriptErrors(t *testing.T) {
 			}
 			writeMatchingLegacyV7Index(t, path, index)
 
-			turns, cursor, err := NewTurnCache().LatestFromFile(path, 1<<20, 1, boundedTestProjector)
+			turns, cursor, err := latestFromFileForTest(NewTurnCache(), path, 1<<20, 1, boundedTestProjector)
 			if err == nil || !strings.Contains(err.Error(), tc.wantError) || !strings.Contains(err.Error(), "unknown field") {
 				t.Fatalf("LatestFromFile = (%v, %q, %v), want %q unknown-field error", turns, cursor, err, tc.wantError)
 			}
@@ -152,7 +259,7 @@ func writeMatchingLegacyV7Index(t testing.TB, path string, index turnIndexDisk) 
 	index.ModTimeUnixNS = info.ModTime().UnixNano()
 	index.FileIdentity = fileIdentity(info)
 	index.ChangeIdentity = fileChangeIdentity(info)
-	index.PrefixStamp, _ = prefixStamp(file, index.CompleteSize)
+	index.PrefixStamp, _, _ = prefixStamp(context.Background(), file, index.CompleteSize)
 	index.FirstAnchor, index.TailAnchor = transcriptAnchors(file, index.CompleteSize)
 	projectionPrefix := fmt.Sprintf("turn-index-v%d:", turnIndexVersion)
 	index.ProjectionID = "turn-index-v7:" + strings.TrimPrefix(index.ProjectionID, projectionPrefix)
@@ -163,7 +270,7 @@ func writeMatchingLegacyV7Index(t testing.TB, path string, index turnIndexDisk) 
 
 func requireLatestFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes, limit int, project BoundedEntryProjector) ([]appwire.Turn, string) {
 	t.Helper()
-	turns, cursor, err := cache.LatestFromFile(path, maxLineBytes, limit, project)
+	turns, cursor, err := latestFromFileForTest(cache, path, maxLineBytes, limit, project)
 	if err != nil {
 		t.Fatalf("LatestFromFile: %v", err)
 	}
@@ -172,7 +279,7 @@ func requireLatestFromFile(t testing.TB, cache *TurnCache, path string, maxLineB
 
 func requirePageFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) FilePage {
 	t.Helper()
-	page, err := cache.PageFromFile(path, maxLineBytes, cursor, limit, project)
+	page, err := pageFromFileForTest(cache, path, maxLineBytes, cursor, limit, project)
 	if err != nil {
 		t.Fatalf("PageFromFile: %v", err)
 	}
@@ -206,8 +313,8 @@ func TestSemanticReadersRejectUnsupportedTranscriptFormat(t *testing.T) {
 			if _, err := ScanPrelude(path, 1<<20); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("ScanPrelude error = %v, want ErrUnsupportedFormat", err)
 			}
-			if turns, err := TurnsFromFile(path, 1<<20, nil); !errors.Is(err, transcript.ErrUnsupportedFormat) || turns != nil {
-				t.Fatalf("TurnsFromFile = (%v, %v), want nil ErrUnsupportedFormat", turns, err)
+			if turns, err := ItemTurnsFromFile(path, 1<<20, nil); !errors.Is(err, transcript.ErrUnsupportedFormat) || turns != nil {
+				t.Fatalf("ItemTurnsFromFile = (%v, %v), want nil ErrUnsupportedFormat", turns, err)
 			}
 		})
 	}
@@ -241,8 +348,8 @@ func TestSemanticReadersIgnoreInvalidUnreadableAndSentinelSiblingAPILog(t *testi
 			if _, err := ScanPrelude(path, 1<<20); err != nil {
 				t.Fatalf("ScanPrelude consulted sibling API log: %v", err)
 			}
-			if _, err := TurnsFromFile(path, 1<<20, nil); err != nil {
-				t.Fatalf("TurnsFromFile consulted sibling API log: %v", err)
+			if _, err := ItemTurnsFromFile(path, 1<<20, nil); err != nil {
+				t.Fatalf("ItemTurnsFromFile consulted sibling API log: %v", err)
 			}
 		})
 	}
@@ -255,8 +362,8 @@ func TestSemanticReadersIgnoreInvalidUnreadableAndSentinelSiblingAPILog(t *testi
 	if err := os.WriteFile(filepath.Join(dir, "session.api.jsonl"), []byte(`{"kind":"api_attempt","response":"sentinel"}`+"\n"), 0o000); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := TurnsFromFile(path, 1<<20, nil); !errors.Is(err, transcript.ErrUnsupportedFormat) {
-		t.Fatalf("TurnsFromFile error = %v, want transcript ErrUnsupportedFormat independent of sibling API log", err)
+	if _, err := ItemTurnsFromFile(path, 1<<20, nil); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+		t.Fatalf("ItemTurnsFromFile error = %v, want transcript ErrUnsupportedFormat independent of sibling API log", err)
 	}
 }
 
@@ -281,10 +388,10 @@ func TestTurnCacheRejectsUnsupportedTranscriptWithoutStaleState(t *testing.T) {
 					}
 					cache := NewTurnCache()
 					if bounded {
-						if _, _, err := cache.LatestFromFile(path, 1<<20, 1, boundedTestProjector); err != nil {
+						if _, _, err := latestFromFileForTest(cache, path, 1<<20, 1, boundedTestProjector); err != nil {
 							t.Fatalf("prime bounded cache: %v", err)
 						}
-					} else if _, err := cache.TurnsFromFile(path, 1<<20, sequentialTestProjector()); err != nil {
+					} else if _, err := cache.ItemTurnsFromFile(path, 1<<20, sequentialTestProjector()); err != nil {
 						t.Fatalf("prime full cache: %v", err)
 					}
 					indexPath := path + ".appwire-index.json"
@@ -297,14 +404,14 @@ func TestTurnCacheRejectsUnsupportedTranscriptWithoutStaleState(t *testing.T) {
 					}
 
 					if bounded {
-						turns, cursor, err := cache.LatestFromFile(path, 1<<20, 1, boundedTestProjector)
+						turns, cursor, err := latestFromFileForTest(cache, path, 1<<20, 1, boundedTestProjector)
 						if !errors.Is(err, transcript.ErrUnsupportedFormat) || turns != nil || cursor != "" {
 							t.Fatalf("LatestFromFile = (%v, %q, %v), want nil empty ErrUnsupportedFormat", turns, cursor, err)
 						}
 					} else {
-						turns, err := cache.TurnsFromFile(path, 1<<20, sequentialTestProjector())
+						turns, err := cache.ItemTurnsFromFile(path, 1<<20, sequentialTestProjector())
 						if !errors.Is(err, transcript.ErrUnsupportedFormat) || turns != nil {
-							t.Fatalf("TurnsFromFile = (%v, %v), want nil ErrUnsupportedFormat", turns, err)
+							t.Fatalf("ItemTurnsFromFile = (%v, %v), want nil ErrUnsupportedFormat", turns, err)
 						}
 					}
 					if _, ok := cache.entries[path]; ok {
@@ -328,12 +435,12 @@ func TestBoundedReadersRequireACompleteV2Header(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		turns, cursor, err := NewTurnCache().LatestFromFile(path, 1<<20, 1, boundedTestProjector)
+		turns, cursor, err := latestFromFileForTest(NewTurnCache(), path, 1<<20, 1, boundedTestProjector)
 		if !errors.Is(err, transcript.ErrUnsupportedFormat) || turns != nil || cursor != "" {
 			t.Fatalf("LatestFromFile = (%v, %q, %v), want nil empty ErrUnsupportedFormat", turns, cursor, err)
 		}
 
-		page, err := NewTurnCache().PageFromFile(path, 1<<20, "", 1, boundedTestProjector)
+		page, err := pageFromFileForTest(NewTurnCache(), path, 1<<20, "", 1, boundedTestProjector)
 		if !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Turns != nil || page.NextCursor != "" {
 			t.Fatalf("PageFromFile = (%+v, %v), want empty ErrUnsupportedFormat", page, err)
 		}

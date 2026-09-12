@@ -55,15 +55,17 @@ func (s *MemoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]s
 
 	// After compaction, inject crystal bank if we have any.
 	if len(s.crystals) > 0 {
-		s.injectCrystals(history)
+		s.injectCrystals(ctx, history)
 	}
 
 	return nil
 }
 
 // injectCrystals ensures the crystal bank is present in history as a steering
-// message at the end. Removes any previous crystal turn first.
-func (s *MemoryCrystalsStrategy) injectCrystals(history *[]schema.Turn) {
+// message at the end. Removes any previous crystal turn first, then reports
+// the net turn-count delta via reportPostFoldInjection so a caller correcting
+// a fold-removal delta for the N4 boundary (issue #634) sees this append.
+func (s *MemoryCrystalsStrategy) injectCrystals(ctx context.Context, history *[]schema.Turn) {
 	var b strings.Builder
 	b.WriteString("[MEMORY CRYSTALS]\nKey facts preserved from this session:\n\n")
 	for _, c := range s.crystals {
@@ -71,19 +73,11 @@ func (s *MemoryCrystalsStrategy) injectCrystals(history *[]schema.Turn) {
 	}
 	b.WriteString("[END CRYSTALS]")
 
-	// Remove any existing crystal turn.
-	filtered := (*history)[:0]
-	for _, t := range *history {
-		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), "[MEMORY CRYSTALS]") {
-			continue
-		}
-		filtered = append(filtered, t)
-	}
-	*history = filtered
-
-	// Append crystal turn at the end (within preserved window for next compaction).
-	crystalTurn := schema.NewTurn(schema.TurnSteering, llm.User(b.String()))
-	*history = append(*history, crystalTurn)
+	// Replace any existing crystal turn(s) with the fresh bank at the end
+	// (within the preserved window for the next compaction) and report the
+	// baseline-corrected injection delta (see replaceSteeringMarkerTurn for
+	// the shared swap/correction semantics).
+	replaceSteeringMarkerTurn(ctx, history, "[MEMORY CRYSTALS]", b.String())
 }
 
 // AfterAction crystallizes key facts from the recent action every 3rd turn.

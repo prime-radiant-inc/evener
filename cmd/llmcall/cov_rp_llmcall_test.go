@@ -336,22 +336,35 @@ func TestLLMCallMain_NoPromptWithBadTimeout(t *testing.T) {
 	}
 }
 
+// The model is always required; the provider is only required when the
+// client's registry names no default instance either.
 func TestLLMCallMain_MissingProviderAndModel(t *testing.T) {
 	for _, ev := range []envvars.Var{envvars.LLMProvider, envvars.EVENERProvider, envvars.LLMModel, envvars.EVENERModel} {
 		t.Setenv(ev.Name, "")
 	}
 	var stdout, stderr bytes.Buffer
 	err := llmcallMain([]string{"hello"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "no model specified") {
+		t.Fatalf("expected model error, got %v", err)
+	}
+
+	// A client with no default instance and no --provider has nothing to call.
+	old := newLLMClient
+	t.Cleanup(func() { newLLMClient = old })
+	newLLMClient = func() (*llm.Client, error) { return llm.NewClient(), nil }
+	stdout.Reset()
+	stderr.Reset()
+	err = llmcallMain([]string{"--model", "m", "hello"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "no provider specified") {
 		t.Fatalf("expected provider error, got %v", err)
 	}
 
-	// Provider set, model still missing.
+	// A client that names a default instance answers for the omitted flag.
+	newLLMClient = func() (*llm.Client, error) { return clientWith(llm.Response{}, nil), nil }
 	stdout.Reset()
 	stderr.Reset()
-	err = llmcallMain([]string{"--provider", "fake", "hello"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "no model specified") {
-		t.Fatalf("expected model error, got %v", err)
+	if err := llmcallMain([]string{"--model", "m", "hello"}, &stdout, &stderr); err != nil {
+		t.Fatalf("omitted --provider must fall back to the client default: %v", err)
 	}
 }
 

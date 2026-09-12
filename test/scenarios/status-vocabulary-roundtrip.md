@@ -55,7 +55,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
    `ask_pending`, and `project`.
 
 3. **[browser] The rail renders what the wire said.** Navigate to
-   `/auth?token=$TOKEN&next=/s/local:$SID` and read every rendered copy:
+   `/auth/$TOKEN?next=/s/local:$SID` and read every rendered copy:
    ```javascript
    (() => {
      const rows = [...document.querySelectorAll('[data-session-ref="local:<SID>"]')];

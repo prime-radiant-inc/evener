@@ -111,9 +111,10 @@ func TestS2Cov_MaybeNudgeSelfCompact_NudgesOnceThenLatches(t *testing.T) {
 // channel closes on Close), so a test can wait for all warnings to be recorded
 // before asserting rather than racing the drain goroutine.
 type chanCollector struct {
-	mu   sync.Mutex
-	msgs []string
-	done chan struct{}
+	mu       sync.Mutex
+	msgs     []string
+	warnData []events.WarningData
+	done     chan struct{}
 }
 
 // newChanCollector returns a collector whose done channel is ready, so a test
@@ -129,6 +130,7 @@ func (c *chanCollector) drain(sess *Session) {
 			if w, ok := ev.Data.(events.WarningData); ok {
 				c.mu.Lock()
 				c.msgs = append(c.msgs, w.Message)
+				c.warnData = append(c.warnData, w)
 				c.mu.Unlock()
 			}
 		}
@@ -151,4 +153,12 @@ func (c *chanCollector) messages() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.msgs...)
+}
+
+// warnings returns the full WarningData payloads seen so far, for assertions
+// that need a warning's title or hint rather than its message text.
+func (c *chanCollector) warnings() []events.WarningData {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]events.WarningData(nil), c.warnData...)
 }

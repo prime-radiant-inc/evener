@@ -29,7 +29,8 @@
 .row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* No space-between: the open anchor belongs beside the agent name it
+   * opens; only the "built-in" status keeps the far edge. */
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--edge);
@@ -42,6 +43,7 @@
 }
 
 .builtin {
+  margin-left: auto;
   color: var(--ink-low);
   font-size: var(--font-size-caption);
 }

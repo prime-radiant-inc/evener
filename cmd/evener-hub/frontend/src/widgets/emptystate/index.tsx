@@ -15,11 +15,15 @@ export interface EmptyStateProps {
    * rather than a deliberate requirement, and kept optional.
    */
   action?: ReactNode;
+  /** "display" sets the title at --font-size-display: for the one pane
+   * whose empty state IS the page (Welcome). Default keeps pane-title. */
+  size?: "default" | "display";
 }
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),
   title: requireClass(styles.title, "emptystate.module.css", "title"),
+  titleDisplay: requireClass(styles.titleDisplay, "emptystate.module.css", "titleDisplay"),
   hint: requireClass(styles.hint, "emptystate.module.css", "hint"),
   action: requireClass(styles.action, "emptystate.module.css", "action"),
 };
@@ -34,10 +38,12 @@ const BASE_CLASS = {
  * remounted). Those assertions previously matched the session pane's own
  * empty-state copy, which coupled a shared shell test to wording that panes
  * are free to change; the testid says what they actually mean. */
-export function EmptyState({ title, hint, action }: EmptyStateProps) {
+export function EmptyState({ title, hint, action, size = "default" }: EmptyStateProps) {
   return (
     <div className={BASE_CLASS.emptyState} data-testid="empty-state">
-      <p className={BASE_CLASS.title}>{title}</p>
+      <p className={size === "display" ? `${BASE_CLASS.title} ${BASE_CLASS.titleDisplay}` : BASE_CLASS.title}>
+        {title}
+      </p>
       {hint !== undefined && <p className={BASE_CLASS.hint}>{hint}</p>}
       {action !== undefined && <div className={BASE_CLASS.action}>{action}</div>}
     </div>

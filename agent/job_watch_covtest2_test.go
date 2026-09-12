@@ -308,8 +308,10 @@ func TestCovWatchKeyMatchesClearRequest(t *testing.T) {
 	}
 }
 
-// TestCovRecordWatchDeliveryLocked covers recordWatchDeliveryLocked
-// (job_watch.go lines 1517-1523) including the nil guard and budget crossing.
+// TestCovRecordWatchDeliveryLocked covers recordWatchDeliveryLocked including
+// the nil guard and the budget crossing. Every real caller is a condition-fire
+// site that has bumped conditionFires just before, so the test drives that
+// counter the same way.
 func TestCovRecordWatchDeliveryLocked(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -319,7 +321,7 @@ func TestCovRecordWatchDeliveryLocked(t *testing.T) {
 	}
 
 	// Normal increment — not yet at budget.
-	cfg := &watchConfig{deliveries: 0}
+	cfg := &watchConfig{conditionFires: 1}
 	if jm.recordWatchDeliveryLocked(cfg) {
 		t.Fatal("first delivery should not cross budget")
 	}
@@ -327,20 +329,25 @@ func TestCovRecordWatchDeliveryLocked(t *testing.T) {
 		t.Fatalf("deliveries = %d, want 1", cfg.deliveries)
 	}
 
-	// Increment to just below budget — not yet crossing.
-	cfg.deliveries = watchDeliveryBudget - 2
+	// Periodic ticks push deliveries far past the budget without ever reaching
+	// this function: the crossing must still be waiting on the budget-th fire.
+	cfg.deliveries = watchDeliveryBudget * 2
+
+	// One fire short of the budget — not yet crossing.
+	cfg.conditionFires = watchDeliveryBudget - 1
 	if jm.recordWatchDeliveryLocked(cfg) {
-		t.Fatal("delivery at budget-2 should not cross")
+		t.Fatal("delivery at budget-1 condition fires should not cross")
 	}
 
-	// Cross the budget — should return true exactly once.
-	cfg.deliveries = watchDeliveryBudget - 1
+	// The budget-th condition fire crosses, exactly once.
+	cfg.conditionFires = watchDeliveryBudget
 	if !jm.recordWatchDeliveryLocked(cfg) {
-		t.Fatal("delivery at budget should cross")
+		t.Fatal("the budget-th condition fire should cross")
 	}
 	// Beyond budget — should not cross again.
+	cfg.conditionFires++
 	if jm.recordWatchDeliveryLocked(cfg) {
-		t.Fatal("delivery beyond budget should not cross again")
+		t.Fatal("a condition fire beyond the budget should not cross again")
 	}
 }
 

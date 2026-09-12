@@ -201,7 +201,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_ = newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
 			runDir := t.TempDir()
 			_, _ = rendezvous.Write(runDir, rendezvous.Entry{PID: 7, Address: "127.0.0.1:1", ThreadID: "thread"})
-			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir, CodexSources: []appsource.CodexSourceConfig{{ID: "codex"}}})
+			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
 			if local, ok := runRegistry.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
 			}
@@ -221,7 +221,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_ = os.WriteFile(filepath.Join(pluginDir2, ".claude-plugin", "plugin.json"), []byte(`{"name":"q"}`), 0o600)
 			_ = os.MkdirAll(filepath.Join(pluginDir2, "commands"), 0o755)
 			_ = os.WriteFile(filepath.Join(pluginDir2, "commands", "a.md"), []byte("---\ndescription: a\n---\na"), 0o600)
-			_, _ = hubCommandList(hubcore.WebConfig{PluginDirs: []string{pluginDir, pluginDir2}})
+			_, _ = hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{pluginDir, pluginDir2}})
 
 			for _, c := range []struct {
 				m string
@@ -260,7 +260,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "test-key"})
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodEvenerAuthLogout, appwire.AuthLogoutParams{Provider: "anthropic"})
 			launchServer := appserver.NewServer(appserver.ServerConfig{})
-			registerLaunchHandlers(launchServer, newHubLaunchController(t.TempDir()))
+			registerLaunchHandlers(launchServer, newHubLaunchController(t.TempDir(), false))
 			_, _ = exactDispatch(context.Background(), t, launchServer, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: t.TempDir(), Layer: "global"})
 
 			// Drive successful instance mutations through their registered closures.
@@ -275,7 +275,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				p any
 			}{
 				{appwire.MethodEvenerInstanceList, appwire.EmptyParams{}},
-				{appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Name: "work", Type: "anthropic"}},
+				{appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}},
 				{appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "work"}},
 				{appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "work"}},
 				{appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: "work"}},
@@ -294,8 +294,8 @@ func FuzzExactAppRPC(f *testing.F) {
 			}
 			pastServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, PluginRoot: t.TempDir()}, appsource.NewRegistry())
 			pastRef := "local:" + pastID
-			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: pastRef, IncludeTurns: true, TurnLimit: 1})
-			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: pastRef, Limit: 1})
+			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: pastRef, IncludeTurns: true, ItemLimit: 1})
+			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: pastRef, ItemLimit: 1})
 			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodEvenerSubagentPreview, appwire.EvenerSubagentPreviewParams{Ref: pastRef, Limit: 1})
 
 			// Drive every successful marketplace/plugin mutation through the router.
@@ -418,7 +418,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			}
 
 			calls := 0
-			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 				calls++
 				return nil, errors.New("resolve")
 			}
@@ -426,7 +426,7 @@ func FuzzExactAppRPC(f *testing.F) {
 
 			calls = 0
 			source.startTurnErr = appwire.SessionUnavailable("resume")
-			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 				calls++
 				if calls == 1 {
 					return source, nil
@@ -436,7 +436,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 
 			calls = 0
-			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 				calls++
 				return source, nil
 			}

@@ -654,9 +654,9 @@ func hasSummaryAbove(before []string) bool {
 // the Makefile/docs decomposition spec: every target carries a documentation
 // annotation, with no exemption list. A target with no "##" summary is a
 // target that appears in no doc and in `make help` with nothing beside it,
-// which is how mutation-floor, fuzz-drive, coverage-gaps,
-// coverage-gaps-selftest and test-install reached the point of having no
-// target-level documentation anywhere in the repository.
+// which is how mutation-floor, fuzz-drive, coverage-gaps and test-install
+// reached the point of having no target-level documentation anywhere in the
+// repository.
 //
 // It keys on RULES rather than on .PHONY names, which is a strict superset:
 // fuzz-drive carried a rule with no .PHONY declaration for months, and keying
@@ -783,11 +783,11 @@ func TestEveryGeneratedRegionIsInTheStalenessDiff(t *testing.T) {
 // you are reading this because the map and LINT_TARGETS disagree, the question
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
-	"lint-naming":        "go run ./cmd/evener-dev/bin tomlcheck",
-	"lint-gofmt":         "gofmt -l",
+	"lint-naming":        "./evener-dev tomlcheck",
+	"lint-gofmt":         "/bin/gofmt\" -l",
 	"lint-evenerfuzz":    "-tags evenerfuzz",
 	"lint-eval":          "-tags eval ",
-	"lint-internal":      "go run ./cmd/evener-dev/bin internalcheck",
+	"lint-internal":      "./evener-dev internalcheck",
 	"lint-golangci":      "module-lint",
 	"lint-generated":     "docs/appwire-protocol.md",
 	"lint-fuzz-registry": "scripts/fuzz/fuzz-registry-check.sh",

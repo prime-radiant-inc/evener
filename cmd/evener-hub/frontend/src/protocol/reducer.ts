@@ -16,6 +16,7 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
   Turn,
+  WarningParams,
 } from "./types.gen";
 
 function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
@@ -293,11 +294,22 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // name/path/(source) fields (ItemImage, model.ts) rather than collapsing to
 // just src. src keeps preferring url — the field the legacy web client
 // (cmd/evener-hub/assets/renderer.js: imagesForUserItem, renderToolOutputImages)
-// treats as the <img src> — falling back to path or name, exactly as before;
-// name/path/source ride alongside it unresolved so a renderer can caption the
-// image instead of losing everything but whichever field happened to win
-// that fallback (kata byq2).
-function imagesToItemImages(images: InputItem[] | undefined): ItemImage[] | undefined {
+// treats as the <img src> — then the inline data-URI bytes, then a
+// sha-addressed /s/{route}/images/{sha} route rebuilt from metadata["sha"]
+// when the serving session is known (the wire Thread.sessionId, mirroring
+// stampThreadImageURLs' sessionID-over-ID preference in output_images.go;
+// imageSessionRoute undefined keeps that branch dark), then path or name,
+// exactly as before; name/path/source ride alongside src unresolved so a
+// renderer can caption the image instead of losing everything but whichever
+// field happened to win that fallback (kata byq2). Bytes beat the
+// synthesized route because they render unconditionally while the route 404s
+// whenever the session is absent from the hub's Past index
+// (handleSessionImage, image_serve.go) — so the route only ever fires for
+// sha-only replay descriptors that carry no bytes at all.
+function imagesToItemImagesForSession(
+  images: InputItem[] | undefined,
+  imageSessionRoute: string | undefined,
+): ItemImage[] | undefined {
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
@@ -305,10 +317,36 @@ function imagesToItemImages(images: InputItem[] | undefined): ItemImage[] | unde
   // through to the bare name gave the browser a relative URL that 404s, and
   // ImageGallery drops an unloadable src — no thumbnail at all (kata w53n).
   return images.map((img) => ({
-    src: img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
+    src: img.url ?? inlineImageSrc(img) ?? metadataShaImageSrc(img, imageSessionRoute) ?? img.path ?? img.name ?? "",
     name: img.name,
     path: img.path,
   }));
+}
+
+// A replayed input image carries no bytes at all: projectReplayInputImage
+// (app_threadread.go) strips Data and records the content sha in
+// metadata["sha"], and stampInputImageURLs (output_images.go) fills in the
+// sha-addressed /s/{session}/images/{sha} route the hub serves those bytes on
+// (handleSessionImage). A live or paged payload that reaches the client
+// without that stamp (older-producer frames, page fits the read path didn't
+// re-stamp) still names fetchable bytes by sha, so the short route is the src
+// when — and only when — no inline bytes are present: the browser fetches and
+// caches by URL instead of holding a ~33%-inflated base64 copy in the model
+// heap and the DOM, but payload bytes render unconditionally while the route
+// 404s for any session absent from the hub's Past index, so bytes stay first.
+// Strict lowercase-hex only (imageShaRegexp): a non-sha metadata value is
+// never URL-shaped, so it falls through to path/name rather than producing a
+// src the hub would 400 on. imageSessionRoute is undefined wherever the wire
+// named no serving session (absent/blank sessionId — the same gap
+// stampThreadImageURLs patches with the thread id); without it there is
+// nothing fetchable to prefer and the data-URI fallback stands.
+function metadataShaImageSrc(img: InputItem, imageSessionRoute?: string): string | undefined {
+  const sha = img.metadata?.sha;
+  if (sha === undefined || sha === "" || imageSessionRoute === undefined || imageSessionRoute === "") {
+    return undefined;
+  }
+  if (!/^[0-9a-f]{64}$/.test(sha)) return undefined;
+  return `/s/${imageSessionRoute}/images/${sha}`;
 }
 
 function inlineImageSrc(img: InputItem): string | undefined {
@@ -335,7 +373,35 @@ function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[
 // live in-flight chunks accumulated via item/reasoning/summaryTextDelta are
 // preserved separately by the item/completed and turn/completed handlers
 // (mergeReasoning), since they are more complete than this seed.
-function wireItemToModel(item: ThreadItem): ItemModel {
+const ITEM_TEXT_PRESENCE = Symbol("itemTextPresence");
+type ItemTextPresence = "omitted" | "provided";
+type InternalItemModel = ItemModel & { [ITEM_TEXT_PRESENCE]?: ItemTextPresence };
+
+function setItemTextPresence(item: ItemModel, presence: ItemTextPresence): ItemModel {
+  Object.defineProperty(item, ITEM_TEXT_PRESENCE, { value: presence, enumerable: false, configurable: true });
+  return item;
+}
+
+function copyItemTextPresence(source: ItemModel, target: ItemModel): ItemModel {
+  const presence = (source as InternalItemModel)[ITEM_TEXT_PRESENCE];
+  return presence === undefined ? target : setItemTextPresence(target, presence);
+}
+
+function itemTextPresence(item: ItemModel): ItemTextPresence {
+  return (item as InternalItemModel)[ITEM_TEXT_PRESENCE] ?? "provided";
+}
+
+// imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
+// callers that can name the serving session — hydrateThread's wire
+// thread.sessionId (falling back to the thread id, mirroring
+// stampThreadImageURLs in output_images.go), item pages and live
+// notifications' model.imageSessionId, carried on the model from hydrate —
+// so a sha-bearing input image that arrived WITHOUT its stamped url still
+// folds to the short /s/{route}/images/{sha} src when it carries no inline
+// bytes — otherwise the bytes stay the src. Undefined on the paths that
+// cannot name it — the sha branch then stays dark and every image resolves
+// exactly as before.
+function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemModel {
   const model: ItemModel & { clientMutationId?: string } = {
     id: item.id,
     turnId: item.turnId ?? "",
@@ -351,7 +417,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     error: item.error,
     prevalOnly: item.prevalOnly,
     exitCode: item.exitCode,
-    images: imagesToItemImages(item.images),
+    images: imagesToItemImagesForSession(item.images, imageSessionRoute),
     outputImages: outputImagesToItemImages(item.outputImages),
     status: item.status,
     source: item.source,
@@ -359,6 +425,9 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  setItemTextPresence(model, item.text === undefined ? "omitted" : "provided");
+  if (item.transcriptKey !== undefined) model.transcriptKey = item.transcriptKey;
+  if (item.position !== undefined) model.position = { ...item.position };
   // Set only when the wire carried one (like clientMutationId below, and
   // unlike the always-copied fields above): an absent transcriptEntryIndex
   // means the item has no persisted transcript position at all, which a fork
@@ -377,9 +446,21 @@ function wireItemToModel(item: ThreadItem): ItemModel {
 // seeded from the settled wire item's own (usually empty) text.
 function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (existing?.reasoningSummaries) {
-    return { ...settled, reasoningSummaries: existing.reasoningSummaries };
+    return copyItemTextPresence(settled, { ...settled, reasoningSummaries: existing.reasoningSummaries });
   }
   return settled;
+}
+
+// Omission is not a replacement: finalize the text already observed locally.
+// Explicit wire text, including empty text, remains authoritative.
+function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (!existing || itemTextPresence(settled) === "provided") return settled;
+  const pending = existing.pendingText;
+  const merged = copyItemTextPresence(existing, {
+    ...settled,
+    text: existing.text + (pending === undefined ? "" : pendingTextJoined(pending)),
+  });
+  return pending === undefined ? merged : setItemTextPresence(merged, "provided");
 }
 
 // item/completed's settled wire item never carries observedStartedAt/
@@ -392,11 +473,11 @@ function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): It
 // only ever from the now argument, never a clock read).
 function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined, now: number): ItemModel {
   if (existing?.observedStartedAt === undefined) return settled;
-  return {
+  return copyItemTextPresence(settled, {
     ...settled,
     observedStartedAt: existing.observedStartedAt,
     observedCompletedAt: existing.observedCompletedAt ?? epochMsToISO(now),
-  };
+  });
 }
 
 // The live tool-settle site drops ArgumentsJSON: EventToolCallEnd
@@ -412,7 +493,7 @@ function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined
 function mergeArguments(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (settled.argumentsJSON !== undefined) return settled;
   if (existing?.argumentsJSON === undefined) return settled;
-  return { ...settled, argumentsJSON: existing.argumentsJSON };
+  return copyItemTextPresence(settled, { ...settled, argumentsJSON: existing.argumentsJSON });
 }
 
 // Folds a PRESERVED item (one carried over from before settlement, not
@@ -436,13 +517,14 @@ function settleItem(item: ItemModel, now: number): ItemModel {
   const stale = item.status === "inProgress";
   const needsObservedCompletion = item.observedStartedAt !== undefined && item.observedCompletedAt === undefined;
   if (pending === undefined && !stale && !needsObservedCompletion) return item;
-  return {
+  const settled = copyItemTextPresence(item, {
     ...item,
     text: pending === undefined ? item.text : item.text + pendingTextJoined(pending),
     pendingText: undefined,
     status: stale ? "completed" : item.status,
     observedCompletedAt: needsObservedCompletion ? epochMsToISO(now) : item.observedCompletedAt,
-  };
+  });
+  return pending === undefined ? settled : setItemTextPresence(settled, "provided");
 }
 
 // The turn-level (non-items) fields wireToTurnModel maps — split out so the
@@ -462,8 +544,11 @@ function wireToTurnScalars(turn: Turn): Omit<TurnModel, "items"> {
   };
 }
 
-function wireToTurnModel(turn: Turn): TurnModel {
-  return { ...wireToTurnScalars(turn), items: (turn.items ?? []).map(wireItemToModel) };
+function wireToTurnModel(turn: Turn, imageSessionRoute?: string): TurnModel {
+  return {
+    ...wireToTurnScalars(turn),
+    items: (turn.items ?? []).map((item) => wireItemToModel(item, imageSessionRoute)),
+  };
 }
 
 // evener.activeTurnId is the primary signal; a turn already marked inProgress
@@ -484,9 +569,11 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
 // dropped so its TurnSeparator does not survive. (zrzr)
 function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
+  const callIds = new Set<string>();
   const resultByCallId = new Map<string, ItemModel>();
   for (const turn of turns) {
     for (const item of turn.items) {
+      if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
       if (item.callId && isToolResultId(item.id)) resultByCallId.set(item.callId, item);
     }
   }
@@ -496,20 +583,23 @@ function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
-      if (item.callId && isToolResultId(item.id)) continue; // folded into its call
+      if (item.callId && isToolResultId(item.id) && callIds.has(item.callId)) continue; // folded into its call
       if (item.callId && isToolCallId(item.id)) {
         const result = resultByCallId.get(item.callId);
         if (result) {
-          items.push({
-            ...item,
-            output: result.output,
-            error: result.error,
-            prevalOnly: result.prevalOnly,
-            exitCode: result.exitCode,
-            completedAt: result.completedAt,
-            status: result.status,
-            outputImages: result.outputImages ?? item.outputImages,
-          });
+          items.push(
+            copyItemTextPresence(item, {
+              ...item,
+              output: result.output,
+              error: result.error,
+              prevalOnly: result.prevalOnly,
+              exitCode: result.exitCode,
+              completedAt: result.completedAt,
+              status: result.status,
+              outputImages: result.outputImages ?? item.outputImages,
+              raw: result.raw ?? item.raw,
+            }),
+          );
           continue;
         }
       }
@@ -520,11 +610,156 @@ function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
   return merged;
 }
 
+const statusRank: Record<string, number> = {
+  inProgress: 0,
+  completed: 1,
+  failed: 1,
+};
+
+function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
+  const textSource = itemTextPresence(newer) === "omitted" && itemTextPresence(older) === "provided" ? older : newer;
+  return copyItemTextPresence(
+    textSource,
+    mergeItemIdentityMetadata(older, {
+      ...older,
+      ...newer,
+      text: textSource.text,
+      toolName: newer.toolName ?? older.toolName,
+      callId: newer.callId ?? older.callId,
+      argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
+      description: newer.description ?? older.description,
+      eventKind: newer.eventKind ?? older.eventKind,
+      steeringKind: newer.steeringKind ?? older.steeringKind,
+      raw: newer.raw ?? older.raw,
+      output: newer.output ?? older.output,
+      error: newer.error ?? older.error,
+      prevalOnly: newer.prevalOnly ?? older.prevalOnly,
+      exitCode: newer.exitCode ?? older.exitCode,
+      images: newer.images ?? older.images,
+      outputImages: newer.outputImages ?? older.outputImages,
+      source: newer.source ?? older.source,
+      reasoningSummaries: newer.reasoningSummaries ?? older.reasoningSummaries,
+      startedAt: newer.startedAt ?? older.startedAt,
+      completedAt: newer.completedAt ?? older.completedAt,
+      observedStartedAt: newer.observedStartedAt ?? older.observedStartedAt,
+      observedCompletedAt: newer.observedCompletedAt ?? older.observedCompletedAt,
+      status:
+        newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
+          ? older.status
+          : newer.status,
+    }),
+  );
+}
+
+function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): ItemModel {
+  const transcriptKey = incoming.transcriptKey || existing.transcriptKey;
+  return copyItemTextPresence(incoming, {
+    ...incoming,
+    ...(transcriptKey ? { transcriptKey } : {}),
+    ...(incoming.position !== undefined || existing.position !== undefined
+      ? { position: incoming.position ?? existing.position }
+      : {}),
+  });
+}
+
+function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
+  if (left.transcriptKey && right.transcriptKey) {
+    return left.transcriptKey === right.transcriptKey;
+  }
+  return left.id === right.id;
+}
+
+function orderedItems(items: ItemModel[]): ItemModel[] {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      if (a.item.position && b.item.position) {
+        return (
+          a.item.position.entry - b.item.position.entry ||
+          a.item.position.item - b.item.position.item ||
+          a.index - b.index
+        );
+      }
+      if (a.item.position) return -1;
+      if (b.item.position) return 1;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
+
+function mergePageItems(older: ItemModel[], newer: ItemModel[]): ItemModel[] {
+  const merged = orderedItems(older);
+  for (const current of orderedItems(newer)) {
+    const index = merged.findIndex((item) => itemIdentityMatches(item, current));
+    if (index === -1) {
+      merged.push(current);
+    } else {
+      const existing = merged[index];
+      if (existing) merged[index] = mergePageItem(existing, current);
+    }
+  }
+  return orderedItems(merged);
+}
+
+function turnsShareItemIdentity(left: TurnModel, right: TurnModel): boolean {
+  return left.items.some((leftItem) => right.items.some((rightItem) => itemIdentityMatches(leftItem, rightItem)));
+}
+
+function turnsMatch(left: TurnModel, right: TurnModel): boolean {
+  return left.id === right.id || turnsShareItemIdentity(left, right);
+}
+
+function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
+  return {
+    ...older,
+    ...newer,
+    startedAt: newer.startedAt ?? older.startedAt,
+    completedAt: newer.completedAt ?? older.completedAt,
+    durationMs: newer.durationMs ?? older.durationMs,
+    usage: newer.usage ?? older.usage,
+    cost: newer.cost ?? older.cost,
+    error: newer.error ?? older.error,
+    status:
+      newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
+        ? older.status
+        : newer.status,
+    items: mergePageItems(older.items, newer.items),
+  };
+}
+
+// The escaped /s/{route} fragment the hub serves sha-addressed image bytes
+// under. The hub's own stamp (sessionImageURL, output_images.go) escapes the
+// wire Thread.sessionId with url.PathEscape — never the stable workspace ref
+// (handleSessionImage looks the id up in Past.Find, where a ref like
+// local:stable finds nothing, and a stable ref can name a different session
+// than the one that served the bytes). encodeURIComponent is the matching
+// client-side escape. An empty id names no fetchable route, so the sha branch
+// stays dark for it. A session id never carries a slash (identifier's
+// base62 UUIDv7), and any foreign ref form the page route cannot serve keeps
+// the branch dark too.
+export function imageSessionRouteForSession(sessionId: string): string | undefined {
+  if (sessionId === "" || sessionId.includes("/")) return undefined;
+  return encodeURIComponent(sessionId);
+}
+
 export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
   const thread = resp.thread;
+  // The snapshot's own stamped urls already win per-image (url-first
+  // precedence); the route only matters for sha-bearing images that arrived
+  // WITHOUT a stamp — replayed input images from a read path that didn't
+  // re-stamp, or older-producer frames.
+  // stampThreadImageURLs (output_images.go) prefers the wire session id and
+  // falls back to the thread id, trimming both (strings.TrimSpace); the
+  // client-side rebuild matches it exactly — a whitespace-padded session id
+  // must not win the fallback and escape to a /s/%20.../images route the hub
+  // would 404 on while the trimmed thread id would have served.
+  const imageSessionId = thread.sessionId.trim() || thread.id.trim();
+  const imageSessionRoute = imageSessionRouteForSession(imageSessionId);
   return {
     ref,
     threadId: thread.id,
+    ...(thread.evener.parentRef === undefined ? {} : { parentRef: thread.evener.parentRef }),
+    imageSessionId,
     ...(thread.evener.instanceId === undefined ? {} : { instanceId: thread.evener.instanceId }),
     name: thread.name ?? "",
     status: thread.status,
@@ -539,7 +774,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],
-    turns: mergeToolCallsByCallId((thread.turns ?? []).map(wireToTurnModel)),
+    turns: mergeToolCallsByCallId((thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.evener.queue,
     pendingMutations: thread.evener.pendingMutations ?? [],
@@ -592,10 +827,32 @@ export function collectAuthoritativeMutationIds(resp: ThreadReadResponse): Set<s
 }
 
 export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
-  const older = mergeToolCallsByCallId((resp.data ?? []).map(wireToTurnModel));
+  return mergeOlderItemPage(model, resp);
+}
+
+export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  // The page response carries no ref of its own (ThreadTurnsListResponse is
+  // bare turns); the model it merges into already knows the serving session,
+  // carried from hydrate on model.imageSessionId. A legacy model hydrated
+  // before that field existed re-derives it from its own thread id.
+  const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
+  const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
+  const turns: TurnModel[] = [];
+
+  for (const older of olderTurns) {
+    const index = turns.findIndex((turn) => turnsMatch(turn, older));
+    if (index === -1) turns.push(older);
+    else if (turns[index]) turns[index] = mergePageTurn(turns[index], older);
+  }
+  for (const current of model.turns) {
+    const index = turns.findIndex((turn) => turnsMatch(turn, current));
+    if (index === -1) turns.push(current);
+    else if (turns[index]) turns[index] = mergePageTurn(turns[index], current);
+  }
+
   return {
     ...model,
-    turns: [...older, ...model.turns],
+    turns: mergeToolCallsByCallId(turns),
     olderCursor: resp.nextCursor,
   };
 }
@@ -647,12 +904,21 @@ function mapItem(items: ItemModel[], itemId: string, fn: (item: ItemModel) => It
   return items.map((it) => (it.id === itemId ? fn(it) : it));
 }
 
+function mapItemByIdentity(items: ItemModel[], incoming: ItemModel, fn: (item: ItemModel) => ItemModel): ItemModel[] {
+  return items.map((it) => (itemIdentityMatches(it, incoming) ? fn(it) : it));
+}
+
 // Finds which turn currently holds itemId, preferring the notification's own
 // turnId hint, then the model's active turn, then a full scan (defensive —
 // in practice the hint and activeTurnId always agree, since only one turn is
 // ever in flight at a time).
-function findItemTurnId(model: ThreadModel, turnIdHint: string | undefined, itemId: string): string | undefined {
-  const turnHasItem = (turn: TurnModel) => turn.items.some((it) => it.id === itemId);
+function findItemTurnId(
+  model: ThreadModel,
+  turnIdHint: string | undefined,
+  identity: string | ItemModel,
+): string | undefined {
+  const turnHasItem = (turn: TurnModel) =>
+    turn.items.some((it) => (typeof identity === "string" ? it.id === identity : itemIdentityMatches(it, identity)));
   if (turnIdHint) {
     const turn = model.turns.find((t) => t.id === turnIdHint);
     if (turn && turnHasItem(turn)) return turnIdHint;
@@ -705,16 +971,28 @@ function settleFirstMatchingTurn(turns: TurnModel[], turnId: string, settled: Tu
 // sends one turn/completed per announcement, all naming the same synthetic
 // turn, so replacing would leave a startup burst showing only its last line
 // where the snapshot shows every one (server/appwire_turns.go's upsertItem).
-function upsertTurnItems(items: ItemModel[], incoming: ThreadItem[], now: number): ItemModel[] {
+function upsertTurnItems(
+  items: ItemModel[],
+  incoming: ThreadItem[],
+  now: number,
+  imageSessionRoute?: string,
+): ItemModel[] {
   let next = items;
   for (const wire of incoming) {
-    const settled = wireItemToModel(wire);
-    const present = next.some((it) => it.id === settled.id);
-    next = present
-      ? mapItem(next, settled.id, (old) =>
-          mergeObservedTiming(mergeArguments(mergeReasoning(settled, old), old), old, now),
-        )
-      : [...next, settled];
+    const settled = wireItemToModel(wire, imageSessionRoute);
+    const index = next.findIndex((it) => itemIdentityMatches(it, settled));
+    if (index === -1) {
+      next = [...next, settled];
+      continue;
+    }
+    const old = next[index];
+    if (!old) continue;
+    const updated = mergeObservedTiming(
+      mergeArguments(mergeReasoning(mergePageItem(old, settled), old), old),
+      old,
+      now,
+    );
+    next = next.map((item, itemIndex) => (itemIndex === index ? updated : item));
   }
   return next;
 }
@@ -730,6 +1008,7 @@ function mergeTurnCompletionStamp(
   turnId: string,
   stamp: Turn,
   now: number,
+  imageSessionRoute?: string,
 ): TurnModel {
   const base: TurnModel = existing ?? { id: turnId, status: "", items: [] };
   return {
@@ -739,7 +1018,7 @@ function mergeTurnCompletionStamp(
     completedAt: epochMsToISO(stamp.completedAt) ?? base.completedAt,
     durationMs: stamp.durationMs ?? base.durationMs,
     error: stamp.error,
-    items: upsertTurnItems(base.items, stamp.items ?? [], now),
+    items: upsertTurnItems(base.items, stamp.items ?? [], now, imageSessionRoute),
   };
 }
 
@@ -770,7 +1049,13 @@ function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
 // same reason.
 function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: Turn, now: number): ThreadModel {
   const existing = model.turns.find((t) => t.id === turnId);
-  const settled = mergeTurnCompletionStamp(existing, turnId, stamp, now);
+  const settled = mergeTurnCompletionStamp(
+    existing,
+    turnId,
+    stamp,
+    now,
+    imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+  );
   return {
     ...model,
     turns: existing ? settleFirstMatchingTurn(model.turns, turnId, settled) : placeNewTurn(model.turns, settled),
@@ -796,7 +1081,11 @@ function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: stri
   while (summaries.length <= summaryIndex) summaries.push([]);
   const chunks = summaries[summaryIndex] ?? [];
   summaries[summaryIndex] = appendChunk(chunks, delta);
-  return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
+  return copyItemTextPresence(item, {
+    ...item,
+    reasoningSummaries: summaries,
+    observedStartedAt: item.observedStartedAt ?? epochMsToISO(now),
+  });
 }
 
 // Appends `incoming` to pendingEscalations, or — if an entry with the same
@@ -819,6 +1108,24 @@ function upsertPendingEscalation(
 // completing its own systemMessage item, say) arrives mid-grind and must not
 // be mistaken for the retry's wait being over.
 const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
+
+// Restates appwire.WarningParams.EffectiveMessage shape for shape: the
+// generated types (WarningParams, `warning` typed `unknown`) are
+// declarations only, no runtime logic is generated alongside them, so the
+// rule cannot be derived from the types and has to be written out again
+// here. `message` wins when non-blank; otherwise `warning` counts when it is
+// itself a non-blank string, or an object (and not an array) whose own
+// `message` is a non-blank string. Every other shape carries no message.
+function warningMessage(params: WarningParams): string {
+  if (typeof params.message === "string" && params.message.trim() !== "") return params.message;
+  const warning = params.warning;
+  if (typeof warning === "string" && warning.trim() !== "") return warning;
+  if (typeof warning === "object" && warning !== null && !Array.isArray(warning)) {
+    const nested = (warning as { message?: unknown }).message;
+    if (typeof nested === "string" && nested.trim() !== "") return nested;
+  }
+  return "";
+}
 
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
@@ -846,6 +1153,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turn } = n.params;
+      // The serving session is the model's own hydrate-carried imageSessionId
+      // (the wire thread.sessionId the image bytes belong to) — never
+      // params.ref or model.ref, which can be a stable workspace alias for a
+      // different session than the one serving /s/{id}/images/{sha}.
+      const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
       // turns is presented everywhere else (mapTurn, findItemTurnId) as if
       // ids are unique. A duplicate here should never happen — the two known
       // ways it could (eptj, bz2z) are both fixed server-side — but blindly
@@ -860,14 +1172,14 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         );
         return {
           ...model,
-          turns: model.turns.map((t, i) => (i === existingIndex ? wireToTurnModel(turn) : t)),
+          turns: model.turns.map((t, i) => (i === existingIndex ? wireToTurnModel(turn, imageSessionRoute) : t)),
           activeTurnId: turn.id,
           lastFrameAt: now,
         };
       }
       return {
         ...model,
-        turns: [...model.turns, wireToTurnModel(turn)],
+        turns: [...model.turns, wireToTurnModel(turn, imageSessionRoute)],
         activeTurnId: turn.id,
         lastFrameAt: now,
       };
@@ -875,23 +1187,28 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
 
     case "turn/completed": {
       const params = n.params;
-      const turnId = params.turnId || params.turn.id;
+      const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
       if (model.activeTurnId !== turnId) return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
       let settledTurn: TurnModel;
       if (stamp.itemsView === "full") {
-        settledTurn = wireToTurnModel(stamp);
-        // Same three-helper composition as item/completed's existing-item
-        // branch below (mergeReasoning/mergeArguments/mergeObservedTiming
+        settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
+        // Same helper composition as item/completed's existing-item branch
+        // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
         // read/write disjoint fields off the same `old` reference, so
         // composition order is free) — this branch has its own settled
         // items rather than item/completed's single one, so it maps instead
         // of a single mapItem call.
         settledTurn.items = settledTurn.items.map((item) => {
-          const old = oldTurn?.items.find((o) => o.id === item.id);
-          return mergeObservedTiming(mergeArguments(mergeReasoning(item, old), old), old, now);
+          const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
+          const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
+          return mergeObservedTiming(
+            mergeArguments(mergeReasoning(mergeCompletedText(identitySettled, old), old), old),
+            old,
+            now,
+          );
         });
       } else {
         // The live wire's settle stamp never carries items — every live
@@ -929,7 +1246,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: [...turn.items, wireItemToModel(item)],
+          items: upsertTurnItems(
+            turn.items,
+            [item],
+            now,
+            imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -938,6 +1260,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params;
+      const incoming = wireItemToModel(item, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
       // A live watcher on a long turn sees nothing move on thread/status/
       // changed until the turn ends, however many tool calls fail inside it
       // (kata 895d) — item/completed is the finer-grained carrier, stamped
@@ -945,14 +1268,21 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       // count. Applied exactly like thread/status/changed's: absent means
       // "no change", never "nobody counted".
       const failedToolCalls = n.params.failedToolCalls ?? model.failedToolCalls;
-      const existingTurnId = findItemTurnId(model, turnId, item.id);
+      const existingTurnId = findItemTurnId(model, turnId, incoming);
       if (existingTurnId) {
         return {
           ...model,
           turns: mapTurn(model.turns, existingTurnId, (turn) => ({
             ...turn,
-            items: mapItem(turn.items, item.id, (old) =>
-              mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now),
+            items: mapItemByIdentity(turn.items, incoming, (old) =>
+              mergeObservedTiming(
+                mergeArguments(
+                  mergeReasoning(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                  old,
+                ),
+                old,
+                now,
+              ),
             ),
           })),
           failedToolCalls,
@@ -971,7 +1301,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, insertTurnId, (turn) => ({
           ...turn,
-          items: [...turn.items, wireItemToModel(item)],
+          items: [...turn.items, incoming],
         })),
         failedToolCalls,
         lastFrameAt: now,
@@ -987,11 +1317,13 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({
-            ...item,
-            // O(1) — see appendChunk's doc comment.
-            pendingText: appendChunk(item.pendingText, params.delta),
-          })),
+          items: mapItem(turn.items, params.itemId, (item) =>
+            copyItemTextPresence(item, {
+              ...item,
+              // O(1) — see appendChunk's doc comment.
+              pendingText: appendChunk(item.pendingText, params.delta),
+            }),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -1038,10 +1370,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({
-            ...item,
-            output: (item.output ?? "") + params.delta,
-          })),
+          items: mapItem(turn.items, params.itemId, (item) =>
+            copyItemTextPresence(item, {
+              ...item,
+              output: (item.output ?? "") + params.delta,
+            }),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -1080,8 +1414,8 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // reads it back, which is how a running session came to show no Steer,
         // no Stop and a dead Send until the page was reloaded (kata 06t8).
         // Same absent-means-no-update rule as the count above: a source that
-        // state-gates nothing (the Codex bridge) sends none, and clearing on
-        // absence would strip the session of every action it advertised.
+        // omits the capability sends none, and clearing on absence would strip
+        // the session of every action it advertised.
         capabilities: n.params.capabilities ?? model.capabilities,
         capabilitySource: n.params.capabilities ? "statusFrame" : model.capabilitySource,
         lastFrameAt: now,
@@ -1127,6 +1461,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         tasks: {
           total: n.params.total,
           done: n.params.done,
+          ...(n.params.cancelled === undefined ? {} : { cancelled: n.params.cancelled }),
+          ...(n.params.remaining === undefined
+            ? n.params.cancelled === undefined
+              ? {}
+              : { remaining: Math.max(0, n.params.total - n.params.done - n.params.cancelled) }
+            : { remaining: n.params.remaining }),
           ...(n.params.current ? { current: n.params.current } : {}),
         },
         lastFrameAt: now,
@@ -1213,7 +1553,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: params.message ?? "",
+            text: warningMessage(params) || JSON.stringify(params),
             status: "completed",
             warning: { source: params.source, title: params.title, hint: params.hint },
           };
@@ -1267,8 +1607,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_steering_live_${activeTurnId}_${steeringCount}`,
             turnId: activeTurnId,
             type: "steering",
+            ...(params.startedAt !== undefined ? { startedAt: epochMsToISO(params.startedAt) } : {}),
             text: params.text ?? "",
-            images: imagesToItemImages(params.images),
+            images: imagesToItemImagesForSession(
+              params.images,
+              imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+            ),
             status: "completed",
             source: params.source,
             steeringKind: params.kind,

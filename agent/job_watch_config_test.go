@@ -182,6 +182,40 @@ func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsImpossibleConcreteJobEventWatches(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "watched"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	for _, tc := range []struct {
+		name   string
+		events []string
+		filter *watchEventFilter
+		wants  []string
+	}{
+		{"assistant tool", []string{"assistant.tool"}, nil, []string{"assistant.tool", "concrete shell job"}},
+		{"communicate", []string{"communicate"}, nil, []string{"communicate", "concrete shell job"}},
+		{"assistant tool filter", []string{"assistant.tool"}, &watchEventFilter{ToolName: "read_file"}, []string{"assistant.tool", "concrete shell job"}},
+		{"terminal notification", []string{"job.notification"}, nil, []string{"automatic", "end its turn"}},
+		{"wildcard", []string{"*"}, nil, []string{"*", "automatic", "output_match"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := jm.configureWatch(watchArgs{Operation: "create", Source: rec.JobID, Target: rec.JobID, Events: tc.events, EventFilter: tc.filter})
+			if err == nil {
+				t.Fatal("configureWatch succeeded, want impossible concrete-job event rejection")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestJobWatchAliasTargetWithoutContextFailsTargetNotFound(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -385,7 +419,7 @@ func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
 		{
 			name: "without_events",
 			args: watchArgs{Target: runtimeMessageAliasCaller, EventFilter: &watchEventFilter{ToolName: "read_file"}},
-			want: "event_filter requires events",
+			want: "event_filter requires events naming assistant.tool",
 		},
 		{
 			name: "wrong_event",
@@ -450,8 +484,8 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 		Events: []string{"communicate", "job.notification"},
 		Every:  2,
 	})
-	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
-		t.Fatalf("error = %v, want every requires exactly one watched event kind", err)
+	if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
+		t.Fatalf("error = %v, want every requires events naming exactly one kind", err)
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
@@ -459,8 +493,8 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 
 	// every>1 with zero events should also fail (no event to throttle).
 	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
-		t.Fatalf("bare every with no events: error = %v, want every requires exactly one watched event kind", err)
+	if err == nil || !strings.Contains(err.Error(), "every with no events has nothing to fire on") {
+		t.Fatalf("bare every with no events: error = %v, want every with no events has nothing to fire on", err)
 	}
 
 	// every:1 reads as unset, so bare every:1 is a watch with no condition.

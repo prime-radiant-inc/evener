@@ -1,14 +1,31 @@
 /* Rail × Quote card. State hues are a token-contract semantic exception. */
 
+.lifecycle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-top: var(--rhythm-line);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.lifecycle[data-kind="running"] {
+  color: var(--alive-ink);
+}
+
+.lifecycle[data-kind="failed"] {
+  color: var(--danger-ink);
+}
+
 .card {
   display: flex;
   flex-direction: column;
   min-width: 0;
   max-width: 100%;
-  gap: 2px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-1);
-  border: 1px solid var(--edge);
+  gap: var(--rhythm-line);
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
   border-left: 2px solid var(--edge-strong);
   border-radius: 0; /* square corners are the design, not an omission */
 }
@@ -18,17 +35,17 @@
 }
 .card[data-kind="failed"] {
   border-left-color: var(--danger);
-  background: var(--danger-bg);
 }
 .card[data-attention="true"] {
   border-left-color: var(--attention);
-  background: var(--attention-bg);
 }
 
 .quote {
   display: block;
   min-width: 0;
-  font-size: var(--font-size-ui);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
+  line-height: var(--line-height-body);
   font-style: italic;
   color: var(--ink-hi);
   overflow-wrap: anywhere;
@@ -49,13 +66,18 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 .stats > span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.lifecycle[data-attention="true"] > span {
+  color: var(--attention-ink);
+  font-weight: var(--font-weight-medium);
 }
 .statusGlyph {
   flex: none;
@@ -83,35 +105,41 @@
 .quotesList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   margin: 0;
-  padding-left: var(--space-5);
-  list-style: decimal;
+  padding: 0;
+  list-style: none;
 }
 .quoteItem {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
   min-width: 0;
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   overflow-wrap: anywhere;
 }
-.quoteItem::marker {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
+.quoteText {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .quoteLive {
   color: var(--ink-hi);
   font-weight: 600;
 }
 .quoteMsg {
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
   font-style: italic;
   color: var(--ink-hi);
 }
 .quoteMeta {
-  font-family: var(--font-mono);
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: var(--space-1);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
-  margin-left: var(--space-2);
   white-space: nowrap;
 }
 .quotesEmpty {
@@ -128,15 +156,12 @@
 }
 .sectionLabel {
   font-size: var(--font-size-caption);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 .mandate {
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

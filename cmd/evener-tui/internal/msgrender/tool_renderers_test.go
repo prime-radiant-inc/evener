@@ -268,12 +268,19 @@ func TestWebSearchRenderer(t *testing.T) {
 
 func TestDelegateRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("delegate")
-	args := toolArgsFromJSON(`{"task":"do something useful"}`)
+	args := toolArgsFromJSON(`{"prompt":"do something useful"}`)
 	if r.Verb(args) != "delegate" {
 		t.Errorf("delegate verb = %q", r.Verb(args))
 	}
 	if !strings.Contains(r.Target(args), "do something") {
 		t.Errorf("delegate target should include task: %q", r.Target(args))
+	}
+	legacy := toolArgsFromJSON(`{"task":"legacy brief"}`)
+	if !strings.Contains(r.Target(legacy), "legacy brief") {
+		t.Errorf("delegate target should fall back to a legacy task key: %q", r.Target(legacy))
+	}
+	if body := delegateBody(legacy, "", 80); !strings.Contains(body, "legacy brief") {
+		t.Errorf("delegate body should fall back to a legacy task key: %q", body)
 	}
 }
 

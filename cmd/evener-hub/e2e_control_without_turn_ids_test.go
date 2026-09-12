@@ -359,6 +359,92 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 	next.RespondToolCall("communicate", communicateArgs("late steer done"))
 }
 
+// TestE2E_SteerAfterAStopReachesTheModelAndTheTranscript is the same rule when
+// the turn ended because the user pressed Stop rather than because the model
+// finished, which is the shape the live turn-control e2e exercises and the one
+// issue #710 was reported from: the steer was Applied and then vanished --
+// never delivered, never a steering item in the transcript a user reads back.
+//
+// A Stop parks pending user steering (#174) so the steer it cancelled is not
+// delivered anyway. A steer typed AFTER the Stop is not that steer; it is the
+// user asking for something new, and it has to run.
+//
+// The stack is fakellm, so this gates the rule the live test only corroborates.
+func TestE2E_SteerAfterAStopReachesTheModelAndTheTranscript(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+
+	stack := startHubStack(t, provider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	client := stack.dialRPC(ctx, t)
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-STEER-AFTER-STOP-OPENING")
+
+	const steerText = "EVENER-E2E-STEER-AFTER-STOP-TEXT"
+
+	// Hold round 1 open so the turn can end only by cancellation.
+	if _, err := provider.Next(ctx.Done()); err != nil {
+		t.Fatalf("waiting for the session's first model request: %v", err)
+	}
+	stopped := awaitActiveTurn(ctx, t, client, ref, "")
+
+	if _, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+	}); err != nil {
+		t.Fatalf("turn/interrupt against running turn %q: %v", stopped, err)
+	}
+	awaitThread(ctx, t, client, ref, "the interrupted session to settle", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+	})
+	awaitTurnStatus(ctx, t, client, ref, stopped, "interrupted")
+
+	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: steerText}},
+	})
+	if err != nil {
+		t.Fatalf("turn/steer after turn %q was stopped: %v", stopped, err)
+	}
+	if receipt.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("turn/steer disposition = %q, want %q", receipt.Receipt.Disposition, appwire.MutationDispositionApplied)
+	}
+
+	// Bounded well inside the test's own deadline: a steer nothing wakes for is
+	// never going to arrive, and that must read as this assertion failing
+	// rather than as the package timing out.
+	deliveryCtx, cancelDelivery := context.WithTimeout(ctx, 45*time.Second)
+	defer cancelDelivery()
+	next, err := provider.Next(deliveryCtx.Done())
+	if err != nil {
+		t.Fatalf("THE STEER WAS ACCEPTED AND NEVER RAN: no turn ever woke to deliver it after the Stop: %v", err)
+	}
+	if !next.Contains(steerText) {
+		t.Fatalf("the turn the steer woke does not carry %q; messages:\n%s", steerText, strings.Join(next.Texts(), "\n"))
+	}
+
+	landedIn := awaitSteeringItem(ctx, t, client, ref, steerText)
+	if landedIn == stopped {
+		t.Fatalf("the steer was folded into the stopped turn %q instead of a later one", stopped)
+	}
+
+	next.RespondToolCall("communicate", communicateArgs("steer after stop done"))
+}
+
 // TestE2E_QueuePreconditionsStillRefuseAStaleClient is the other side of
 // deleting a precondition: the two that name a real object have to keep biting.
 // expectedQueueRevision on drainAsSteer and expectedEntryId on
@@ -517,11 +603,11 @@ func TestE2E_LiveModelStopAndSteerNeedNoTurnID(t *testing.T) {
 		t.Skip("no LLM API key in env")
 	}
 
-	stack := startHubStackOnProvider(t, fmt.Sprintf(`schema = 1
+	stack := startHubStackOnProvider(t, fmt.Sprintf(`
 default = %q
 
-[instances.%s]
-type = %q
+[providers.%s]
+base = %q
 `, instance, instance, instance), instance+"/"+model)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -641,10 +727,13 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	var seen string
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				if turn.ID != turnID {
 					continue
 				}
@@ -660,7 +749,7 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatalf("turn %s never reached status %q in the transcript; last status %q", turnID, status, seen)
+	t.Fatalf("turn %s never reached status %q in the transcript; last status %q (last poll error: %v)", turnID, status, seen, lastErr)
 }
 
 // awaitModelOutput waits for the named turn to carry model-produced output, so
@@ -674,10 +763,13 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client, ref, turnID string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "full")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				if turn.ID != turnID {
 					continue
 				}
@@ -694,7 +786,7 @@ func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client,
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatalf("turn %s produced no model output; anything asserted about it would hold for a turn the provider never ran", turnID)
+	t.Fatalf("turn %s produced no model output; anything asserted about it would hold for a turn the provider never ran (last poll error: %v)", turnID, lastErr)
 }
 
 // awaitModelEcho waits for text to come back as model output. Unlike a
@@ -704,10 +796,13 @@ func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client,
 func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, ref, text string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "full")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				for _, item := range turn.Items {
 					if item.Type == "agentMessage" && strings.Contains(item.Text, text) {
 						return
@@ -721,7 +816,7 @@ func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, r
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatalf("%q never came back as model output: the steer was accepted and recorded, but nothing proves the model received it", text)
+	t.Fatalf("%q never came back as model output: the steer was accepted and recorded, but nothing proves the model received it (last poll error: %v)", text, lastErr)
 }
 
 // awaitSteeringItem waits for text to appear as a steering item in the durable
@@ -729,10 +824,13 @@ func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, r
 func awaitSteeringItem(ctx context.Context, t *testing.T, client *appwire.Client, ref, text string) string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "full")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				for _, item := range turn.Items {
 					if item.Type == "steering" && strings.Contains(item.Text, text) {
 						return turn.ID
@@ -746,8 +844,39 @@ func awaitSteeringItem(ctx context.Context, t *testing.T, client *appwire.Client
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatalf("%q never appeared as a steering item in the transcript: the steer was accepted but a user reading the session back never sees it", text)
+	t.Fatalf("%q never appeared as a steering item in the transcript: the steer was accepted but a user reading the session back never sees it (last poll error: %v)", text, lastErr)
 	return ""
+}
+
+// readTranscriptTurns starts each observation with the bounded v4 thread/read
+// item window. Older transcript items are reached only through the opaque
+// cursor returned by that read, so polling does not silently miss a target in
+// the history while still avoiding an unbounded initial response.
+func readTranscriptTurns(ctx context.Context, client *appwire.Client, ref, itemsView string) ([]appwire.Turn, error) {
+	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{
+		Ref:          ref,
+		IncludeTurns: true,
+		ItemsView:    itemsView,
+		ItemLimit:    appwire.TranscriptItemPageLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	turns := append([]appwire.Turn(nil), read.Thread.Turns...)
+	for cursor := read.OlderCursor; cursor != ""; {
+		page, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{
+			Ref:       ref,
+			Cursor:    cursor,
+			ItemsView: itemsView,
+			ItemLimit: appwire.TranscriptItemPageLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		turns = append(turns, page.Data...)
+		cursor = page.NextCursor
+	}
+	return turns, nil
 }
 
 // requireConflict fails unless err is the daemon's Conflict carrying want,

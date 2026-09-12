@@ -14,14 +14,7 @@ import (
 // is a bare-string "./plugins/widget" living in the same repo.
 func makeInstallableMarketplace(t *testing.T) (mktRepo, name string) {
 	t.Helper()
-	name = "acme"
-	dir := filepath.Join(t.TempDir(), "mkt")
-	os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755)
-	os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"),
-		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`), 0o644)
-	writePlugin(t, filepath.Join(dir, "plugins", "widget"), "widget", nil)
-	makeGitRepo(t, dir, "README.md", "x")
-	return dir, name
+	return makeMarketplaceRepoWithPlugin(t, "acme", "widget"), "acme"
 }
 
 func TestInstall_MaterializesAndRegisters(t *testing.T) {
@@ -51,6 +44,98 @@ func TestInstall_MaterializesAndRegisters(t *testing.T) {
 	}
 }
 
+// A plugin name comes out of an untrusted marketplace.json, and Install is
+// where the store first commits to one: a registry key is <plugin>@<marketplace>,
+// parsed at the LAST '@', so a catalog entry named wid@get in acme keys
+// wid@get@acme and every later lookup reads it back as plugin "wid@get" from
+// marketplace "acme". Only a marketplace name carrying '@' moves the
+// separator the parse depends on, so only that name is refused.
+func TestInstall_AcceptsAPluginNameThatCarriesAnAt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "dir-acme")
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"wid@get","source":"./plugins/widget"}]}`
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, filepath.Join(dir, "plugins", "widget"), "widget", nil)
+
+	m := NewManager(t.TempDir())
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	if _, err := m.Install(ctx, "wid@get", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	reg, err := LoadRegistry(m.registryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Plugins["wid@get@acme"]; !ok {
+		t.Fatalf("registry missing wid@get@acme: %+v", reg.Plugins)
+	}
+	items, err := m.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Plugin != "wid@get" || items[0].Marketplace != "acme" {
+		t.Fatalf("List() = %+v, want one wid@get from acme", items)
+	}
+}
+
+// The store's scratch directories are the marketplaces directory's own
+// children, so a plugin can carry one of their names without colliding with
+// anything: its cache directory is cache/<marketplace>/.old, and the staging
+// an install fetches into is cache/<marketplace>/.old/.staging, a level
+// deeper. A catalog is free to name a plugin that, and refusing it would
+// leave that plugin uninstallable.
+func TestInstall_AcceptsAPluginNamedForAScratchDirectory(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	// The catalog's own name for the plugin is what keys the install; the
+	// plugin's manifest names itself kebab-case, as every manifest must.
+	mktRepo := filepath.Join(t.TempDir(), "mkt-acme")
+	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"` + asideCloneName + `","source":"./plugins/widget"}]}`
+	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, filepath.Join(mktRepo, "plugins", "widget"), "widget", nil)
+	makeGitRepo(t, mktRepo, "README.md", "mkt")
+
+	m := NewManager(t.TempDir())
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	entry, err := m.Install(ctx, asideCloneName, "acme")
+	if err != nil {
+		t.Fatalf("installing a plugin named %q: %v", asideCloneName, err)
+	}
+	if _, err := os.Stat(filepath.Join(entry.InstallPath, ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("materialized plugin.json missing: %v", err)
+	}
+	// Under the plugin's own cache directory, not the marketplace clone's
+	// scratch directory.
+	if want := filepath.Join(m.cacheDir(), "acme", asideCloneName); !strings.HasPrefix(entry.InstallPath, want+string(filepath.Separator)) {
+		t.Fatalf("install path = %q, want it under %q", entry.InstallPath, want)
+	}
+	reg, err := LoadRegistry(m.registryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Plugins[registryKey(asideCloneName, "acme")]; !ok {
+		t.Fatalf("registry missing %s: %+v", registryKey(asideCloneName, "acme"), reg.Plugins)
+	}
+}
+
 // TestInstall_LazyFetchesSeededPointer guards against a self-deadlock: Install
 // already holds m.lockPath() when it reaches catalogPlugin -> ensureFetched, so
 // ensureFetched must NOT try to acquire that same lock itself (flock(2) is
@@ -74,7 +159,7 @@ func TestInstall_LazyFetchesSeededPointer(t *testing.T) {
 	if !entry.Enabled {
 		t.Error("installed entry not enabled")
 	}
-	mk, _ := m.ListMarketplaces()
+	mk, _ := m.ListMarketplaces(context.Background())
 	if mk[name].InstallLocation == "" {
 		t.Fatal("InstallLocation not backfilled after lazy fetch via Install")
 	}

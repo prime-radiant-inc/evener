@@ -1,0 +1,39 @@
+{
+  "scope": "Signed Release simulator app installation and retention check against the already qualified 0d75 backend. Physical iPhone and TestFlight installation remain unverified.",
+  "native": {
+    "source": "0097e3841fe9296ebe32da4cb6780cd7d2a8923f",
+    "inputEquivalentNativeSource": "016b118f78767e6b325bfe782c974135835242db",
+    "node": "22.13.1",
+    "executableSha256": "3883015716cc2b24540aa96a984e42111fed51e9e67fb4dbf7567e8901eabc4f",
+    "bundleSha256": "98478257829105c65d120a9c8925d699dc3e919c975d6c447e90b82c4fb4ffd2",
+    "bundleIdentifier": "com.primeradiant.evener.native",
+    "deviceFamily": [
+      1
+    ],
+    "platform": "iphonesimulator"
+  },
+  "retention": {
+    "nativeSource": "0097e3841fe9296ebe32da4cb6780cd7d2a8923f",
+    "backendSource": "0d75cf8b5fabb9992f2938caf42f2e8129d9c8d1",
+    "canonicalItemsUnchanged": 32,
+    "allDraftTablesUnchanged": true,
+    "draftTables": 7,
+    "otherReaderPositionsUnchanged": 11,
+    "providerRequestsBefore": 41,
+    "providerRequestsAfter": 41,
+    "visibleUnsentDraft": true
+  },
+  "combinedGate": {
+    "source": "5137914ccb66b04aa1b980757888f63141cf2f27",
+    "command": "make merge-approval-gate",
+    "exitCode": 0,
+    "logSha256": "810e44832ae1b53d7931f7189f65e6a1bd235b022c5221e376ed2fd8622defc1",
+    "nativeTests": 720,
+    "sharedTests": 686,
+    "excludesPendingTimingCompactionFix": true
+  },
+  "evidence": {
+    "screenshot": "2026-09-10-native-0097-installed.png",
+    "screenshotSha256": "8e06bf55b5670d2c50348c67795326eaa73217928f66926b19488b0683b75be5"
+  }
+}

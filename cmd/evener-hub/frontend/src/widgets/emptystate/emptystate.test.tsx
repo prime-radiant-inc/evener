@@ -43,3 +43,11 @@ test("renders title, hint, and action together", () => {
   expect(screen.getByText("Start one from the command palette.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "New session" })).toBeTruthy();
 });
+
+test("size=display adds the display-size title class; the default does not", () => {
+  const { container, rerender } = render(<EmptyState title="No session open" size="display" />);
+  const title = () => container.querySelector('[data-testid="empty-state"] > p');
+  expect(title()?.className).toMatch(/titleDisplay/);
+  rerender(<EmptyState title="No session open" />);
+  expect(title()?.className).not.toMatch(/titleDisplay/);
+});

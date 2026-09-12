@@ -59,7 +59,7 @@ func (m hubModel) dashboardView() string {
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.credentialsPanel.View(),
-			Footer:  "[Enter] set api key  [O] OAuth sign-in  [C] clear  [Esc] close",
+			Footer:  "[Enter] set credential  [O] OAuth sign-in  [C] clear  [Esc] close",
 			Height:  m.height,
 		}.View()
 	}
@@ -147,7 +147,7 @@ func dashboardHeader(hubURL string, liveCount int, width int, badge string) stri
 }
 
 // needsYouCount reports how many live sessions are in a state that needs the
-// user's attention (awaiting input, warning, or errored). Only hubRowSession
+// user's attention (awaiting input, warning, errored, or restart required). Only hubRowSession
 // rows are counted; a project's rollup row carries the same aggregated state
 // as its children (see buildDashboardRows) and would double-count otherwise.
 func needsYouCount(rows []hubRow) int {
@@ -157,7 +157,7 @@ func needsYouCount(rows []hubRow) int {
 			continue
 		}
 		switch stateLabel(row.state) {
-		case "awaiting", "warning", "errored":
+		case "awaiting", "warning", "errored", "restartRequired":
 			count++
 		}
 	}
@@ -297,7 +297,7 @@ func stateColor(state string) lipgloss.Color {
 		return th.StateAwaiting
 	case "active":
 		return th.StateWorking
-	case "warning":
+	case "warning", "restartRequired":
 		return th.StateWarning
 	case "idle":
 		return th.StateIdle
@@ -534,7 +534,7 @@ func statusDot(state string) string {
 		return "●"
 	case "active":
 		return "●"
-	case "warning":
+	case "warning", "restartRequired":
 		return "●"
 	case "idle":
 		return "●"

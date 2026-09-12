@@ -213,57 +213,6 @@ func TestLaunchFailureErrorStderrInError(t *testing.T) {
 	}
 }
 
-// TestProviderCredentialInEnvFound covers the path where the credential is in
-// the env.
-func TestProviderCredentialInEnvFound(t *testing.T) {
-	env := []string{"OPENAI_API_KEY=sk-12345"}
-	if !providerCredentialInEnv("openai", env) {
-		t.Fatal("expected to find openai credential in env")
-	}
-}
-
-// TestProviderCredentialInEnvNotFound covers the path where the credential is
-// not in the env.
-func TestProviderCredentialInEnvNotFound(t *testing.T) {
-	env := []string{"OTHER_VAR=value"}
-	if providerCredentialInEnv("openai", env) {
-		t.Fatal("expected not to find openai credential in env")
-	}
-}
-
-// TestProviderCredentialInEnvEmptyValue covers the path where the credential
-// env var is present but empty.
-func TestProviderCredentialInEnvEmptyValue(t *testing.T) {
-	env := []string{"OPENAI_API_KEY=  "}
-	if providerCredentialInEnv("openai", env) {
-		t.Fatal("empty credential should not be considered found")
-	}
-}
-
-// TestOpenAICompatibleBaseURLInEnvFound covers the found path.
-func TestOpenAICompatibleBaseURLInEnvFound(t *testing.T) {
-	env := []string{"OPENAI_COMPATIBLE_BASE_URL=http://localhost:8080"}
-	if !openAICompatibleBaseURLInEnv(env) {
-		t.Fatal("expected to find base URL in env")
-	}
-}
-
-// TestOpenAICompatibleBaseURLInEnvNotFound covers the not-found path.
-func TestOpenAICompatibleBaseURLInEnvNotFound(t *testing.T) {
-	env := []string{"OTHER_VAR=value"}
-	if openAICompatibleBaseURLInEnv(env) {
-		t.Fatal("expected not to find base URL in env")
-	}
-}
-
-// TestOpenAICompatibleBaseURLInEnvEmptyValue covers the empty-value path.
-func TestOpenAICompatibleBaseURLInEnvEmptyValue(t *testing.T) {
-	env := []string{"OPENAI_COMPATIBLE_BASE_URL=  "}
-	if openAICompatibleBaseURLInEnv(env) {
-		t.Fatal("empty base URL should not be considered found")
-	}
-}
-
 // TestEnvLookupFound covers the found path.
 func TestEnvLookupFound(t *testing.T) {
 	env := []string{"A=1", "B=2", "B=3"}
@@ -287,25 +236,5 @@ func TestEnvLookupEmptyEnv(t *testing.T) {
 	_, ok := envLookup(nil, "A")
 	if ok {
 		t.Fatal("expected not found in nil env")
-	}
-}
-
-// TestOpenAIInstanceOAuthUsableNoStateDir covers the path where stateDir
-// doesn't exist.
-func TestOpenAIInstanceOAuthUsableNoStateDir(t *testing.T) {
-	if openAIInstanceOAuthUsable("/nonexistent/path/that/does/not/exist", "openai") {
-		t.Fatal("expected false for nonexistent state dir")
-	}
-}
-
-// TestOpenAIStateDirFromLaunchEnvNil covers the nil env path.
-func TestOpenAIStateDirFromLaunchEnvNil(t *testing.T) {
-	got := openAIStateDirFromLaunchEnv(nil)
-	// Should return default state dir ending with "evener".
-	if got == "" {
-		t.Fatal("expected non-empty default state dir for nil env")
-	}
-	if !strings.HasSuffix(got, "evener") {
-		t.Fatalf("expected state dir ending with 'evener', got %q", got)
 	}
 }

@@ -128,7 +128,7 @@ test("pillNeedsYou is true when model status is warning with new content below",
 
   // Add content (pill appears) and set status to warning
   rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: "warning" } }) });
-  // pillNeedsYou requires pillCount > 0 AND isAttentionWorthy(model) === true
+  // pillNeedsYou requires pillVisible AND isAttentionWorthy(model) === true
   // isAttentionWorthy checks model.askPending || model.status.type === "awaiting" || "warning"
   expect(result.current.pillNeedsYou).toBe(true);
 });

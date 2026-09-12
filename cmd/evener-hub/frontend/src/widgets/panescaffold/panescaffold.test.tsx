@@ -163,15 +163,16 @@ test("the body rule scrolls independently of the header and footer", () => {
   expect(css).toContain("overflow-y: auto");
 });
 
-test("the question footer fits short content and caps tall content", () => {
+// The footer used to carry a .footer:has([data-ask-response-dock]) special
+// case while AskDock lived in it; the dock is the transcript's trailing row
+// now (Session.tsx -> TranscriptBody's trailingRow), so the footer is back
+// to the one fixed-slot contract every pane shares.
+test("the header and footer are fixed slots around the scrolling body", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   expect(css).toContain("flex: none");
   expect(css).toContain("flex: 1 1 0");
-  expect(css).toContain(".footer:has([data-ask-response-dock])");
-  expect(css).toContain("flex: 0 1 auto");
-  expect(css).toContain("min-height: 0");
-  expect(css).toContain("max-height: 70%");
+  expect(css).not.toContain("data-ask-response-dock");
 });
 
 // The composer's bottom safe-area accommodation lives where it docks - this
@@ -185,7 +186,9 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   // "a stylesheet assertion that matches its own comment" trap).
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
-  expect(footerRule).toContain("padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom))");
+  expect(footerRule).toContain(
+    "padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  );
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll
@@ -196,7 +199,9 @@ test("the body keeps end-of-scroll content clear of the home indicator", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
-  expect(bodyRule).toContain("padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom))");
+  expect(bodyRule).toContain(
+    "padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  );
 });
 
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
@@ -267,23 +272,25 @@ test("mobile: the body can never scroll sideways - wide content is contained, no
   expect(bodyRule![1]).toContain("overflow-x: clip");
 });
 
-// Micro-label pattern (design doc §2/§6): the pane title is chrome, not a
-// heading-sized title - small uppercase caption on the inset header band.
-test("the header sits on the inset surface", () => {
+// Approved editorial-instrument spec (2026-09-09): page headings are not bands.
+test("the header shares the page surface with a fine separating rule", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.header \{([^}]*)\}/)?.[1] ?? "";
-  expect(rule).toContain("background: var(--surface-inset)");
+  expect(rule).toContain("background: transparent");
   expect(rule).toContain("border-bottom: 1px solid var(--edge)");
 });
 
-test("the title renders as an uppercase micro-label, not a pane-title-sized heading", () => {
+test("the title renders as a sentence-case pane-title heading, not an uppercase micro-label", () => {
+  // typography-spacing-critique-2026-09-06 R4: the pane IS the page, so its
+  // title is the page heading. The micro-label recipe stays for containers
+  // inside a page (InspectorCard, RecommendationCard, Table headers).
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.title \{([^}]*)\}/)?.[1] ?? "";
-  expect(rule).toContain("font-size: var(--font-size-caption)");
-  expect(rule).toContain("font-weight: var(--font-weight-medium)");
-  expect(rule).toContain("text-transform: uppercase");
-  expect(rule).toContain("letter-spacing: var(--tracking-micro)");
-  expect(rule).toContain("color: var(--ink-mid)");
+  expect(rule).toContain("font-size: var(--font-size-pane-title)");
+  expect(rule).toContain("font-weight: var(--font-weight-semibold)");
+  expect(rule).not.toContain("text-transform");
+  expect(rule).toContain("letter-spacing: var(--tracking-display)");
+  expect(rule).toContain("color: var(--ink-hi)");
 });

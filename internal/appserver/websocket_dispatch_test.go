@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,46 +58,42 @@ func waitFor[T any](t *testing.T, what string, ch <-chan T) T {
 	}
 }
 
-// dispatchSlowFastServer builds a server whose thread/list handler blocks
-// until released, plus an http server speaking AppWire over WebSocket. The
-// release channel is closed by test cleanup so a parked handler can never
+// dispatchSlowFastServer builds a server whose thread/read handler — a
+// slow-read method that dispatches concurrently — blocks until released, plus
+// an http server speaking AppWire over WebSocket. The returned release is
+// idempotent and also runs at test cleanup, so a parked handler can never
 // outlive the test.
-func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}) {
+func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
 	t.Helper()
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		select {
 		case <-handlerStarted:
 		default:
 			close(handlerStarted)
 		}
 		<-releaseHandler
-		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_held"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
-	t.Cleanup(func() {
-		select {
-		case <-releaseHandler:
-		default:
-			close(releaseHandler)
-		}
-	})
-	return server, httpServer, handlerStarted
+	release := sync.OnceFunc(func() { close(releaseHandler) })
+	t.Cleanup(release)
+	return server, httpServer, handlerStarted, release
 }
 
 // TestServeWebSocketSlowHandlerDoesNotDelayPing pins the fix itself: with one
-// handler parked mid-turn, the browser's app-level ping heartbeat completes
-// on the same connection while the slow handler is still running.
+// slow-read handler parked mid-turn, the browser's app-level ping heartbeat
+// completes on the same connection while the slow handler is still running.
 func TestServeWebSocketSlowHandlerDoesNotDelayPing(t *testing.T) {
-	_, httpServer, handlerStarted := dispatchSlowFastServer(t)
+	_, httpServer, handlerStarted, _ := dispatchSlowFastServer(t)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
 	slowDone := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		slowDone <- err
 	}()
 	waitFor(t, "slow handler to start", handlerStarted)
@@ -121,44 +120,37 @@ func TestServeWebSocketSlowHandlerDoesNotDelayPing(t *testing.T) {
 }
 
 // TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns pins the other
-// half of the fix: a fast request issued after a slow one returns its own
-// response, correctly paired to its id, without waiting for the slow one.
+// half of the fix: a request issued after a parked slow read returns its own
+// response, correctly paired to its id, without waiting for the slow one —
+// the slow read dispatched on its own goroutine, so the receive loop stayed
+// free to handle the later request inline.
 func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
-	server, httpServer, handlerStarted := dispatchSlowFastServer(t)
-	fastStarted := make(chan struct{})
-	fastRelease := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		close(fastStarted)
-		<-fastRelease
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_fast"}}, nil
+	server, httpServer, handlerStarted, _ := dispatchSlowFastServer(t)
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_fast"}}}, nil
 	})
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
 	slowDone := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		slowDone <- err
 	}()
 	waitFor(t, "slow handler to start", handlerStarted)
 
 	fastDone := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_fast"})
+		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
 		fastDone <- err
 	}()
-	waitFor(t, "fast handler to start while the slow handler was busy", fastStarted)
-
-	// Release only the fast handler; the slow one stays parked. If dispatch
-	// were still serial, the fast response could never arrive.
-	close(fastRelease)
 	select {
 	case err := <-fastDone:
 		if err != nil {
 			t.Fatalf("fast request failed while slow handler was busy: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("fast request was head-of-line blocked behind a slow handler")
+		t.Fatal("fast request was head-of-line blocked behind a slow read")
 	}
 
 	select {
@@ -209,39 +201,29 @@ func TestServeWebSocketRejectsRequestsBeforeInitialize(t *testing.T) {
 // the opposite order they were issued both return their own result, not each
 // other's.
 func TestServeWebSocketResponsesPairToIDsWhenHandlersCompleteOutOfOrder(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	releaseSlow := make(chan struct{})
-	slowResult := appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_slow"}}}
-	fastResult := appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_fast"}}
+	server, httpServer, slowStarted, releaseSlow := dispatchSlowFastServer(t)
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		<-releaseSlow
-		return slowResult, nil
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_fast"}}}, nil
 	})
-	fastStarted := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		close(fastStarted)
-		return fastResult, nil
-	})
-	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
 
-	slowDone := make(chan appwire.ThreadListResponse, 1)
+	slowDone := make(chan appwire.ThreadReadResponse, 1)
 	slowErr := make(chan error, 1)
 	go func() {
-		resp, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_held"})
 		slowDone <- resp
 		slowErr <- err
 	}()
-	fastDone := make(chan appwire.ThreadReadResponse, 1)
+	waitFor(t, "slow handler to start", slowStarted)
+	fastDone := make(chan appwire.ThreadListResponse, 1)
 	fastErr := make(chan error, 1)
 	go func() {
-		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_fast"})
+		resp, err := client.ThreadList(ctx, appwire.ThreadListParams{})
 		fastDone <- resp
 		fastErr <- err
 	}()
 
-	waitFor(t, "fast handler to start while the slow handler was pending", fastStarted)
 	select {
 	case err := <-fastErr:
 		if err != nil {
@@ -251,17 +233,17 @@ func TestServeWebSocketResponsesPairToIDsWhenHandlersCompleteOutOfOrder(t *testi
 		t.Fatal("fast response was blocked behind the slow request")
 	}
 	resp := waitFor(t, "fast response payload", fastDone)
-	if resp.Thread.ID != "th_fast" {
-		t.Fatalf("fast response paired to wrong result: %+v", resp.Thread)
+	if len(resp.Data) != 1 || resp.Data[0].ID != "th_fast" {
+		t.Fatalf("fast response paired to wrong result: %+v", resp.Data)
 	}
 
-	close(releaseSlow)
+	releaseSlow()
 	if err := waitFor(t, "slow request to complete after release", slowErr); err != nil {
 		t.Fatalf("slow request failed after release: %v", err)
 	}
 	slowResp := waitFor(t, "slow response payload", slowDone)
-	if len(slowResp.Data) != 1 || slowResp.Data[0].ID != "th_slow" {
-		t.Fatalf("slow response paired to wrong result: %+v", slowResp.Data)
+	if slowResp.Thread.ID != "th_held" {
+		t.Fatalf("slow response paired to wrong result: %+v", slowResp.Thread)
 	}
 }
 
@@ -308,70 +290,90 @@ func TestServeWebSocketBurstOfConcurrentRequestsAllPairCorrectly(t *testing.T) {
 	}
 }
 
-// TestServeWebSocketInFlightOverflowAnswersUnavailableAndPingStillAnswered
-// pins the in-flight limiter: with every slot held by a blocking handler, the
-// next request is answered promptly with a retryable Unavailable wire error —
-// not parked, not disconnected — and ping still answers on the same
-// connection, because the limiter never blocks the receive loop.
-func TestServeWebSocketInFlightOverflowAnswersUnavailableAndPingStillAnswered(t *testing.T) {
+// TestConcurrentDispatchMethodsAreExactlyTheSlowReads pins the dispatch
+// policy's method set against the full appwire catalog: only the known-slow
+// read methods leave the receive loop; every mutation — and every other
+// read, present or future — stays serial per connection. A method added to
+// the catalog is classified here automatically, so the concurrent set cannot
+// silently acquire (or lose) a member.
+func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
+	slowReads := map[string]bool{
+		appwire.MethodThreadRead:            true,
+		appwire.MethodThreadTurnsList:       true,
+		appwire.MethodEvenerSubagentPreview: true,
+		// evener/update/check does synchronous GitHub I/O (up to two
+		// 10s timeouts); inline dispatch would block unrelated RPCs
+		// on the connection. Read-only, frontend discards stale results.
+		appwire.MethodEvenerUpdateCheck: true,
+		// evener/update/apply does a multi-minute download, verify, and
+		// install under the overall upgrade deadline; inline dispatch
+		// would hold the connection's serial worker that whole time.
+		// Safe out of order: hubUpdateMu plus the cross-process install
+		// lock fail a concurrent apply fast, and the restart waits on
+		// its own response flush rather than connection order.
+		appwire.MethodEvenerUpdateApply: true,
+	}
+	for _, spec := range appwire.Methods {
+		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {
+			t.Errorf("concurrentDispatchMethod(%s) = %v, want %v", spec.Name, got, want)
+		}
+	}
+	for method := range slowReads {
+		if !concurrentDispatchMethod(method) {
+			t.Errorf("%s should dispatch concurrently", method)
+		}
+	}
+}
+
+// TestServeWebSocketMutationsDispatchSeriallyPerConnection pins the serial
+// half of the dispatch contract: a later request on the same connection does
+// not begin until an earlier non-slow-read request completes, so handlers
+// outside the slow-read set keep the per-connection ordering they were
+// written against.
+func TestServeWebSocketMutationsDispatchSeriallyPerConnection(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	release := make(chan struct{})
-	var started sync.WaitGroup
-	started.Add(maxConcurrentRequestsPerConnection)
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		started.Done()
-		<-release
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		close(firstStarted)
+		<-releaseFirst
+		return appwire.EmptyResponse{}, nil
 	})
+	secondStarted := make(chan struct{})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_list"}}}, nil
+		close(secondStarted)
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_1"}}}, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
-	t.Cleanup(func() { close(release) })
+	release := sync.OnceFunc(func() { close(releaseFirst) })
+	t.Cleanup(release)
 
-	// Park one request per limiter slot; each takes its own dispatch
-	// goroutine and its own slot.
-	for range maxConcurrentRequestsPerConnection {
-		go func() {
-			_, _ = client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: "th_held"})
-		}()
-	}
-	startedDone := make(chan struct{})
+	firstDone := make(chan error, 1)
 	go func() {
-		started.Wait()
-		close(startedDone)
+		firstDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
 	}()
-	waitFor(t, "all in-flight slots to be held", startedDone)
+	waitFor(t, "first request to start", firstStarted)
 
-	overflowDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
 	go func() {
 		_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
-		overflowDone <- err
+		secondDone <- err
 	}()
 	select {
-	case err := <-overflowDone:
-		var wire appwire.WireError
-		if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
-			t.Fatalf("overflow request error=%v, want Unavailable wire error", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("overflow request was parked instead of answered with Unavailable")
+	case <-secondStarted:
+		t.Fatal("a later request began while an earlier one was still in flight on the same connection")
+	case <-time.After(100 * time.Millisecond):
 	}
 
-	pingDone := make(chan error, 1)
-	go func() {
-		var out appwire.EmptyResponse
-		pingDone <- client.Request(ctx, appwire.MethodPing, appwire.EmptyParams{}, &out)
-	}()
-	select {
-	case err := <-pingDone:
-		if err != nil {
-			t.Fatalf("ping failed while all in-flight slots were held: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("ping was starved while all in-flight slots were held")
+	release()
+	if err := waitFor(t, "first request to complete", firstDone); err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	waitFor(t, "second handler to start after the first completed", secondStarted)
+	if err := waitFor(t, "second request to complete", secondDone); err != nil {
+		t.Fatalf("second request failed: %v", err)
 	}
 }
 
@@ -386,9 +388,10 @@ type hydrationMarkerParams struct {
 
 // TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 // pins the record accounting when one connection issues a hydrating read
-// immediately followed by mutations: under concurrent dispatch the mutation
-// can run (and commit notifications) while the hydration read is still in
-// flight, so the sequence-cut discipline — not dispatch order — decides which
+// immediately followed by mutations: the read dispatches on its own
+// goroutine, so the mutation can run (and commit notifications) while the
+// hydration read is still in flight, and only the sequence-cut discipline
+// — not dispatch order — decides which
 // set each record lands in. Whatever the interleaving, every notification
 // must reach the client exactly once, in whichever set (the hydration's
 // buffered replay or the live stream), and none may be lost or duplicated.
@@ -521,6 +524,165 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 	}
 }
 
+func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T) {
+	const threadID = "th_admission"
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+		if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
+			return threadID, true
+		}
+		return "", false
+	}})
+	notifier := NewNotifier(16)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unsubStarted := make(chan struct{})
+	var once sync.Once
+	server.beforeSubscriptionRegistration = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if !Subscribe(ctx, "th_unrelated") {
+			return appwire.ThreadReadResponse{}, nil
+		}
+		if !CaptureSubscription(ctx, false, func() string { return params.ThreadID }, notifier.CurrentSequence, func() bool { return true }) {
+			return appwire.ThreadReadResponse{}, nil
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: params.ThreadID}}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+		close(unsubStarted)
+		Unsubscribe(ctx, params.ThreadID)
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: threadID, Subscribe: true})
+		readDone <- err
+	}()
+	waitFor(t, "read admission barrier", entered)
+	unsubDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: threadID})
+		unsubDone <- err
+	}()
+	if err := waitFor(t, "following unsubscribe response", unsubDone); err != nil {
+		t.Fatalf("unsubscribe failed: %v", err)
+	}
+	close(release)
+	if err := waitFor(t, "older read response", readDone); err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	server.subs.mu.RLock()
+	if len(server.subs.byThread[threadID]) != 0 {
+		server.subs.mu.RUnlock()
+		t.Fatal("canceled older read registered a subscription")
+	}
+	if len(server.subs.byThread["th_unrelated"]) != 1 {
+		server.subs.mu.RUnlock()
+		t.Fatal("unrelated subscription was removed")
+	}
+	server.subs.mu.RUnlock()
+
+	server.beforeSubscriptionRegistration = nil
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: threadID, Subscribe: true}); err != nil {
+		t.Fatalf("later read failed: %v", err)
+	}
+	server.subs.mu.RLock()
+	defer server.subs.mu.RUnlock()
+	if len(server.subs.byThread[threadID]) != 1 {
+		t.Fatalf("later read subscription count = %d, want 1", len(server.subs.byThread[threadID]))
+	}
+}
+
+func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testing.T) {
+	const threadID = "th_registration_barrier"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unsubStarted := make(chan struct{})
+	captureResolved := make(chan error, 1)
+	server := NewServer(ServerConfig{
+		ServerName: "test-server", SourceID: "local",
+		SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+			if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
+				return threadID, true
+			}
+			return "", false
+		},
+	})
+	server.beforeSubscriptionBeginBuffered = func() {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+		<-release
+	}
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return params.ThreadID },
+			func() uint64 { return 0 },
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() { captureResolved <- nil },
+				Abort:  func() { captureResolved <- errors.New("the read capture was withdrawn") },
+			},
+		) {
+			return appwire.ThreadReadResponse{}, nil
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: params.ThreadID}}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+		close(unsubStarted)
+		Unsubscribe(ctx, params.ThreadID)
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: threadID, Subscribe: true})
+		readDone <- err
+	}()
+	waitFor(t, "claim/register barrier", entered)
+	unsubDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{ThreadID: threadID})
+		unsubDone <- err
+	}()
+	waitFor(t, "unsubscribe handler", unsubStarted)
+	select {
+	case err := <-unsubDone:
+		t.Fatalf("unsubscribe completed before registration release: %v", err)
+	default:
+	}
+	close(release)
+	if err := waitFor(t, "unsubscribe after registration", unsubDone); err != nil {
+		t.Fatalf("unsubscribe failed: %v", err)
+	}
+	if err := waitFor(t, "read after registration", readDone); err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	// An unsubscribe that lands while the read's generation is still buffering
+	// marks that entry withdrawn and leaves the capture to drop it (see
+	// subscription.withdrawn). The capture resolves after its response reaches
+	// the send queue, so the client's read response is not an ordering signal
+	// for the registry; the capture handoff is.
+	if err := waitFor(t, "read capture resolution", captureResolved); err != nil {
+		t.Fatalf("read capture failed: %v", err)
+	}
+	server.subs.mu.RLock()
+	defer server.subs.mu.RUnlock()
+	if len(server.subs.byThread[threadID]) != 0 {
+		t.Fatal("unsubscribe left a stale registered subscription")
+	}
+}
+
 // seenMarkers sorts the delivered markers for stable failure messages.
 func seenMarkers(seen map[string]bool) []string {
 	markers := make([]string, 0, len(seen))
@@ -529,4 +691,95 @@ func seenMarkers(seen map[string]bool) []string {
 	}
 	sort.Strings(markers)
 	return markers
+}
+
+// requireInternalError asserts one request error is the panic barrier's
+// InternalError wire error.
+func requireInternalError(t *testing.T, what string, err error) {
+	t.Helper()
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("%s error = %v, want InternalError wire error", what, err)
+	}
+}
+
+// TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives
+// pins the panic barrier on both dispatch paths: a panic in an
+// inline-dispatched handler (thread/list) and in a concurrently dispatched
+// slow read (thread/read) each answer an InternalError response, are logged
+// with a stack, and leave the connection — and the process — alive for
+// subsequent requests.
+func TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives(t *testing.T) {
+	var logMu sync.Mutex
+	var logBuf strings.Builder
+	server := NewServer(ServerConfig{
+		ServerName: "test-server", Version: "test", SourceID: "local",
+		Logf: func(format string, args ...any) {
+			logMu.Lock()
+			fmt.Fprintf(&logBuf, format+"\n", args...)
+			logMu.Unlock()
+		},
+	})
+	logged := func() string {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logBuf.String()
+	}
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		panic("inline handler blew up")
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		panic("slow-read handler blew up")
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+
+	_, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+	requireInternalError(t, "inline panicking request", err)
+
+	_, err = client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1"})
+	requireInternalError(t, "concurrent panicking request", err)
+
+	// The same connection keeps serving: a routed request and the app-level
+	// ping both still answer.
+	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"}); err != nil {
+		t.Fatalf("routed request after panics failed: %v", err)
+	}
+	var out appwire.EmptyResponse
+	if err := client.Request(ctx, appwire.MethodPing, appwire.EmptyParams{}, &out); err != nil {
+		t.Fatalf("ping after panics failed: %v", err)
+	}
+
+	output := logged()
+	for _, want := range []string{
+		"panic handling " + appwire.MethodThreadList,
+		"inline handler blew up",
+		"panic handling " + appwire.MethodThreadRead,
+		"slow-read handler blew up",
+		"goroutine", // the stack trace made it into the log
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("panic log missing %q in:\n%s", want, output)
+		}
+	}
+}
+
+// TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured pins the
+// never-silent guarantee: with no ServerConfig.Logf, a panic report goes to
+// the standard logger instead of being dropped the way logf drops advisory
+// lines.
+func TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	var buf strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	server.panicLogf("appserver: panic handling %s: %v", appwire.MethodThreadList, "boom")
+	if !strings.Contains(buf.String(), "panic handling thread/list: boom") {
+		t.Fatalf("standard logger output = %q, want the panic line", buf.String())
+	}
 }

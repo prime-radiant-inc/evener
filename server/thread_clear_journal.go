@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -26,7 +27,9 @@ const (
 // threadClearRecord is the durable identity fence for one clear request. A
 // reserved record survives a daemon restart so the same request can resume (or
 // recover the already-installed replacement) without accepting a second clear
-// against the same stable workspace ref.
+// against the same stable workspace ref. The journal holds at most one record
+// per stable ref: a newer clear's reservation supersedes any older record for
+// the same ref, whose expected instance no such retry can name anymore.
 type threadClearRecord struct {
 	ClientMutationID   string                       `json:"client_mutation_id"`
 	RequestHash        string                       `json:"request_hash"`
@@ -128,11 +131,38 @@ func persistThreadClearJournal(path string, records map[string]threadClearRecord
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace thread clear journal: %w", err)
 	}
+	// The rename is only durable once the directory entry itself is synced; a
+	// crash right after the rename could otherwise lose the replacement. Some
+	// filesystems cannot sync a directory at all; tolerating that keeps clear
+	// usable there instead of turning a durability nicety into a hard failure.
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open thread clear journal directory: %w", err)
+	}
+	if err := dir.Sync(); err != nil && !journalSyncUnsupported(err) {
+		_ = dir.Close()
+		return fmt.Errorf("sync thread clear journal directory: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("close thread clear journal directory: %w", err)
+	}
 	return nil
 }
 
-func threadClearRequestHash(params appwire.ThreadClearParams) string {
-	data, _ := json.Marshal(params)
+// journalSyncUnsupported reports whether a sync failed because the filesystem
+// does not support syncing that file, mirroring the tolerance the hub's
+// deletion and transcript-display stores apply to the same rename idiom.
+func journalSyncUnsupported(err error) bool {
+	return errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.EINVAL)
+}
+
+func threadClearRequestHash(params appwire.ThreadClearParams) (string, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return "", fmt.Errorf("encode thread clear request for hashing: %w", err)
+	}
 	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:])
+	return hex.EncodeToString(hash[:]), nil
 }

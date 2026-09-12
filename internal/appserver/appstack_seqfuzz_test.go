@@ -164,9 +164,13 @@ func (s *ctxTransport) Recv(ctx context.Context) (appwire.Message, error) {
 	return s.stackTransport.Recv(ctx)
 }
 
-type stackCloser struct{ closes int }
+type stackCloser struct {
+	closes    int
+	immediate int
+}
 
 func (s *stackCloser) Close(websocket.StatusCode, string) error { s.closes++; return nil }
+func (s *stackCloser) CloseNow() error                          { s.immediate++; return nil }
 
 func exerciseReceiveLoops(t rapidTB) {
 	s := NewServer(ServerConfig{})
@@ -184,12 +188,18 @@ func exerciseReceiveLoops(t rapidTB) {
 	if closer.closes != 1 {
 		t.Fatalf("abnormal receive close count = %d", closer.closes)
 	}
+	if closer.immediate != 0 {
+		t.Fatalf("noncancelled immediate close count = %d", closer.immediate)
+	}
 	c.closeSend()
 	ctx, cancel := context.WithCancel(context.Background())
 	c.setCancel(cancel)
 	transport := &ctxTransport{ctx: ctx}
 	transport.messages = []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)}
 	runWebSocketReceiveLoop(ctx, closer, transport, c, newWebSocketReadGate())
+	if closer.closes != 1 || closer.immediate != 1 {
+		t.Fatalf("cancelled close counts = graceful %d, immediate %d", closer.closes, closer.immediate)
+	}
 }
 
 type stackPinger struct {

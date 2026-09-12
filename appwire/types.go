@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,16 +10,23 @@ import (
 // ProtocolVersion is compared exactly at the handshake
 // (internal/appserver/server.go), so bumping it makes a mixed pair of binaries
 // fail once, loudly, at initialize -- rather than agreeing there and then
-// disagreeing on every request.
+// disagreeing on every request. Daemon reads must identify authoritative
+// mutation state: a client cannot safely release uncertain sends from a peer
+// that does not supply that evidence.
 //
-// v3 dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
+// v4 makes transcript reads item-only and rejects retired paging fields. v3
+// dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
 // turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
 // names no turn. A v2 daemon still requires that field, so a v3 client talking
 // to one would get a Conflict per button press and the user would read it as
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v3"
+const ProtocolVersion = "evener-appwire-v5"
+
+// ThreadStatusRestartRequired identifies a live daemon that cannot serve this
+// hub's protocol. Its current activity is unavailable until explicitly restarted.
+const ThreadStatusRestartRequired = "restartRequired"
 
 const (
 	MethodInitialize                  = "initialize"
@@ -26,6 +34,7 @@ const (
 	MethodPing                        = "ping"
 	MethodThreadList                  = "thread/list"
 	MethodThreadRead                  = "thread/read"
+	MethodThreadUnsubscribe           = "thread/unsubscribe"
 	MethodThreadTurnsList             = "thread/turns/list"
 	MethodThreadTurnItemsList         = "thread/turns/items/list"
 	MethodThreadStart                 = "thread/start"
@@ -37,6 +46,7 @@ const (
 	MethodThreadVisionModelSet        = "thread/vision-model/set"
 	MethodThreadCompactStart          = "thread/compact/start"
 	MethodThreadShutdown              = "thread/shutdown"
+	MethodEvenerThreadForceStop       = "evener/thread/forceStop"
 	MethodTurnStart                   = "turn/start"
 	MethodTurnSteer                   = "turn/steer"
 	MethodTurnInterrupt               = "turn/interrupt"
@@ -69,6 +79,8 @@ const (
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
+	MethodEvenerUpdateCheck           = "evener/update/check"
+	MethodEvenerUpdateApply           = "evener/update/apply"
 	MethodEvenerAuthStatus            = "evener/auth/status"
 	MethodEvenerAuthTest              = "evener/auth/test"
 	MethodEvenerAuthLoginStart        = "evener/auth/login/start"
@@ -76,6 +88,8 @@ const (
 	MethodEvenerAuthLogout            = "evener/auth/logout"
 	MethodEvenerAuthList              = "evener/auth/list"
 	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
+	MethodEvenerAuthApiKeyClear       = "evener/auth/apiKey/clear"
+	MethodEvenerAuthCredentialJsonSet = "evener/auth/credentialJson/set"
 	MethodEvenerAuthDeviceStart       = "evener/auth/device/start"
 	MethodEvenerAuthDevicePoll        = "evener/auth/device/poll"
 	MethodEvenerLaunchResolve         = "evener/launch/resolve"
@@ -95,6 +109,7 @@ const (
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
 	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceEdit       = "evener/marketplace/edit"
 	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
 	MethodEvenerPluginList            = "evener/plugin/list"
 	MethodEvenerPluginInstall         = "evener/plugin/install"
@@ -104,10 +119,11 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
-	// MethodEvenerSettingsOverview returns the field bag behind six settings
+	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
+	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
-	// hub/runtime, storage, agent roster, codex launch configs, and probed MCP
-	// servers. See SettingsOverviewResponse's doc comment.
+	// hub/runtime, storage, agent roster, and probed MCP servers. See
+	// SettingsOverviewResponse's doc comment.
 	MethodEvenerSettingsOverview = "evener/settings/overview"
 	// MethodEvenerSandboxEscalationResolve delivers a human's approve/deny decision
 	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
@@ -216,34 +232,91 @@ type NavigationCapability struct {
 	Version      int    `json:"version"`
 	GenerationID string `json:"generationId"`
 	Sequence     uint64 `json:"sequence"`
+	ReadVersions []int  `json:"readVersions,omitempty"`
 }
 
 // NavigationReadParams selects one bounded hub navigation resource. Offset
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	Resource   string  `json:"resource"`
-	Section    string  `json:"section,omitempty"`
-	SectionID  string  `json:"sectionId,omitempty"`
-	Catalog    string  `json:"catalog,omitempty"`
-	ProjectKey string  `json:"projectKey,omitempty"`
-	Tier       string  `json:"tier,omitempty"`
-	Ref        string  `json:"ref,omitempty"`
-	Offset     *uint32 `json:"offset,omitempty"`
-	Limit      *uint32 `json:"limit,omitempty"`
-	ETag       string  `json:"etag,omitempty"`
+	RepresentationVersion uint8               `json:"representationVersion"`
+	Resource              string              `json:"resource"`
+	Section               string              `json:"section,omitempty"`
+	SectionID             string              `json:"sectionId,omitempty"`
+	Catalog               string              `json:"catalog,omitempty"`
+	ProjectKey            string              `json:"projectKey,omitempty"`
+	Tier                  string              `json:"tier,omitempty"`
+	Ref                   string              `json:"ref,omitempty"`
+	Offset                *uint32             `json:"offset,omitempty"`
+	Limit                 *uint32             `json:"limit,omitempty"`
+	Base                  *NavigationReadBase `json:"base,omitempty"`
+}
+
+func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
+	type wire NavigationReadParams
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var decoded wire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if base, present := fields["base"]; present {
+		var baseFields map[string]json.RawMessage
+		if err := json.Unmarshal(base, &baseFields); err != nil || baseFields == nil || decoded.Base == nil {
+			return errors.New("base must be an object when present")
+		}
+		if len(baseFields) != 3 {
+			return errors.New("invalid navigation base")
+		}
+		for _, name := range []string{"generationId", "revision", "etag"} {
+			value, ok := baseFields[name]
+			if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return errors.New("invalid navigation base")
+			}
+		}
+		if decoded.Base.GenerationID == "" || decoded.Base.ETag == "" || len(decoded.Base.GenerationID) > 256 || len(decoded.Base.ETag) > 1024 || decoded.Base.Revision > 9007199254740991 {
+			return errors.New("invalid navigation base")
+		}
+	}
+	if decoded.RepresentationVersion != 2 {
+		return errors.New("representationVersion must be 2")
+	}
+	if _, present := fields["etag"]; present {
+		return errors.New("etag is not a v2 field")
+	}
+	*params = NavigationReadParams(decoded)
+	return nil
+}
+
+type NavigationReadBase struct {
+	GenerationID string `json:"generationId"`
+	Revision     uint64 `json:"revision"`
+	ETag         string `json:"etag"`
 }
 
 // NavigationReadResponse carries one revisioned navigation resource. Data is
 // raw JSON because the resource discriminator selects among several existing
 // projection shapes.
 type NavigationReadResponse struct {
-	Status       string          `json:"status"`
-	GenerationID string          `json:"generationId"`
-	Revision     uint64          `json:"revision"`
-	ETag         string          `json:"etag"`
-	Data         json.RawMessage `json:"data,omitempty"`
+	Status         string                   `json:"status"`
+	Representation NavigationRepresentation `json:"representation,omitempty"`
+	GenerationID   string                   `json:"generationId"`
+	Revision       uint64                   `json:"revision"`
+	ETag           string                   `json:"etag"`
+	Base           *NavigationReadBase      `json:"base,omitempty"`
+	Data           json.RawMessage          `json:"data,omitempty"`
 }
+
+type NavigationRepresentation string
+
+const (
+	NavigationRepresentationSnapshot NavigationRepresentation = "snapshot"
+	NavigationRepresentationDelta    NavigationRepresentation = "delta"
+)
 
 // FavoriteSetParams selects the project favorite decision to persist. Kind is
 // retained so the typed method preserves the explicit rejection for the
@@ -467,6 +540,7 @@ type FeatureSet struct {
 	DirectoryComplete         bool `json:"directoryComplete"`
 	Auth                      bool `json:"auth"`
 	TranscriptDisplaySettings bool `json:"transcriptDisplaySettings,omitempty"`
+	KeybindingsSettings       bool `json:"keybindingsSettings,omitempty"`
 }
 
 type Thread struct {
@@ -520,17 +594,22 @@ type TaskSummary struct {
 // snapshot. A nil *TaskAggregate on EvenerThread means the source cannot know
 // the session's task state; a present zero is an authoritative empty list.
 type TaskAggregate struct {
-	Total   int          `json:"total"`
-	Done    int          `json:"done"`
-	Current *TaskSummary `json:"current,omitempty"`
+	Total     int          `json:"total"`
+	Done      int          `json:"done"`
+	Cancelled int          `json:"cancelled,omitempty"`
+	Remaining int          `json:"remaining,omitempty"`
+	Current   *TaskSummary `json:"current,omitempty"`
 }
 
 type EvenerThread struct {
-	Ref        string `json:"ref"`
-	InstanceID string `json:"instanceId,omitempty"`
-	ParentRef  string `json:"parentRef,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Profile    string `json:"profile,omitempty"`
+	// ResumeRequired means recovery stopped this session and automatic actions
+	// must wait for an explicit thread/resume. Saved transcripts remain readable.
+	ResumeRequired bool   `json:"resumeRequired,omitempty"`
+	Ref            string `json:"ref"`
+	InstanceID     string `json:"instanceId,omitempty"`
+	ParentRef      string `json:"parentRef,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	Profile        string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
@@ -548,6 +627,9 @@ type EvenerThread struct {
 	// value (Depth==0, Preview==nil) means "no queued messages".
 	Queue            QueueState        `json:"queue"`
 	PendingMutations []PendingMutation `json:"pendingMutations,omitempty"`
+	// MutationStateAuthoritative identifies a daemon snapshot that can settle
+	// uncertain sends. Saved transcript data cannot prove a mutation absent.
+	MutationStateAuthoritative bool `json:"mutationStateAuthoritative,omitempty"`
 	// Tasks carries the task-list progress for a session snapshot. It is nil
 	// when the source cannot authoritatively read task state, including an old
 	// daemon or a missing persisted task file; a present zero is real zero.
@@ -562,8 +644,9 @@ type EvenerThread struct {
 	// thread envelope, which is refreshed at the turn boundaries that move
 	// them. Usage is a pointer
 	// (unlike the other two scalars) because EvenerUsage is a value struct whose
-	// omitempty would never omit — nil is how a fresh/old-daemon/codex thread
-	// signals "no token data" rather than rendering ↑0 ↓0.
+	// omitempty would never omit — nil is how a fresh thread, an old daemon, or a
+	// source-backed thread that omits the field signals "no token data" rather
+	// than rendering ↑0 ↓0.
 	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (matching WorkMillis's
 	// scale, and the web reducer's epoch-ms read), 0 when no turn is running.
 	// Emitting seconds here would mix units with the consumer's ms clock.
@@ -571,10 +654,10 @@ type EvenerThread struct {
 	WorkMillis          int64        `json:"workMillis,omitempty"`
 	ActiveTurnStartedAt int64        `json:"activeTurnStartedAt,omitempty"`
 	// Cost is the session's cumulative estimated dollar total — the "~$X.XX"
-	// string EstimateCost derives from Usage at the thread's model price, the
+	// string EstimateCost derives from Usage at the registry row's cost, the
 	// session-scope sibling of the per-turn Turn.Cost (same shape, same "~"
-	// estimate marker). Empty (omitted) when Usage is nil or the model is
-	// uncataloged: an honest "unknown" that renders no chip, never a
+	// estimate marker). Empty (omitted) when Usage is nil or the row carries
+	// no cost: an honest "unknown" that renders no chip, never a
 	// misleading "~$0.00" — the only "~$0.00" a consumer sees is a genuinely
 	// sub-cent priced session. Derived from the authoritative full-session
 	// cumulative Usage (the same total the token cluster trusts), never a
@@ -609,19 +692,20 @@ type EvenerThread struct {
 	// failed. Nil means nobody counted: the transcript is unreadable (a legacy
 	// format_version 1 file, or a missing one), the session has no transcript,
 	// or the producer does not derive the figure at all — an old daemon, a
-	// Codex-sourced thread, or the hub's per-entry list sweeps, which cannot
-	// afford a scan per session. Consumers render nil as nothing, never as a
-	// fabricated zero.
+	// source-backed thread that omits the field, or the hub's per-entry list
+	// sweeps, which cannot afford a scan per session. Consumers render nil as
+	// nothing, never as a fabricated zero.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 	// AskPending is true while an ask_user question is unanswered. Additive:
-	// absent on old daemons and Codex threads, decoding as false.
+	// absent on old daemons and source-backed threads that omit the field,
+	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session
 	// surfaces the card(s). It is a HUMAN-CLIENT field only — it is never part of the
-	// model's transcript or any model-visible projection. Absent on old daemons /
-	// Codex threads.
+	// model's transcript or any model-visible projection. Absent on old daemons
+	// and source-backed threads that omit the field.
 	PendingEscalations []SandboxEscalationRequested `json:"pendingEscalations,omitempty"`
 	// ReasoningEffort, ReasoningEffortLevels, and SupportsReasoning are the
 	// live reasoning-effort settings for the session's current profile, so a
@@ -649,9 +733,9 @@ type GoalState struct {
 }
 
 // EvenerUsage carries a evener session's cumulative self-only token totals for
-// the status row. A nil *EvenerUsage on EvenerThread means no token data (old
-// daemon, Codex thread, or a session with zero usage) — the clusters hide
-// rather than render ↑0 ↓0.
+// the status row. A nil *EvenerUsage on EvenerThread means no token data (an old
+// daemon, a source-backed thread that omits the field, or a session with zero
+// usage) — the clusters hide rather than render ↑0 ↓0.
 type EvenerUsage struct {
 	InputTokens     int64 `json:"inputTokens,omitempty"`
 	OutputTokens    int64 `json:"outputTokens,omitempty"`
@@ -695,11 +779,13 @@ type ThreadQueueChangedParams struct {
 // task-list progress after a change, so a client refreshes the status row
 // event-driven instead of polling evener/tasks/list.
 type TaskUpdatedParams struct {
-	ThreadID string       `json:"threadId"`
-	Ref      string       `json:"ref"`
-	Total    int          `json:"total"`
-	Done     int          `json:"done"`
-	Current  *TaskSummary `json:"current,omitempty"`
+	ThreadID  string       `json:"threadId"`
+	Ref       string       `json:"ref"`
+	Total     int          `json:"total"`
+	Done      int          `json:"done"`
+	Cancelled int          `json:"cancelled,omitempty"`
+	Remaining int          `json:"remaining,omitempty"`
+	Current   *TaskSummary `json:"current,omitempty"`
 }
 
 // GoalUpdatedParams is the complete session goal state after a mutation. Goal
@@ -711,11 +797,10 @@ type GoalUpdatedParams struct {
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the
-// completed turn and its ID.
+// completed turn.
 type TurnCompletedParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId"`
 	Turn     Turn   `json:"turn"`
 }
 
@@ -789,12 +874,12 @@ type ThreadCapabilities struct {
 	// messages for processing after the active turn completes.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
-	// for a evener session that can accept a goal; false for sources without the
-	// engine (e.g. codex), so goal/set is gated like every other thread action.
+	// for a evener session that can accept a goal; false for sources that do not
+	// advertise the capability, so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
 	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
-	// meta); false for Codex-bridged threads.
+	// meta); false for non-local/source-backed threads that do not advertise it.
 	Rename bool `json:"rename"`
 }
 
@@ -816,6 +901,15 @@ type EvenerDiagnostics struct {
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
 	TurnSlots  *EvenerTurnSlots        `json:"turnSlots,omitempty"`
 	Agents     []string                `json:"agents,omitempty"`
+	// DelegateDiagnostics carries delegate-SUBSYSTEM diagnostics that are
+	// not about any one delegate -- e.g. the shared delegates.jsonl itself
+	// being unreadable (delegatestore.ErrLineTooLong), which yields zero
+	// delegates to attach a per-delegate diagnostic to. Delegates[].Diagnostics
+	// (EvenerDelegateInfo) is per-delegate and can only ever be populated
+	// when at least one delegate exists, so a diagnostic about the shared
+	// journal itself needs a vessel that does not depend on any delegate
+	// surviving to carry it.
+	DelegateDiagnostics []string `json:"delegateDiagnostics,omitempty"`
 }
 
 // MarshalJSON preserves an explicit empty plugin inventory while keeping a
@@ -883,6 +977,11 @@ type EvenerJobInfo struct {
 	FromWatch        bool   `json:"fromWatch,omitempty"`
 	Background       bool   `json:"background,omitempty"`
 	Command          string `json:"command,omitempty"`
+	// Intent is the tool call's `intent` argument (see WithIntentParameter):
+	// the model's own one-line statement of why the command is being run.
+	// Captured on the job record at launch so job surfaces (the sidebar rail,
+	// the activity panel) can show it alongside the command.
+	Intent           string `json:"intent,omitempty"`
 	ParentDelegateID string `json:"parentDelegateId,omitempty"`
 	DelegateID       string `json:"delegateId,omitempty"`
 	Task             string `json:"task,omitempty"`
@@ -958,12 +1057,32 @@ type EvenerTurnSlots struct {
 	Drives int64 `json:"driveTurns"`
 }
 
+// TurnItemsView identifies whether a turn carries its complete item list or a
+// fragment selected by item-mode paging.
+type TurnItemsView string
+
+const (
+	TurnItemsViewFull     TurnItemsView = "full"
+	TurnItemsViewFragment TurnItemsView = "fragment"
+)
+
+// ThreadItemPosition is an absolute position in the decoded transcript and
+// the final visible projected item slice for that entry.
+type ThreadItemPosition struct {
+	Entry uint64 `json:"entry"`
+	Item  uint32 `json:"item"`
+}
+
 type Turn struct {
-	ID        string       `json:"id"`
-	Items     []ThreadItem `json:"items,omitempty"`
-	ItemsView string       `json:"itemsView"`
-	Status    string       `json:"status"`
-	Error     *TurnError   `json:"error,omitempty"`
+	ID        string        `json:"id"`
+	Items     []ThreadItem  `json:"items,omitempty"`
+	ItemsView TurnItemsView `json:"itemsView"`
+	Status    string        `json:"status"`
+	Error     *TurnError    `json:"error,omitempty"`
+	// HasEarlierItems and HasLaterItems describe completeness at the item
+	// boundaries of a fragment. They are omitted by legacy/full responses.
+	HasEarlierItems bool `json:"hasEarlierItems,omitempty"`
+	HasLaterItems   bool `json:"hasLaterItems,omitempty"`
 	// StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil/0 when unset),
 	// the same scale as DurationMS and the web reducer's epoch-ms read. The
 	// appprojector/apptranscript producers stamp them via time.Time.UnixMilli.
@@ -972,7 +1091,7 @@ type Turn struct {
 	DurationMS  *int64 `json:"durationMs,omitempty"`
 	// Usage and Cost are the turn's own (not cumulative-session) token totals
 	// and estimated dollar cost — nil/empty when not computable (no usage
-	// data for this turn, or an uncataloged model). Populated live by
+	// data for this turn, or a registry row with no cost). Populated live by
 	// summing EventAssistantTextEnd's per-round usage across the turn
 	// (internal/appprojector), and for ended sessions by reading the
 	// persisted per-round schema.Turn.Usage (internal/apptranscript).
@@ -1094,21 +1213,23 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Type                 string        `json:"type"`
-	ID                   string        `json:"id"`
-	TurnID               string        `json:"turnId,omitempty"`
-	TranscriptEntryIndex int           `json:"transcriptEntryIndex,omitempty"`
-	Text                 string        `json:"text,omitempty"`
-	Delta                string        `json:"delta,omitempty"`
-	Images               []InputItem   `json:"images,omitempty"`
-	ToolName             string        `json:"toolName,omitempty"`
-	CallID               string        `json:"callId,omitempty"`
-	ArgumentsJSON        string        `json:"argumentsJson,omitempty"`
-	Description          string        `json:"description,omitempty"`
-	Output               string        `json:"output,omitempty"`
-	Error                string        `json:"error,omitempty"`
-	OutputImages         []OutputImage `json:"outputImages,omitempty"`
-	Status               string        `json:"status,omitempty"`
+	Type                 string              `json:"type"`
+	ID                   string              `json:"id"`
+	TranscriptKey        string              `json:"transcriptKey,omitempty"`
+	Position             *ThreadItemPosition `json:"position,omitempty"`
+	TurnID               string              `json:"turnId,omitempty"`
+	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
+	Text                 string              `json:"text,omitempty"`
+	Delta                string              `json:"delta,omitempty"`
+	Images               []InputItem         `json:"images,omitempty"`
+	ToolName             string              `json:"toolName,omitempty"`
+	CallID               string              `json:"callId,omitempty"`
+	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	Output               string              `json:"output,omitempty"`
+	Error                string              `json:"error,omitempty"`
+	OutputImages         []OutputImage       `json:"outputImages,omitempty"`
+	Status               string              `json:"status,omitempty"`
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
@@ -1204,32 +1325,59 @@ type ThreadReadParams struct {
 	ItemsView           string `json:"itemsView,omitempty"`
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
-	// TurnLimit bounds includeTurns to the latest N turns for windowed
-	// (lazy) loading; 0 means unbounded (the full transcript). When it
-	// truncates, the response carries OlderCursor for paging back via
-	// thread/turns/list.
-	TurnLimit int `json:"turnLimit,omitempty"`
+	ItemLimit           int    `json:"itemLimit,omitempty"`
 }
 
 type ThreadReadResponse struct {
 	Thread Thread `json:"thread"`
-	// OlderCursor is set when TurnLimit truncated the returned turns; pass it
-	// to thread/turns/list to fetch the page of turns just before the window.
-	// Empty means the response already includes the oldest turn.
+	// OlderCursor is set when itemLimit truncated the returned items; pass it
+	// to thread/turns/list to fetch the page just before the window. Empty means
+	// the response already includes the oldest item.
 	OlderCursor string `json:"olderCursor,omitempty"`
+}
+
+func decodeStrictJSON(data []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(dst)
+}
+
+func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
+	type wire ThreadReadParams
+	var decoded wire
+	if err := decodeStrictJSON(data, &decoded); err != nil {
+		return err
+	}
+	*p = ThreadReadParams(decoded)
+	return nil
+}
+
+type ThreadUnsubscribeParams struct {
+	ThreadID string `json:"threadId,omitempty"`
+	Ref      string `json:"ref,omitempty"`
 }
 
 type ThreadTurnsListParams struct {
 	ThreadID  string `json:"threadId,omitempty"`
 	Ref       string `json:"ref,omitempty"`
 	Cursor    string `json:"cursor,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
+	ItemLimit int    `json:"itemLimit,omitempty"`
 }
 
 type ThreadTurnsListResponse struct {
 	Data       []Turn `json:"data"`
 	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+func (p *ThreadTurnsListParams) UnmarshalJSON(data []byte) error {
+	type wire ThreadTurnsListParams
+	var decoded wire
+	if err := decodeStrictJSON(data, &decoded); err != nil {
+		return err
+	}
+	*p = ThreadTurnsListParams(decoded)
+	return nil
 }
 
 type ThreadTurnItemsListParams struct {
@@ -1523,6 +1671,10 @@ type TurnCancelQueuedResponse struct {
 }
 
 type ThreadCompactStartParams struct {
+	Ref string `json:"ref"`
+}
+
+type ThreadForceStopParams struct {
 	Ref string `json:"ref"`
 }
 
@@ -1900,6 +2052,41 @@ type UpgradeResponse struct {
 	RestartMessage string   `json:"restartMessage"`
 }
 
+// UpdateCheckParams selects the channel to compare the running build against.
+// Empty means the running binary's own upgrade channel.
+type UpdateCheckParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateCheckResponse reports the running build and what the channel points
+// at. Applicable is false for dev builds, which are never self-updated; the
+// Latest* fields are empty then and no network request was made.
+type UpdateCheckResponse struct {
+	Channel         string `json:"channel"`
+	BuildChannel    string `json:"buildChannel"`
+	CurrentVersion  string `json:"currentVersion"`
+	CurrentCommit   string `json:"currentCommit"`
+	LatestTag       string `json:"latestTag,omitempty"`
+	LatestCommit    string `json:"latestCommit,omitempty"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+	Applicable      bool   `json:"applicable"`
+}
+
+// UpdateApplyParams selects the channel to install. Empty means the running
+// binary's own upgrade channel.
+type UpdateApplyParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateApplyResponse is returned just before the hub execs the installed
+// binary in place; Restarting is always true on success.
+type UpdateApplyResponse struct {
+	Release    string   `json:"release"`
+	Channel    string   `json:"channel"`
+	Installed  []string `json:"installed"`
+	Restarting bool     `json:"restarting"`
+}
+
 type AuthStatusParams struct {
 	Provider string `json:"provider"`
 }
@@ -1933,14 +2120,19 @@ type AuthStatusResponse struct {
 	// HasStoredFile is true when a key exists in credentials.toml.
 	HasStoredFile bool `json:"hasStoredFile,omitempty"`
 	// EnvVar is the name of the env var that supplies a key, when present.
-	EnvVar       string `json:"envVar,omitempty"`
-	Email        string `json:"email,omitempty"`
-	StoredEmail  string `json:"storedEmail,omitempty"`
-	AccountID    string `json:"accountId,omitempty"`
-	WorkspaceID  string `json:"workspaceId,omitempty"`
-	NeedsRefresh bool   `json:"needsRefresh,omitempty"`
-	NeedsLogin   bool   `json:"needsLogin,omitempty"`
-	Error        string `json:"error,omitempty"`
+	EnvVar string `json:"envVar,omitempty"`
+	// ShadowedEnvVar names an environment variable that is set but loses to
+	// a higher-precedence credential (api_key, credential_headers, or
+	// store, spec §10); empty when no such variable is set, including when
+	// an env source is itself what resolves.
+	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
+	Email          string `json:"email,omitempty"`
+	StoredEmail    string `json:"storedEmail,omitempty"`
+	AccountID      string `json:"accountId,omitempty"`
+	WorkspaceID    string `json:"workspaceId,omitempty"`
+	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
+	NeedsLogin     bool   `json:"needsLogin,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 type AuthLoginStartParams struct {
@@ -1986,6 +2178,7 @@ type ModelDescriptor struct {
 	// false/zero from a live provider instead of treating it as unknown.
 	DisplayName           string   `json:"displayName,omitempty"`
 	ContextWindow         *int     `json:"contextWindow,omitempty"`
+	MaxInputTokens        *int     `json:"maxInputTokens,omitempty"`
 	SupportsTools         *bool    `json:"supportsTools,omitempty"`
 	SupportsVision        *bool    `json:"supportsVision,omitempty"`
 	MaxOutputTokens       *int     `json:"maxOutputTokens,omitempty"`
@@ -1994,6 +2187,10 @@ type ModelDescriptor struct {
 	InputCostPerMillion   *float64 `json:"inputCostPerMillion,omitempty"`
 	OutputCostPerMillion  *float64 `json:"outputCostPerMillion,omitempty"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
+	// Warnings carries the registry's resolved-row notes (e.g. a global-only
+	// model under a regional Vertex location) so the model picker can flag a
+	// row the resolver itself warns about.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type ModelListDiagnostic struct {
@@ -2045,10 +2242,10 @@ type ThreadStatusChangedParams struct {
 	// those flip, so the set refreshes there and nowhere else — no polling, no
 	// re-read of the transcript.
 	//
-	// ABSENT MEANS "NO UPDATE", same as the count: a source that does not
-	// state-gate its capabilities (the Codex bridge) omits it, and a client
-	// that cleared its set on absence would strip a session of every action
-	// its hydrate legitimately advertised.
+	// ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
+	// threads may omit capabilities their source does not advertise. A client
+	// that cleared its set on absence would strip a session of every action its
+	// hydrate legitimately advertised.
 	//
 	// A CLOSE frame is the one status a daemon does not fill in: what a thread
 	// can still be asked to do once its daemon is gone is the hub's answer, not
@@ -2070,8 +2267,9 @@ type AgentMessageDeltaParams struct {
 
 // ReasoningSummaryDeltaParams is the params shape for the
 // item/reasoning/summaryTextDelta notification: an incremental chunk of the
-// model's reasoning summary for the named reasoning item. Mirrors the Codex
-// app-server reasoning stream so the web UI can render thinking live.
+// model's reasoning summary for the named reasoning item. The hub preserves
+// source-provided compatible fields without claiming a Codex bridge, so the web
+// UI can render thinking live.
 type ReasoningSummaryDeltaParams struct {
 	ThreadID     string `json:"threadId"`
 	Ref          string `json:"ref"`
@@ -2227,6 +2425,8 @@ type WarningParams struct {
 // "user" for human-sent steering (rendered as a user message) and omitted
 // entirely for daemon-originated steering (issue #24).
 type EvenerSteeringInjectedParams struct {
+	// StartedAt is the server event timestamp in epoch milliseconds.
+	StartedAt        *int64      `json:"startedAt,omitempty"`
 	ThreadID         string      `json:"threadId"`
 	Ref              string      `json:"ref"`
 	Text             string      `json:"text,omitempty"`
@@ -2439,8 +2639,7 @@ type LaunchOptionChoice struct {
 }
 
 type LaunchOptionEnvFallback struct {
-	Name   string `json:"name"`
-	Secret bool   `json:"secret,omitempty"`
+	Name string `json:"name"`
 }
 
 type LaunchOption struct {
@@ -2480,6 +2679,19 @@ type AuthApiKeySetParams struct {
 	Value    string `json:"value"`
 }
 
+// AuthApiKeyClearParams is the params for evener/auth/apiKey/clear.
+type AuthApiKeyClearParams struct {
+	Provider string `json:"provider"`
+}
+
+// AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
+// a Google credential JSON (service-account key or application-default
+// authorized_user file) for a gcp-adc instance.
+type AuthCredentialJsonSetParams struct {
+	Provider string `json:"provider"`
+	Value    string `json:"value"`
+}
+
 // AuthDeviceStartParams is the params for evener/auth/device/start.
 type AuthDeviceStartParams struct {
 	Provider string `json:"provider"`
@@ -2511,49 +2723,152 @@ type AuthDevicePollResponse struct {
 	Status *AuthStatusResponse `json:"status,omitempty"`
 }
 
-// InstanceEntry is the wire representation of one configured provider instance
-// and its current credential status. The credential-status fields mirror
-// AuthStatusResponse so the existing web credential-source rendering can be
-// reused without additional translation.
+// InstanceEntry is one registry instance with its credential status
+// (spec §11.3). ActiveSource and AuthModes speak the registry's vocabulary:
+// a source is one of api_key, credential_headers, store, env:<VAR>, oauth,
+// adc, or none. A credential value never appears here.
 type InstanceEntry struct {
-	Name           string   `json:"name"`
-	Type           string   `json:"type"`
-	APIStyle       string   `json:"apiStyle"`
-	BaseURL        string   `json:"baseUrl"`
+	Name string `json:"name"`
+	// Base is the registry id an explicitly-named instance is built on;
+	// empty when the instance name is itself the registry id.
+	Base       string            `json:"base,omitempty"`
+	ProviderID string            `json:"providerId"`
+	Protocol   string            `json:"protocol"`
+	Surface    string            `json:"surface,omitempty"`
+	Auth       string            `json:"auth"`
+	BaseURL    string            `json:"baseUrl,omitempty"`
+	Vars       map[string]string `json:"vars,omitempty"`
+	// APIKeyEnv and CredentialHeader are the AUTHORED api_key_env (its first
+	// entry) and credential header (as NAME=VALUE) from providers.toml, so
+	// the sheet's form can prefill them. Never the registry's own defaults
+	// for an implicit instance, and never a secret: the loader accepts a
+	// hand-written literal that both authoring surfaces would refuse
+	// (registry.CheckCredentialHeaderValue guards those, not the file). That
+	// rule takes $VARIABLE references with at most one auth scheme word
+	// ahead of them, and the entry omits any header it refuses.
+	APIKeyEnv        string `json:"apiKeyEnv,omitempty"`
+	CredentialHeader string `json:"credentialHeader,omitempty"`
+	// Implicit is true for an instance that exists from the environment
+	// alone: it has no entry in providers.toml, so it cannot be removed.
+	Implicit bool `json:"implicit"`
+	// Hidden marks a provider with no resolvable base URL in this
+	// environment (its *_BASE_URL variable is unset).
+	Hidden         bool     `json:"hidden,omitempty"`
 	IsDefault      bool     `json:"isDefault"`
 	AuthModes      []string `json:"authModes,omitempty"`
 	ActiveSource   string   `json:"activeSource"`
 	HasStoredFile  bool     `json:"hasStoredFile,omitempty"`
 	HasStoredOAuth bool     `json:"hasStoredOAuth"`
 	EnvVar         string   `json:"envVar,omitempty"`
-	StoredEmail    string   `json:"storedEmail,omitempty"`
+	// ShadowedEnvVar names an environment variable that is set but loses to
+	// a higher-precedence credential (api_key, credential_headers, or
+	// store, spec §10); empty when no such variable is set, including when
+	// an env source is itself what resolves.
+	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
+	StoredEmail    string `json:"storedEmail,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
-	// look for at all — an auth-none provider, or a gateway that inherits no
-	// type-level key — so an absent credential is not a missing one. It is
-	// never omitted: false is the meaningful value, and a client reading an
-	// absent field as false would call every instance optional.
+	// look for at all — auth = none or optional-bearer — so an absent
+	// credential is not a missing one. It is never omitted: false is the
+	// meaningful value, and a client reading an absent field as false would
+	// call every instance optional.
 	CredentialRequired bool `json:"credentialRequired"`
+	// Warnings are the registry's own notes about this instance, chiefly
+	// what is missing and how to supply it.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
-// InstanceListResponse is the result of evener/instance/list.
+// ProviderDescriptor is a registry provider the add form can build on: its
+// id and display name, the protocol and auth scheme it defaults to, and the
+// variables its URL templates read. Vars maps a template placeholder name
+// to the environment variable name it is fed by, so a typed override can be
+// sent keyed by the name the registry actually substitutes. It is
+// registry.Transport.VarsEnv restricted to the placeholders some URL
+// template reads or a host rule consumes (Registry.TemplateVarsEnv): a
+// vars_env entry nothing substitutes, such as a credential's own variable,
+// gets no input. VarsEnv is the same environment-variable names alone,
+// sorted. It stays a list because v3
+// peers — a TUI built before Vars existed — decode it as one, and
+// ProtocolVersion is compared exactly, so a wire shape cannot change under
+// v3; new readers use Vars.
+type ProviderDescriptor struct {
+	ID        string            `json:"id"`
+	Name      string            `json:"name,omitempty"`
+	Protocol  string            `json:"protocol"`
+	Auth      string            `json:"auth"`
+	VarsEnv   []string          `json:"varsEnv,omitempty"`
+	Vars      map[string]string `json:"vars,omitempty"`
+	APIKeyEnv []string          `json:"apiKeyEnv,omitempty"`
+	Implicit  bool              `json:"implicit"`
+}
+
+// InstanceListResponse is the result of evener/instance/list. Diagnostics
+// carries the providers.toml load error, the user-layer note, stray OAuth
+// records and load warnings; WritesRefused says the hub has no registry to
+// write against — the file could not be read, or none has loaded yet — so no
+// instance may be written until that is fixed (spec §10).
 type InstanceListResponse struct {
-	Instances      []InstanceEntry `json:"instances"`
-	AvailableTypes []string        `json:"availableTypes"`
+	Instances          []InstanceEntry      `json:"instances"`
+	AvailableProviders []ProviderDescriptor `json:"availableProviders"`
+	Diagnostics        []string             `json:"diagnostics,omitempty"`
+	UserLayer          string               `json:"userLayer,omitempty"`
+	WritesRefused      bool                 `json:"writesRefused,omitempty"`
 }
 
-// InstanceCreateParams is the params for evener/instance/create.
+// InstanceCreateParams is the params for evener/instance/create. APIKeyEnv
+// is a variable name and CredentialHeader must reference a $VAR: secrets
+// never cross this boundary (spec §11.2).
 type InstanceCreateParams struct {
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-	APIStyle string `json:"apiStyle"`
-	BaseURL  string `json:"baseUrl"`
+	Name             string            `json:"name"`
+	Base             string            `json:"base"`
+	BaseURL          string            `json:"baseUrl,omitempty"`
+	Protocol         string            `json:"protocol,omitempty"`
+	Surface          string            `json:"surface,omitempty"`
+	Vars             map[string]string `json:"vars,omitempty"`
+	APIKeyEnv        string            `json:"apiKeyEnv,omitempty"`
+	CredentialHeader string            `json:"credentialHeader,omitempty"`
 }
 
-// InstanceEditParams is the params for evener/instance/edit.
+// InstanceEditParams is the params for evener/instance/edit. Editing an
+// implicit instance writes a shadowing entry carrying only these fields
+// (spec §11.3). This wire shape is part of evener-appwire-v4; fields carried
+// forward retain their established meanings, and v4 peers negotiate this
+// shape before using it.
+//
+// EMPTY MEANS UNCHANGED, not "clear", for BaseURL, Protocol and Surface: an
+// empty value leaves the stored one alone. That preserves the pre-v4 field
+// semantics (#711) — BaseURL cannot be emptied to mean "clear" without
+// changing what a v3 `baseUrl: ""` meant to a peer before the v4 upgrade.
+//
+// ClearBaseURL is the v4 way to reach a clear: when true, it drops the
+// authored base_url override and goes back to the registry default, lifting
+// spec §10's credential-inheritance stop, which keys on a literal base_url.
+// BaseURL and ClearBaseURL are never both meaningful in the same request: send
+// one or the other.
+//
+// The rename and credential fields obey the same rule. NewName renames
+// the instance (empty means unchanged). APIKeyEnv/ClearAPIKeyEnv and
+// CredentialHeader/ClearCredentialHeader set or drop the authored
+// api_key_env and credential_headers; CredentialHeader is NAME=VALUE with a
+// $VAR value, exactly as InstanceCreateParams takes it. ClearProtocol and
+// ClearSurface drop an authored protocol or surface so the base provider's
+// value applies again, the same shape as ClearBaseURL. A Vars entry
+// whose value is empty DELETES that variable: a blank var never meant
+// anything, so the empty value is free to mean "remove". Each set/clear
+// pair follows BaseURL/ClearBaseURL: never both meaningful in one request.
 type InstanceEditParams struct {
-	Name     string `json:"name"`
-	APIStyle string `json:"apiStyle"`
-	BaseURL  string `json:"baseUrl"`
+	Name                  string            `json:"name"`
+	NewName               string            `json:"newName,omitempty"`
+	BaseURL               string            `json:"baseUrl,omitempty"`
+	ClearBaseURL          bool              `json:"clearBaseUrl,omitempty"`
+	Protocol              string            `json:"protocol,omitempty"`
+	ClearProtocol         bool              `json:"clearProtocol,omitempty"`
+	Surface               string            `json:"surface,omitempty"`
+	ClearSurface          bool              `json:"clearSurface,omitempty"`
+	Vars                  map[string]string `json:"vars,omitempty"`
+	APIKeyEnv             string            `json:"apiKeyEnv,omitempty"`
+	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
+	CredentialHeader      string            `json:"credentialHeader,omitempty"`
+	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.
@@ -2575,9 +2890,9 @@ type CommandDescriptor struct {
 	PluginName   string `json:"pluginName,omitempty"`
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
-	// Source is "plugin" or "user"; "project" is reserved for a future
-	// project-scoped catalog (project commands are cwd-dependent and never
-	// appear in the hub-wide catalog).
+	// Source is "plugin", "user", or "project". "project" is returned by the
+	// spawn-scoped catalog (project commands are cwd-dependent); it never
+	// appears in the hub-wide catalog.
 	Source string `json:"source,omitempty"`
 }
 
@@ -2596,6 +2911,7 @@ type LaunchConfigLayer struct {
 	ReasoningEffort             string            `json:"reasoningEffort,omitempty"`
 	ContextStrategy             string            `json:"contextStrategy,omitempty"`
 	OpenAIResponsesContinuation string            `json:"openAIResponsesContinuation,omitempty"` //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
+	ProviderIdleTimeout         string            `json:"providerIdleTimeout,omitempty"`
 	Sandbox                     string            `json:"sandbox,omitempty"`
 	SandboxNet                  *bool             `json:"sandboxNet,omitempty"`
 	MaxRounds                   *int              `json:"maxRounds,omitempty"`
@@ -2620,6 +2936,7 @@ type LaunchConfigLayer struct {
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`
+	APILog                      *bool             `json:"apiLog,omitempty"`
 	TraceFile                   string            `json:"traceFile,omitempty"`
 	CPUProfile                  string            `json:"cpuProfile,omitempty"`
 	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`            //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
@@ -2716,11 +3033,39 @@ type PluginCheckNowResponse struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
-// PluginPreviewParams requests the side-effect-free launch plugin inventory
-// for a working directory and optional per-launch overrides.
+// PluginPreviewParams requests the launch plugin inventory for a working
+// directory and optional per-launch overrides. Preview starts no session and
+// runs no plugin code; for a requested bundled plugin it readies the same
+// store a launch publishes into, staging and removing a marked copy, so it
+// fails wherever the launch it describes would. Readying that store creates
+// the bundled directory under the plugin root when it is missing, and the
+// directory stays behind — with the lock file the cache keeps in it — once the
+// staged copy is removed; a destination holding content the running binary did
+// not publish is reported as the conflict a launch would set aside, and left
+// exactly where it is.
 type PluginPreviewParams struct {
 	CWD             string             `json:"cwd"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogParams requests the slash catalog a spawn with these
+// inputs would load. Field names and shapes match ThreadStartParams exactly:
+// when this call and a thread/start agree on all three, the menu shows what
+// that start would load. Model, effort, access mode, and prompt text do not
+// affect the inventory and are deliberately absent.
+type SpawnSlashCatalogParams struct {
+	CWD             string             `json:"cwd"`
+	Harness         string             `json:"harness,omitempty"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogResponse is the pre-session slash inventory: the commands
+// and skills a session started with the params would offer. Row shapes reuse
+// CommandDescriptor and EvenerSkillInfo verbatim so the web composer merges
+// them with mergeSlashCommands unchanged.
+type SpawnSlashCatalogResponse struct {
+	Commands []CommandDescriptor `json:"commands"`
+	Skills   []EvenerSkillInfo   `json:"skills,omitempty"`
 }
 
 // PluginPreviewResponse is the launch plugin inventory and structured
@@ -2781,8 +3126,8 @@ type MarketplaceEntry struct {
 }
 
 // MarketplaceListResponse is the result of evener/marketplace/list. Every
-// marketplace mutation (add/remove/refresh) also returns this, so a client
-// can re-render from the response without a separate list round-trip.
+// marketplace mutation (add/edit/remove/refresh) also returns this, so a
+// client can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
@@ -2792,6 +3137,17 @@ type MarketplaceListResponse struct {
 type MarketplaceAddParams struct {
 	Name   string                 `json:"name,omitempty"`
 	Source MarketplaceSourceInput `json:"source"`
+}
+
+// MarketplaceEditParams is the params for evener/marketplace/edit (spec
+// 2026-09-07 §3). NewName renames the registered marketplace (empty means
+// unchanged); Source replaces its source and re-fetches it (absent means
+// unchanged). Installed plugins are unaffected beyond being re-keyed under
+// the new name.
+type MarketplaceEditParams struct {
+	Name    string                  `json:"name"`
+	NewName string                  `json:"newName,omitempty"`
+	Source  *MarketplaceSourceInput `json:"source,omitempty"`
 }
 
 // MarketplaceNameParams identifies one registered marketplace by name — the
@@ -2863,28 +3219,26 @@ type PluginSetAutoUpgradeParams struct {
 }
 
 // SettingsOverviewResponse is the result of evener/settings/overview: the field
-// bag behind six settings sections whose only data path today is Go-template
-// variables rendered server-side — General, Hub, Storage, Agents, Codex
-// launch, and the probed half of MCP servers (cmd/evener-hub/templates/
-// partials/settings/{general,hub,storage,agents,launch-codex,mcp}.html) —
-// replacing cmd/evener-hub/web_settings.go's settingsData for exactly those six
-// (the deletion wave removes the template path once the frontend ports off
-// it). Every field is sourced from the same computation the legacy template
-// used; see each sub-type's doc comment for the exact web_settings.go
-// citation. A field the legacy template never rendered is left off rather
-// than invented — also noted on the sub-type that would otherwise carry it.
+// bag behind five settings sections whose only data path today is Go-template
+// variables rendered server-side — General, Hub, Storage, Agents, and the
+// probed half of MCP servers (cmd/evener-hub/templates/partials/settings/
+// {general,hub,storage,agents,mcp}.html) — replacing cmd/evener-hub/
+// web_settings.go's settingsData for exactly those five. Every field is sourced
+// from the same computation the legacy template used; see each sub-type's doc
+// comment for the exact web_settings.go citation. A field the legacy template
+// never rendered is left off rather than invented — also noted on the sub-type
+// that would otherwise carry it.
 //
 // The other ten settings sections (providers/credentials, evener launch,
-// in-repo trust, per-project override, marketplaces/plugins, plugin/skill
-// dirs, the MCP config editable half, theme, transcript, display,
-// notifications) are out of scope: they already have their own wire methods
-// or land on a different task's new store. Nothing here is per-project.
+// in-repo trust, per-project override, marketplaces/plugins, plugin/skill dirs,
+// the MCP config editable half, theme, transcript, display, notifications) are
+// out of scope: they already have their own wire methods or land on a different
+// task's new store. Nothing here is per-project.
 type SettingsOverviewResponse struct {
-	Hub           *SettingsHubOverview       `json:"hub,omitempty"`
-	Storage       *SettingsStorageOverview   `json:"storage,omitempty"`
-	Agents        []SettingsAgentEntry       `json:"agents,omitempty"`
-	CodexLaunches []SettingsCodexLaunchEntry `json:"codexLaunches,omitempty"`
-	McpDiscovered *SettingsMCPOverview       `json:"mcpDiscovered,omitempty"`
+	Hub           *SettingsHubOverview     `json:"hub,omitempty"`
+	Storage       *SettingsStorageOverview `json:"storage,omitempty"`
+	Agents        []SettingsAgentEntry     `json:"agents,omitempty"`
+	McpDiscovered *SettingsMCPOverview     `json:"mcpDiscovered,omitempty"`
 }
 
 // SettingsHubOverview is the Settings → General / Settings → Hub section
@@ -2899,6 +3253,8 @@ type SettingsHubOverview struct {
 	// Commit is the git commit the binary was built from; empty in dev builds.
 	// Source: web_settings.go settingsData.HubCommit (buildinfo.GitSHA).
 	Commit string `json:"commit,omitempty"`
+	// BuildChannel is buildinfo.BuildChannel(): release, snapshot, or dev.
+	BuildChannel string `json:"buildChannel,omitempty"`
 	// ListenAddr is the hub HTTP server's bind address.
 	// Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
 	ListenAddr string `json:"listenAddr,omitempty"`
@@ -2971,35 +3327,6 @@ type SettingsAgentEntry struct {
 	// shape parity with web_settings.go's agentDisplay.EditPath in case a
 	// future on-disk agent source populates it.
 	EditPath string `json:"editPath,omitempty"`
-}
-
-// SettingsCodexLaunchEntry is one row in Settings → Codex launch config
-// (cmd/evener-hub/templates/partials/settings/launch-codex.html): a read-only
-// display of one [[codex_launches]] hub.toml entry.
-// Source: web_settings.go settingsData.CodexLaunches (cfg.CodexLaunches,
-// codexlaunch.CodexLaunchConfig).
-//
-// Binary/WorkingDir/Listen/Timeout ride over the wire as their raw configured
-// value (empty/zero when unset) rather than the template's display-fallback
-// text ("codex", "(inherited)", "ws://127.0.0.1:0", "30s") — the frontend
-// applies the same fallback at render time, so the wire stays truthful about
-// what is actually configured.
-//
-// Args, BearerToken, and BearerTokenFile are intentionally excluded: Args is
-// never rendered by the template, and the bearer-token fields are live
-// secrets the credential-never-echo invariant forbids sending to the browser
-// — the template never renders them either. EnvKeys carries only the Env
-// map's keys, sorted, matching the template's own redaction ("Values are
-// redacted here.").
-type SettingsCodexLaunchEntry struct {
-	ID         string `json:"id"`
-	Binary     string `json:"binary,omitempty"`
-	WorkingDir string `json:"workingDir,omitempty"`
-	Listen     string `json:"listen,omitempty"`
-	// TimeoutMillis is Timeout in milliseconds, 0 when unset (the template's
-	// 30s default applies client-side, matching the other display fallbacks).
-	TimeoutMillis int64    `json:"timeoutMillis,omitempty"`
-	EnvKeys       []string `json:"envKeys,omitempty"`
 }
 
 // SettingsMCPServerEntry is one probed MCP server row in Settings → MCP

@@ -6,12 +6,10 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -29,35 +27,40 @@ type RelayLifecycleHooks struct {
 	RegisterSubscription       func(context.Context, string, bool) bool
 	BeforeSupervisor           func(threadID string)
 	BeforeLaunchCommit         func(threadID string)
+	BeforeCanonicalPublish     func(relayKey string, notification appwire.Notification)
+	AfterCanonicalPublishEntry func(relayKey string, notification appwire.Notification)
 }
 
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr                   string
-	AuthToken                 string                  // capability token gating every non-exempt route
-	MobileBaseURL             string                  // optional external origin used for mobile pairing QR codes
-	HubStateRoot              string                  // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
-	LaunchConfigRoot          string                  // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
-	TranscriptDisplayStore    *TranscriptDisplayStore // hub-authoritative Desktop/Mobile transcript-display defaults; nil → load from HubStateRoot
-	TranscriptDisplayStoreErr error                   // diagnostic returned while loading the injected store; retained for startup diagnostics
-	RunDir                    string                  // run directory where rendezvous files live
-	PastIndexPath             string                  // path to the SQLite past-index DB, for display in settings
+	AuthToken                 string                   // capability token gating every non-exempt route
+	MobileBaseURL             string                   // optional external origin used for mobile pairing QR codes
+	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
+	LaunchConfigRoot          string                   // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
+	TranscriptDisplayStore    *TranscriptDisplayStore  // hub-authoritative Desktop/Mobile transcript-display defaults; nil → load from HubStateRoot
+	TranscriptDisplayStoreErr error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
+	KeybindingsStore          *KeybindingsStore        // hub-authoritative user keybinding overrides; nil → load from HubStateRoot
+	KeybindingsStoreErr       error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
+	DaemonProcesses           daemonprocess.Controller // nil selects verified native process operations
+	RunDir                    string                   // run directory where rendezvous files live
+	PastIndexPath             string                   // path to the SQLite past-index DB, for display in settings
 	Roster                    *Roster
 	Past                      *PastIndex
-	Spawner                   Spawner             // optional; nil disables spawn
-	ResumeLocks               *ResumeLocks        // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
-	DeletionStore             *DeletionStore      // host-authoritative deletion fences; production persists this under HubStateRoot
-	PastPerPage               int                 // results per page for /past; defaults to 50 when zero
-	StateDir                  string              // root of the projects/<sha> state directory; needed for ForkSession
-	CredsStore                *credentials.Store  // credentials store; passed to auth controller
-	PluginDirs                []string            // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
-	PluginRoot                string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
-	MCPConfigPath             string              // MCP config file path; when empty, default to ~/.config/evener/mcp.json
-	ProviderConfig            *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
-	ProvidersConfigPath       string              // path to providers.toml; forwarded to the auth controller
-	CodexSources              []appsource.CodexSourceConfig
-	CodexLaunches             []codexlaunch.CodexLaunchConfig
-	CodexLauncher             *codexlaunch.CodexLauncher
+	Spawner                   Spawner            // optional; nil disables spawn
+	ResumeLocks               *ResumeLocks       // shared session ownership and recovery authority; web construction loads from HubStateRoot when nil
+	DeletionStore             *DeletionStore     // host-authoritative deletion fences; production persists this under HubStateRoot
+	PastPerPage               int                // results per page for /past; defaults to 50 when zero
+	StateDir                  string             // root of the projects/<sha> state directory; needed for ForkSession
+	CredsStore                *credentials.Store // credentials store; passed to auth controller
+	PluginDirs                []string           // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
+	PluginRoot                string             // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
+	MCPConfigPath             string             // MCP config file path; when empty, default to ~/.config/evener/mcp.json
+	Registry                  *ProviderRegistry  // live provider registry; the instance, auth, credential-test and model surfaces all read it
+	ProvidersConfigPath       string             // path to providers.toml; the instances pane is its only writer
+	CredentialsPath           string             // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
+	NoUserLayer               bool               // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
+	APILogDefault             bool               // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
 
 	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
 	Favorite    *FavoriteStore   // favorite decision store; nil when not configured
@@ -104,9 +107,10 @@ type SpawnRequest struct {
 	StateDir      string
 	RunDir        string
 	PluginRoot    string // internal/plugins.Manager root handed to the child serve process; "" keeps the child's default root resolution
+	AgentsDocPath string // personal AGENTS.md handed to the child serve process; "" lets the child resolve it from its own environment
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Spawn
-	Provider      string   // for credential injection
+	Provider      string   // instance the launch selected; gated against the registry before spawning
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.
@@ -117,7 +121,8 @@ type ResumeRequest struct {
 	StateDir      string
 	Resolved      launchconfig.Resolved
 	RunDir        string
+	AgentsDocPath string // personal AGENTS.md handed to the child serve process; "" lets the child resolve it from its own environment
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
-	Provider      string   // for credential injection
+	Provider      string   // instance the launch selected; gated against the registry before spawning
 }

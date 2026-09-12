@@ -8,6 +8,7 @@ import { manifest as navigationManifest } from "../../stores/navigation/testing"
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
 import { ClientProvider } from "../clientContext";
 import { resetWorkspaceStoreForTests } from "../workspace";
+import railStyles from "./Rail.module.css";
 import { RailHost } from "./RailHost";
 import { revealSessionInRail, setRailRevealHandler } from "./railController";
 
@@ -59,7 +60,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   resetWorkspaceStoreForTests();
   // Quiet, resolving fetch so any mounted <Rail/> refresh() doesn't throw.
   vi.stubGlobal(
@@ -86,6 +87,9 @@ describe("docked by default", () => {
     expect(screen.getByRole("button", { name: /new session/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /hide sidebar/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
+    const body = document.querySelector(`.${railStyles.body}`);
+    expect(body?.className.split(/\s+/)).not.toContain(railStyles.parentScrollBody);
+    expect(body?.parentElement?.className.split(/\s+/)).not.toContain(railStyles.parentScrollRail);
   });
 });
 
@@ -116,7 +120,7 @@ describe("hide / show", () => {
   test("the chip surfaces the needs-you count in its accessible name (color-is-attention badge)", () => {
     prefsStore.getState().setSidebarHidden(true);
     navigationStore.setState({
-      mode: "v1",
+      mode: "v2",
       manifest: {
         key: { kind: "manifest" },
         data: navigationManifest({
@@ -140,7 +144,7 @@ describe("hide / show", () => {
 test("v1 badge ignores stale legacy tree attention and uses manifest section count", () => {
   prefsStore.getState().setSidebarHidden(true);
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     manifest: {
       key: { kind: "manifest" },
       data: navigationManifest({
@@ -256,6 +260,9 @@ describe("resizable width", () => {
     render(<RailHost />);
     expect(screen.getByTestId("rail-search")).toBeTruthy(); // the rail itself is there
     expect(screen.queryByTestId("rail-resize-handle")).toBeNull();
+    const body = document.querySelector(`.${railStyles.body}`);
+    expect(railStyles.parentScrollBody).toBeTruthy();
+    expect(body?.className.split(/\s+/)).toContain(railStyles.parentScrollBody);
   });
 });
 

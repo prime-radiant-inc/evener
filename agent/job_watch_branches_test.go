@@ -192,6 +192,18 @@ func TestNormalizeWatchSource(t *testing.T) {
 			t.Fatalf("Public = %q", src.Public)
 		}
 	})
+	t.Run("job id with job: prefix", func(t *testing.T) {
+		src, err := normalizeWatchSource("job:job_abc123")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if src.Kind != watchSourceConcreteJob {
+			t.Fatalf("Kind = %v", src.Kind)
+		}
+		if src.Public != "job_abc123" {
+			t.Fatalf("Public = %q, want job_abc123 (prefix stripped)", src.Public)
+		}
+	})
 	t.Run("delegate id", func(t *testing.T) {
 		src, err := normalizeWatchSource("dlg_abc123")
 		if err != nil {
@@ -368,13 +380,13 @@ func TestValidateWatchEventArgs(t *testing.T) {
 	})
 	t.Run("every with zero events", func(t *testing.T) {
 		err := validateWatchEventArgs(watchArgs{Every: 3})
-		if err == nil || !strings.Contains(err.Error(), "every requires exactly one") {
+		if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
 			t.Fatalf("expected error, got %v", err)
 		}
 	})
 	t.Run("every with multiple events", func(t *testing.T) {
 		err := validateWatchEventArgs(watchArgs{Every: 3, Events: []string{"job.notification", "communicate"}})
-		if err == nil || !strings.Contains(err.Error(), "every requires exactly one") {
+		if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
 			t.Fatalf("expected error, got %v", err)
 		}
 	})
@@ -386,7 +398,7 @@ func TestValidateWatchEventArgs(t *testing.T) {
 	})
 	t.Run("event_filter without events", func(t *testing.T) {
 		err := validateWatchEventArgs(watchArgs{EventFilter: &watchEventFilter{}})
-		if err == nil || !strings.Contains(err.Error(), "event_filter requires events") {
+		if err == nil || !strings.Contains(err.Error(), "event_filter requires events naming assistant.tool") {
 			t.Fatalf("expected error, got %v", err)
 		}
 	})

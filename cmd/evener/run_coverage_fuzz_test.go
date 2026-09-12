@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 func FuzzRunCoverage(f *testing.F) {
@@ -48,12 +47,12 @@ func FuzzRunCoverage(f *testing.F) {
 				t.Fatal("want ensure error")
 			}
 			runEnsureUserConfigDirs = func() error { return nil }
-			runSeedMarketplaces = func() error { return errors.New("seed") }
+			runSeedMarketplaces = func(context.Context) error { return errors.New("seed") }
 			if err := run(context.Background(), runConfig{stdout: io.Discard, stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "prompt") {
 				t.Fatalf("error = %v", err)
 			}
 			t.Setenv("HOME", t.TempDir())
-			if err := oldSeed(); err != nil {
+			if err := oldSeed(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -125,24 +124,20 @@ func FuzzRunCoverage(f *testing.F) {
 			t.Cleanup(func() {
 				runLoadClient, runAttachAPILogger, runNewSession, runProvisionSandbox = oldLoad, oldAttach, oldNew, oldProvision
 			})
-			runLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-				return nil, providercfg.Config{}, false, errors.New("load")
-			}
+			runLoadClient = func(string) (*llm.Client, error) { return nil, errors.New("load") }
 			if err := run(context.Background(), base(t)); err == nil {
 				t.Fatal("want load error")
 			}
 			client := llm.NewClient()
 			client.Register(&scriptedProvider{name: "openai"})
-			runLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-				return client, scriptedProviderConfig("openai"), true, nil
-			}
-			runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+			runLoadClient = func(string) (*llm.Client, error) { return client, nil }
+			runAttachAPILogger = func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error) {
 				return nil, nil, errors.New("log")
 			}
 			if err := run(context.Background(), base(t)); err == nil {
 				t.Fatal("want logger error")
 			}
-			runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+			runAttachAPILogger = func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error) {
 				return func(string) error { return nil }, func() error { return nil }, nil
 			}
 			cfg := base(t)

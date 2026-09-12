@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -68,6 +69,10 @@ type delegateIsolation struct {
 	ownsFreshEnv    bool
 	worktreePath    string
 	worktreeProject identifier.Project
+	// laneAdmission is the spawn's close-fence admission, carried here so a
+	// rollback can rename it as it begins.
+	laneAdmission envWorkID
+	laneFenced    bool
 }
 
 type delegateQuietAttentionClaim struct {
@@ -145,27 +150,263 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 	return errors.Join(appendErr, completionErr)
 }
 
-func (s *Session) startDelegateQuietWatchdog(ctx context.Context, lease delegateLease) context.CancelFunc {
+// delegateQuietWatchEntry is one lease registered on the shared quiet-watchdog
+// hub: the lease to tick plus a per-lease stop channel. Detach is best-effort:
+// closing stop keeps later ticks from being dispatched to the lease, but a tick
+// the hub loop already snapshotted may still run once for it.
+type delegateQuietWatchEntry struct {
+	lease delegateLease
+	stop  chan struct{}
+	// busy coalesces ticks while one tick for this registration is still
+	// running: the hub loop swaps it from 0 to 1 with CompareAndSwap, and a
+	// tick that loses the race is dropped rather than queued. *uint32 (not a
+	// plain field) so entries stay comparable as map keys while still
+	// sharing one atomic word per registration.
+	busy *uint32
+}
+
+// delegateQuietWatchHub multiplexes one ticker across every live
+// delegate-quiet watchdog registered on one Session. Previously each lease
+// armed its own NewTicker(delegateQuietCheckInterval) plus its own goroutine;
+// with K live leases that was K tickers and K goroutines all firing on the
+// same cadence. The hub keeps a single clock.Ticker (one goroutine, one clock
+// waiter per Session) and fans each tick out to the currently registered
+// leases.
+//
+// The hub is keyed to the session's injected clock (s.sclock()): the hub is
+// created lazily under the delegateQuietWatchHubs registry lock, so every
+// lease on the same session — and therefore the same s.clock — shares one
+// ticker and stays on the fake clock in tests.
+type delegateQuietWatchHub struct {
+	// mu guards entries alone, so ticks and detaches on one session never
+	// contend with other sessions' hubs (or the registry lock) while running
+	// tick work. Lock order is always registry -> mu, never the reverse.
+	mu     sync.Mutex
+	ticker interface {
+		C() <-chan time.Time
+		Stop()
+	}
+	done    chan struct{}
+	close   sync.Once
+	entries map[delegateQuietWatchEntry]struct{}
+}
+
+// delegateQuietWatchHubs is the process-wide registry mapping each *Session to
+// its live hub. It lives in this file (rather than on Session) so Session's
+// struct stays untouched; the entry for a session is removed when its hub's
+// last lease detaches, so the registry never pins an idle session, and
+// Session pointers are map keys only (never dereferenced after removal).
+var delegateQuietWatchHubs = struct {
+	sync.Mutex
+	hubs map[*Session]*delegateQuietWatchHub
+}{
+	hubs: make(map[*Session]*delegateQuietWatchHub),
+}
+
+// delegateQuietWatchTickDone observes one hub tick's completed lease work. It
+// is nil in production; tests set it to await tick completion deterministically
+// instead of polling. It fires after runDelegateQuietWatchdogTick returns, so
+// the tick's durable write is already visible to the observer; coalesced and
+// detached ticks do no work and never fire it. Stored atomically because the
+// hub's tick workers read it while tests swap it; observers must not block:
+// the call runs on the tick's worker goroutine.
+var delegateQuietWatchTickDone atomic.Pointer[func(lease delegateLease)]
+
+// quietWatchTickDone loads the tick observer, if any.
+func quietWatchTickDone() func(lease delegateLease) {
+	if ptr := delegateQuietWatchTickDone.Load(); ptr != nil {
+		return *ptr
+	}
+	return nil
+}
+
+// setQuietWatchTickDone swaps the tick observer for tests; a nil hook clears it.
+func setQuietWatchTickDone(hook func(lease delegateLease)) (restore func()) {
+	prev := delegateQuietWatchTickDone.Load()
+	if hook == nil {
+		delegateQuietWatchTickDone.Store(nil)
+	} else {
+		delegateQuietWatchTickDone.Store(&hook)
+	}
+	return func() {
+		if prev == nil {
+			delegateQuietWatchTickDone.Store(nil)
+		} else {
+			delegateQuietWatchTickDone.Store(prev)
+		}
+	}
+}
+
+// delegateQuietWatchNext arms (or reuses) the shared hub for s and registers
+// lease on it. Registration is atomic with the hub lookup under the registry
+// lock, so the entry always lands on the hub the registry points at and can
+// never strand on a stopped, unregistered hub.
+// The returned CancelFunc detaches exactly this registration:
+// the hub's single ticker keeps serving the remaining leases, and the hub
+// goroutine exits (stopping the shared ticker) only when the last
+// registration leaves, so no ticker leaks after a lease ends. Cancellation
+// rides on the run context via context.AfterFunc rather than a parked
+// goroutine per registration, so the hub goroutine stays the only
+// steady-state goroutine per session no matter how many leases share it.
+func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLease) context.CancelFunc {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	watchCtx, cancel := context.WithCancel(ctx)
-	ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case now := <-ticker.C():
-				_ = s.runDelegateQuietWatchdogTick(lease, now)
-			case <-watchCtx.Done():
+	entry := delegateQuietWatchEntry{lease: lease, stop: make(chan struct{}), busy: new(uint32)}
+	// Lookup-plus-insert is atomic under the registry lock: a lookup that ran
+	// before detach's delete would otherwise strand this entry on a stopped,
+	// unregistered hub that never ticks again. Lock order stays registry -> hub
+	// mu here and in detach, never the reverse. A creation loser that finds a
+	// hub after stopping its spare ticker re-verifies the registry still points
+	// at that hub before landing on it: a detach-plus-replace in the gap means
+	// retrying the lookup instead of registering on the stale hub. The creation
+	// winner re-verifies the same way after starting the serve goroutine: the
+	// freshly published hub is observable (empty) while the lock is released,
+	// so another watchdog can register on it and detach in that window,
+	// unregistering and stopping it; landing unconditionally would strand this
+	// entry on the stopped, unregistered hub.
+	delegateQuietWatchHubs.Lock()
+	var hub *delegateQuietWatchHub
+	for {
+		hub = delegateQuietWatchHubs.hubs[s]
+		if hub != nil {
+			break
+		}
+		delegateQuietWatchHubs.Unlock()
+		ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
+		fresh := &delegateQuietWatchHub{
+			ticker:  ticker,
+			done:    make(chan struct{}),
+			entries: make(map[delegateQuietWatchEntry]struct{}),
+		}
+		delegateQuietWatchHubs.Lock()
+		existing := delegateQuietWatchHubs.hubs[s]
+		if existing == nil {
+			delegateQuietWatchHubs.hubs[s] = fresh
+			delegateQuietWatchHubs.Unlock()
+			go s.serveDelegateQuietWatchHub(fresh)
+			delegateQuietWatchHubs.Lock()
+			// The winner-published hub was observable while the lock was
+			// released to start its goroutine: a register-plus-detach in the
+			// gap unregisters and stops it, so only land on it while the
+			// registry still points at it, otherwise loop back and retry the
+			// lookup (or a fresh creation) instead of stranding this entry
+			// on the stopped, unregistered hub.
+			if delegateQuietWatchHubs.hubs[s] != fresh {
+				continue
+			}
+			hub = fresh
+			break
+		}
+		delegateQuietWatchHubs.Unlock()
+		ticker.Stop()
+		delegateQuietWatchHubs.Lock()
+		// The loser-observed hub may have been detached and replaced while the
+		// lock was released to stop the spare ticker: only land on it while the
+		// registry still points at it, otherwise loop back and retry the lookup.
+		if delegateQuietWatchHubs.hubs[s] == existing {
+			hub = existing
+			break
+		}
+	}
+	hub.mu.Lock()
+	hub.entries[entry] = struct{}{}
+	hub.mu.Unlock()
+	delegateQuietWatchHubs.Unlock()
+	var detachOnce sync.Once
+	stopped := make(chan struct{})
+	detach := func() {
+		detachOnce.Do(func() {
+			// The registry entry is removed only while it still points at this
+			// hub: detaching an entry must never delete a successor hub a later
+			// attach registered for the same session.
+			delegateQuietWatchHubs.Lock()
+			hub.mu.Lock()
+			delete(hub.entries, entry)
+			empty := len(hub.entries) == 0
+			unregistered := empty && delegateQuietWatchHubs.hubs[s] == hub
+			if unregistered {
+				delete(delegateQuietWatchHubs.hubs, s)
+			}
+			hub.mu.Unlock()
+			delegateQuietWatchHubs.Unlock()
+			close(entry.stop)
+			close(stopped)
+			// Stop-once rides on close.Do (not on empty): two detaches can both
+			// observe an empty hub while a concurrent attach is in flight, and a
+			// plain empty check would stop the ticker out from under it.
+			if unregistered {
+				hub.close.Do(func() {
+					close(hub.done)
+					hub.ticker.Stop()
+				})
+			}
+		})
+	}
+	stopAfter := context.AfterFunc(watchCtx, detach)
+	return func() {
+		detach()
+		stopAfter()
+		cancel()
+		<-stopped
+	}
+}
+
+// serveDelegateQuietWatchHub is the hub's single goroutine: each shared tick
+// fans out to every registered lease whose stop channel is still open. Each
+// lease's tick runs on its own goroutine so one lease blocked on durable
+// transcript I/O (or armDelegateAttention's reservation path) cannot stall
+// the remaining leases or delay hub shutdown: the loop never waits on tick
+// work and keeps selecting on hub.done.
+func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
+	for {
+		select {
+		case now := <-hub.ticker.C():
+			delegateQuietWatchHubs.Lock()
+			current := delegateQuietWatchHubs.hubs[s]
+			delegateQuietWatchHubs.Unlock()
+			if current != hub {
 				return
 			}
+			hub.mu.Lock()
+			live := make([]delegateQuietWatchEntry, 0, len(hub.entries))
+			for entry := range hub.entries {
+				live = append(live, entry)
+			}
+			hub.mu.Unlock()
+			for _, entry := range live {
+				// At most one tick runs per registration: a tick that arrives
+				// while the previous one for the same lease is still blocked
+				// is coalesced away instead of piling up a goroutine (and a
+				// redundant work burst on release) per tick.
+				if entry.busy == nil || !atomic.CompareAndSwapUint32(entry.busy, 0, 1) {
+					continue
+				}
+				go func(entry delegateQuietWatchEntry) {
+					defer atomic.StoreUint32(entry.busy, 0)
+					select {
+					case <-entry.stop:
+						return
+					default:
+					}
+					_ = s.runDelegateQuietWatchdogTick(entry.lease, now)
+					if done := quietWatchTickDone(); done != nil {
+						done(entry.lease)
+					}
+				}(entry)
+			}
+		case <-hub.done:
+			return
 		}
-	}()
-	return func() {
-		ticker.Stop()
-		cancel()
 	}
+}
+
+func (s *Session) startDelegateQuietWatchdog(ctx context.Context, lease delegateLease) context.CancelFunc {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.delegateQuietWatchNext(ctx, lease)
 }
 
 func delegateQuietAttentionID(lease delegateLease) string {
@@ -336,12 +577,38 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	if len(ids) == 0 {
 		return false
 	}
+	// Claim the child for the WHOLE start, not just for this check. Everything
+	// between here and launchAcceptedDelegateAttention is durable work
+	// (ReserveAttention, acceptDelegateAttention's transcript append,
+	// CommitStart, the delegate update emit), and the run goroutine only sets
+	// running at the far end of it. Without the claim a wake-edge drive landing
+	// in that gap reads an idle child: the reservation is already consumed and
+	// the attention is no longer pending, so driveStableDelegateAttention itself
+	// declines, and driveChildIfNotStopGated falls through to
+	// driveSubagentNotificationTurn, which starts a second, UNLEASED turn on the
+	// session this generation is about to run. The two turns then share one
+	// drain ladder and the unleased one can pop the run's follow-up, leaving the
+	// generation to settle attention-only instead of report-required. The claim
+	// is the drive flag every other guard already reads, and it is handed over
+	// under the same sub.mu hold that sets running.
 	sub.mu.Lock()
 	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing
+	if !blocked {
+		sub.driving = true
+	}
 	sub.mu.Unlock()
 	if blocked {
 		return true
 	}
+	launched := false
+	defer func() {
+		if launched {
+			return
+		}
+		sub.mu.Lock()
+		sub.driving = false
+		sub.mu.Unlock()
+	}()
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
 	s.mu.Unlock()
@@ -367,8 +634,13 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
+	if observer := s.cfg.testOnly.delegateAttentionStartCommitted; observer != nil {
+		observer(sub)
+	}
 	s.delegateController.emitDelegateUpdate(started.plan)
-	if launchErr := s.launchAcceptedDelegateAttention(sub, started); launchErr != nil {
+	launchErr := s.launchAcceptedDelegateAttention(sub, started)
+	launched = launchErr == nil
+	if launchErr != nil {
 		plans, finishErr := s.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(launchErr, "launch_failed"))
 		if executeErr := s.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
@@ -395,6 +667,12 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	sub.mu.Lock()
 	sub.fatalRunGated = false
 	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
+	// Hand the start claim over to the run under one hold, so the child never
+	// reads idle between the committed start and the run that owns it. The
+	// clear is unconditional: the owed-attention bootstrap reaches here
+	// without having taken the claim, and clearing a flag it never set is
+	// harmless because running is already true under this same hold.
+	sub.driving = false
 	sub.mu.Unlock()
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	s.launchSubagentRun(runCtx, sub, runCancel, "", descriptorProvenance(started.descriptor))
@@ -1132,11 +1410,16 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
-		return delegateStartFailed(errors.New("invalid_request: task is required"))
+		return delegateStartFailed(errors.New("invalid_request: prompt is required"))
 	}
 	isolationName := strings.TrimSpace(args.Isolation)
 	if isolationName != "" && isolationName != "worktree" {
 		return delegateStartFailed(fmt.Errorf("invalid_request: isolation %q is not supported (expected \"worktree\")", isolationName))
+	}
+	if len(args.TaskList) > 0 && s.cfg.ShareTasksWithChildren {
+		// A shared store already has the parent's tasks and is never
+		// re-seeded, so the items would vanish; say so instead.
+		return delegateStartFailed(errors.New("invalid_request: task_list cannot seed a delegate that shares your task store; add the steps to your own task_list instead"))
 	}
 	if strings.TrimSpace(s.stateDir) == "" {
 		return delegateStartFailed(errors.New("delegate creation requires a durable state directory"))
@@ -1144,15 +1427,24 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	s.mu.Lock()
 	ownAllowance := s.delegationAllowance
 	s.mu.Unlock()
-	if ok, validRange := validateDelegateGrant(args.DelegationAllowance, ownAllowance); !ok {
+	if args.DelegationAllowance == nil {
+		args.DelegationAllowance = new(defaultDelegateGrant(ownAllowance))
+	}
+	if ok, validRange := validateDelegateGrant(args.grantedAllowance(), ownAllowance); !ok {
 		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validRange))
 	}
-	if err := llm.ValidateReasoningEffort(args.ReasoningEffort); err != nil {
+	if err := llm.ValidateReasoningEffort(llm.NormalizeReasoningEffort(args.ReasoningEffort)); err != nil {
 		return delegateStartFailed(err)
 	}
 	selection, err := s.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
 		return delegateStartFailed(err)
+	}
+	if args.ForkContext {
+		parent := s.currentProfile()
+		if selection.profile.ID() != parent.ID() || selection.profile.Model() != parent.Model() {
+			return delegateStartFailed(errors.New("invalid_request: fork_context requires the parent's model and provider; use a clean session with a self-contained prompt for a different model"))
+		}
 	}
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
@@ -1163,8 +1455,8 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
 	if explicitSandbox && args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
 		return delegateStartFailed(newDelegateSandboxRequestError(
-			errors.New("invalid_request: sandbox_net cannot be enforced on this host because no sandbox backend is available; omit sandbox_net"),
-			"sandbox_net",
+			errors.New("invalid_request: sandbox cannot be enforced on this host because no sandbox backend is available; omit the sandbox parameter"),
+			"sandbox",
 		))
 	}
 	if readOnlyScope {
@@ -1201,6 +1493,38 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return delegateStartFailed(err)
 	}
+	// The lane this spawn is about to cut is taken back by every failure below,
+	// and each of those rollbacks forks git on the PARENT's environment, whose
+	// process table a close reaps. prepareIsolation admits its own create, but
+	// that admission dies with it, and the rollbacks that matter run long after
+	// it returns: CommitStart's failure, failCommittedStart's arms, and
+	// failAdoptedStart. An admission asked for where one of those rollbacks
+	// starts would be refused by the very close that caused it, so it is taken
+	// HERE, before the lane exists, and released once by this defer — every exit
+	// from this function passes through it, including the arms that retain a
+	// candidate and roll nothing back, so no path leaks it.
+	//
+	// It overlaps prepareIsolation's create admission for the length of the
+	// create. Two live admissions on the same fence are just two things the
+	// close waits for; this one is named for the spawn, not the rollback: a
+	// healthy spawn holds it for its whole run, and a fence warning printed
+	// during that ordinary run must not read as a rollback in progress, which
+	// is why worktreeCreate and prepareIsolation both rename theirs only once
+	// an undo actually starts.
+	//
+	// A refusal needs no answer of its own: `closing` only ever goes false to
+	// true, so prepareIsolation's own admission is refused too and the spawn
+	// fails with no lane cut and nothing to take back.
+	var (
+		laneAdmission envWorkID
+		laneFenced    bool
+	)
+	if reservation.worktreePath != "" {
+		laneAdmission, laneFenced = s.beginEnvWork("delegate start on lane " + reservation.worktreePath)
+		if laneFenced {
+			defer s.endEnvWork(laneAdmission)
+		}
+	}
 	isolation, err := runtime.prepareIsolation(ctx, reservation, worktreeProject, requestedSandbox)
 	if err != nil {
 		err = delegateSandboxFallbackHint(s, args, err)
@@ -1208,6 +1532,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(errors.Join(err, abortErr))
 	}
+	// The arms reached from here own the rename, because they are where a
+	// rollback actually starts.
+	isolation.laneAdmission, isolation.laneFenced = laneAdmission, laneFenced
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		isolation.cleanup(s, reservation.delegateID)
@@ -1282,11 +1609,11 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 }
 
 func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.grantsDelegation())
+	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), args.WatchParent, isolationName)
 }
 
-func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
+func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1296,10 +1623,10 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if agentType == "" {
 		agentType = "default"
 	}
-	agentName, rolePrompt := stableDelegateRole(selection, args.DelegationAllowance > 0, s)
-	reasoningEffort := strings.TrimSpace(args.ReasoningEffort)
+	agentName, rolePrompt := stableDelegateRole(selection, args.grantsDelegation(), s)
+	reasoningEffort := llm.NormalizeReasoningEffort(args.ReasoningEffort)
 	if reasoningEffort == "" {
-		reasoningEffort = strings.TrimSpace(childConfig.ReasoningEffort)
+		reasoningEffort = llm.NormalizeReasoningEffort(childConfig.ReasoningEffort)
 	}
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
@@ -1348,8 +1675,8 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	}
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
-		Task:                          task,
-		Description:                   task,
+		Task:                          brief,
+		Description:                   brief,
 		AgentType:                     agentType,
 		RequestedModel:                selection.requestedModel,
 		ResolvedProfileID:             selection.profile.ID(),
@@ -1360,7 +1687,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		FrozenSkillBodies:             frozenSkillBodies,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
 		ResultSchema:                  resultSchema,
-		DelegationAllowance:           args.DelegationAllowance,
+		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
 		Sandbox:                       sandboxSnapshot,
@@ -1370,9 +1697,11 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		Provenance:                    s.activeCausalProvenance(),
 		Resumable:                     true,
 	}
+	var roleTasks []task.TaskTemplate
 	if selection.agent != nil {
-		descriptor.TaskTemplates = append(descriptor.TaskTemplates, selection.agent.Tasks...)
+		roleTasks = selection.agent.Tasks
 	}
+	descriptor.TaskTemplates = task.ExpandParentTasks(roleTasks, args.TaskList)
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		descriptor.OriginToolCallID = callID
 	}
@@ -1434,7 +1763,43 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 	s := runtime.owner
 	isolation := delegateIsolation{worktreeProject: project}
 	workingDir := reservation.worktreePath
+	var (
+		laneAdmission envWorkID
+		laneFenced    bool
+	)
+	// The lane's admission is named for the create until an undo actually
+	// starts: a create still in flight must not read as a rollback in a fence
+	// warning (worktreeCreate renames its own for the same reason). It renames
+	// itself to the lane BEING UNDONE, which is the created path, not the
+	// reserved one the admission was opened under — the mismatch arm below is
+	// the case where those differ, and it is the created lane the rollback
+	// removes.
+	rollback := func() {
+		if laneFenced {
+			s.relabelEnvWork(laneAdmission, "delegate lane rollback for "+isolation.worktreePath)
+		}
+		isolation.cleanup(s, reservation.delegateID)
+	}
 	if workingDir != "" {
+		// Cutting the lane forks git on the PARENT's environment, whose process
+		// table a close reaps, and so does the rollback every failure below owes
+		// it. Neither is a manage_worktree operation, so the dispatch's close
+		// fence never sees them; admit them here as ONE span, for the reason
+		// worktreeCreate's create/rollback admission is one span — an admission
+		// asked for where the rollback starts would be refused by the very close
+		// that made the rollback necessary, and an unfenced rollback races the
+		// environment cleanup it exists to keep residue out of.
+		//
+		// A refused admission refuses the spawn, which is the dispatch's answer
+		// for the dispatch's reason: no lane has been cut yet, and cutting one
+		// against an environment being reaped and stores being closed leaves
+		// exactly the locked worktree, branch and sidecar this admission is here
+		// to prevent.
+		laneAdmission, laneFenced = s.beginEnvWork("create delegate lane " + workingDir)
+		if !laneFenced {
+			return isolation, fmt.Errorf(`delegate isolation:"worktree": %w`, errWorktreeOpWhileClosing)
+		}
+		defer s.endEnvWork(laneAdmission)
 		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID)
 		if err != nil {
 			return isolation, err
@@ -1442,13 +1807,13 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 		isolation.worktreePath = path
 		isolation.worktreeProject = createdProject
 		if filepath.Clean(path) != filepath.Clean(workingDir) {
-			isolation.cleanup(s, reservation.delegateID)
+			rollback()
 			return delegateIsolation{}, fmt.Errorf("delegate isolation path %q does not match reserved path %q", path, workingDir)
 		}
 	}
 	env, ownsFresh, err := s.prepareSubagentEnvironment(workingDir, requestedSandbox)
 	if err != nil {
-		isolation.cleanup(s, reservation.delegateID)
+		rollback()
 		return delegateIsolation{}, err
 	}
 	isolation.env = env
@@ -1474,11 +1839,26 @@ func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error
 	)
 }
 
+// cleanup runs every rollback the isolation step owes: prepareIsolation's own
+// rollback, and the four arms reached after it returns (CommitStart's
+// failure, failCommittedStart's arms, and failAdoptedStart). Every one of
+// those callers runs inside the lane admission delegateRuntime.create holds
+// across the whole spawn, so this takes none of its own.
+//
+// The rename lives here because every post-prepareIsolation arm funnels
+// through this method, and the retain arms that roll nothing back never
+// reach it, so the admission reads "rollback" only when one is actually
+// running.
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
+	if isolation.laneFenced && isolation.worktreePath != "" {
+		s.relabelEnvWork(isolation.laneAdmission, "delegate lane rollback for "+isolation.worktreePath)
+	}
 	if isolation.ownsFreshEnv {
-		if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-			local.DisposeSandboxScratch()
-		}
+		// prepareSubagentRunFromSelection leaves a PREPARED environment alone (it
+		// belongs to this isolation step), so this is the only rollback for the
+		// scratch the construction's git snapshot minted on an unsandboxed lane,
+		// as well as for a sandboxed lane's owned one.
+		disposeUnadoptedScratch(isolation.env)
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
@@ -1514,7 +1894,15 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	if started.descriptor.ParentWatchGranted {
 		ctx = context.WithValue(ctx, ctxWatchParent, true)
 	}
-	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection)
+	var inheritedContext []transcript.Entry
+	if args.ForkContext {
+		var err error
+		inheritedContext, err = s.snapshotDelegateContext()
+		if err != nil {
+			return nil, err
+		}
+	}
+	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection, inheritedContext)
 	if err != nil {
 		return nil, err
 	}
@@ -1582,10 +1970,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	discardEnv := true
 	defer func() {
+		// The construction below runs the child's git snapshot, which is what
+		// mints an unsandboxed environment's scratch, so a failure after that
+		// point has one to drop as surely as a sandboxed restore has its owned one.
 		if discardEnv && ownsFresh {
-			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.DisposeSandboxScratch()
-			}
+			disposeUnadoptedScratch(childEnv)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
@@ -1613,6 +2002,8 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		LLMSleep:                s.cfg.LLMSleep,
 		clock:                   s.clock,
 		testOnly:                s.cfg.testOnly,
+		// The personal doc belongs to whoever runs the tree now, not to the run that froze this delegate.
+		AgentsDocPath:           s.cfg.AgentsDocPath,
 		TurnEndsProcess:         s.cfg.TurnEndsProcess,
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
@@ -1649,6 +2040,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if err != nil {
 		return nil, false, err
 	}
+	child.recordEnvironmentOwnership(childEnv, ownsFresh)
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
 		child.discardRestoredCandidate()
@@ -1690,7 +2082,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		startedAt:        now,
 		endedAt:          &now,
 		stableDescriptor: &stableDescriptor,
-		ownsEnv:          ownsFresh,
 	}
 	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	return sub, true, nil
@@ -1819,9 +2210,17 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 	plans, claimedForClose, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason, runtimeForClose)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if committedStartFailureDisposition(finishErr) == delegateCommittedStartFailureStopWon {
-		if prepared != nil && (!controllerAttached || claimedForClose) {
-			prepared.runCancel()
-			prepared.disposeUnadopted()
+		// The stop settled the generation, so this exit owns the rollback of
+		// whatever nobody else holds: the unadopted child, unless the controller
+		// kept its runtime for its own close, and with it the isolation the
+		// construction was building on. The lane and its clone's scratch have no
+		// other owner once the start is dead, whether or not a child was built.
+		if prepared == nil || !controllerAttached || claimedForClose {
+			if prepared != nil {
+				prepared.runCancel()
+				prepared.disposeUnadopted()
+			}
+			isolation.cleanup(runtime.owner, started.lease.delegateID)
 		}
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
 	}
@@ -2237,7 +2636,5 @@ func (s *Session) closeOwnedDelegateRuntimeTree(ctx context.Context) error {
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil {
 		return nil
 	}
-	return s.delegateController.closeRuntimeTree(ctx, func(child *Session) {
-		child.close(ctx, false)
-	})
+	return s.delegateController.closeRuntimeTree(ctx)
 }

@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -40,7 +43,7 @@ func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testi
 		descriptor.ParentWatchGranted = true
 		descriptor.DelegationAllowance = 2
 	})
-	want, _, err := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+	want, _, err := LoadSessionDelegateStatus(context.Background(), fixture.stateDir, fixture.meta.ID)
 	if err != nil {
 		t.Fatalf("cold stable status: %v", err)
 	}
@@ -196,7 +199,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				}
 			}
 
-			cold, _, coldErr := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+			cold, _, coldErr := LoadSessionDelegateStatus(context.Background(), fixture.stateDir, fixture.meta.ID)
 			if tt.wantColdError {
 				if coldErr == nil {
 					t.Fatal("cold delegate status accepted an eligible missing/unreadable transcript")
@@ -528,11 +531,14 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 	startedAt := time.Now().UTC()
 	endedAt := startedAt.Add(time.Second)
 	const jobID = "job_status_projection"
+	const intent = "Running the test suite to find the failure"
 	if err := sess.jobManager.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            jobID,
 		Type:             jobstore.JobShell,
+		Command:          "go test ./...",
+		Intent:           intent,
 		OwnerSessionID:   sess.ID(),
 		VisibleToSession: sess.ID(),
 		StartedAt:        &startedAt,
@@ -562,6 +568,9 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		job.Reason != "exit_nonzero" || job.TranscriptRef != shellTranscriptRef(jobID) ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)
+	}
+	if job.Intent != intent {
+		t.Fatalf("job intent = %q, want %q", job.Intent, intent)
 	}
 }
 
@@ -814,5 +823,116 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 	}
 	if !foundUnsupported {
 		t.Error("HookEvents missing Setup (unsupported/reserved-placeholder)")
+	}
+}
+
+// TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing
+// asserts an oversized delegates.jsonl line does not hard-fail the
+// chat/transcript view for every session sharing that root -- live or
+// historical -- on a single corrupt line: the posture is "loud but
+// CONTAINED". LoadSessionDelegateStatus must not fail, and must carry a
+// diagnosed error (with file + line info) rather than propagating
+// ErrLineTooLong unclassified or swallowing it silently.
+func TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedelegateroot"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	// Inject a small MaxLineBytes so this test's fixture doesn't need an
+	// actual 128 MiB line to trip delegatestore's package default -- same
+	// established pattern as
+	// TestLoadSessionJobActivityTree_PathologicalLineErrorsLoudlyNotSilently,
+	// this test is about the CONTAINMENT property, not re-proving the cap
+	// fires (delegatestore's own tests already do that).
+	original := scanDelegateJournal
+	scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		limits.MaxLineBytes = 20
+		return original(ctx, path, fromOffset, limits)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	status, diagnostics, err := LoadSessionDelegateStatus(context.Background(), stateDir, rootID)
+	if err != nil {
+		t.Fatalf("LoadSessionDelegateStatus: %v, want nil error -- an oversized delegate journal line must degrade, not fail the whole ThreadRead RPC this feeds", err)
+	}
+	if len(status) != 0 {
+		t.Fatalf("status = %+v, want empty (nothing is safely decodable once a line in the shared journal exceeds the cap)", status)
+	}
+	found := false
+	for _, d := range diagnostics {
+		if strings.Contains(d, "delegates.jsonl") && strings.Contains(d, "line") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics = %v, want one identifying the oversized delegates.jsonl line (file + line info), visible rather than silently dropped", diagnostics)
+	}
+}
+
+func TestSessionOwnsDelegateCancellationDuringJournalFold(t *testing.T) {
+	stateDir := t.TempDir()
+	ownerID := "02wMz5Txv1C3Hut0M8GCeC"
+	childID := "02wMz5Txv1C3Hut0M8GCeD"
+	writePastStableDelegates(t, stateDir, ownerID, pastStableDescriptor(ownerID, childID, "inspect ownership"))
+	savePastActivityMeta(t, stateDir, ownerID, "Owner")
+	synctest.Test(t, func(t *testing.T) {
+		started, release := make(chan struct{}), make(chan struct{})
+		original := scanDelegateJournal
+		scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+			close(started)
+			<-release
+			return original(ctx, path, fromOffset, limits)
+		}
+		defer func() { scanDelegateJournal = original }()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, err := SessionOwnsDelegate(ctx, stateDir, ownerID, childID); done <- err }()
+		<-started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("ownership error=%v, want cancellation", err)
+			}
+		default:
+			t.Error("ownership caller still waits for the journal fold after cancellation")
+		}
+		close(release)
+		synctest.Wait()
+		owned, err := SessionOwnsDelegate(context.Background(), stateDir, ownerID, childID)
+		if err != nil || !owned {
+			t.Errorf("shared fold lost healthy caller's result: owned=%v, err=%v", owned, err)
+		}
+	})
+}
+
+func TestSessionOwnsDelegateVerifiesRootOwnerAndImmediateParent(t *testing.T) {
+	const rootID = "02wMz5Txv1C3Hut0M8GCeC"
+	const parentID = "02wMz5Txv1C3Hut0M8GCeD"
+	const childID = "02wMz5Txv1C3Hut0M8GCeE"
+	const siblingID = "02wMz5Txv1C3Hut0M8GCeF"
+	stateDir := t.TempDir()
+	parent := pastStableDescriptor(rootID, parentID, "parent task")
+	child := pastStableDescriptor(rootID, childID, "nested task")
+	child.ParentDelegateID = "dlg_" + parentID
+	sibling := pastStableDescriptor(rootID, siblingID, "sibling task")
+	writePastStableDelegates(t, stateDir, rootID, parent, child, sibling)
+	savePastActivityMeta(t, stateDir, rootID, "root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, parentID, "parent", rootID, 1)
+	savePastActivityMetaWithTreeRevision(t, stateDir, siblingID, "sibling", rootID, 1)
+	for _, tc := range []struct {
+		parent, child string
+		want          bool
+	}{
+		{rootID, parentID, true}, {parentID, childID, true}, {rootID, childID, false}, {siblingID, childID, false},
+	} {
+		t.Run(tc.parent+"/"+tc.child, func(t *testing.T) {
+			got, err := SessionOwnsDelegate(t.Context(), stateDir, tc.parent, tc.child)
+			if err != nil || got != tc.want {
+				t.Fatalf("owned=%v error=%v, want %v", got, err, tc.want)
+			}
+		})
 	}
 }

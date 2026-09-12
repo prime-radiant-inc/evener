@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>transcript-measure-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); }
+  /* PaneScaffold's phone body: 16px of padding a side on a 375px screen. */
+  .pane { box-sizing: border-box; width: 375px; padding: 0 16px; background: var(--surface-1); }
+</style>
+</head>
+<body data-font-size="m" data-transcript-measure="reading">
+<!-- The same opener DOM as cases/transcript-measure (AgentMessageItem.tsx's
+     wrap(): .message.opener > .tile + .column > .header + .bubble > .root > p),
+     measured in a real 375px viewport so the <700px media rules apply. -->
+<div class="pane" data-pane>
+  <div class="turn" data-turn>
+    <div class="message opener">
+      <span class="tile" aria-hidden="true"></span>
+      <div class="column">
+        <div class="header"><span class="name">Agent</span><span class="meta">preview · 2m ago</span></div>
+        <div class="bubble">
+          <div class="root">
+            <p data-prose>The transcript display flow is ready. I inspected the projection layer and its test coverage, then traced how each turn is reduced into display items before the virtual list renders them. The reducer keys subagent modules on turn id alone, which two sessions can share, so I added the session ref to the key and updated the three call sites that read it.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+function lineCount(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const tops = new Set();
+  for (const rect of range.getClientRects()) tops.add(Math.round(rect.top));
+  return tops.size;
+}
+window.measure = () => {
+  const pane = document.querySelector("[data-pane]");
+  const paneInner = pane.clientWidth - 32;
+  const prose = document.querySelector("[data-prose]");
+  const lines = lineCount(prose);
+  const chars = prose.textContent.length;
+  const proseRect = prose.getBoundingClientRect();
+  return {
+    viewport: window.innerWidth,
+    paneInner,
+    proseWidth: proseRect.width,
+    proseLeft: proseRect.left - pane.getBoundingClientRect().left,
+    lines,
+    chars,
+    charsPerLine: chars / Math.max(1, lines),
+    fontSize: getComputedStyle(prose).fontSize,
+  };
+};
+</script>
+</body>
+</html>

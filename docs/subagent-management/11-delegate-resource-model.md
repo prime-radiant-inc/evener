@@ -594,9 +594,12 @@ durable fold rejects any disagreement between them.
 TaskTemplates stores a copy of every template in the selected named agent's
 ordered workflow, including each title, prompt, reasoning effort, type, and
 insertion directive. Stable construction populates the child task store from
-that complete committed slice. Registered delegate creation supplies no parent
-task templates, preserving the existing child-workflow behavior without
-consulting the live agent registry after commit.
+that complete committed slice. A parent-supplied `task_list` is expanded into
+that slice at describe time (replacing the role's `parent_tasks` placeholder,
+or following the role's defaults when it has none), so launch and every
+resume seed the child from the same frozen list without consulting the live
+agent registry after commit. A delegate that shares its parent's task store
+refuses `task_list` at creation, since a shared store is never re-seeded.
 
 ToolNameCeiling stores the sorted, unique, pre-commit ceiling derived from the
 effective parent registry, named-agent policy, watch and delegation grants,
@@ -1053,6 +1056,45 @@ joined the exact completion receipt of every owned shell or descendant job it
 successfully stopped. A shell signal that merely begins asynchronous process
 termination is not completion. Stop-admission or persistence failures remain
 part of the failed generation's terminal diagnostic instead of being discarded.
+
+#### Finish-path authority: the intent reducer
+
+The generation finish path's guards — exact-lease generation/binding
+authentication, settlement-claim creation and fencing, finalization phase
+admission with stop-promotion arbitration, stop precedence and fallback
+selection, suppression, no-action eligibility, prepared-terminal outcome
+normalization, append-failure recovery latching, and the per-entry-point
+stale-lease policies (suppress, propagate, swallow) — live in one locked
+decision function, `reduceFinishIntent` in `agent/delegate_tree_intents.go`.
+The caller holds the controller mutex; the reducer acquires no locks,
+performs no journal I/O, and calls no Session methods (runtime
+pointer-identity comparison is the single permitted exception). Each
+finish-path wrapper method constructs a typed intent, reduces it, appends the
+returned journal batch, builds concrete mutation plans against post-append
+durable state from the returned effect descriptors, and applies the effects.
+Wrappers branch only on the reducer's decision; they never re-evaluate
+aggregate, live, or controller state and never assign outcomes or
+dispositions.
+
+The start-failure finishers (CompleteStartInput, FailCommittedStart,
+FailCommittedRestart, finishStoppedStartLocked) and the recovery finishers
+(reconcileRecoveryRequiredStopLocked,
+reconcileRuntimeLostFromEvidenceLocked) remain separate entry paths with
+their own claim types and batch builders. Folding them into the same reducer
+is a named deferred follow-up; until it lands, stop-finish selection exists
+in three places and prepared-terminal normalization in two.
+
+The differential lifecycle harness
+(`agent/delegate_lifecycle_differential_test.go` with its model in
+`agent/delegate_lifecycle_model_test.go`) gates this path: it drives
+randomized, deterministic operation sequences through the real controller
+and asserts cross-layer agreement between the controller, the durable
+journal, and an independent model after every operation, including across
+simulated crash and append-failure recovery (invariants I1–I7 where in
+force). It pinned the three historical lifecycle bug classes — no-action
+selection, nil-evidence escalation tolerance, and exhaustion-payload
+overwrite — by mutation, and it is the regression net for any future change
+to the finish path.
 
 ### communicate
 

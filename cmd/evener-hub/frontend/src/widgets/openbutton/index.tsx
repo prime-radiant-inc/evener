@@ -1,30 +1,36 @@
 // The standard "open out of this surface" affordance: the box-arrow OpenIcon
-// glyph, alone (iconOnly, for dense rows) or after a word ("open",
-// "open in editor"). Every place the UI opens something outside the current
-// surface - a child transcript pane, a file doc pane, an external editor -
-// routes through this one component, so a rendering change lands once.
+// glyph, alone (the button form) or after words (the anchor form, an external
+// target). Every place the UI opens something outside the current surface -
+// a child transcript pane, a file doc pane, an external editor - routes
+// through this one component, so a rendering change lands once.
+//
+// ONE treatment: icon-only, everywhere. The accessible name stays specific
+// ("Open transcript", "Open beside: src/a.ts") because many open controls
+// share a screen; the TOOLTIP is the one word "Open" everywhere.
+//
+// The touch target never reaches the line box: the .inline wrapper is the
+// full hit size (28px, --tap-min on phones - the IconButton sm inside fills
+// it) and its negative margin-block hands exactly 1em back to layout, so a
+// row with the affordance is the height of a row without it.
 //
 // The affordance always rides inside something clickable (a disclosure head,
 // a tool row's summary line, an activity-tree row), so it owns
 // stopPropagation: a click here must never also toggle the enclosing row.
 import type { MouseEvent } from "react";
-import { Button } from "../button";
 import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
 import styles from "./openbutton.module.css";
 
 const CLASS = {
   link: requireClass(styles.link, "openbutton.module.css", "link"),
+  inline: requireClass(styles.inline, "openbutton.module.css", "inline"),
 };
 
 // The traditional "open out of the box" glyph - a box with its top-right
 // corner open and an arrow leaving through it - in the app's 16x16 stroke
-// grammar, currentColor so it inherits the Button/IconButton variant colour
-// exactly as the text label it replaced did (kata 3qnd - the surrounding
-// pane chrome, Pop out/Fork from here, is all icons; this was the one text
-// label left). Defaults to this control's 14px; the pane header's pop-out
-// action (shell/PopoutHeaderAction.tsx) renders it at 16px, the geometry
-// mobile/StackHost's BackIcon shares.
+// grammar, currentColor so it inherits the Button/IconButton variant colour.
+// Defaults to this control's 14px; the pane header's pop-out action
+// (shell/PopoutHeaderAction.tsx) renders it at 16px.
 export function OpenIcon({ size = 14 }: { size?: number }) {
   return (
     <svg viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
@@ -49,46 +55,25 @@ export function OpenIcon({ size = 14 }: { size?: number }) {
 }
 
 export interface OpenButtonProps {
-  /** Accessible name. Word form: an aria-label more specific than the bare
-   * word (many "open" controls share a screen) - defaults to `word`.
-   * iconOnly: the control's ONLY name (required there by IconButton). */
+  /** Accessible name. Stay specific ("Open transcript", "Open beside:
+   * src/a.ts") - many open controls share a screen. Defaults to "Open". */
   label?: string;
-  /** The visible word the glyph follows (word and anchor forms). */
-  word?: string;
-  /** Dense-row form: just the glyph, `label` as the accessible name, for
-   * surfaces (the activity tree's first line) with no room for the word. */
-  iconOnly?: boolean;
-  /** iconOnly density: xs rides a text row (activity tree), sm stands in
-   * pane chrome or a tool row's trailing slot. The word form is always
-   * Button sm. */
-  size?: "xs" | "sm";
-  /** An external target renders an <a> (new tab, no opener access) instead
-   * of a <button> - the settings "open in editor" case. The anchor is the
-   * word form: it ignores iconOnly, size, and onClick. */
-  href?: string;
-  /** Click handler for the button forms. An href anchor navigates instead
+  /** Click handler for the button form. An href anchor navigates instead
    * and only stopPropagates. */
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   /** Forwards to the underlying control: activity-tree rows are their own
    * tab stop, so their nested open glyph takes -1 there. */
   tabIndex?: number;
-  /** Hover text; iconOnly defaults it to `label` (its only visible hint). */
-  title?: string;
+  /** An external target renders an <a> (new tab, no opener access) instead
+   * of a <button> - the settings "open in editor" case. The anchor names
+   * itself from its visible words and ignores onClick. */
+  href?: string;
+  /** The visible words the glyph follows (anchor form only). */
+  word?: string;
 }
 
-export function OpenButton({
-  label,
-  word = "open",
-  iconOnly = false,
-  size = "sm",
-  href,
-  onClick,
-  tabIndex,
-  title,
-}: OpenButtonProps) {
+export function OpenButton({ label, onClick, tabIndex, href, word = "open" }: OpenButtonProps) {
   if (href !== undefined) {
-    // The anchor names itself from its visible words unless a more specific
-    // label is given; the glyph is aria-hidden, so it adds nothing.
     return (
       <a
         className={CLASS.link}
@@ -96,7 +81,7 @@ export function OpenButton({
         target="_blank"
         rel="noopener noreferrer"
         aria-label={label}
-        title={title}
+        title="Open"
         tabIndex={tabIndex}
         onClick={(event) => event.stopPropagation()}
       >
@@ -109,24 +94,20 @@ export function OpenButton({
     event.stopPropagation();
     onClick?.(event);
   }
-  const name = label ?? word;
-  if (iconOnly) {
-    return (
+  return (
+    // data-open-shell is the surfaces' hook for context-specific geometry
+    // (dense activity rows cap the hit HEIGHT at the row's so neighbors'
+    // targets never overlap - activitypanel.module.css).
+    <span className={CLASS.inline} data-open-shell>
       <IconButton
-        label={name}
-        title={title ?? name}
+        label={label ?? "Open"}
+        title="Open"
         tabIndex={tabIndex}
         icon={<OpenIcon />}
         variant="quiet"
-        size={size}
+        size="sm"
         onClick={handleClick}
       />
-    );
-  }
-  return (
-    <Button variant="quiet" size="sm" aria-label={name} title={title} tabIndex={tabIndex} onClick={handleClick}>
-      {word}
-      <OpenIcon />
-    </Button>
+    </span>
   );
 }

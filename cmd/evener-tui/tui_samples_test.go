@@ -14,7 +14,7 @@ func TestHubTUISampleCorpusCoversRequiredVariants(t *testing.T) {
 	if len(corpus.DashboardTree.Projects) < 2 {
 		t.Fatalf("dashboard projects=%d, want at least evener and external project samples", len(corpus.DashboardTree.Projects))
 	}
-	requireSampleSources(t, corpus.DashboardTree.Live, "evener", "codex-local")
+	requireSampleSources(t, corpus.DashboardTree.Live, "evener", "local-daemon")
 
 	project := corpus.ProjectHistory
 	if project.Name == "" || len(project.Sessions) < 2 {
@@ -24,15 +24,15 @@ func TestHubTUISampleCorpusCoversRequiredVariants(t *testing.T) {
 		t.Fatalf("project history must include live and ended sessions: %+v", project.Sessions)
 	}
 
-	for _, name := range []string{"evener-idle", "codex-readonly", "busy-steer", "busy-readonly", "ended"} {
+	for _, name := range []string{"evener-idle", "source-readonly", "busy-steer", "busy-readonly", "ended"} {
 		if _, ok := corpus.Sessions[name]; !ok {
 			t.Fatalf("missing session detail sample %q", name)
 		}
 	}
 
-	codex := corpus.Sessions["codex-readonly"]
-	if codex.SourceLabel != "codex-local" || codex.Capabilities.Clear || codex.Capabilities.Shutdown {
-		t.Fatalf("codex readonly sample should preserve source label and unsupported actions: %+v", codex)
+	source := corpus.Sessions["source-readonly"]
+	if source.SourceLabel != "local-daemon" || source.Capabilities.Clear || source.Capabilities.Shutdown {
+		t.Fatalf("source readonly sample should preserve source label and unsupported actions: %+v", source)
 	}
 
 	if len(corpus.TranscriptEvents) == 0 || !containsMessageKind(corpus.TranscriptEvents, transcript.MsgTool) {
@@ -63,7 +63,6 @@ func TestHubTUISampleCorpusHasGoldenRendersForCoreSurfaces(t *testing.T) {
 		"ask-overlay-single",
 		"ask-overlay-multi-review",
 		"spawn-evener",
-		"spawn-codex",
 		"spawn-auth-required",
 		"model-picker",
 		"theme-picker",
@@ -130,7 +129,7 @@ func TestHubTUISampleCorpusHasFocusAndDraftInteractionSamples(t *testing.T) {
 		"composer-draft-survives-overlay",
 		"busy-enter-queues-message",
 		"busy-ctrl-s-drains-as-steer",
-		"unsupported-codex-actions-hidden-or-disabled",
+		"unsupported-source-actions-hidden-or-disabled",
 	}
 	interactions := map[string]tuiInteractionSample{}
 	for _, sample := range corpus.Interactions {

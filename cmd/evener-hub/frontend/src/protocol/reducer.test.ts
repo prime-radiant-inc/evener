@@ -12,6 +12,8 @@ import {
   chunkViewBackingForTests,
   collectAuthoritativeMutationIds,
   hydrateThread,
+  imageSessionRouteForSession,
+  mergeOlderItemPage,
   notificationTargetsThread,
   pendingTextJoined,
   prependOlderTurns,
@@ -20,6 +22,7 @@ import {
 import { hydrateStreamingAgentMessage } from "./testing/tokenFlood";
 import type {
   AnyNotification,
+  InputItem,
   QueueState,
   SandboxEscalationRequested,
   Thread,
@@ -27,6 +30,7 @@ import type {
   ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  Turn,
 } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
 
@@ -524,7 +528,19 @@ function agentMessageDelta(delta: string): AnyNotification {
   };
 }
 
-test("every delta's fold appends onto the SAME backing array, which grows by exactly one (O(1) append)", () => {
+// The O(1)-append test's ceiling is a tripwire for a hang, not a
+// responsiveness bar: its 20,000-delta fold measures ~0.4s in isolation and
+// in-suite, so the 5s default holds ~12x headroom — until the whole gate's
+// concurrent Go and vitest streams saturate the runner and a single worker
+// loses more than that (the #672 CI failure: 5,000ms exceeded, same tree
+// green on rerun). Sized like hookTimeout/WARM_ROUTE_TRIPWIRE_MS: well above
+// the work, still bounded, and a regression to O(n^2) blows through it
+// regardless (a copy per delta is ~200M string copies at N=20,000).
+const O1_APPEND_TRIPWIRE_MS = 30_000;
+
+test("every delta's fold appends onto the SAME backing array, which grows by exactly one (O(1) append)", {
+  timeout: O1_APPEND_TRIPWIRE_MS,
+}, () => {
   // White-box on purpose (chunkViewBackingForTests): chunk strings are
   // PRIMITIVES, so element-level identity checks survive a per-delta copy
   // ([...chunks, delta] preserves every string reference) — only the
@@ -589,7 +605,6 @@ test("a mid-stream model state stays observationally frozen while later deltas c
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -721,6 +736,257 @@ test("wire items carry transcriptEntryIndex into the model - it is what thread/f
   expect(itemAt(turnAt(hydrated, 0), 0).transcriptEntryIndex).toBeUndefined();
 });
 
+test("keyless item/completed updates a keyed hydrated item without losing identity metadata", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_1",
+            turnId: "turn_1",
+            transcriptKey: "transcript:item_1",
+            position: { entry: 4, item: 2 },
+            type: "agentMessage",
+            text: "old",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { id: "item_1", turnId: "turn_1", type: "agentMessage", text: "current", status: "completed" },
+      },
+    },
+    1001,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(turnAt(model, 0).items).toHaveLength(1);
+  expect(item).toMatchObject({
+    id: "item_1",
+    text: "current",
+    status: "completed",
+    transcriptKey: "transcript:item_1",
+    position: { entry: 4, item: 2 },
+  });
+});
+
+test("turn/completed only merges same-ID keyless items, not conflicting keys or unrelated IDs", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_1",
+            turnId: "turn_1",
+            transcriptKey: "transcript:item_1",
+            position: { entry: 4, item: 2 },
+            type: "agentMessage",
+            text: "old",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+
+  const completed = (item: ThreadItem): AnyNotification => ({
+    method: "turn/completed",
+    params: {
+      threadId: "thr_t",
+      ref: "ref_t",
+      turn: { id: "turn_1", status: "completed", itemsView: "full", items: [item] },
+    },
+  });
+
+  model = applyNotification(
+    model,
+    completed({ id: "item_1", turnId: "turn_1", type: "agentMessage", text: "keyless current", status: "completed" }),
+    1001,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 0).text).toBe("keyless current");
+
+  model = applyNotification(
+    model,
+    completed({
+      id: "item_1",
+      turnId: "turn_1",
+      transcriptKey: "transcript:other",
+      type: "agentMessage",
+      text: "conflicting key",
+      status: "completed",
+    }),
+    1002,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(2);
+
+  model = applyNotification(
+    model,
+    completed({ id: "item_unrelated", turnId: "turn_1", type: "agentMessage", text: "unrelated", status: "completed" }),
+    1003,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(3);
+});
+
+test("active full turn/completed preserves only identity-matched hydrated item metadata", () => {
+  const keepPosition = { entry: 8, item: 0 };
+  const conflictingPosition = { entry: 8, item: 1 };
+  const oldPosition = { entry: 8, item: 2 };
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_active" },
+    turns: [
+      {
+        id: "turn_active",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_keep",
+            turnId: "turn_active",
+            transcriptKey: "transcript:item_keep",
+            position: keepPosition,
+            type: "reasoning",
+            text: "hydrated reasoning",
+            argumentsJson: '{"from":"hydrate"}',
+            status: "inProgress",
+          },
+          {
+            id: "item_conflicting",
+            turnId: "turn_active",
+            transcriptKey: "transcript:item_conflicting:old",
+            position: conflictingPosition,
+            type: "agentMessage",
+            text: "old conflicting item",
+            status: "completed",
+          },
+          {
+            id: "item_old",
+            turnId: "turn_active",
+            transcriptKey: "transcript:item_old",
+            position: oldPosition,
+            type: "agentMessage",
+            text: "removed by authoritative stamp",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  expect(model.activeTurnId).toBe("turn_active");
+
+  // This live delta gives the hydrated item the model-only fields that the
+  // existing full-stamp merge must continue preserving.
+  model = applyNotification(
+    model,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_active",
+        itemId: "item_keep",
+        summaryIndex: 0,
+        delta: " + live",
+      },
+    },
+    1100,
+  );
+  const beforeCompletion = itemAt(turnAt(model, 0), 0);
+  expect(beforeCompletion.observedStartedAt).toBeDefined();
+  expect(beforeCompletion.reasoningSummaries).toEqual([["hydrated reasoning", " + live"]]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: {
+          id: "turn_active",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_conflicting",
+              turnId: "turn_active",
+              transcriptKey: "transcript:item_conflicting:new",
+              type: "agentMessage",
+              text: "new conflicting item",
+              status: "completed",
+            },
+            {
+              id: "item_keep",
+              turnId: "turn_active",
+              type: "reasoning",
+              text: "final reasoning",
+              status: "completed",
+            },
+            {
+              id: "item_new",
+              turnId: "turn_active",
+              type: "agentMessage",
+              text: "new unrelated item",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    },
+    1200,
+  );
+
+  const settledTurn = turnAt(model, 0);
+  expect(model.activeTurnId).toBeUndefined();
+  expect(settledTurn.status).toBe("completed");
+  expect(settledTurn.items.map((item) => item.id)).toEqual(["item_conflicting", "item_keep", "item_new"]);
+  expect(settledTurn.items).toHaveLength(3);
+
+  const conflicting = itemAt(settledTurn, 0);
+  expect(conflicting).toMatchObject({
+    id: "item_conflicting",
+    transcriptKey: "transcript:item_conflicting:new",
+    text: "new conflicting item",
+    status: "completed",
+  });
+  expect(conflicting.position).toBeUndefined();
+
+  const keep = itemAt(settledTurn, 1);
+  expect(keep).toMatchObject({
+    id: "item_keep",
+    text: "final reasoning",
+    status: "completed",
+    transcriptKey: "transcript:item_keep",
+    position: keepPosition,
+    argumentsJSON: '{"from":"hydrate"}',
+    observedStartedAt: beforeCompletion.observedStartedAt,
+    observedCompletedAt: new Date(1200).toISOString(),
+  });
+  expect(keep.reasoningSummaries).toEqual([["hydrated reasoning", " + live"]]);
+
+  const unrelated = itemAt(settledTurn, 2);
+  expect(unrelated).toMatchObject({ id: "item_new", text: "new unrelated item", status: "completed" });
+  expect(unrelated.transcriptKey).toBeUndefined();
+  expect(unrelated.position).toBeUndefined();
+});
+
 test("agentMessage/reset discards the in-flight item", () => {
   let model = testHydrate();
   model = applyNotification(
@@ -849,7 +1115,6 @@ test("turn/completed applies with authoritative ref and thread identity", () => 
     params: {
       threadId: "thr_t",
       ref: "ref_t",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "", items: [] },
     },
   };
@@ -931,7 +1196,6 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
     params: {
       threadId: "thr_a",
       ref: "ref_a",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "" },
     },
   };
@@ -1049,7 +1313,6 @@ test("turn/completed settles only the FIRST turn matching a duplicated id, leavi
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -1106,7 +1369,6 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -1136,7 +1398,6 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1212,7 +1473,6 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1266,7 +1526,6 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1334,7 +1593,6 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "interrupted", itemsView: "" },
       },
     },
@@ -1379,7 +1637,6 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "", error },
       },
     },
@@ -1448,7 +1705,6 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "", error },
       },
     },
@@ -1488,7 +1744,7 @@ test('evener/steering/injected with source "user" appends a steering item to the
     model,
     {
       method: "evener/steering/injected",
-      params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" },
+      params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user", startedAt: 1000 },
     },
     1002,
   );
@@ -1500,6 +1756,7 @@ test('evener/steering/injected with source "user" appends a steering item to the
     turnId: "turn_1",
     type: "steering",
     text: "please also check X",
+    startedAt: "1970-01-01T00:00:01.000Z",
     status: "completed",
     source: "user",
   });
@@ -1603,7 +1860,6 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -1831,6 +2087,165 @@ test("item/completed resolves a sha-routed tool-result image's src from its url"
   ]);
 });
 
+const SHA_IMAGE = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+function hydrateWithShaImage(imageOverrides: Partial<InputItem> = {}): ThreadModel {
+  // The default fixture's wire session ("sess_t") differs from its ref
+  // ("ref_t") on purpose: the sha route must be built from the serving
+  // session, never the ref — a stable workspace alias (e.g. local:stable)
+  // names no Past.Find entry and its /s/{ref}/images/{sha} 404s.
+  const turns: Turn[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      itemsView: "full",
+      items: [
+        {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look at this",
+          status: "completed",
+          images: [{ type: "image", name: "photo.png", metadata: { sha: SHA_IMAGE }, ...imageOverrides }],
+        },
+      ],
+    },
+  ];
+  return testHydrate({ turns });
+}
+
+test("hydrateThread resolves a sha-bearing image without a stamped url to the serving session's image route", () => {
+  const model = hydrateWithShaImage();
+  expect(model.imageSessionId).toBe("sess_t");
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: `/s/sess_t/images/${SHA_IMAGE}`, name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a stamped url wins over the rebuilt sha route", () => {
+  const stamped = `/s/sess_t/images/${SHA_IMAGE}`;
+  const model = hydrateWithShaImage({ url: stamped });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: stamped, name: "photo.png", path: undefined }]);
+});
+
+test("inline bytes win over the rebuilt sha route (bytes render when the Past index cannot serve the route)", () => {
+  // A sha+bytes payload (legacy/live frames the hub never stripped) resolves
+  // to the bytes: the route 404s for any session absent from the hub's Past
+  // index (handleSessionImage, image_serve.go), while the bytes render
+  // unconditionally. Sha-only replay descriptors still resolve to the route
+  // (the test above).
+  const model = hydrateWithShaImage({
+    mediaType: "image/png",
+    data: "iVBORw0KGgo=",
+  });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a non-hex metadata sha falls back to the inline data-URI, never a hub-400 route", () => {
+  const model = hydrateWithShaImage({
+    metadata: { sha: "not-a-sha" },
+    mediaType: "image/png",
+    data: "iVBORw0KGgo=",
+  });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a sha+bytes image with no known session keeps the data-URI (unknown-session fallback)", () => {
+  // Blank wire ids name no fetchable route (imageSessionRoute undefined keeps
+  // the branch dark), so the same sha+bytes payload that resolves to a route
+  // above resolves to the usable bytes here instead of a broken src.
+  const model = hydrateWithShaImage({});
+  const wireModel = { ...model, imageSessionId: "", threadId: "" };
+  const page: ThreadTurnsListResponse = {
+    data: [
+      {
+        id: "turn_0",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_paged",
+            turnId: "turn_0",
+            text: "older",
+            status: "completed",
+            images: [
+              {
+                type: "image",
+                name: "photo.png",
+                mediaType: "image/png",
+                data: "iVBORw0KGgo=",
+                metadata: { sha: SHA_IMAGE },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    nextCursor: undefined,
+  };
+  const paged = mergeOlderItemPage(wireModel, page);
+  expect(itemAt(turnAt(paged, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a live item/completed with sha but no stamped url resolves to the hydrated session's route", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look at this",
+          status: "completed",
+          images: [{ type: "image", name: "photo.png", metadata: { sha: SHA_IMAGE } }],
+        },
+      },
+    },
+    1002,
+  );
+
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: `/s/sess_t/images/${SHA_IMAGE}`, name: "photo.png", path: undefined },
+  ]);
+});
+
+test("imageSessionRouteForSession escapes the session id and rejects what cannot serve", () => {
+  expect(imageSessionRouteForSession("sess_t")).toBe("sess_t");
+  expect(imageSessionRouteForSession("")).toBeUndefined();
+  expect(imageSessionRouteForSession("proj/one")).toBeUndefined();
+});
+
+test("hydrateThread trims a whitespace-padded sessionId and falls back to the trimmed thread id", () => {
+  // stampThreadImageURLs (output_images.go) trims both (strings.TrimSpace):
+  // a padded-but-blank "  " session id must fall back to the thread id, and
+  // a clean thread id must survive — neither may escape to a /s/%20... route.
+  const blankPadded = testHydrate({ id: "thr_t", sessionId: "   " });
+  expect(blankPadded.imageSessionId).toBe("thr_t");
+  const padded = testHydrate({ id: "  thr_t  ", sessionId: "  sess_t  " });
+  expect(padded.imageSessionId).toBe("sess_t");
+});
+
 // Task 1-3 carried a typed kind (events.SteeringKind* on the Go side) onto
 // the wire at each injection site, through to EvenerSteeringInjectedParams.kind
 // on the live notification. The model must carry it the last hop onto the
@@ -1917,6 +2332,925 @@ test("prependOlderTurns tolerates a wire-nullable data array (treats it as an em
 
   expect(result.turns.map((t) => t.id)).toEqual(["turn_2"]);
   expect(result.olderCursor).toBe("cursor_0");
+});
+
+test("mergeOlderItemPage merges shared turns and transcript items in position order with current precedence", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "live-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k1",
+            transcriptKey: "k1",
+            position: { entry: 2, item: 1 },
+            turnId: "live-turn",
+            type: "agentMessage",
+            text: "new text",
+            status: "completed",
+          },
+          {
+            id: "live-k2",
+            transcriptKey: "k2",
+            position: { entry: 3, item: 1 },
+            turnId: "live-turn",
+            type: "agentMessage",
+            text: "current-only",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const current = model.turns[0];
+  if (!current) throw new Error("expected current turn");
+  const currentItem = current.items[0];
+  if (!currentItem) throw new Error("expected current item");
+  currentItem.observedStartedAt = "1970-01-01T00:00:01.001Z";
+  currentItem.observedCompletedAt = "1970-01-01T00:00:01.002Z";
+  currentItem.reasoningSummaries = [["kept reasoning"]];
+  currentItem.outputImages = [{ src: "new-image" }];
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "historical-turn",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "historical-turn",
+            type: "agentMessage",
+            text: "older-only",
+            status: "completed",
+          },
+          {
+            id: "old-k1",
+            transcriptKey: "k1",
+            position: { entry: 2, item: 1 },
+            turnId: "historical-turn",
+            type: "agentMessage",
+            text: "old duplicate",
+            argumentsJson: "old arguments",
+            outputImages: [{ url: "old-image", source: "old-source" }],
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  expect(result.turns).toHaveLength(1);
+  expect(result.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["k0", "k1", "k2"]);
+  expect(result.turns[0]?.items.filter((item) => item.transcriptKey === "k1")).toHaveLength(1);
+  expect(result.turns[0]?.items[1]).toMatchObject({
+    id: "live-k1",
+    text: "new text",
+    argumentsJSON: "old arguments",
+    observedStartedAt: "1970-01-01T00:00:01.001Z",
+    observedCompletedAt: "1970-01-01T00:00:01.002Z",
+    reasoningSummaries: [["kept reasoning"]],
+    outputImages: [{ src: "new-image" }],
+    status: "completed",
+  });
+  expect(result.olderCursor).toBe("cursor_0");
+});
+
+test("mergeOlderItemPage preserves older settled payload and usage when the current same-key fragment omits them", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "current-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer text wins",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+        itemsView: "fragment",
+        items: [
+          {
+            id: "older-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older text",
+            output: "older output",
+            error: "older error",
+            exitCode: 3,
+            completedAt: 2,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.usage).toEqual({ inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    id: "current-item",
+    text: "newer text wins",
+    output: "older output",
+    error: "older error",
+    exitCode: 3,
+    completedAt: "1970-01-01T00:00:00.002Z",
+    status: "completed",
+  });
+});
+
+test.each([
+  ["omitted text falls back to the older settled text", undefined, "settled text"],
+  ["explicit empty text remains empty", "", ""],
+  ["explicit nonempty text remains the newer text", "newer text", "newer text"],
+])("mergeOlderItemPage preserves same-key text presence semantics: %s", (_case, newerText, expectedText) => {
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "completed",
+            itemsView: "fragment",
+            items: [
+              {
+                id: "newer-item",
+                transcriptKey: "shared-key",
+                position: { entry: 2, item: 0 },
+                turnId: "shared-turn",
+                type: "agentMessage",
+                ...(newerText === undefined ? {} : { text: newerText }),
+                status: "completed",
+              },
+              {
+                id: "newer-after",
+                transcriptKey: "after-key",
+                position: { entry: 2, item: 1 },
+                turnId: "shared-turn",
+                type: "agentMessage",
+                text: "after",
+                status: "completed",
+              },
+            ],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            position: { entry: 2, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "settled text",
+            output: "settled output",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  expect(result.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["shared-key", "after-key"]);
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    id: "newer-item",
+    text: expectedText,
+    output: "settled output",
+    position: { entry: 2, item: 0 },
+  });
+  expect(result.olderCursor).toBe("cursor_0");
+});
+
+test("mergeOlderItemPage keeps omitted text absent across repeated same-key merges", () => {
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "completed",
+            itemsView: "fragment",
+            items: [{ id: "newer-item", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const page = {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed" as const,
+        itemsView: "full" as const,
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage" as const,
+            text: "settled text",
+            status: "completed" as const,
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  };
+
+  const first = mergeOlderItemPage(model, page);
+  const second = mergeOlderItemPage(first, page);
+
+  expect(first.turns[0]?.items[0]?.text).toBe("settled text");
+  expect(second.turns[0]?.items[0]?.text).toBe("settled text");
+  expect(second.turns[0]?.items).toHaveLength(1);
+});
+
+test("an even older omitted fragment does not erase an older provided text", () => {
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "completed",
+            itemsView: "fragment",
+            items: [{ id: "newer-item", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const provided = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "provided-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "A",
+          },
+        ],
+      },
+    ],
+  });
+  const result = mergeOlderItemPage(provided, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "omitted-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]?.text).toBe("A");
+});
+
+test.each([
+  ["omitted text recovers history", undefined, "settled"],
+  ["explicit empty text stays empty", "", ""],
+])("item/completed preserves text presence for later pagination: %s", (_case, text, expectedText) => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "item-1",
+            transcriptKey: "shared-key",
+            position: { entry: 2, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+          },
+        ],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "shared-turn",
+        item: {
+          id: "item-1",
+          turnId: "shared-turn",
+          type: "agentMessage",
+          status: "completed",
+          ...(text === undefined ? {} : { text }),
+        },
+      },
+    },
+    1001,
+  );
+  expect(model.turns[0]?.items[0]).toMatchObject({
+    transcriptKey: "shared-key",
+    position: { entry: 2, item: 0 },
+    status: "completed",
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "settled",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items).toHaveLength(1);
+  expect(result.turns[0]?.items[0]?.text).toBe(expectedText);
+});
+
+for (const method of ["item/completed", "turn/completed"] as const) {
+  for (const chunks of [[], ["chunk-1", "chunk-2"]]) {
+    test.each([
+      ["omitted", undefined, `prefix${chunks.join("")}`],
+      ["explicit empty", "", ""],
+      ["explicit nonempty", "replacement", "replacement"],
+    ])(`${method} settles streamed text with ${chunks.length} pending chunks: %s`, (_case, text, expected) => {
+      let model = testHydrate({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "inProgress",
+            itemsView: "full",
+            items: [
+              {
+                id: "item-1",
+                turnId: "shared-turn",
+                type: "agentMessage",
+                text: "prefix",
+                status: "inProgress",
+              },
+            ],
+          },
+        ],
+      });
+      expect(model.activeTurnId).toBe("shared-turn");
+      for (const delta of chunks) {
+        model = applyNotification(
+          model,
+          {
+            method: "item/agentMessage/delta",
+            params: { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn", itemId: "item-1", delta },
+          },
+          1001,
+        );
+      }
+      const item: ThreadItem = {
+        id: "item-1",
+        turnId: "shared-turn",
+        type: "agentMessage",
+        status: "completed",
+        ...(text === undefined ? {} : { text }),
+      };
+      const params = { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn" };
+      model = applyNotification(
+        model,
+        method === "item/completed"
+          ? { method, params: { ...params, item } }
+          : {
+              method,
+              params: {
+                ...params,
+                turn: { id: "shared-turn", status: "completed", itemsView: "full", items: [item] },
+              },
+            },
+        1002,
+      );
+      expect(model.turns[0]?.items[0]?.text).toBe(expected);
+      expect(model.turns[0]?.items[0]?.pendingText).toBeUndefined();
+      expect(model.turns[0]?.items[0]?.status).toBe("completed");
+    });
+  }
+}
+
+test("agent message delta clone preserves omitted text presence for later pagination", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [{ id: "item-1", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn", itemId: "item-1", delta: "chunk" },
+    },
+    1001,
+  );
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "settled",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]?.text).toBe("settled");
+});
+
+test("settling nonempty pending text marks its fresh text as provided", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [{ id: "item-1", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn", itemId: "item-1", delta: "live" },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "shared-turn", status: "completed", itemsView: "" },
+      },
+    },
+    1002,
+  );
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "historical",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]?.text).toBe("live");
+});
+
+test("mergeOlderItemPage retains the older status when an equal-rank newer item omits status", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "newer-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer text without status",
+          },
+        ],
+      },
+    ],
+  });
+
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "older-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older text",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]).toMatchObject({ text: "newer text without status", status: "inProgress" });
+});
+
+test("mergeOlderItemPage retains older identity when a newer matching item omits it", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            transcriptKey: "",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer unkeyed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            transcriptKey: "older-key",
+            position: { entry: 1, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older keyed",
+          },
+        ],
+      },
+    ],
+  });
+  expect(result.turns[0]?.items).toHaveLength(1);
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    id: "same-id",
+    text: "newer unkeyed",
+    transcriptKey: "older-key",
+    position: { entry: 1, item: 0 },
+  });
+});
+
+test("mergeOlderItemPage lets newer defined identity replace older identity", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            transcriptKey: "newer-key",
+            position: { entry: 2, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer keyed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older unkeyed",
+          },
+        ],
+      },
+    ],
+  });
+  expect(result.turns[0]?.items).toHaveLength(1);
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    transcriptKey: "newer-key",
+    position: { entry: 2, item: 0 },
+    text: "newer keyed",
+  });
+});
+
+test("mergeOlderItemPage position-orders the final items when pages arrive out of chronology", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "current-earlier",
+            transcriptKey: "key-1",
+            position: { entry: 1, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "current earlier position",
+          },
+        ],
+      },
+    ],
+  });
+
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "arrived-later",
+            transcriptKey: "key-3",
+            position: { entry: 3, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "later position arrived on older request",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["key-1", "key-3"]);
+});
+
+test("mergeOlderItemPage preserves unmatched results and folds a result-only turn only after its call arrives", () => {
+  const model = testHydrate();
+  const resultOnly = {
+    id: "result-turn",
+    status: "completed",
+    itemsView: "full",
+    items: [
+      {
+        id: "item_tool_result_orphan",
+        transcriptKey: "result-key",
+        position: { entry: 1, item: 1 },
+        turnId: "result-turn",
+        type: "commandExecution",
+        callId: "orphan-call",
+        output: "orphan output",
+        status: "completed",
+      },
+    ],
+  };
+  const visible = mergeOlderItemPage(model, { data: [resultOnly], nextCursor: "cursor_0" });
+  expect(visible.turns).toHaveLength(1);
+  expect(visible.turns[0]?.items[0]?.output).toBe("orphan output");
+
+  const withCall = mergeOlderItemPage(visible, {
+    data: [
+      {
+        id: "call-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_call_orphan",
+            transcriptKey: "call-key",
+            position: { entry: 0, item: 1 },
+            turnId: "call-turn",
+            type: "commandExecution",
+            callId: "orphan-call",
+            argumentsJson: "{}",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_done",
+  });
+  expect(withCall.turns).toHaveLength(1);
+  expect(withCall.turns[0]?.items).toHaveLength(1);
+  expect(withCall.turns[0]?.items[0]).toMatchObject({
+    id: "item_tool_call_orphan",
+    argumentsJSON: "{}",
+    output: "orphan output",
+    status: "completed",
+  });
+});
+
+test("item/started upserts an existing transcript key instead of appending a duplicate", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "historical-id",
+            transcriptKey: "same-key",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "agentMessage",
+            text: "old",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          id: "live-id",
+          transcriptKey: "same-key",
+          position: { entry: 1, item: 1 },
+          turnId: "turn_1",
+          type: "agentMessage",
+          text: "new",
+          status: "inProgress",
+        },
+      },
+    },
+    2000,
+  );
+  expect(model.turns[0]?.items).toHaveLength(1);
+  expect(model.turns[0]?.items[0]).toMatchObject({ id: "live-id", text: "new", transcriptKey: "same-key" });
+});
+
+test("item/completed settles an existing transcript key despite a different display ID", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "historical-id",
+            transcriptKey: "stable-key",
+            position: { entry: 1, item: 0 },
+            turnId: "turn_1",
+            type: "agentMessage",
+            text: "partial",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          id: "live-id",
+          transcriptKey: "stable-key",
+          position: { entry: 1, item: 0 },
+          turnId: "turn_1",
+          type: "agentMessage",
+          text: "settled",
+          status: "completed",
+        },
+      },
+    },
+    2000,
+  );
+  expect(model.turns[0]?.items).toHaveLength(1);
+  expect(model.turns[0]?.items[0]).toMatchObject({
+    id: "live-id",
+    text: "settled",
+    status: "completed",
+    transcriptKey: "stable-key",
+  });
+});
+
+test("item/completed retains legacy display-ID matching when stable identity is unavailable", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [{ id: "legacy-id", turnId: "turn_1", type: "agentMessage", text: "partial", status: "inProgress" }],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { id: "legacy-id", turnId: "turn_1", type: "agentMessage", text: "settled", status: "completed" },
+      },
+    },
+    2000,
+  );
+  expect(model.turns[0]?.items).toHaveLength(1);
+  expect(model.turns[0]?.items[0]).toMatchObject({ id: "legacy-id", text: "settled", status: "completed" });
 });
 
 // askPending is a THREAD-level wire signal (EvenerThread.askPending, mirroring
@@ -2120,12 +3454,12 @@ test("hydrateThread maps a settled item's exitCode onto the model (snapshot path
   expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(0);
 });
 
-// A tool-call's purpose crosses the wire as ThreadItem.description (set
+// A tool-call's intent crosses the wire as ThreadItem.description (set
 // server-side, e.g. delegate's mandate); wireItemToModel historically dropped
 // it. The model must carry it so the subagent Activity feed can render each
-// child tool-call's purpose (§4.2). Both hydrate and live paths fold through
+// child tool-call's intent (§4.2). Both hydrate and live paths fold through
 // wireItemToModel, so the snapshot path proves the carry.
-test("wireItemToModel carries the wire description (tool-call purpose) onto the item", () => {
+test("wireItemToModel carries the wire description (tool-call intent) onto the item", () => {
   const thread = testThread({
     turns: [
       {
@@ -2297,6 +3631,51 @@ test("reload merges a tool CALL and its RESULT (separate turns, same callId) int
 
   // The now-empty result turn is gone, so only one turn (and one separator) remains.
   expect(model.turns).toHaveLength(1);
+});
+
+test("reload merges a tool RESULT's raw state into the CALL item (hydration preserves structured raw)", () => {
+  const delegateRaw = { id: "dlg_42", type: "delegate", status: "running", task: "do work" };
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_1_0",
+            type: "commandExecution",
+            toolName: "job_status",
+            callId: "call_B",
+            argumentsJson: JSON.stringify({ target: "dlg_42" }),
+            startedAt: 1,
+            status: "inProgress",
+          },
+        ],
+      },
+      {
+        id: "turn_2",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_result_2_0",
+            type: "commandExecution",
+            toolName: "job_status",
+            callId: "call_B",
+            output: JSON.stringify(delegateRaw),
+            raw: delegateRaw,
+            completedAt: 2,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 0);
+  const items = model.turns.flatMap((t) => t.items).filter((i) => i.callId === "call_B");
+  expect(items).toHaveLength(1);
+  expect(items[0]?.raw).toEqual(delegateRaw); // raw from the RESULT survives the merge
 });
 
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
@@ -2567,7 +3946,6 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "interrupted", itemsView: "" },
       },
     },
@@ -2773,7 +4151,6 @@ test("a warning item survives a bare turn/completed settle stamp (composition wi
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -2823,6 +4200,71 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
     text: "context canceled",
     warning: { source: "user", title: "Cancelled", hint: "" },
   });
+});
+
+test("warning with object-form `warning.message` and no top-level message renders that nested message", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", warning: { message: "nested warning text" } } },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("nested warning text");
+});
+
+test("warning with bare-string `warning` and no top-level message renders that string", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", warning: "provider hiccup" } },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("provider hiccup");
+});
+
+test.each([
+  ["blank string warning", ""],
+  ["object warning with no message field", { source: "x" }],
+  ["object warning with non-string message", { message: 42 }],
+  ["number warning", 42],
+])("warning with no message anywhere (%s) falls back to the raw frame", (_case, warning) => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe(JSON.stringify(params));
 });
 
 // Settled tool calls keep their arguments: the live projector's
@@ -3040,7 +4482,11 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     },
     2000,
   );
-  expect(model.tasks).toEqual({ total: 7, done: 7, current: { id: 7, description: "replacement task" } });
+  expect(model.tasks).toEqual({
+    total: 7,
+    done: 7,
+    current: { id: 7, description: "replacement task" },
+  });
 
   model = applyNotification(
     model,
@@ -3048,6 +4494,23 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     3000,
   );
   expect(model.tasks).toEqual({ total: 7, done: 7 });
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/task/updated",
+      params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 1, cancelled: 5, remaining: 1 },
+    },
+    4000,
+  );
+  expect(model.tasks).toEqual({ total: 7, done: 1, cancelled: 5, remaining: 1 });
+
+  model = applyNotification(
+    model,
+    { method: "evener/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 3, done: 0, cancelled: 3 } },
+    5000,
+  );
+  expect(model.tasks).toEqual({ total: 3, done: 0, cancelled: 3, remaining: 0 });
 
   const rehydrated = testHydrate({
     evener: {
@@ -3158,7 +4621,7 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
   expect(model.supportsReasoning).toBe(true);
 });
 
-test("hydrateThread defaults the wave 5 snapshot-only fields when thread.evener omits them (old daemon / codex thread)", () => {
+test("hydrateThread defaults the wave 5 snapshot-only fields when thread.evener omits them (old daemon / source-backed thread)", () => {
   const model = testHydrate(); // testThread()'s default evener carries none of these
 
   expect(model.goal).toBeNull();
@@ -3272,9 +4735,9 @@ test("thread/status/changed to a non-active status clears the live work-clock an
 
 test("turn/completed clears the live work-clock anchor — the active turn just ended", () => {
   // Wire shapes: evener.activeTurnId sets model.activeTurnId (reducer.ts:231-233,
-  // server/appwire_runtime.go:865); TurnCompletedParams is the bare {turnId,
-  // turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433 citing
-  // the internal/appprojector live settle sites).
+  // server/appwire_runtime.go:865); TurnCompletedParams is the bare {threadId,
+  // ref, turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433
+  // citing the internal/appprojector live settle sites).
   let model = testHydrate({
     status: { type: "active" },
     evener: {
@@ -3295,7 +4758,6 @@ test("turn/completed clears the live work-clock anchor — the active turn just 
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -3371,7 +4833,6 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -3606,7 +5067,6 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -4117,7 +5577,6 @@ test("modelRetry clears when its turn completes", () => {
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "" },
       },
     },
@@ -4144,10 +5603,7 @@ test("modelRetry clears when a new turn starts", () => {
 // emits ONE turn/completed per announcement, each carrying a single item and
 // all naming the SAME synthetic turn: appwire.SystemPreludeTurnID before the
 // session's first real turn has started, a freshly minted "turn_N" gap id
-// between two real turns (kata 9ekv). The payload is a map literal with no
-// top-level "turnId" key at all, so the reducer's params.turn.id fallback is
-// the only id on the frame — TurnCompletedParams declares turnId required,
-// hence the cast for the wire-true shape.
+// between two real turns (kata 9ekv). turn.id is the only id on the frame.
 function announcementFrame(turnId: string, item: ThreadItem): AnyNotification {
   return {
     method: "turn/completed",
@@ -4156,7 +5612,7 @@ function announcementFrame(turnId: string, item: ThreadItem): AnyNotification {
       ref: "ref_t",
       turn: { id: turnId, status: "completed", itemsView: "full", items: [item] },
     },
-  } as AnyNotification;
+  };
 }
 
 const PLUGIN_LOADED_ITEM: ThreadItem = {

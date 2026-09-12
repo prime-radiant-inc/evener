@@ -406,8 +406,8 @@ rm -rf "$tmpdir"
   After kata `k7t8` wired the per-turn cancel, kata `0ax1` changed
   ProcessInput's abort path in `agent/session.go` to flip state
   back to `SessionIdle` (and append a `STEERING` interrupt marker
-  to the transcript) instead of calling `s.Close()`. Matches
-  Claude Code / codex: the user clicks interrupt, the in-flight
+  to the transcript) instead of calling `s.Close()`. This matches
+  other coding-agent interfaces: the user clicks interrupt, the in-flight
   turn dies, the session stays ready for the next message.
   Subsequent `send`, `compact`, `clear`, `shutdown` all keep
   working on the same SID. If a regression makes state go to

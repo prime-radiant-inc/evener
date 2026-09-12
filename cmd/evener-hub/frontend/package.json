@@ -8,20 +8,22 @@
     "build": "node scripts/clean-dist.mjs && tsc --noEmit --incremental false && vite build",
     "typecheck": "tsc --noEmit --incremental false",
     "typecheck:fast": "tsc --noEmit",
-    "test": "sh -c 'vitest run --maxWorkers=4 --exclude \"scripts/*.test.mjs\" \"$@\" && node --test scripts/*.test.mjs' --",
-    "test:coverage": "vitest run --coverage --maxWorkers=4 --exclude 'scripts/*.test.mjs'",
+    "test": "sh -c 'maxWorkers=4; helper=../../../scripts/lib/load-aware-workers.sh; if [ -r \"$helper\" ]; then . \"$helper\"; computed=$(load_aware_workers 4 2>/dev/null) || computed=; case \"$computed\" in \"\"|*[!0-9]*) ;; *) maxWorkers=$computed ;; esac; fi; vitest run --maxWorkers=\"$maxWorkers\" --exclude \"scripts/*.test.mjs\" \"$@\" && node --test scripts/*.test.mjs' --",
+    "test:coverage": "sh -c 'maxWorkers=4; helper=../../../scripts/lib/load-aware-workers.sh; if [ -r \"$helper\" ]; then . \"$helper\"; computed=$(load_aware_workers 4 2>/dev/null) || computed=; case \"$computed\" in \"\"|*[!0-9]*) ;; *) maxWorkers=$computed ;; esac; fi; vitest run --coverage --maxWorkers=\"$maxWorkers\" --exclude \"scripts/*.test.mjs\" \"$@\"' --",
     "lint": "biome ci src",
     "format": "biome format --write src",
     "check": "biome check --write src",
     "layoutguard": "node scripts/layoutguard/run.mjs",
     "overflowguard": "node scripts/overflowguard/run.mjs",
     "shellguard": "node scripts/shellguard/run.mjs",
-    "spawnguard": "node scripts/spawnguard/run.mjs"
+    "spawnguard": "node scripts/spawnguard/run.mjs",
+    "transcriptscrollguard": "node scripts/transcriptscrollguard/run.mjs"
   },
   "license": "ISC",
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/source-serif-4": "^5.3.0",
     "@tanstack/react-virtual": "^3.14.7",
     "anser": "^2.3.5",
     "dockview": "^7.0.2",
@@ -31,7 +33,7 @@
     "qrcode.react": "4.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-router": "^8.3.0",
+    "tinykeys": "^4.0.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -44,11 +46,11 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "fake-indexeddb": "6.2.5",
     "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
     "vite": "^8.1.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

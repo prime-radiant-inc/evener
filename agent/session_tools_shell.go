@@ -141,7 +141,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefShell(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			shellArgs, err := parseShellToolArgs(args)
+			shellArgs, err := parseShellToolArgs(ctx, args)
 			if err != nil {
 				return "", err
 			}
@@ -238,22 +238,44 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			var matches []string
 			var excluded int
+			var truncatedAt int
 			var err error
-			if ge, ok := env.(execenv.GlobExcluder); ok {
-				matches, excluded, err = ge.GlobWithExclusions(ctx, pat, path, includeIgnored)
-			} else {
+			switch g := env.(type) {
+			case execenv.GlobBudgeter:
+				budget := execenv.NewGlobBudget()
+				matches, excluded, err = g.GlobWithBudget(ctx, pat, path, includeIgnored, budget)
+				truncatedAt = budget.TruncatedAt()
+			case execenv.GlobExcluder:
+				matches, excluded, err = g.GlobWithExclusions(ctx, pat, path, includeIgnored)
+			default:
 				matches, err = env.Glob(ctx, pat, path, includeIgnored)
 			}
 			if err != nil {
 				return "", err
 			}
+			result := strings.Join(matches, "\n")
 			// Silent-empty is the enemy: a bare "" here is indistinguishable
 			// from "genuinely no matches" when it's actually "every match was
 			// filtered out by the default dotfile/gitignore exclusion" (D2).
 			if len(matches) == 0 && excluded > 0 {
-				return fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded), nil
+				result = fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded)
 			}
-			return strings.Join(matches, "\n"), nil
+			if truncatedAt > 0 {
+				// Silent truncation is the same enemy: the matches collected
+				// before the cap tripped look exactly like the whole answer,
+				// and a fully-excluded or fully-masked capped walk would
+				// otherwise report its emptiness as if the walk had finished.
+				// The cap counts candidate matches, before the dotfile/
+				// gitignore exclusion above drops any of them, so the number
+				// of paths actually shown can be smaller than the cap itself.
+				note := fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt)
+				if result == "" {
+					result = note
+				} else {
+					result += "\n\n" + note
+				}
+			}
+			return result, nil
 		},
 	}); err != nil {
 		return err
@@ -276,7 +298,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	return nil
 }
 
-func parseShellToolArgs(args map[string]any) (shellArgs, error) {
+func parseShellToolArgs(ctx context.Context, args map[string]any) (shellArgs, error) {
 	mode, err := parseShellMode(args)
 	if err != nil {
 		return shellArgs{}, err
@@ -284,8 +306,11 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	parsed := shellArgs{
 		Command:     fmt.Sprint(args["command"]),
 		Description: stringArg(args, "description"),
-		Mode:        mode,
-		Background:  mode == shellModeBackground,
+		// The registry stripped intent from args before dispatch; recover it
+		// from the exec context (see tool.IntentFromContext).
+		Intent:     tool.IntentFromContext(ctx),
+		Mode:       mode,
+		Background: mode == shellModeBackground,
 		// WorkingDir is the raw model-supplied cwd, if any; "" means omitted. It is
 		// resolved (relative paths joined against env.WorkingDirectory(), validated
 		// against the sandbox root) by resolveShellWorkingDir before dispatch, which
@@ -577,7 +602,9 @@ func formatShellResult(out shellToolResult) string {
 	// promoted is the foreground-wait-timeout promotion (job-control.md:210,214):
 	// the command itself did not time out — the foreground wait did, and the
 	// command keeps running as a durable background job.
-	promoted := out.Mode == string(shellModeBackground) && out.TimedOut && out.JobID != ""
+	backgrounded := out.Mode == string(shellModeBackground) && out.JobID != ""
+	promoted := backgrounded && out.TimedOut
+	directBackground := backgrounded && !promoted
 
 	var foot []string
 	if out.ExitCode != nil && out.Mode != string(shellModeBackground) && !runTimeout {
@@ -594,17 +621,27 @@ func formatShellResult(out shellToolResult) string {
 		}
 	case promoted:
 		foot = append(foot,
-			fmt.Sprintf("still running as %s — the foreground wait ended, not the command", out.JobID),
+			"the foreground wait ended, not the command",
 			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
-	case out.Mode == string(shellModeBackground) && out.JobID != "":
-		foot = append(foot, "running in background as "+out.JobID)
+	case directBackground:
+		// The identifying footer is appended after optional retention details so
+		// the job ID remains at the absolute tail.
 	case out.JobID != "":
 		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
 	}
 	if out.DroppedBytes > 0 {
 		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
+	}
+	if promoted {
+		foot = append(foot, "still running as "+out.JobID)
+	} else if directBackground {
+		foot = append(foot, "running in background as "+out.JobID)
+	}
+	if backgrounded {
+		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
+		b.WriteByte(' ')
 	}
 	if len(foot) > 0 {
 		b.WriteString("[")

@@ -123,7 +123,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				t.Fatalf("fallback=%q", got)
 			}
 		case 10:
-			for _, tc := range []struct{ harness, want string }{{"", ""}, {"evener", "local"}, {" codex ", "codex"}} {
+			for _, tc := range []struct{ harness, want string }{{"", ""}, {"evener", "local"}, {" external ", "external"}} {
 				if got := launchSourceID(appwire.ThreadStartParams{Harness: tc.harness}); got != tc.want {
 					t.Fatalf("launchSourceID=%q want %q", got, tc.want)
 				}
@@ -203,7 +203,7 @@ func FuzzCovRPCThreadsHandlers(f *testing.F) {
 				t.Fatal("scripted compact unexpectedly succeeded")
 			}
 		case 7:
-			if _, err := hubCommandList(hubcore.WebConfig{}); err != nil {
+			if _, err := hubCommandList(context.Background(), hubcore.WebConfig{}); err != nil {
 				t.Fatal(err)
 			}
 		case 8:

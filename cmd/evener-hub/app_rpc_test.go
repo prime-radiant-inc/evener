@@ -9,12 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,16 +23,22 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -47,6 +54,585 @@ func TestHubRPCPluginPreviewRoute(t *testing.T) {
 	}
 	if _, ok := out.(appwire.PluginPreviewResponse); !ok {
 		t.Fatalf("preview route response = %T, want PluginPreviewResponse", out)
+	}
+}
+
+func TestHubRPCItemReadAndListUseFinalPacker(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "codex:item-packing", Incarnation: "rpc-item-packing", ProjectionVersion: 1}
+	turns, err := appitempaging.RegroupTurnFragments(testItemCandidates(45))
+	if err != nil {
+		t.Fatalf("group fixture: %v", err)
+	}
+	olderCursor, err := appitempaging.EncodeCursor(identity, appwire.ThreadItemPosition{Entry: 0, Item: 0})
+	if err != nil {
+		t.Fatalf("encode fixture cursor: %v", err)
+	}
+	thread := appwire.Thread{
+		ID:        "item-packing",
+		SessionID: "item-packing",
+		Source:    "codex",
+		CWD:       "/tmp/item-packing",
+		Evener:    appwire.EvenerThread{Ref: "codex:item-packing"},
+		Turns:     turns,
+	}
+	source := &itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{
+			Thread:      thread,
+			OlderCursor: olderCursor,
+		},
+		list: appwire.ThreadTurnsListResponse{
+			Data:       turns,
+			NextCursor: olderCursor,
+		},
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(45), OlderCursor: olderCursor},
+			Identity:   identity,
+			Exhausted:  false,
+		},
+		listCandidates: func(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			return appsource.ItemCandidateResult{
+				Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(45), OlderCursor: olderCursor},
+				Identity:   identity,
+				Exhausted:  false,
+			}, nil
+		},
+		rejectLegacyItemList: true,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+
+	readRaw, err := json.Marshal(appwire.ThreadReadParams{
+		Ref:          "codex:item-packing",
+		IncludeTurns: true,
+		ItemLimit:    40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadRead,
+		Params: readRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/read: %v", err)
+	}
+	read, ok := readValue.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("item thread/read response = %T", readValue)
+	}
+	if got := len(flattenTestItems(read.Thread.Turns)); got != 40 {
+		t.Fatalf("item thread/read count = %d, want 40", got)
+	}
+
+	listRaw, err := json.Marshal(appwire.ThreadTurnsListParams{
+		Ref:       "codex:item-packing",
+		Cursor:    olderCursor,
+		ItemLimit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(2),
+		Method: appwire.MethodThreadTurnsList,
+		Params: listRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/turns/list: %v", err)
+	}
+	list, ok := listValue.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("item thread/turns/list response = %T", listValue)
+	}
+	if got := len(flattenTestItems(list.Data)); got != 40 {
+		t.Fatalf("item thread/turns/list count = %d, want 40", got)
+	}
+	if read.OlderCursor == "" || list.NextCursor == "" {
+		t.Fatal("item pages did not retain an opaque older cursor")
+	}
+	if source.candidateReadCalls != 0 || source.candidateListCalls != 1 {
+		t.Fatalf("candidate source calls = read %d/list %d, want read 0/list 1", source.candidateReadCalls, source.candidateListCalls)
+	}
+}
+
+func TestHubRPCItemReadAndListHonorSmallerRequestedLimit(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "codex:small-limit", Incarnation: "small-limit", ProjectionVersion: 1}
+	candidates := testItemCandidates(45)
+	turns, err := appitempaging.RegroupTurnFragments(candidates)
+	if err != nil {
+		t.Fatalf("group fixture: %v", err)
+	}
+	sourceCursor, err := appitempaging.EncodeCursor(identity, candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode source cursor: %v", err)
+	}
+	source := &itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "small-limit", SessionID: "small-limit", Source: "codex", Evener: appwire.EvenerThread{Ref: identity.ThreadRef}, Turns: turns,
+		}, OlderCursor: sourceCursor},
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates}, Identity: identity, Exhausted: true,
+		},
+		listCandidates: func(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			return appsource.ItemCandidateResult{Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates}, Identity: identity, Exhausted: true}, nil
+		},
+		rejectLegacyItemList: true,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+
+	readValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+		Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: identity.ThreadRef, IncludeTurns: true, ItemLimit: 3}),
+	})
+	if err != nil {
+		t.Fatalf("small-limit thread/read: %v", err)
+	}
+	read, ok := readValue.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("small-limit thread/read response = %T", readValue)
+	}
+	if got := len(flattenTestItems(read.Thread.Turns)); got != 3 {
+		t.Fatalf("small-limit thread/read items = %d, want 3", got)
+	}
+
+	listValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(2), Method: appwire.MethodThreadTurnsList,
+		Params: mustPagingJSON(t, appwire.ThreadTurnsListParams{Ref: identity.ThreadRef, Cursor: sourceCursor, ItemLimit: 3}),
+	})
+	if err != nil {
+		t.Fatalf("small-limit thread/turns/list: %v", err)
+	}
+	list, ok := listValue.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("small-limit thread/turns/list response = %T", listValue)
+	}
+	if got := len(flattenTestItems(list.Data)); got != 3 {
+		t.Fatalf("small-limit thread/turns/list items = %d, want 3", got)
+	}
+}
+
+func TestHubRPCInitialItemReadRejectsCompleteLegacyV3Metadata(t *testing.T) {
+	const (
+		sessionID = "02wMz5Txv733WHFsVy66SR"
+		routeRef  = "local:legacy-initial-workspace"
+		hubToken  = "legacy-initial-token"
+	)
+	legacyTurns := []appwire.Turn{
+		{ID: "turn-0", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-0-0", Text: "oldest"},
+			{Type: "agentMessage", ID: "item-0-1", Text: "older"},
+		}},
+		{ID: "turn-with-zero-items"},
+		{ID: "turn-2", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-2-0", Text: "newer"},
+			{Type: "agentMessage", ID: "item-2-1", Text: "newest"},
+		}},
+	}
+	daemonRequest := make(chan appwire.ThreadReadParams, 1)
+	authHeader := make(chan string, 1)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "legacy-initial-v3-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		daemonRequest <- params
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: legacyTurns,
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader <- r.Header.Get("Authorization")
+		daemon.ServeWebSocket(w, r)
+	}))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: 22 * 1000, Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):],
+		SourceID: "local", ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: routeRef,
+		InstanceID: "legacy-initial-v3-instance", HubToken: hubToken,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref: routeRef, ThreadID: sessionID, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFull), ItemLimit: 3,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unpositioned item") {
+		t.Fatalf("legacy-v3 initial item read = (%+v, %v), want unpositioned item identity error", response, err)
+	}
+	request := <-daemonRequest
+	if request.Ref != routeRef || request.ThreadID != sessionID || !request.IncludeTurns || request.ItemsView != string(appwire.TurnItemsViewFull) || request.ItemLimit != 3 {
+		t.Fatalf("legacy-v3 daemon request = %+v, want routed resolved item request", request)
+	}
+	if got := <-authHeader; got != "Bearer "+hubToken {
+		t.Fatalf("legacy-v3 daemon authorization = %q, want bearer token", got)
+	}
+}
+
+func TestHubRPCItemListPreservesSavedErrorsAndCursorFallback(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	sessionID := entry.Meta.ID
+	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
+	savedFirst, found, err := pastThreadReadResponse(context.Background(), cfg, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, ItemLimit: 40,
+	})
+	if err != nil || !found || len(savedFirst.Thread.Turns) == 0 || savedFirst.OlderCursor == "" {
+		t.Fatalf("saved item fixture = (%+v, found=%v, err=%v), want non-empty page with continuation", savedFirst, found, err)
+	}
+	savedSecond, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 40, Cursor: savedFirst.OlderCursor,
+	})
+	if err != nil || !found || len(savedSecond.Data) == 0 {
+		t.Fatalf("saved continuation fixture = (%+v, found=%v, err=%v), want non-empty page", savedSecond, found, err)
+	}
+
+	identity := appitempaging.CursorIdentity{ThreadRef: ref, Incarnation: "live-terminal", ProjectionVersion: 1}
+	liveCursor, err := appitempaging.EncodeCursor(identity, appwire.ThreadItemPosition{Entry: 100, Item: 0})
+	if err != nil {
+		t.Fatalf("encode live terminal cursor: %v", err)
+	}
+	var candidateCursors []string
+	source := &localItemPackingRPCSource{itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: ref},
+		}},
+		listCandidates: func(_ context.Context, params appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			candidateCursors = append(candidateCursors, params.Cursor)
+			switch params.Cursor {
+			case liveCursor:
+				return appsource.ItemCandidateResult{Identity: identity, Exhausted: true}, nil
+			case savedFirst.OlderCursor:
+				return appsource.ItemCandidateResult{}, errors.New("cursor is not owned by live source")
+			default:
+				return appsource.ItemCandidateResult{}, fmt.Errorf("unexpected candidate cursor %q", params.Cursor)
+			}
+		},
+		rejectLegacyItemList: true,
+	}}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(cfg, sources)
+
+	dispatch := func(cursor string) (appwire.ThreadTurnsListResponse, error) {
+		value, dispatchErr := server.Router().Dispatch(context.Background(), appwire.Request{
+			ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList,
+			Params: mustPagingJSON(t, appwire.ThreadTurnsListParams{
+				Ref: ref, ItemLimit: 40, Cursor: cursor,
+			}),
+		})
+		if dispatchErr != nil {
+			return appwire.ThreadTurnsListResponse{}, dispatchErr
+		}
+		response, ok := value.(appwire.ThreadTurnsListResponse)
+		if !ok {
+			t.Fatalf("thread/turns/list response = %T", value)
+		}
+		return response, nil
+	}
+
+	_, err = dispatch(liveCursor)
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("source-accepted terminal cursor error = %T %v, want saved stale-cursor WireError", err, err)
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("source-accepted terminal cursor error data = %#v, want stale-cursor info", wireErr.Data)
+	}
+
+	fallback, err := dispatch(savedFirst.OlderCursor)
+	if err != nil {
+		t.Fatalf("saved-owned cursor fallback: %v", err)
+	}
+	if !reflect.DeepEqual(fallback, savedSecond) {
+		t.Fatalf("saved-owned cursor fallback = %+v, want %+v", fallback, savedSecond)
+	}
+	if !slices.Equal(candidateCursors, []string{liveCursor, savedFirst.OlderCursor}) {
+		t.Fatalf("candidate cursors = %v, want live then saved", candidateCursors)
+	}
+}
+
+type localItemPackingRPCSource struct {
+	itemPackingRPCSource
+}
+
+func (*localItemPackingRPCSource) ID() string { return "local" }
+
+type itemPackingRPCSource struct {
+	relayLifecycleSource
+	read                 appwire.ThreadReadResponse
+	list                 appwire.ThreadTurnsListResponse
+	readCandidates       appsource.ItemCandidateResult
+	listCandidates       func(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error)
+	candidateReadCalls   int
+	candidateListCalls   int
+	rejectLegacyItemList bool
+}
+
+func (s *itemPackingRPCSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return s.read, nil
+}
+
+func (*itemPackingRPCSource) RelayOnThreadRead() bool { return false }
+
+func (s *itemPackingRPCSource) ListTurns(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	if s.rejectLegacyItemList {
+		return appwire.ThreadTurnsListResponse{}, errors.New("legacy item list path must not be called")
+	}
+	return s.list, nil
+}
+
+func (s *itemPackingRPCSource) ReadItemCandidates(context.Context, appwire.ThreadReadParams) (appsource.ItemCandidateResult, error) {
+	s.candidateReadCalls++
+	return s.readCandidates, nil
+}
+
+func (s *itemPackingRPCSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+	s.candidateListCalls++
+	if s.listCandidates != nil {
+		return s.listCandidates(ctx, params)
+	}
+	return s.readCandidates, nil
+}
+
+type metadataItemReadRPCSource struct {
+	itemPackingRPCSource
+	metadata appwire.ThreadReadResponse
+}
+
+func (s *metadataItemReadRPCSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if !params.IncludeTurns {
+		return s.metadata, nil
+	}
+	return s.read, nil
+}
+
+func TestHubRPCItemMetadataReadPreservesMetadata(t *testing.T) {
+	metadata := appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{ID: "item-metadata", SessionID: "item-metadata", Source: "codex", Evener: appwire.EvenerThread{Ref: "codex:item-metadata"}},
+		OlderCursor: "metadata-cursor",
+	}
+	newServer := func(metadata appwire.ThreadReadResponse) *appserver.Server {
+		source := &metadataItemReadRPCSource{
+			read:     appwire.ThreadReadResponse{Thread: metadata.Thread},
+			metadata: metadata,
+		}
+		sources := appsource.NewRegistry()
+		sources.Add(source)
+		return newHubAppServer(hubcore.WebConfig{}, sources)
+	}
+
+	t.Run("successful metadata response stamps item mode", func(t *testing.T) {
+		value, err := newServer(metadata).Router().Dispatch(context.Background(), appwire.Request{
+			ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+			Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: "codex:item-metadata", ItemLimit: 7}),
+		})
+		if err != nil {
+			t.Fatalf("metadata item read: %v", err)
+		}
+		response, ok := value.(appwire.ThreadReadResponse)
+		if !ok {
+			t.Fatalf("metadata item read response = %T", value)
+		}
+		if response.Thread.Turns != nil {
+			t.Fatalf("metadata turns = %+v, want nil", response.Thread.Turns)
+		}
+		if response.OlderCursor != metadata.OlderCursor {
+			t.Fatalf("metadata cursor = %q, want %q", response.OlderCursor, metadata.OlderCursor)
+		}
+	})
+
+	t.Run("metadata response carrying a full turn is rejected", func(t *testing.T) {
+		invalid := metadata
+		invalid.Thread.Turns = []appwire.Turn{{ID: "full-turn", ItemsView: appwire.TurnItemsViewFull}}
+		_, err := newServer(invalid).Router().Dispatch(context.Background(), appwire.Request{
+			ID: appwire.NewIntID(2), Method: appwire.MethodThreadRead,
+			Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: "codex:item-metadata"}),
+		})
+		if err == nil {
+			t.Fatal("metadata item read accepted a full turn while IncludeTurns was false")
+		}
+	})
+}
+
+type metadataErrorItemTurnsSource struct {
+	itemPackingRPCSource
+	metadataErr error
+}
+
+func (s *metadataErrorItemTurnsSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, s.metadataErr
+}
+
+func TestListItemTurnsPreservesPackedResponseAndLogsMetadataError(t *testing.T) {
+	sentinel := errors.New("metadata sentinel")
+	source := &metadataErrorItemTurnsSource{
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(1)},
+			Identity:   appitempaging.CursorIdentity{ThreadRef: "codex:metadata-error", Incarnation: "metadata-error", ProjectionVersion: 1},
+			Exhausted:  true,
+		},
+		metadataErr: sentinel,
+	}
+	var logs []struct {
+		format string
+		args   []any
+	}
+	logf := func(format string, args ...any) {
+		logs = append(logs, struct {
+			format string
+			args   []any
+		}{format: format, args: args})
+	}
+
+	response, handled, err := listItemTurns(context.Background(), source, appwire.ThreadTurnsListParams{
+		Ref: "codex:metadata-error",
+	}, logf)
+	if err != nil {
+		t.Fatalf("listItemTurns: %v", err)
+	}
+	if !handled {
+		t.Fatal("listItemTurns handled = false, want true")
+	}
+	items := flattenTestItems(response.Data)
+	if len(items) != 1 || items[0].ID != "item-00" {
+		t.Fatalf("packed items = %+v, want the valid source item", items)
+	}
+	for _, entry := range logs {
+		for _, arg := range entry.args {
+			if loggedErr, ok := arg.(error); ok && errors.Is(loggedErr, sentinel) {
+				return
+			}
+		}
+	}
+	t.Fatalf("logger did not receive sentinel error as an argument: %+v", logs)
+}
+
+func TestHubRPCItemByteTrimReturnsExcludedCandidateExactlyOnce(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "codex:byte-packing", Incarnation: "rpc-byte-packing", ProjectionVersion: 1}
+	candidates := testItemCandidates(2)
+	for i := range candidates {
+		candidates[i].Item.Text = strings.Repeat("x", 600_000)
+	}
+	turns, err := appitempaging.RegroupTurnFragments(candidates)
+	if err != nil {
+		t.Fatalf("group response-derived candidates: %v", err)
+	}
+	sourceCursor, err := appitempaging.EncodeCursor(identity, candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode source cursor: %v", err)
+	}
+	all := appsource.ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates, OlderCursor: sourceCursor},
+		Identity:   identity,
+		Exhausted:  false,
+	}
+	thread := appwire.Thread{
+		ID:     "byte-packing",
+		Source: "codex",
+		Evener: appwire.EvenerThread{Ref: identity.ThreadRef},
+		Turns:  turns,
+	}
+	source := &itemPackingRPCSource{
+		read:                 appwire.ThreadReadResponse{Thread: thread, OlderCursor: sourceCursor},
+		readCandidates:       all,
+		rejectLegacyItemList: true,
+		listCandidates: func(_ context.Context, params appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			if params.Cursor == "" {
+				return all, nil
+			}
+			before, err := appitempaging.DecodeCursor(params.Cursor, identity)
+			if err != nil {
+				return appsource.ItemCandidateResult{}, err
+			}
+			selected, hasOlder, err := appitempaging.SelectCandidates(candidates, &before, params.ItemLimit)
+			if err != nil {
+				return appsource.ItemCandidateResult{}, err
+			}
+			window := appitempaging.TranscriptItemWindow{Candidates: selected}
+			if hasOlder && len(selected) > 0 {
+				window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
+				if err != nil {
+					return appsource.ItemCandidateResult{}, err
+				}
+			}
+			return appsource.ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+
+	readRaw, err := json.Marshal(appwire.ThreadReadParams{
+		Ref:          identity.ThreadRef,
+		IncludeTurns: true,
+		ItemLimit:    40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadRead,
+		Params: readRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/read: %v", err)
+	}
+	read, ok := readValue.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("item thread/read response = %T", readValue)
+	}
+	readItems := flattenTestItems(read.Thread.Turns)
+	if len(readItems) != 1 || readItems[0].ID != "item-01" {
+		t.Fatalf("byte-trimmed read items = %+v, want only newest item-01", readItems)
+	}
+	if read.OlderCursor == "" {
+		t.Fatal("byte-trimmed read omitted excluded-item cursor")
+	}
+	before, err := appitempaging.DecodeCursor(read.OlderCursor, identity)
+	if err != nil {
+		t.Fatalf("decode response-derived rebased cursor: %v", err)
+	}
+	if before != candidates[1].Position {
+		t.Fatalf("response-derived rebased cursor = %+v, want oldest returned position %+v", before, candidates[1].Position)
+	}
+
+	listRaw, err := json.Marshal(appwire.ThreadTurnsListParams{
+		Ref:       identity.ThreadRef,
+		ItemLimit: 40,
+		Cursor:    read.OlderCursor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(2),
+		Method: appwire.MethodThreadTurnsList,
+		Params: listRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/turns/list: %v", err)
+	}
+	list, ok := listValue.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("item thread/turns/list response = %T", listValue)
+	}
+	listItems := flattenTestItems(list.Data)
+	if len(listItems) != 1 || listItems[0].ID != "item-00" || list.NextCursor != "" {
+		t.Fatalf("older byte-trimmed items = %+v, cursor=%q, want only item-00 with no cursor", listItems, list.NextCursor)
+	}
+	if source.candidateReadCalls != 0 || source.candidateListCalls != 1 {
+		t.Fatalf("candidate source calls = read %d/list %d, want read 0/list 1", source.candidateReadCalls, source.candidateListCalls)
 	}
 }
 
@@ -102,8 +688,14 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 }
 
 func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	for _, cleared := range []bool{false, true} {
+		t.Run(fmt.Sprint("cleared=", cleared), func(t *testing.T) { testHubSteersSurvivingDaemon(t, cleared) })
+	}
+}
+
+func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 	const (
-		daemonProtocol = "evener-appwire-v3"
+		daemonProtocol = appwire.ProtocolVersion
 		threadID       = "th_compatible"
 		mutationID     = "mutation-compatible-steer"
 	)
@@ -122,6 +714,18 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 		})
 	})
 	defer daemonHTTP.Close()
+
+	resumeID := threadID
+	if cleared {
+		resumeID = "workspace_before_clear"
+		entries, err := rendezvous.List(runDir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("rendezvous entries=%+v error=%v", entries, err)
+		}
+		entry := entries[0]
+		entry.WorkspaceRef = "local:" + resumeID
+		writeRendezvous(t, runDir, entry)
+	}
 
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
@@ -143,11 +747,11 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + resumeID})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+	if resumed.Thread.ID != threadID || resumed.Thread.Evener.Ref != "local:"+threadID || resumeCalls != 0 {
 		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
 	}
 
@@ -207,7 +811,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 	}
 	sources := newHubSourceRegistry(cfg)
 
-	_, err = sourceForThreadWithManagedLaunch(context.Background(), cfg, sources, ref, webTestSessionID)
+	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
@@ -1335,73 +1939,6 @@ func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
 	}
 }
 
-func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	cfg := hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	}
-	sources := newHubSourceRegistry(cfg)
-
-	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{})
-	if err != nil {
-		t.Fatalf("hubThreadList: %v", err)
-	}
-	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex-managed:th_fake" {
-		t.Fatalf("threads=%+v", resp.Data)
-	}
-	if _, ok := sources.Source("codex-managed"); !ok {
-		t.Fatal("managed Codex source was not registered")
-	}
-}
-
-func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	cfg := hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	}
-	localThread := appwire.Thread{
-		ID:        "01LOCAL",
-		SessionID: "01LOCAL",
-		Source:    "local",
-		Preview:   "local thread",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-		Evener:    appwire.EvenerThread{Ref: "local:01LOCAL"},
-	}
-	sources := appsource.NewRegistry()
-	sources.Add(&listThreadSource{id: "local", thread: localThread})
-
-	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"local"}})
-	if err != nil {
-		t.Fatalf("hubThreadList: %v", err)
-	}
-	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "local:01LOCAL" {
-		t.Fatalf("threads=%+v", resp.Data)
-	}
-	if _, ok := sources.Source("codex-managed"); ok {
-		t.Fatal("managed Codex source was registered despite local-only source filter")
-	}
-}
-
-func TestHubThreadListReturnsManagedCodexLaunchErrorWhenSelectedSourceFails(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")})
-	defer shutdownCodexLauncher(t, launcher)
-	cfg := hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")},
-		CodexLauncher: launcher,
-	}
-	sources := newHubSourceRegistry(cfg)
-
-	_, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"codex-managed"}})
-	assertHubLaunchError(t, err)
-}
-
 func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
 	localThread := appwire.Thread{
 		ID:        "01LOCAL",
@@ -1450,23 +1987,6 @@ func TestHubThreadListReturnsErrorWhenAnySelectedSourceFails(t *testing.T) {
 	_, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"local", "codex"}})
 	if err == nil || !strings.Contains(err.Error(), "codex offline") {
 		t.Fatalf("hubThreadList error=%v, want codex offline", err)
-	}
-}
-
-func TestNewHubSourceRegistryAddsConfiguredCodexSources(t *testing.T) {
-	sources := newHubSourceRegistry(hubcore.WebConfig{
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex-local",
-			Endpoint: "ws://127.0.0.1:9900",
-		}},
-	})
-	if _, ok := sources.Source("local"); !ok {
-		t.Fatal("local source missing")
-	}
-	if source, ok := sources.Source("codex-local"); !ok {
-		t.Fatal("codex source missing")
-	} else if source.ID() != "codex-local" {
-		t.Fatalf("source=%q", source.ID())
 	}
 }
 
@@ -1593,6 +2113,27 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}
 }
 
+// TestMergePastMetadataForList_PropagatesContextCancellation covers the
+// contract that mergePastMetadataForList must propagate ctx cancellation
+// and deadline errors from pastEntryThread rather than silently falling
+// back to the unenriched live thread -- a canceled thread-list request must
+// stop, not keep sweeping later threads. The delegate journal fixture
+// (seedPastSessionWithActivity) matters here: without it, pastEntryThread's
+// own ctx-aware step (pastEntryDelegateStatus -> agent.LoadSessionDelegateStatus,
+// gated on delegates.jsonl existing at all) is never reached, so a canceled
+// ctx would go unnoticed for a different, uninteresting reason.
+func TestMergePastMetadataForList_PropagatesContextCancellation(t *testing.T) {
+	cfg, rootID, _, _ := seedPastSessionWithActivity(t, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	live := appwire.Thread{ID: rootID}
+
+	_, err := mergePastMetadataForList(ctx, cfg, "local", live)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled -- a canceled request must not silently fall back to the live thread unenriched", err)
+	}
+}
+
 func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -1700,14 +2241,19 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if resp.Thread.ID != sessionID || len(resp.Thread.Turns) != 3 {
+	// The user+assistant exchange is one logical turn; the trailing user
+	// input is its own open group.
+	if resp.Thread.ID != sessionID || len(resp.Thread.Turns) != 2 {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {
 		t.Fatalf("first item=%+v", got)
 	}
-	if got := resp.Thread.Turns[1].Items[0]; got.Type != "agentMessage" || got.Text != "first reply" {
+	if got := resp.Thread.Turns[0].Items[1]; got.Type != "agentMessage" || got.Text != "first reply" {
 		t.Fatalf("second item=%+v", got)
+	}
+	if got := resp.Thread.Turns[1].Items[0]; got.Type != "userMessage" || got.Text != "second task" {
+		t.Fatalf("third item=%+v", got)
 	}
 }
 
@@ -1745,12 +2291,14 @@ func TestHubRPCSubscribedReadReturnsPastForCrashMarker(t *testing.T) {
 		IncludeTurns: true,
 		ItemsView:    "full",
 		Subscribe:    true,
-		TurnLimit:    40,
+		ItemLimit:    40,
 	})
 	if err != nil {
 		t.Fatalf("subscribed thread/read: %v", err)
 	}
-	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+	// The user+assistant exchange is one logical turn; the trailing user
+	// input is its own open group.
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 2 {
 		t.Fatalf("saved thread = %+v", response.Thread)
 	}
 }
@@ -1887,7 +2435,7 @@ func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.
 	if err != nil {
 		t.Fatalf("non-subscribed thread/read: %v", err)
 	}
-	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 2 {
 		t.Fatalf("non-subscribed saved thread = %+v", response.Thread)
 	}
 }
@@ -1933,7 +2481,7 @@ func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.
 	if err != nil {
 		t.Fatalf("non-atomic subscribed thread/read: %v", err)
 	}
-	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 2 {
 		t.Fatalf("non-atomic saved thread = %+v", response.Thread)
 	}
 }
@@ -2023,10 +2571,12 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if len(resp.Thread.Turns) != 2 || len(resp.Thread.Turns[1].Items) != 1 {
+	// The assistant tool call and its result are one logical turn with one
+	// merged command-execution item.
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
 		t.Fatalf("turns=%+v", resp.Thread.Turns)
 	}
-	item := resp.Thread.Turns[1].Items[0]
+	item := resp.Thread.Turns[0].Items[0]
 	if len(item.OutputImages) != 2 {
 		t.Fatalf("OutputImages=%+v, want tool-result then file-backed descriptors", item.OutputImages)
 	}
@@ -2060,6 +2610,8 @@ func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
 					Type:          "commandExecution",
 					ID:            "item_shell",
 					TurnID:        "turn_1",
+					Position:      &appwire.ThreadItemPosition{Entry: 0, Item: 0},
+					TranscriptKey: "live-item:item_shell",
 					ToolName:      "shell",
 					CallID:        "call_shell",
 					ArgumentsJSON: `{}`,
@@ -2123,6 +2675,7 @@ func TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns(t *testing.T) {
 				ID: "turn_1",
 				Items: []appwire.ThreadItem{{
 					Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
+					Position: &appwire.ThreadItemPosition{Entry: 0, Item: 0}, TranscriptKey: "live-item:item_shot",
 					ToolName: "screenshot", CallID: "call_shot", ArgumentsJSON: `{}`,
 					Status:       appwire.TurnStatusCompleted,
 					OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12, SHA: sha}},
@@ -2214,7 +2767,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	if resp.Thread.Status.Type != appwire.ThreadStatusClosed {
 		t.Fatalf("status=%q", resp.Thread.Status.Type)
 	}
-	if len(resp.Thread.Turns) != 3 {
+	if len(resp.Thread.Turns) != 2 {
 		t.Fatalf("turns=%d thread=%+v", len(resp.Thread.Turns), resp.Thread)
 	}
 	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {
@@ -2287,6 +2840,223 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 	}
 	if resp.Thread.Preview != "live codex thread" || resp.Thread.Evener.Ref != "codex:"+sessionID {
 		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+// A stable workspace ref and its current session ID cancel the same pending
+// read, without changing the response identity used for notification delivery.
+func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		read        appwire.ThreadReadParams
+		unsubscribe appwire.ThreadUnsubscribeParams
+	}{
+		{"stable_ref_current_id", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{ThreadID: "current"}},
+		{"current_id_stable_ref", appwire.ThreadReadParams{ThreadID: "current"}, appwire.ThreadUnsubscribeParams{Ref: "local:stable"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce, firstRead sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				id := "current"
+				if params.Ref == "local:other" || params.ThreadID == "other" {
+					id = "other"
+				} else {
+					firstRead.Do(func() {
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+						}
+					})
+				}
+				appserver.Subscribe(ctx, id)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+			source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+				return []appsource.LocalDaemonEntry{
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "other", SessionID: "other", WorkspaceRef: "local:other", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+				}
+			}, http.DefaultClient)
+			sources := appsource.NewRegistry()
+			sources.Add(source)
+			appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+			hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other"}); err != nil {
+				t.Fatalf("unrelated read: %v", err)
+			}
+			readDone := make(chan error, 1)
+			go func() {
+				_, err := client.ThreadRead(ctx, tc.read)
+				readDone <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("read did not reach the pre-capture daemon barrier")
+			}
+			if _, err := client.ThreadUnsubscribe(ctx, tc.unsubscribe); err != nil {
+				t.Fatalf("unsubscribe before capture: %v", err)
+			}
+			unblock()
+			var readErr error
+			select {
+			case readErr = <-readDone:
+			case <-ctx.Done():
+				t.Fatal("read did not finish after barrier release")
+			}
+			if got := appServer.SubscriberCount("local:stable"); got != 0 {
+				t.Fatalf("canceled stable subscriptions = %d", got)
+			}
+			if got := appServer.SubscriberCount("local:current"); got != 0 {
+				t.Fatalf("old stable/current read registered %d stale subscriptions after unsubscribe", got)
+			}
+			// The hub already reports an unavailable subscription when its
+			// handoff capture is rejected; cancellation preserves that contract.
+			var wire appwire.WireError
+			if !errors.As(readErr, &wire) || wire.Code != appwire.CodeUnavailable {
+				t.Fatalf("canceled read error = %v, want unavailable subscription", readErr)
+			}
+			data, ok := wire.Data.(map[string]any)
+			if !ok || data["evenerErrorInfo"] != string(appwire.ErrorSessionUnavailable) {
+				t.Fatalf("canceled read error data = %#v, want sessionUnavailable", wire.Data)
+			}
+			if got := appServer.SubscriberCount("local:other"); got != 1 {
+				t.Fatalf("unrelated subscriptions = %d, want 1", got)
+			}
+			appServer.Broadcast("local:stable", "test/stale-admission", map[string]any{})
+			appServer.Broadcast("local:current", "test/stale-admission", map[string]any{})
+			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			if got := aliasMethodCountUntilBarrier(t, client, "test/stale-admission"); got != 0 {
+				t.Fatalf("canceled read delivered %d notifications", got)
+			}
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:stable"}); err != nil {
+				t.Fatalf("later read: %v", err)
+			}
+			if got := appServer.SubscriberCount("local:stable"); got != 1 {
+				t.Fatalf("later read subscriptions = %d, want 1", got)
+			}
+			awaitLiveHubSubscriptions(t, appServer, 2)
+			daemon.Broadcast("current", "test/later-admission", map[string]any{"threadId": "current"})
+			daemon.Broadcast("current", "test/alias-barrier", map[string]any{"threadId": "current"})
+			if got := aliasMethodCountUntilBarrier(t, client, "test/later-admission"); got != 1 {
+				t.Fatalf("later read delivered %d notifications, want 1", got)
+			}
+		})
+	}
+}
+
+func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		read        appwire.ThreadReadParams
+		unsubscribe appwire.ThreadUnsubscribeParams
+	}{
+		{"child_ref", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
+		{"child_id", appwire.ThreadReadParams{ThreadID: "current"}, appwire.ThreadUnsubscribeParams{ThreadID: "child"}},
+		{"unsubscribe_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{Ref: "local:child", ThreadID: "current"}},
+		{"read_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable", ThreadID: "child"}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce, firstRead sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				id := "current"
+				if params.Ref == "local:other" || params.ThreadID == "other" {
+					id = "other"
+				} else {
+					firstRead.Do(func() {
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+						}
+					})
+				}
+				appserver.Subscribe(ctx, id)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+			source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+				return []appsource.LocalDaemonEntry{
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}, SessionID: "child", OwnerSessionID: "current", ReadOnlyAlias: true},
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "other", SessionID: "other", WorkspaceRef: "local:other", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+				}
+			}, http.DefaultClient)
+			sources := appsource.NewRegistry()
+			sources.Add(source)
+			appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+			hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other"}); err != nil {
+				t.Fatalf("unrelated read: %v", err)
+			}
+			readDone := make(chan error, 1)
+			go func() {
+				_, err := client.ThreadRead(ctx, tc.read)
+				readDone <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("read did not reach the pre-capture daemon barrier")
+			}
+			if _, err := client.ThreadUnsubscribe(ctx, tc.unsubscribe); err != nil {
+				t.Fatalf("unsubscribe before capture: %v", err)
+			}
+			unblock()
+			var readErr error
+			select {
+			case readErr = <-readDone:
+			case <-ctx.Done():
+				t.Fatal("read did not finish after barrier release")
+			}
+			if readErr != nil {
+				t.Fatalf("child unsubscribe canceled unrelated pending root read: %v", readErr)
+			}
+			deliveryKey := "local:stable"
+			if tc.read.ThreadID != "" {
+				deliveryKey = "local:" + tc.read.ThreadID
+			}
+			if got := appServer.SubscriberCount(deliveryKey); got != 1 {
+				t.Fatalf("root subscriptions = %d, want 1", got)
+			}
+			if got := appServer.SubscriberCount("local:other"); got != 1 {
+				t.Fatalf("unrelated subscriptions = %d, want 1", got)
+			}
+			awaitLiveHubSubscriptions(t, appServer, 2)
+			daemon.Broadcast("current", "test/root-admission", map[string]any{"threadId": "current"})
+			daemon.Broadcast("current", "test/alias-barrier", map[string]any{"threadId": "current"})
+			if got := aliasMethodCountUntilBarrier(t, client, "test/root-admission"); got != 1 {
+				t.Fatalf("root read delivered %d notifications, want 1", got)
+			}
+		})
 	}
 }
 
@@ -2729,6 +3499,104 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for subscribed codex notification")
+	}
+}
+
+// thread/unsubscribe must drop the calling connection's downstream
+// subscription — the registry entry thread/read's relay created — so the
+// relay's idle ticker sees SubscriberCount zero and can retire, and a second
+// call stays a quiet no-op.
+func TestHubRPCThreadUnsubscribeDropsDownstreamSubscription(t *testing.T) {
+	const threadID = "th_unsub"
+	source := &relayBroadcastSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 1 {
+		t.Fatalf("subscriber count after subscribed read = %d, want 1", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 0 {
+		t.Fatalf("subscriber count after unsubscribe = %d, want 0", got)
+	}
+
+	// The relay's notifications no longer reach this connection.
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after unsubscribe",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after unsubscribe: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Idempotent: unsubscribing again succeeds quietly.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("second ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount("codex:" + threadID); got != 0 {
+		t.Fatalf("subscriber count after second unsubscribe = %d, want 0", got)
+	}
+}
+
+// The fallback branch: when no source resolves (an exited session removed
+// its rendezvous entry), an unsubscribe still quietly succeeds. The handler
+// resolves through the plain registry (sourceForThread, never the
+// managed-launch path), so no launcher is even consulted — an unsubscribe is
+// a "stop caring" operation and must not spawn.
+func TestHubRPCThreadUnsubscribeUnresolvedSourceIsQuiet(t *testing.T) {
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// A ref whose source never existed: quiet success, no error.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: "codex:th_missing"}); err != nil {
+		t.Fatalf("ThreadUnsubscribe for unresolvable source: %v", err)
+	}
+	// The same for a bare threadID with no ref.
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{ThreadID: "th_missing"}); err != nil {
+		t.Fatalf("ThreadUnsubscribe for unresolvable thread: %v", err)
 	}
 }
 
@@ -3750,6 +4618,1069 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 		}
 	case <-time.After(time.Second):
 		t.Fatal("fresh relay did not become ready after initialization stop")
+	}
+}
+
+func TestHubRelayKeyStopKeepsCanonicalSiblingAndListener(t *testing.T) {
+	const (
+		rootRef  = "local:stop-root"
+		childRef = "local:stop-child"
+	)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	read := func(ref string) {
+		t.Helper()
+		result, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+		if err != nil {
+			t.Fatalf("readThread(%q): %v", ref, err)
+		}
+		result.finish(false)
+	}
+	read(rootRef)
+	read(childRef)
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("initial relay acquisitions = %d, want one canonical handle", got)
+	}
+
+	relays.stopRelay(childRef)
+	if got := lease.closeCallCount(); got != 0 {
+		t.Fatalf("lease closes after child-key stop = %d, want 0 while root remains", got)
+	}
+	read(childRef)
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("relay acquisitions after child rebind = %d, want existing canonical handle", got)
+	}
+	if got := lease.listenCallCount(); got != 1 {
+		t.Fatalf("RelaySession Listen calls after child rebind = %d, want one retained listener", got)
+	}
+	relays.stopRelay(rootRef)
+	relays.stopRelay(childRef)
+}
+
+func TestHubRelayKeyStopDefersFinalTeardownForInFlightCommand(t *testing.T) {
+	const relayKey = "local:stop-in-flight"
+	readEntered := make(chan struct{})
+	releaseRead := make(chan struct{})
+	leaseClosed := make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "stop-in-flight", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		readHook: func() {
+			close(readEntered)
+			<-releaseRead
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(leaseClosed) },
+	}
+	source := &relaySessionTestSource{lease: lease}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	readResult := make(chan readOutcome, 1)
+	go func() {
+		read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+		readResult <- readOutcome{read: read, err: err}
+	}()
+	<-readEntered
+
+	relays.stopRelay(relayKey)
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseRead)
+		t.Fatalf("command owners after deferred relay-key stop = %d, want 1", got)
+	}
+	if got := lease.closeCallCount(); got != 0 {
+		close(releaseRead)
+		t.Fatalf("lease closes while stopped key command is in flight = %d, want 0", got)
+	}
+	select {
+	case <-leaseClosed:
+		close(releaseRead)
+		t.Fatal("final canonical lease closed before the in-flight command released")
+	default:
+	}
+
+	close(releaseRead)
+	result := <-readResult
+	if result.err != nil {
+		t.Fatalf("readThread: %v", result.err)
+	}
+	result.read.finish(false)
+	select {
+	case <-leaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("deferred relay-key stop did not close the final lease after command release")
+	}
+	if got := lease.closeCallCount(); got != 1 {
+		t.Fatalf("final lease closes = %d, want 1", got)
+	}
+}
+
+func TestHubRelayPostStopCommandWaitsForFreshGeneration(t *testing.T) {
+	const relayKey = "local:stop-fresh-generation"
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "stop-fresh-generation", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldReadEntered := make(chan struct{})
+	releaseOldRead := make(chan struct{})
+	oldLeaseClosed := make(chan struct{})
+	var oldReadOnce sync.Once
+	oldLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			oldReadOnce.Do(func() {
+				close(oldReadEntered)
+				<-releaseOldRead
+			})
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldLeaseClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan readOutcome {
+		out := make(chan readOutcome, 1)
+		go func() {
+			read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- readOutcome{read: read, err: err}
+		}()
+		return out
+	}
+	oldResult := startRead()
+	<-oldReadEntered
+	relays.stopRelay(relayKey)
+
+	postStopDeferred := make(chan struct{})
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { close(postStopDeferred) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStopResult := startRead()
+	select {
+	case <-postStopDeferred:
+	case <-time.After(time.Second):
+		close(releaseOldRead)
+		t.Fatal("post-stop command joined the stopped generation instead of waiting")
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseOldRead)
+		t.Fatalf("stopped generation command owners = %d, want only the original command", got)
+	}
+	if got := oldLease.readCallCount(); got != 1 {
+		close(releaseOldRead)
+		t.Fatalf("stopped generation Read calls = %d, want 1", got)
+	}
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(releaseOldRead)
+		t.Fatalf("old lease closes while original command is in flight = %d, want 0", got)
+	}
+
+	close(releaseOldRead)
+	old := <-oldResult
+	if old.err != nil {
+		t.Fatalf("old readThread: %v", old.err)
+	}
+	old.read.finish(false)
+	select {
+	case <-oldLeaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("stopped generation did not close after its original command released")
+	}
+	postStop := <-postStopResult
+	if postStop.err != nil {
+		t.Fatalf("post-stop readThread: %v", postStop.err)
+	}
+	postStop.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("relay acquisitions after stopped generation retired = %d, want fresh second generation", got)
+	}
+	if got := oldLease.readCallCount(); got != 1 {
+		t.Fatalf("old generation Read calls after fresh read = %d, want 1", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh generation calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+
+	rejoined, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatalf("fresh generation rejoin: %v", err)
+	}
+	rejoined.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("relay acquisitions after fresh generation rejoin = %d, want 2", got)
+	}
+	if got := freshLease.listenCallCount(); got != 1 {
+		t.Fatalf("fresh generation Listen calls after rejoin = %d, want 1", got)
+	}
+	relays.stopRelay(relayKey)
+}
+
+func TestHubRelayStopCoversOverlappingPendingGenerations(t *testing.T) {
+	const relayKey = "local:overlapping-pending-stop"
+	canonicalA := appwire.Ref{SourceID: "local", ThreadID: "overlapping-canonical-a"}
+	canonicalB := appwire.Ref{SourceID: "local", ThreadID: "overlapping-canonical-b"}
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "overlapping-pending-stop", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	type heldLease struct {
+		lease   *scriptedRelaySessionLease
+		entered chan struct{}
+		release func()
+		closed  chan struct{}
+	}
+	newHeldLease := func() heldLease {
+		entered := make(chan struct{})
+		releaseRead := make(chan struct{})
+		closed := make(chan struct{})
+		var releaseOnce sync.Once
+		lease := &scriptedRelaySessionLease{
+			readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+				close(entered)
+				<-releaseRead
+				return readResult(), nil
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+			closeHook:  func() { close(closed) },
+		}
+		return heldLease{
+			lease:   lease,
+			entered: entered,
+			release: func() { releaseOnce.Do(func() { close(releaseRead) }) },
+			closed:  closed,
+		}
+	}
+	heldA := newHeldLease()
+	heldB := newHeldLease()
+	defer heldA.release()
+	defer heldB.release()
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var resolveMu sync.Mutex
+	resolved := canonicalA
+	acquisitionsA := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			resolveMu.Lock()
+			defer resolveMu.Unlock()
+			return resolved, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			if ref == canonicalB {
+				return routeAwareTestLease(heldB.lease), nil
+			}
+			acquisitionsA++
+			if acquisitionsA == 1 {
+				return routeAwareTestLease(heldA.lease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan readOutcome {
+		out := make(chan readOutcome, 1)
+		go func() {
+			read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- readOutcome{read: read, err: err}
+		}()
+		return out
+	}
+	readA := startRead()
+	<-heldA.entered
+	resolveMu.Lock()
+	resolved = canonicalB
+	resolveMu.Unlock()
+	readB := startRead()
+	<-heldB.entered
+	if got := relays.relayCommandCount(relayKey); got != 2 {
+		t.Fatalf("overlapping pending command owners = %d, want 2", got)
+	}
+
+	relays.stopRelay(relayKey)
+	if got := relays.relayCommandCount(relayKey); got != 2 {
+		t.Fatalf("stopped overlapping pending command owners = %d, want 2", got)
+	}
+	resolveMu.Lock()
+	resolved = canonicalA
+	resolveMu.Unlock()
+	deferred := make(chan struct{}, 3)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferred <- struct{}{} }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStop := startRead()
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		t.Fatal("post-stop command did not defer behind the older hidden pending generation")
+	}
+	if got := heldA.lease.readCallCount(); got != 1 {
+		t.Fatalf("older stopped pending Read calls = %d, want 1", got)
+	}
+	if got := heldB.lease.readCallCount(); got != 1 {
+		t.Fatalf("newer stopped pending Read calls = %d, want 1", got)
+	}
+
+	heldA.release()
+	resultA := <-readA
+	if resultA.err != nil {
+		t.Fatalf("older pending read: %v", resultA.err)
+	}
+	if relays.relayPublished(relayKey) {
+		t.Fatal("older stopped pending read published downstream ownership")
+	}
+	resultA.read.finish(false)
+	select {
+	case <-heldA.closed:
+	case <-time.After(time.Second):
+		t.Fatal("older stopped pending handle did not close after its own command released")
+	}
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		t.Fatal("post-stop command did not remain deferred behind the newer pending generation")
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		t.Fatalf("pending command owners after older release = %d, want newer owner only", got)
+	}
+	if got := heldB.lease.closeCallCount(); got != 0 {
+		t.Fatalf("newer pending lease closes before its command release = %d, want 0", got)
+	}
+
+	heldB.release()
+	resultB := <-readB
+	if resultB.err != nil {
+		t.Fatalf("newer pending read: %v", resultB.err)
+	}
+	if relays.relayPublished(relayKey) {
+		t.Fatal("newer stopped pending read published downstream ownership")
+	}
+	resultB.read.finish(false)
+	select {
+	case <-heldB.closed:
+	case <-time.After(time.Second):
+		t.Fatal("newer stopped pending handle did not close after its own command released")
+	}
+	fresh := <-postStop
+	if fresh.err != nil {
+		t.Fatalf("fresh post-stop read: %v", fresh.err)
+	}
+	if !relays.relayPublished(relayKey) {
+		t.Fatal("fresh post-stop generation did not publish downstream ownership")
+	}
+	fresh.read.finish(false)
+	if got := source.acquireCallCount(); got != 3 {
+		t.Fatalf("relay acquisitions after overlapping stop = %d, want two old plus one fresh", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh generation calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+	if got := heldA.lease.readCallCount(); got != 1 {
+		t.Fatalf("older stale generation Read calls = %d, want no post-stop join", got)
+	}
+	if got := heldB.lease.readCallCount(); got != 1 {
+		t.Fatalf("newer stale generation Read calls = %d, want no post-stop join", got)
+	}
+
+	rejoined, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatalf("fresh generation rejoin: %v", err)
+	}
+	rejoined.finish(false)
+	if got := source.acquireCallCount(); got != 3 {
+		t.Fatalf("relay acquisitions after fresh rejoin = %d, want 3", got)
+	}
+	if got := freshLease.listenCallCount(); got != 1 {
+		t.Fatalf("fresh generation listeners after rejoin = %d, want 1", got)
+	}
+	relays.stopRelay(relayKey)
+}
+
+func TestHubRelayCanonicalStopRetiresOnlyNamedHandle(t *testing.T) {
+	canonicalA := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-a"}
+	canonicalB := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-b"}
+	newLease := func() *scriptedRelaySessionLease {
+		return &scriptedRelaySessionLease{
+			readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+				ref, err := appwire.ParseRef(params.Ref)
+				if err != nil {
+					return appsource.RelayReadResult{}, err
+				}
+				return appsource.RelayReadResult{
+					Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID: ref.ThreadID, Source: ref.SourceID,
+						Evener: appwire.EvenerThread{Ref: params.Ref},
+					}},
+					Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+				}, nil
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+	}
+	leaseA := newLease()
+	leaseB := newLease()
+	source := &relaySessionTestSource{
+		resolveRelay: func(params appwire.ThreadReadParams) (appwire.Ref, error) {
+			if params.Ref == canonicalB.String() {
+				return canonicalB, nil
+			}
+			return canonicalA, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			if ref == canonicalB {
+				return routeAwareTestLease(leaseB), nil
+			}
+			return routeAwareTestLease(leaseA), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	read := func(ref string) {
+		t.Helper()
+		result, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+		if err != nil {
+			t.Fatalf("readThread(%q): %v", ref, err)
+		}
+		result.finish(false)
+	}
+	read(canonicalA.String())
+	read(canonicalB.String())
+
+	relays.stopCanonicalRelay(canonicalA)
+	if got := leaseA.closeCallCount(); got != 1 {
+		t.Fatalf("named canonical lease closes = %d, want 1", got)
+	}
+	if got := leaseB.closeCallCount(); got != 0 {
+		t.Fatalf("unrelated canonical lease closes = %d, want 0", got)
+	}
+	read(canonicalB.String())
+	if got := leaseB.listenCallCount(); got != 1 {
+		t.Fatalf("unrelated canonical listener starts = %d, want retained single listener", got)
+	}
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after unrelated read = %d, want two original canonical handles", got)
+	}
+	relays.stopCanonicalRelay(canonicalB)
+}
+
+func TestHubRelayCanonicalStopRetainsBusyPublishedHandleUntilFreshGeneration(t *testing.T) {
+	const relayKey = "local:canonical-stop-busy"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-busy"}
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "canonical-stop-busy", Source: "local", Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldClosed := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{
+		readFunc:   func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) { return readResult(), nil },
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc:   func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) { return readResult(), nil },
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-busy", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	initial, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.finish(false)
+
+	busyEntered := make(chan struct{})
+	releaseBusy := make(chan struct{})
+	oldLease.mu.Lock()
+	oldLease.readHook = func() {
+		close(busyEntered)
+		<-releaseBusy
+	}
+	oldLease.mu.Unlock()
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	busyResult := startRead()
+	<-busyEntered
+	relays.stopCanonicalRelay(canonical)
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(releaseBusy)
+		t.Fatalf("canonical stop closed busy published lease: %d", got)
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseBusy)
+		t.Fatalf("busy published command owners after canonical stop = %d, want 1", got)
+	}
+
+	deferred := make(chan struct{})
+	var deferredOnce sync.Once
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStopResult := startRead()
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		close(releaseBusy)
+		t.Fatal("post-canonical-stop command did not defer behind busy handle")
+	}
+	if got := oldLease.readCallCount(); got != 2 {
+		close(releaseBusy)
+		t.Fatalf("old generation Read calls after stop = %d, want initial plus busy only", got)
+	}
+	close(releaseBusy)
+	busy := <-busyResult
+	if busy.err != nil {
+		t.Fatal(busy.err)
+	}
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical stop closed lease before busy handoff released: %d", got)
+	}
+	busy.read.finish(false)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("busy canonical generation did not close after exact owner release")
+	}
+	postStop := <-postStopResult
+	if postStop.err != nil {
+		t.Fatal(postStop.err)
+	}
+	postStop.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after canonical stop drain = %d, want fresh generation", got)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("old canonical lease closes = %d, want once", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh canonical calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+}
+
+func TestHubRelayCanonicalStopRetainsOverlappingPendingStates(t *testing.T) {
+	const (
+		relayA = "local:canonical-stop-pending-a"
+		relayB = "local:canonical-stop-pending-b"
+	)
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-pending-owner"}
+	type gate struct {
+		entered chan struct{}
+		release chan struct{}
+	}
+	gates := map[string]gate{
+		relayA: {entered: make(chan struct{}), release: make(chan struct{})},
+		relayB: {entered: make(chan struct{}), release: make(chan struct{})},
+	}
+	resultFor := func(ref string) appsource.RelayReadResult {
+		parsed, err := appwire.ParseRef(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: parsed.ThreadID, Source: parsed.SourceID, Evener: appwire.EvenerThread{Ref: ref},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldClosed := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			g := gates[params.Ref]
+			close(g.entered)
+			<-g.release
+			return resultFor(params.Ref), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return resultFor(params.Ref), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquisitions int
+	var acquireMu sync.Mutex
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-pending", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func(ref string) <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	resultA := startRead(relayA)
+	<-gates[relayA].entered
+	resultB := startRead(relayB)
+	<-gates[relayB].entered
+	if got := relays.relayCommandCount(relayA) + relays.relayCommandCount(relayB); got != 2 {
+		t.Fatalf("overlapping canonical pending owners = %d, want 2", got)
+	}
+	relays.stopCanonicalRelay(canonical)
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical stop closed overlapping pending lease: %d", got)
+	}
+
+	deferred := make(chan struct{})
+	var deferredOnce sync.Once
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStop := startRead(relayA)
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		close(gates[relayA].release)
+		close(gates[relayB].release)
+		t.Fatal("post-stop command did not defer behind overlapping pending canonical states")
+	}
+
+	close(gates[relayA].release)
+	first := <-resultA
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	if relays.relayPublished(relayA) {
+		t.Fatal("stopped pending relay A published")
+	}
+	first.read.finish(false)
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical lease closed with second pending owner: %d", got)
+	}
+	close(gates[relayB].release)
+	second := <-resultB
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	if relays.relayPublished(relayB) {
+		t.Fatal("stopped pending relay B published")
+	}
+	second.read.finish(false)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("overlapping pending canonical handle did not close after all exact owners released")
+	}
+	fresh := <-postStop
+	if fresh.err != nil {
+		t.Fatal(fresh.err)
+	}
+	fresh.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("canonical acquisitions after overlapping drain = %d, want fresh second generation", got)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("old overlapping lease closes = %d, want once", got)
+	}
+}
+
+func TestHubRelayCanonicalStopWaitsForInitializingAcquire(t *testing.T) {
+	const relayKey = "local:canonical-stop-initializing"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-initializing"}
+	readResult := appsource.RelayReadResult{
+		Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: canonical.ThreadID, Source: canonical.SourceID, Evener: appwire.EvenerThread{Ref: relayKey},
+		}},
+		Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+	}
+	firstAcquireEntered := make(chan struct{})
+	releaseFirstAcquire := make(chan struct{})
+	secondAcquireEntered := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{readResult: readResult, deliveries: make(chan appsource.RelayDelivery)}
+	freshLease := &scriptedRelaySessionLease{readResult: readResult, deliveries: make(chan appsource.RelayDelivery)}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			acquisitions++
+			call := acquisitions
+			acquireMu.Unlock()
+			if call == 1 {
+				close(firstAcquireEntered)
+				<-releaseFirstAcquire
+				return routeAwareTestLease(oldLease), nil
+			}
+			close(secondAcquireEntered)
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing", SourceID: "local"}),
+		hubcore.WebConfig{}, appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	start := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	initial := start()
+	<-firstAcquireEntered
+	relays.stopCanonicalRelay(canonical)
+	waiting := make(chan struct{})
+	var waitingOnce sync.Once
+	previousWait := observeHubRelayWait
+	observeHubRelayWait = func() { waitingOnce.Do(func() { close(waiting) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	later := start()
+	select {
+	case <-waiting:
+	case <-secondAcquireEntered:
+		close(releaseFirstAcquire)
+		t.Fatal("post-stop join acquired a fresh lease before stopped initializing acquire drained")
+	case <-time.After(time.Second):
+		close(releaseFirstAcquire)
+		t.Fatal("post-stop join did not reach initializing handle drain wait")
+	}
+	select {
+	case <-secondAcquireEntered:
+		close(releaseFirstAcquire)
+		t.Fatal("fresh acquisition started while stopped initializing acquire remained blocked")
+	default:
+	}
+	close(releaseFirstAcquire)
+	first := <-initial
+	if !errors.Is(first.err, context.Canceled) {
+		if first.read != nil {
+			first.read.finish(false)
+		}
+		t.Fatalf("stopped initializing read error = %v, want context.Canceled", first.err)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("late old lease closes = %d, want 1", got)
+	}
+	if got := oldLease.listenCallCount(); got != 0 {
+		t.Fatalf("late old lease Listen calls = %d, want 0 after stop", got)
+	}
+	select {
+	case <-secondAcquireEntered:
+	case <-time.After(time.Second):
+		t.Fatal("fresh acquisition did not start after initializing handle drained")
+	}
+	next := <-later
+	if next.err != nil {
+		t.Fatal(next.err)
+	}
+	next.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after initializing stop = %d, want old plus one fresh", got)
+	}
+	if got := freshLease.listenCallCount(); got != 1 {
+		t.Fatalf("fresh listener starts = %d, want 1", got)
+	}
+}
+
+func TestHubRelayCanonicalStopInitializingAcquireErrorUnblocksFreshGeneration(t *testing.T) {
+	const relayKey = "local:canonical-stop-initializing-error"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-initializing-error"}
+	firstAcquireEntered := make(chan struct{})
+	releaseFirstAcquire := make(chan struct{})
+	acquireFailure := errors.New("initial relay acquisition failed")
+	freshLease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: canonical.ThreadID, Source: canonical.SourceID, Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			acquisitions++
+			call := acquisitions
+			acquireMu.Unlock()
+			if call == 1 {
+				close(firstAcquireEntered)
+				<-releaseFirstAcquire
+				return nil, acquireFailure
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing-error", SourceID: "local"}),
+		hubcore.WebConfig{}, appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	start := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	initial := start()
+	<-firstAcquireEntered
+	relays.stopCanonicalRelay(canonical)
+	later := start()
+	close(releaseFirstAcquire)
+	first := <-initial
+	if !errors.Is(first.err, acquireFailure) {
+		t.Fatalf("initial acquisition error = %v, want %v", first.err, acquireFailure)
+	}
+	next := <-later
+	if next.err != nil {
+		t.Fatal(next.err)
+	}
+	next.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after stopped initialization error = %d, want 2", got)
+	}
+}
+
+type blockingInitializingListenLease struct {
+	*scriptedRelaySessionLease
+	listenEntered  chan struct{}
+	listenCanceled chan struct{}
+	releaseListen  chan struct{}
+}
+
+func (l *blockingInitializingListenLease) Listen(ctx context.Context) (<-chan appsource.RelayDelivery, error) {
+	close(l.listenEntered)
+	<-ctx.Done()
+	close(l.listenCanceled)
+	<-l.releaseListen
+	return nil, ctx.Err()
+}
+
+func TestHubRelayCanonicalStopRetainsInitializingHandleUntilListenCancellationReturns(t *testing.T) {
+	const relayKey = "local:canonical-stop-initializing-listen"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-initializing-listen"}
+	oldBase := &scriptedRelaySessionLease{deliveries: make(chan appsource.RelayDelivery)}
+	oldLease := &blockingInitializingListenLease{
+		scriptedRelaySessionLease: oldBase,
+		listenEntered:             make(chan struct{}),
+		listenCanceled:            make(chan struct{}),
+		releaseListen:             make(chan struct{}),
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: canonical.ThreadID, Source: canonical.SourceID, Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(freshLease), nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-initializing-listen", SourceID: "local"}),
+		hubcore.WebConfig{}, appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	start := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	initial := start()
+	<-oldLease.listenEntered
+	relays.stopCanonicalRelay(canonical)
+	<-oldLease.listenCanceled
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(oldLease.releaseListen)
+		t.Fatalf("initializing lease closed before Listen cancellation returned: %d", got)
+	}
+	waiting := make(chan struct{})
+	var waitOnce sync.Once
+	previousWait := observeHubRelayWait
+	observeHubRelayWait = func() { waitOnce.Do(func() { close(waiting) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	later := start()
+	select {
+	case <-waiting:
+	case <-time.After(time.Second):
+		close(oldLease.releaseListen)
+		t.Fatal("post-stop join did not wait for initializing Listen termination")
+	}
+	close(oldLease.releaseListen)
+	first := <-initial
+	if !errors.Is(first.err, context.Canceled) {
+		t.Fatalf("stopped initializing Listen error = %v, want context.Canceled", first.err)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("stopped initializing Listen lease closes = %d, want 1", got)
+	}
+	next := <-later
+	if next.err != nil {
+		t.Fatal(next.err)
+	}
+	next.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after Listen drain = %d, want old plus one fresh", got)
 	}
 }
 
@@ -6487,46 +8418,6 @@ func TestHubRPCModelListUsesWorkingDirForEvenerLaunchContract(t *testing.T) {
 	}
 }
 
-func TestHubRPCModelListRoutesCodexHarnessToSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local", AdapterNativeInitialize: true})
-	var gotParams appwire.ModelListParams
-	appserver.HandleTyped(codex.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-		gotParams = params
-		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex-local",
-			Endpoint: "ws" + codexHTTP.URL[len("http"):],
-		}},
-		Spawner: &fakeRPCModelContractSpawner{
-			contract: appwire.ModelListResponse{
-				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}},
-			},
-		},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: "codex-local"})
-	if err != nil {
-		t.Fatalf("ModelList: %v", err)
-	}
-	if gotParams.Harness != "" {
-		t.Fatalf("codex source received hub harness routing field: %+v", gotParams)
-	}
-	if len(resp.Data) != 1 || resp.Data[0].Provider != "codex-local" || resp.Data[0].Model != "gpt-5.3-codex" {
-		t.Fatalf("models=%+v", resp.Data)
-	}
-}
-
 func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractIsEmpty(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
@@ -6624,7 +8515,7 @@ func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v3","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+	  printf '{"protocol":"evener-appwire-v5","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -6702,78 +8593,147 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 }
 
 func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
-	const sessionID = "033snFBSHFr78ZbQQMAeBD"
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:        sessionID,
-			SessionID: sessionID,
-			Source:    "local",
-			Evener: appwire.EvenerThread{
-				Ref:          params.Ref,
-				Capabilities: appwire.ThreadCapabilities{Send: true},
-			},
-		}}, nil
-	})
-	var gotPrompt string
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		gotPrompt = inputTextForTest(params.Input)
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
-	})
-	daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
-	dropper := &dropFirstConnectionListener{
-		Listener: daemonHTTP.Listener,
-		dropped:  make(chan struct{}),
-	}
-	daemonHTTP.Listener = dropper
-	daemonHTTP.Start()
-	defer daemonHTTP.Close()
+	for _, fault := range []string{"probe", "listing", "status", "stale-instance"} {
+		t.Run(fault, func(t *testing.T) {
+			const sessionID = "033snFBSHFr78ZbQQMAeBD"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          params.Ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+						Diagnostics: &appwire.EvenerDiagnostics{Delegates: []appwire.EvenerDelegateInfo{
+							{ChildSessionID: "active-child", Lifecycle: "running", Status: "running"},
+							{ChildSessionID: "idle-child", Lifecycle: "idle", Status: "completed", Resumable: true},
+							{ChildSessionID: "closed-child", Lifecycle: "closed", Status: "completed", Terminal: true},
+						}},
+					},
+				}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				if fault == "status" {
+					return appwire.ThreadListResponse{}, appwire.Unavailable("status temporarily unavailable")
+				}
+				return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+			})
+			var gotPrompt string
+			var turns int
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				gotPrompt = inputTextForTest(params.Input)
+				turns++
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+			})
+			daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
+			dropper := &dropFirstConnectionListener{
+				Listener: daemonHTTP.Listener,
+				dropped:  make(chan struct{}),
+			}
+			if fault == "probe" {
+				daemonHTTP.Listener = dropper
+			}
+			daemonHTTP.Start()
+			defer daemonHTTP.Close()
 
-	runDir := t.TempDir()
-	entry := rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-	}
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
-	roster := hubcore.NewRoster(runDir, failedRPCProber{})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:  runDir,
-		Roster:  roster,
-		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			runDir := t.TempDir()
+			entry := rendezvous.Entry{
+				PID:       os.Getpid(),
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			if fault == "stale-instance" {
+				entry.InstanceID = "fresh-instance"
+			}
+			var spawns int
+			spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+				spawns++
+				writeRendezvous(t, runDir, entry)
+				if fault == "listing" || fault == "stale-instance" {
+					if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return entry, nil
+			}}
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			if fault == "stale-instance" {
+				old := entry
+				old.InstanceID = "previous-instance"
+				writeRendezvous(t, runDir, old)
+				roster.Refresh()
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:  runDir,
+				Roster:  roster,
+				Spawner: spawner,
+				Past:    hubcore.NewPastIndex(""),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Model: "openai/gpt-5",
-		CWD:   "/tmp",
-		Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	select {
-	case <-dropper.dropped:
-	default:
-		t.Fatal("startup test did not drop the first daemon connection")
-	}
-	if gotPrompt != "review the open PRs" {
-		t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
-	}
-	if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
-		t.Fatalf("response=%+v", resp)
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+				Model: "openai/gpt-5",
+				CWD:   "/tmp",
+				Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
+			})
+			if err != nil {
+				t.Fatalf("ThreadStart: %v", err)
+			}
+			if fault == "probe" {
+				select {
+				case <-dropper.dropped:
+				default:
+					t.Fatal("startup test did not drop the first daemon connection")
+				}
+			}
+			if gotPrompt != "review the open PRs" {
+				t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
+			}
+			if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
+				t.Fatalf("response=%+v", resp)
+			}
+
+			if spawns != 1 || turns != 1 {
+				t.Fatalf("spawns=%d turns=%d", spawns, turns)
+			}
+			if live, ok := roster.Find(sessionID); !ok || live.PID != entry.PID || live.Crashed {
+				t.Errorf("spawned daemon is not registered: %+v, present=%v", live, ok)
+			}
+			if live, _ := roster.Find(sessionID); live.InstanceID != entry.InstanceID {
+				t.Errorf("registered instance=%q, want %q", live.InstanceID, entry.InstanceID)
+			}
+			if state, ok := roster.SubagentState("active-child"); !ok || state != appwire.ThreadStatusActive {
+				t.Errorf("active child projection: state=%q live=%v", state, ok)
+			}
+			if state, ok := roster.SubagentState("idle-child"); !ok || state != appwire.ThreadStatusIdle {
+				t.Errorf("idle child projection: state=%q live=%v", state, ok)
+			}
+			if roster.IsSubagentActive("closed-child") {
+				t.Error("closed child published as live")
+			}
+			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref}); err != nil {
+				t.Fatalf("subsequent ThreadRead: %v", err)
+			}
+			if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+				Ref: resp.Thread.Evener.Ref, ClientMutationID: "follow-up", ExpectedInstanceID: sessionID,
+				Input: []appwire.InputItem{{Type: "text", Text: "continue review"}},
+			}); err != nil {
+				t.Fatalf("subsequent TurnStart: %v", err)
+			}
+			if spawns != 1 || turns != 2 || gotPrompt != "continue review" {
+				t.Fatalf("follow-up delivery: spawns=%d turns=%d prompt=%q", spawns, turns, gotPrompt)
+			}
+
+		})
 	}
 }
 
@@ -7087,6 +9047,10 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 	}
 }
 
+// TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider: a provider
+// the launch contract never enumerated is still launchable when the registry
+// holds the instance (spec §11.3) — an endpoint that lists no models is
+// configured, not broken.
 func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T) {
 	runDir := t.TempDir()
 	var got hubcore.SpawnRequest
@@ -7103,9 +9067,13 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	}
 	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		got = req
-		return rendezvous.Entry{PID: 301, ThreadID: "th_openrouter_anthropic", SessionID: "th_openrouter_anthropic"}, nil
+		return rendezvous.Entry{PID: 301, ThreadID: "th_orclaude", SessionID: "th_orclaude"}, nil
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	credsStore := newTestCredentialsStore(t)
+	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENROUTER_API_KEY": "k"}, map[string]registry.Provider{
+		"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic},
+	}, credsStore)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg, CredsStore: credsStore})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -7114,17 +9082,17 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		ModelProvider: "openrouter-anthropic",
+		ModelProvider: "orclaude",
 		Model:         "anthropic/claude-3-5-sonnet",
 		CWD:           "/tmp",
 	})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if got.Resolved.Effective.Model != "openrouter-anthropic/anthropic/claude-3-5-sonnet" {
+	if got.Resolved.Effective.Model != "orclaude/anthropic/claude-3-5-sonnet" {
 		t.Fatalf("spawn model=%q", got.Resolved.Effective.Model)
 	}
-	if resp.Thread.Evener.Ref != "local:th_openrouter_anthropic" {
+	if resp.Thread.Evener.Ref != "local:th_orclaude" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7231,7 +9199,7 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	stateRoot := t.TempDir()
 	launchRoot := t.TempDir()
 	cwd := t.TempDir()
-	c := newHubLaunchController(launchRoot)
+	c := newHubLaunchController(launchRoot, false)
 	if _, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
 		Layer:  "global",
@@ -7280,246 +9248,6 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	}
 	if got.Provider != "openai" {
 		t.Errorf("Provider = %q, want openai", got.Provider)
-	}
-}
-
-func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var startCalled bool
-	var turnCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		startCalled = true
-		if params["cwd"] != "/work/project" || params["model"] != "gpt-5.1-codex" {
-			t.Fatalf("thread/start params=%+v", params)
-		}
-		if _, ok := params["harness"]; ok {
-			t.Fatalf("codex thread/start should not receive hub harness routing field: %+v", params)
-		}
-		if _, ok := params["sourceId"]; ok {
-			t.Fatalf("codex thread/start should not receive hub source routing field: %+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":            "th_codex",
-			"sessionId":     "th_codex",
-			"preview":       "codex task",
-			"modelProvider": "openai",
-			"createdAt":     100,
-			"updatedAt":     100,
-			"status":        map[string]any{"type": "idle"},
-			"cwd":           "/work/project",
-			"cliVersion":    "codex-test",
-			"source":        "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		turnCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("turn/start params=%+v", params)
-		}
-		return map[string]any{"turn": map[string]any{
-			"id":        "turn_codex",
-			"items":     []any{},
-			"itemsView": "full",
-			"status":    "inProgress",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex",
-		CWD:     "/work/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "hello codex"}},
-		Model:   "gpt-5.1-codex",
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	if !startCalled || !turnCalled {
-		t.Fatalf("startCalled=%v turnCalled=%v", startCalled, turnCalled)
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex" || resp.Turn.ID != "turn_codex" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex-managed",
-		CWD:     "/tmp/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "hello launched codex"}},
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex-managed",
-		CWD:     "/tmp/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "first launched codex"}},
-	}); err != nil {
-		t.Fatalf("first ThreadStart: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex-managed",
-		CWD:     "/tmp/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "second launched codex"}},
-	})
-	if err != nil {
-		t.Fatalf("second ThreadStart: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
-		t.Fatalf("EnsureSource: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex-managed:th_fake"})
-	if err != nil {
-		t.Fatalf("ThreadResume: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
-		t.Fatalf("EnsureSource: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex-managed:th_fake"})
-	if err != nil {
-		t.Fatalf("ThreadFork: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake_child" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", web.sources); err != nil {
-		t.Fatalf("EnsureSource: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	hub := httptest.NewUnstartedServer(nil)
-	web.cfg.HubAddr = hub.Listener.Addr().String()
-	hub.Config.Handler = web.Handler()
-	hub.Start()
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_fake", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
-		t.Fatal("TurnStart succeeded for Codex source")
-	}
-	next := launcherRunningProcess(t, launcher, "codex-managed")
-	if next == first {
-		t.Fatal("turn/start reused the exited managed Codex process")
 	}
 }
 
@@ -7592,6 +9320,58 @@ func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
 	}
 }
 
+// TestResumeRequestForConfigCarriesLaunchAPILog proves the resume path
+// consults the session's launch layers for api_log: buildResumeArgs passes
+// the value through to the daemon, so without this carry an explicit
+// api_log choice would be silently dropped and the hub floor (or the
+// daemon's own default) would fill the gap instead. An unset layer must
+// stay nil so the hub floor still applies, and a broken launch.toml must
+// not block the resume.
+func TestResumeRequestForConfigCarriesLaunchAPILog(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		launchTOML string // global launch.toml content; "" writes nothing
+		wantNil    bool
+		wantOn     bool
+	}{
+		{name: "layer true is carried", launchTOML: "api_log = true\n", wantOn: true},
+		{name: "layer false is carried, not dropped", launchTOML: "api_log = false\n", wantOn: false},
+		{name: "unset stays nil for the hub floor", launchTOML: "", wantNil: true},
+		{name: "broken launch.toml resumes with api_log unset", launchTOML: "not = [toml", wantNil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			sessionID := hubtest.SessionID(t)
+			_, past := makeResumeSession(t, root, sessionID, "openai", "gpt-4o")
+			launchRoot := filepath.Join(root, "launchroot")
+			if tc.launchTOML != "" {
+				if err := os.MkdirAll(launchRoot, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(launchRoot, "launch.toml"), []byte(tc.launchTOML), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past, LaunchConfigRoot: launchRoot}, sessionID)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantNil {
+				if req.Resolved.Effective.APILog != nil {
+					t.Fatalf("APILog = %v, want nil", *req.Resolved.Effective.APILog)
+				}
+				return
+			}
+			if got := req.Resolved.Effective.APILog; got == nil || *got != tc.wantOn {
+				t.Fatalf("APILog = %v, want %v", got, tc.wantOn)
+			}
+			if got := req.Resolved.Effective.Model; got != "openai/gpt-4o" {
+				t.Fatalf("Model = %q, want openai/gpt-4o (api_log carry must not clobber it)", got)
+			}
+		})
+	}
+}
+
 // TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive proves the
 // native worktree tools spec §7 "Hub consumers" migration: a session
 // actively inside a worktree must resume with `--dir` set to its restore
@@ -7629,89 +9409,6 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 	}
 	if req.WorkingDir != restoreRoot {
 		t.Fatalf("resume dir=%q, want restore root %q (not the worktree path)", req.WorkingDir, restoreRoot)
-	}
-}
-
-func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var startCalled bool
-	var turnCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		startCalled = true
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_blank",
-			"sessionId": "th_blank",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		turnCalled = true
-		return nil, errors.New("blank prompt should not start a turn")
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex",
-		CWD:     "/work/project",
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	if !startCalled {
-		t.Fatal("Codex source was not started for blank prompt")
-	}
-	if turnCalled {
-		t.Fatal("Codex turn was started for blank prompt")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_blank" || resp.Turn.ID != "" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID: "codex-local",
-		}, {}},
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	var resp struct {
-		Data []struct {
-			ID    string `json:"id"`
-			Label string `json:"label"`
-			Kind  string `json:"kind"`
-		} `json:"data"`
-	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHarnessesList, map[string]any{}, &resp); err != nil {
-		t.Fatalf("evener/harnesses/list: %v", err)
-	}
-	got := map[string]string{}
-	for _, h := range resp.Data {
-		got[h.ID] = h.Kind
-	}
-	if got["evener"] != "evener" || got["codex-local"] != "codex" || got["codex"] != "codex" || got["codex-managed"] != "codex" {
-		t.Fatalf("harnesses=%+v", resp.Data)
 	}
 }
 
@@ -7759,6 +9456,259 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 	if resp.Thread.ID != "th_resumed" || resp.Thread.Evener.Ref != "local:th_resumed" {
 		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
+	for _, fault := range []string{"status", "listing", "confirmed", "read", "identity"} {
+		t.Run(fault, func(t *testing.T) {
+			const sessionID = "resumed-owner"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				if fault == "confirmed" {
+					return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+				}
+				return appwire.ThreadListResponse{}, appwire.Unavailable("inventory unavailable")
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				if fault == "read" {
+					return appwire.ThreadReadResponse{}, appwire.Unavailable("read unavailable")
+				}
+				id := sessionID
+				if fault == "identity" {
+					id = "different-owner"
+				}
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "delivered"}}, nil
+			})
+			peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer peer.Close()
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
+			spawns := 0
+			spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				spawns++
+				writeRendezvous(t, runDir, entry)
+				if fault == "confirmed" {
+					roster.Refresh()
+				}
+				if fault == "listing" || fault == "confirmed" {
+					if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return entry, nil
+			}}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks()})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if spawns != 1 {
+				t.Fatalf("spawns=%d", spawns)
+			}
+			if fault == "read" || fault == "identity" {
+				if err == nil || roster.HasConfirmedEntry(entry) {
+					t.Fatalf("unverified owner admitted: error=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Thread.ID != sessionID || !roster.HasConfirmedEntry(entry) {
+				t.Fatalf("resume did not publish owner: %+v", response.Thread)
+			}
+			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID}); err != nil {
+				t.Fatal(err)
+			}
+			turn, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, ClientMutationID: "resume-followup", ExpectedInstanceID: sessionID, Input: []appwire.InputItem{{Type: "text", Text: "continue"}}})
+			if err != nil || turn.Turn.ID != "delivered" {
+				t.Fatalf("followup=%+v error=%v", turn, err)
+			}
+		})
+	}
+}
+
+func TestHubRPCSubscribedReadRefreshesReplacedDaemonOwnership(t *testing.T) {
+	for _, sameEndpoint := range []bool{false, true} {
+		t.Run(fmt.Sprint("same endpoint=", sameEndpoint), func(t *testing.T) {
+			testHubSubscribedReadReplacedOwner(t, sameEndpoint, appwire.MethodThreadRead, serveProtocolMismatch)
+		})
+	}
+}
+
+func TestHubRPCSessionActionsRefreshReplacedDaemonOwnership(t *testing.T) {
+	for _, method := range []string{appwire.MethodThreadShutdown, appwire.MethodThreadModelSet, appwire.MethodThreadVisionModelSet, appwire.MethodThreadCompactStart, appwire.MethodGoalSet} {
+		t.Run(method, func(t *testing.T) { testHubSubscribedReadReplacedOwner(t, true, method, serveProtocolMismatch) })
+	}
+}
+
+func TestHubRPCTurnStartRefreshesReplacedDaemonBeforeRelay(t *testing.T) {
+	testHubSubscribedReadReplacedOwner(t, true, appwire.MethodTurnStart, serveProtocolMismatch)
+}
+
+func TestHubRPCCachedRouteRefreshesTypedProtocolMismatch(t *testing.T) {
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodTurnStart, appwire.MethodThreadModelSet} {
+		t.Run(method, func(t *testing.T) { testHubSubscribedReadReplacedOwner(t, true, method, serveTypedProtocolMismatch) })
+	}
+}
+
+func testHubSubscribedReadReplacedOwner(t *testing.T, sameEndpoint bool, method string, replacement http.HandlerFunc) {
+	root := t.TempDir()
+	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+	})
+	var handlerMu sync.RWMutex
+	serve := http.HandlerFunc(daemon.ServeWebSocket)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerMu.RLock()
+		handler := serve
+		handlerMu.RUnlock()
+		handler(w, r)
+	}))
+	defer peer.Close()
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	if !roster.HasConfirmedEntry(entry) {
+		t.Fatal("owner not confirmed")
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	entry.Protocol = "evener-appwire-v4"
+	if sameEndpoint {
+		handlerMu.Lock()
+		serve = replacement
+		handlerMu.Unlock()
+	} else {
+		peer.Close()
+		entry.Endpoint = protocolMismatchPeer(t)
+	}
+	writeRendezvous(t, runDir, entry)
+	if method != appwire.MethodThreadRead {
+		params := map[string]any{"ref": "local:" + sessionID}
+		switch method {
+		case appwire.MethodTurnStart:
+			params["clientMutationId"] = "replacement-send"
+			params["expectedInstanceId"] = sessionID
+			params["input"] = []appwire.InputItem{{Type: "text", Text: "keep this message"}}
+		case appwire.MethodThreadModelSet:
+			params["modelProvider"], params["model"] = "test", "test-model"
+		case appwire.MethodThreadVisionModelSet:
+			params["visionModel"] = "test/vision"
+		case appwire.MethodGoalSet:
+			params["objective"] = "test goal"
+		}
+		var response any
+		err := client.Request(context.Background(), method, params, &response)
+		if !isDaemonRestartRequiredError(err) {
+			t.Fatalf("error=%v", err)
+		}
+		if method == appwire.MethodTurnStart {
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatal(err)
+			}
+			data, ok := wire.Data.(map[string]any)
+			if !ok || data["clientMutationId"] != "replacement-send" || data["mutationOutcome"] != "unknown" || data["retryDisposition"] != "blocked" {
+				t.Fatalf("mutation outcome=%+v", wire.Data)
+			}
+		}
+		return
+	}
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Thread.Status.Type != appwire.ThreadStatusRestartRequired {
+		t.Fatalf("status=%s", response.Thread.Status.Type)
+	}
+	if response.Thread.Evener.Capabilities.Send || len(response.Thread.Turns) != 2 {
+		t.Fatalf("thread=%+v", response.Thread)
+	}
+}
+
+func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T) {
+	for _, state := range []string{"healthy", "unreachable", "absent"} {
+		t.Run(state, func(t *testing.T) {
+			const sessionID = "confirmed-owner"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			thread := appwire.Thread{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: thread}, nil
+			})
+			peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer peer.Close()
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			if state != "absent" {
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID})
+				roster.Refresh()
+				if _, ok := roster.Find(sessionID); !ok {
+					t.Fatal("owner was not confirmed")
+				}
+			}
+			if state == "unreachable" {
+				peer.Close()
+			}
+			if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			spawned := false
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				spawned = true
+				return rendezvous.Entry{}, errors.New("unexpected replacement")
+			}}})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if spawned {
+				t.Fatal("spawned despite incomplete ownership discovery")
+			}
+			if state == "healthy" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.Thread.ID != sessionID {
+					t.Fatalf("thread=%+v", response.Thread)
+				}
+			} else if err == nil {
+				t.Fatal("resume succeeded without a verified owner")
+			}
+			if roster.OwnershipError() == nil {
+				t.Fatal("partial confirmation cleared the discovery failure")
+			}
+		})
 	}
 }
 
@@ -7948,200 +9898,6 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 	}
 }
 
-func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var resumeCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadResume, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		resumeCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/resume params=%+v", params)
-		}
-		for _, field := range []string{"pluginDirs", "enabledPlugins"} {
-			if _, present := params[field]; present {
-				t.Fatalf("thread/resume unexpectedly carried launch selection %q: %+v", field, params)
-			}
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":            "th_codex",
-			"sessionId":     "th_codex",
-			"preview":       "resumed codex",
-			"modelProvider": "openai",
-			"status":        map[string]any{"type": "idle"},
-			"source":        "appServer",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("ThreadResume: %v", err)
-	}
-	if !resumeCalled {
-		t.Fatal("codex resume was not routed")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var readCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		readCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/read params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex",
-			"sessionId": "th_codex",
-			"preview":   "read-only codex",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("ThreadRead: %v", err)
-	}
-	if !readCalled {
-		t.Fatal("codex read was not routed")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCThreadCompactRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var compactCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/read params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex",
-			"sessionId": "th_codex",
-			"preview":   "compact codex",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		compactCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/compact/start params=%+v", params)
-		}
-		return map[string]any{}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "codex:th_codex"}); err != nil {
-		t.Fatalf("ThreadCompactStart: %v", err)
-	}
-	if !compactCalled {
-		t.Fatal("configured Codex source was not compacted")
-	}
-}
-
-func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var forkCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/read params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex",
-			"sessionId": "th_codex",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadFork, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		forkCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/fork params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex_child",
-			"sessionId": "th_codex_child",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("ThreadFork: %v", err)
-	}
-	if !forkCalled {
-		t.Fatal("configured Codex source was not forked")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex_child" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
 func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	source := &startResumeRelaySource{
 		id: "codex",
@@ -8233,10 +9989,6 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 		if !strings.Contains(string(got.Params), "subscribe failed after start") || !strings.Contains(string(got.Params), `"source":"hub"`) {
 			t.Fatalf("warning params=%s", got.Params)
 		}
-		payload := warningPayload(got.Params)
-		if payload["source"] != "hub" || payload["title"] != "Live updates unavailable" {
-			t.Fatalf("warning payload=%+v", payload)
-		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for relay warning")
 	}
@@ -8314,7 +10066,7 @@ func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
 		{
 			name: "initial source resolution",
 			configure: func(_ *int) {
-				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+				resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 					return nil, errors.New("source unavailable")
 				}
 			},
@@ -8329,7 +10081,7 @@ func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
 						return appwire.TurnStartResponse{}, appwire.SessionUnavailable("daemon went away")
 					},
 				}
-				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+				resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 					return source, nil
 				}
 			},
@@ -8676,229 +10428,111 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 }
 
 func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) {
-	root := t.TempDir()
-	workingDir := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
-	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	staleAddress := ln.Addr().String()
-	staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
-	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
-	})
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	defer daemonHTTP.Close()
-
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       -1,
-		Address:   staleAddress,
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  staleEndpoint,
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-		StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
-	})
-	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
-	roster := hubcore.NewRoster(runDir, prober)
-	roster.Refresh()
-	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
-		t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
-	}
-	resumeCalled := false
-	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			if req.WorkingDir != workingDir {
-				t.Fatalf("resume request=%+v", req)
+	for _, refreshFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint("refresh failure=", refreshFailure), func(t *testing.T) {
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
 			}
-			resumeCalled = true
-			entry := rendezvous.Entry{
-				PID:        110,
-				Address:    daemonHTTP.Listener.Addr().String(),
-				Protocol:   appwire.ProtocolVersion,
-				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:   "local",
-				ThreadID:   sessionID,
-				SessionID:  sessionID,
-				WorkingDir: workingDir,
-				StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
-			prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
-			writeRendezvous(t, runDir, entry)
+			staleAddress := ln.Addr().String()
+			staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
+			if err := ln.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				appserver.Subscribe(ctx, sessionID)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID:       -1,
+				Address:   staleAddress,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  staleEndpoint,
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+				StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
+			})
+			prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
+			roster := hubcore.NewRoster(runDir, prober)
 			roster.Refresh()
-			return entry, nil
-		},
-	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:      runDir,
-		Roster:      roster,
-		Spawner:     spawner,
-		Past:        past,
-		ResumeLocks: hubcore.NewResumeLocks(),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
+				t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
+			}
+			resumeCalled := false
+			spawner := &fakeRPCSpawner{
+				resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+					if req.WorkingDir != workingDir {
+						t.Fatalf("resume request=%+v", req)
+					}
+					resumeCalled = true
+					entry := rendezvous.Entry{
+						PID:        110,
+						Address:    daemonHTTP.Listener.Addr().String(),
+						Protocol:   appwire.ProtocolVersion,
+						Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+						SourceID:   "local",
+						ThreadID:   sessionID,
+						SessionID:  sessionID,
+						WorkingDir: workingDir,
+						StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+					}
+					prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
+					writeRendezvous(t, runDir, entry)
+					if refreshFailure {
+						if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
-	if err != nil {
-		t.Fatalf("TurnStart: %v", err)
-	}
-	if !resumeCalled {
-		t.Fatal("resume was not called after local transport error")
-	}
-	if resp.Turn.ID != "turn_recovered" {
-		t.Fatalf("turn=%+v", resp.Turn)
-	}
-}
+					roster.Refresh()
+					return entry, nil
+				},
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:      runDir,
+				Roster:      roster,
+				Spawner:     spawner,
+				Past:        past,
+				ResumeLocks: hubcore.NewResumeLocks(),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
 
-// TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry guards the kata ws5f
-// fix: the MethodTurnStart resume gate must accept managed-launch refs (e.g.
-// codex:thread_xxx) even when they aren't in the local past index, so that an
-// auto-resume retry fires when the managed daemon dies mid-turn.
-func TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
-	cfg := hubcore.WebConfig{Past: hubcore.NewPastIndex(""), CodexLauncher: launcher}
-	if !hubKnowsRef(cfg, "codex-managed:th_known") {
-		t.Fatal("hubKnowsRef should accept managed-launch ref")
-	}
-	if hubKnowsRef(cfg, "codex-unknown:th_known") {
-		t.Fatal("hubKnowsRef should reject ref whose source is not managed")
-	}
-	if hubKnowsRef(cfg, "local:th_not_in_past") {
-		t.Fatal("hubKnowsRef should reject local ref with no past entry")
-	}
-}
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+			if err != nil {
+				t.Fatalf("TurnStart: %v", err)
+			}
+			if !resumeCalled {
+				t.Fatal("resume was not called after local transport error")
+			}
+			if resp.Turn.ID != "turn_recovered" {
+				t.Fatalf("turn=%+v", resp.Turn)
+			}
 
-// resumeAfterSessionUnavailableManagedSource simulates a managed codex daemon
-// that returns SessionUnavailable on the first StartTurn (the daemon just
-// died), then succeeds after the hub calls ResumeThread.
-type resumeAfterSessionUnavailableManagedSource struct {
-	relayLifecycleSource
-	id           string
-	mu           sync.Mutex
-	startCalls   int
-	resumeCalls  int
-	thread       appwire.Thread
-	startPrompts []string
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) ID() string { return s.id }
-
-func (s *resumeAfterSessionUnavailableManagedSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	return appwire.ThreadReadResponse{Thread: s.thread}, nil
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) ResumeThread(_ context.Context, _ appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
-	s.mu.Lock()
-	s.resumeCalls++
-	s.mu.Unlock()
-	return appwire.ThreadResumeResponse{Thread: s.thread}, nil
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) StartTurn(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	s.mu.Lock()
-	s.startCalls++
-	calls := s.startCalls
-	s.startPrompts = append(s.startPrompts, inputTextForTest(params.Input))
-	s.mu.Unlock()
-	if calls == 1 {
-		return appwire.TurnStartResponse{}, appwire.SessionUnavailable("managed daemon went away")
-	}
-	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_after_resume"}}, nil
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) counts() (start, resume int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.startCalls, s.resumeCalls
-}
-
-// seedManagedSource pokes a fake source into the CodexLauncher's caches so
-// that EnsureSource returns it without spawning a real process.
-func seedManagedSource(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string, source appsource.Source) {
-	t.Helper()
-	launcher.Mu.Lock()
-	defer launcher.Mu.Unlock()
-	launcher.Sources[sourceID] = source
-	launcher.Running[sourceID] = &codexlaunch.LaunchedCodex{
-		Cmd:    &exec.Cmd{},
-		Exited: make(chan struct{}),
-	}
-}
-
-// TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable verifies that
-// the auto-resume retry fires for a non-local managed-launch ref when the
-// backing daemon returns SessionUnavailable. Previously the past-index gate
-// at MethodTurnStart skipped the retry entirely for any non-local ref (kata
-// ws5f).
-func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
-	fake := &resumeAfterSessionUnavailableManagedSource{
-		canceled: make(chan struct{}, 1),
-		id:       "codex-managed",
-		thread: appwire.Thread{
-			ID:        "th_managed",
-			SessionID: "th_managed",
-			Source:    "codex-managed",
-			Evener: appwire.EvenerThread{
-				Ref:          "codex-managed:th_managed",
-				Capabilities: appwire.ThreadCapabilities{Send: true},
-			},
-		},
-	}
-	seedManagedSource(t, launcher, "codex-managed", fake)
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
-		ExpectedInstanceID: "th_managed",
-		Ref:                "codex-managed:th_managed",
-		Input:              []appwire.InputItem{{Type: "text", Text: "keep going"}},
-	})
-	if err != nil {
-		t.Fatalf("TurnStart: %v", err)
-	}
-	if resp.Turn.ID != "turn_after_resume" {
-		t.Fatalf("turn=%+v, want turn_after_resume", resp.Turn)
-	}
-	starts, resumes := fake.counts()
-	if starts != 2 {
-		t.Fatalf("StartTurn calls=%d, want 2 (initial + retry after resume)", starts)
-	}
-	if resumes != 1 {
-		t.Fatalf("ResumeThread calls=%d, want 1", resumes)
+		})
 	}
 }
 
@@ -8943,23 +10577,21 @@ func (s *sessionUnavailableOnceSource) counts() (start, resume int) {
 	return s.startCalls, s.resumeCalls
 }
 
-// TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef confirms the resume gate
-// still refuses non-local refs the hub does not know about (no managed launch,
-// no past entry) even after widening the gate to include managed-launch
-// sources (kata ws5f). The hub should bubble up the original SessionUnavailable
-// error without attempting a resume.
+// TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef confirms the local
+// past-index retry gate refuses non-local refs. The hub should bubble up the
+// original SessionUnavailable error without attempting a resume.
 func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	fake := &sessionUnavailableOnceSource{
 		canceled: make(chan struct{}, 1),
-		id:       "codex",
+		id:       "remote",
 		thread: appwire.Thread{
 			ID:        "th_unknown",
 			SessionID: "th_unknown",
-			Source:    "codex",
+			Source:    "remote",
 			Evener: appwire.EvenerThread{
-				Ref:          "codex:th_unknown",
+				Ref:          "remote:th_unknown",
 				Capabilities: appwire.ThreadCapabilities{Send: true},
 			},
 		},
@@ -8977,7 +10609,7 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	}
 	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		ExpectedInstanceID: "th_unknown",
-		Ref:                "codex:th_unknown",
+		Ref:                "remote:th_unknown",
 		Input:              []appwire.InputItem{{Type: "text", Text: "should not resume"}},
 	})
 	if err == nil {
@@ -9502,7 +11134,11 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 
 func buildRPCParentSessionWithWorkingDir(t *testing.T, stateDir, workingDir string) string {
 	t.Helper()
-	parentID := "02wMz5Txv1C3Hut0M8GCeB"
+	return buildRPCSessionWithWorkingDir(t, stateDir, "02wMz5Txv1C3Hut0M8GCeB", workingDir)
+}
+
+func buildRPCSessionWithWorkingDir(t *testing.T, stateDir, parentID, workingDir string) string {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -9543,67 +11179,39 @@ func buildRPCParentSessionWithWorkingDir(t *testing.T, stateDir, workingDir stri
 	return parentID
 }
 
-func launcherRunningProcess(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string) *codexlaunch.LaunchedCodex {
-	t.Helper()
-	launcher.Mu.Lock()
-	defer launcher.Mu.Unlock()
-	launched := launcher.Running[sourceID]
-	if launched == nil || launched.Cmd == nil || launched.Cmd.Process == nil {
-		t.Fatalf("launcher has no running process for %s", sourceID)
-	}
-	return launched
-}
+// TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate pins
+// the registry-only rule (spec §11.3): a launch model contract that never
+// listed an instance does not make that instance unlaunchable, as long as the
+// registry has it. A name the registry does not have is still refused.
+func TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[providers.work]\nbase = \"anthropic\"\napi_key = \"sk-inline\"\n")
+	cfg := hubcore.WebConfig{Registry: newTestRegistry(t, t.TempDir(), tomlPath, nil, nil)}
 
-func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) {
-	t.Helper()
-	select {
-	case <-launched.Exited:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for launched codex process to exit")
+	if !launchInstanceExists(cfg, "work") {
+		t.Error("an instance the registry holds is launchable even when the contract omits it")
 	}
-}
-
-// TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag verifies that
-// launchProviderAllowsUnreportedModels returns true for any instance name
-// whose behavior tag is "openrouter-anthropic", not just the literal string.
-// A renamed instance like "ora-work" mapped to tag "openrouter-anthropic" must
-// behave identically to the canonical instance name.
-func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
-	cfg := &providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "ora-work", Type: "openrouter-anthropic"},
-		},
+	if !launchInstanceExists(cfg, "WORK") {
+		t.Error("the instance name is matched case-insensitively, as the launch ref is")
 	}
-	// Renamed instance with tag "openrouter-anthropic" must allow unreported models.
-	if !launchProviderAllowsUnreportedModels("ora-work", cfg) {
-		t.Error("renamed openrouter-anthropic instance must allow unreported models")
+	if launchInstanceExists(cfg, "nowhere") {
+		t.Error("a name the registry does not have must not be launchable")
 	}
-	// Identity fallback (no config): literal name "openrouter-anthropic" still works.
-	if !launchProviderAllowsUnreportedModels("openrouter-anthropic", nil) {
-		t.Error("canonical openrouter-anthropic must allow unreported models with nil config")
-	}
-	// A non-openrouter-anthropic instance must not allow unreported models.
-	if launchProviderAllowsUnreportedModels("openrouter", cfg) {
-		t.Error("openrouter instance must not allow unreported models")
+	if launchInstanceExists(hubcore.WebConfig{}, "work") {
+		t.Error("with no registry there is nothing to accept on")
 	}
 }
 
 func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
-	cfg := providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
-		},
-	}
-	if err := providercfg.WriteFile(tomlPath, cfg); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		ProviderConfig:      &cfg,
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -9616,20 +11224,26 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &resp); err != nil {
 		t.Fatalf("evener/instance/list: %v", err)
 	}
-	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
-		t.Fatalf("instances=%+v", resp.Instances)
+	found := false
+	for _, inst := range resp.Instances {
+		if inst.Name == "my-openai" {
+			found = true
+		}
 	}
-	if len(resp.AvailableTypes) == 0 {
-		t.Error("AvailableTypes must be non-empty in list response")
+	if !found {
+		t.Fatalf("instances=%+v, want the authored my-openai entry", resp.Instances)
+	}
+	if len(resp.AvailableProviders) == 0 {
+		t.Error("AvailableProviders must be non-empty in list response")
 	}
 	hasOpenAI := false
-	for _, tp := range resp.AvailableTypes {
-		if tp == "openai" {
+	for _, p := range resp.AvailableProviders {
+		if p.ID == "openai" {
 			hasOpenAI = true
 		}
 	}
 	if !hasOpenAI {
-		t.Errorf("AvailableTypes=%v missing expected type \"openai\"", resp.AvailableTypes)
+		t.Errorf("AvailableProviders=%+v missing the openai registry id", resp.AvailableProviders)
 	}
 }
 
@@ -9646,10 +11260,13 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -9660,7 +11277,7 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork"}, &resp); err != nil {
 		t.Fatalf("evener/instance/create: %v", err)
 	}
 
@@ -9682,10 +11299,13 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -9710,6 +11330,122 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// A rename whose credential move fails still reached providers.toml and the
+// registry, so every other client's instance list is stale by exactly as much
+// as it would be on success: the broadcast has to fire even though the call
+// comes back an error naming what was left behind. The failure is injected on
+// the credentials store's own temp path, so the whole move is the real one.
+func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	if err := credsStore.Set("base", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	breakCredentialWrites(t, credsStore.Path())
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
+		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
+	}
+	// The file is the new name either way, which is what the other clients
+	// are now out of date against.
+	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated after a rename whose credential move failed")
+	}
+}
+
+// The sibling case: the credential move succeeded and the reload that follows
+// it failed, so the rename is on disk in full — providers.toml and
+// credentials.toml both carry the new name — and only the hub's view of it is
+// behind. Every other client is stale by exactly as much as after a clean
+// rename, so the broadcast has to fire here too.
+func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	if err := credsStore.Set("base", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// The stored key under the new name is what marks the move as done, so
+	// this refuses the reload that runs after it and no earlier one: every
+	// load before the move — including the one right after providers.toml is
+	// written — still finds the key under the old name.
+	load := testRegistryLoader(t.TempDir(), tomlPath, credsStore, nil)
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if v, _ := credsStore.Get("personal"); v != "" {
+			return nil, nil, errors.New("registry refused the reload after the credential move")
+		}
+		return load(extra...)
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            reg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "registry refused the reload after the credential move") {
+		t.Fatalf("evener/instance/edit = %v, want the failed reload reported", err)
+	}
+	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+	if v, _ := credsStore.Get("personal"); v != "sk-stored" {
+		t.Fatalf("the credential move did not run: personal = %q", v)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated after a rename whose final reload failed")
+	}
+}
+
 // TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove
 // sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc
 // comment for why evener/auth/updated is the right (reused) notification.
@@ -9718,10 +11454,13 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -9755,10 +11494,13 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -9800,6 +11542,19 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	return srv
 }
 
+// newTestCredentialsStore loads a credentials store over a file of this test's
+// own, so writes through evener/auth/apiKey never reach the developer's
+// credentials.toml or another test's.
+func newTestCredentialsStore(t *testing.T) *credentials.Store {
+	t.Helper()
+	credsPath := filepath.Join(t.TempDir(), "credentials.toml")
+	store, err := credentials.LoadStore(credsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credsPath, err)
+	}
+	return store
+}
+
 // newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
 // returns the constructed *WebServer, for tests that need to wire an
 // onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
@@ -9807,12 +11562,267 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 // starts serving requests.
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
+	// An unset root falls back to a HOME/XDG-derived default, which under this
+	// package's TestMain is the one throwaway root every test in the binary
+	// shares, so two parallel tests that both leave a root unset read each
+	// other's launch.toml, credentials.toml and plugin store. A test that means
+	// to exercise a seeded XDG environment passes the root explicitly.
+	for _, root := range []*string{&cfg.HubStateRoot, &cfg.LaunchConfigRoot, &cfg.PluginRoot} {
+		if *root == "" {
+			*root = t.TempDir()
+		}
+	}
+	// credentials.toml gets the same treatment: the auth controller keeps its
+	// OAuth records in the registry's state root, but the store it writes
+	// keys to follows no root, so without a default parallel tests calling
+	// evener/auth/apiKey/set or apiKey/clear would share the process-wide
+	// XDG-derived store and overwrite each other's keys. CredentialsPath is
+	// the same file, as in production (main.go loads the store from
+	// cmdutil.CredentialsPath and hands children that path).
+	if cfg.CredsStore == nil {
+		// A caller that brings its own registry has already chosen where that
+		// registry resolves credentials from, and a store minted here would
+		// not be it: evener/auth/apiKey/set would write a file the registry
+		// never reads, so Reload and every status answer would keep reporting
+		// the credential the registry's own source holds.
+		if cfg.Registry != nil {
+			t.Fatalf("newHubRPCTestServerWithWeb: an injected Registry must come with the CredsStore it resolves from; without it evener/auth/apiKey/set writes a store the registry never reads")
+		}
+		cfg.CredsStore = newTestCredentialsStore(t)
+	}
+	if cfg.CredentialsPath == "" {
+		cfg.CredentialsPath = cfg.CredsStore.Path()
+	}
+	if cfg.Registry == nil {
+		// Every auth and instance answer comes from the registry, so a hub
+		// fixture without one answers nothing. newTestRegistry loads it
+		// straight from this server's own store and state root - offline,
+		// uncached, no user layer and no ambient environment - so the store
+		// the auth handlers write is the one the registry resolves from,
+		// stray OAuth records come from this server's state root, and nothing
+		// reaches the developer's providers.toml or credentials.toml.
+		// cmdutil.LoadRegistry will not do: it loads the process-wide
+		// credentials.toml before any caller option applies, so the fixture
+		// failed whenever that file was malformed, had loose permissions or
+		// was rewritten by another test.
+		cfg.Registry = newTestRegistry(t, cfg.HubStateRoot, "", cfg.CredsStore, nil)
+	}
+	return startHubRPCTestServer(t, cfg)
+}
+
+// startHubRPCTestServer serves cfg exactly as given, with none of
+// newHubRPCTestServerWithWeb's per-test defaults. It is for the rare test
+// whose subject is an unset root: an empty LaunchConfigRoot means "none" to
+// the handlers, and the fixture would fill it in.
+func startHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
 	web := NewWebServer(cfg)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
 	return srv, web
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnRoots pins the fixture's isolation
+// contract: a caller that leaves HubStateRoot, LaunchConfigRoot or PluginRoot
+// unset gets a directory of its own, not the package-wide throwaway root every
+// test in this binary shares. Without it two parallel tests both writing
+// launch.toml, credentials.toml or the plugin store read each other's writes.
+func TestHubRPCTestServerGivesEachTestItsOwnRoots(t *testing.T) {
+	t.Parallel()
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer first.Close()
+	second, secondWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer second.Close()
+
+	for _, root := range []struct {
+		name   string
+		got    func(hubcore.WebConfig) string
+		shared string
+	}{
+		{"HubStateRoot", func(c hubcore.WebConfig) string { return c.HubStateRoot }, cmdutil.DefaultStateRoot()},
+		{"LaunchConfigRoot", func(c hubcore.WebConfig) string { return c.LaunchConfigRoot }, cmdutil.DefaultConfigRoot()},
+		{"PluginRoot", func(c hubcore.WebConfig) string { return c.PluginRoot }, plugins.DefaultRoot()},
+	} {
+		a, b := root.got(firstWeb.cfg), root.got(secondWeb.cfg)
+		if a == "" || b == "" {
+			t.Errorf("%s left empty (%q, %q); it falls back to the shared package root", root.name, a, b)
+			continue
+		}
+		if a == b {
+			t.Errorf("%s is %q for both servers; the fixture is not isolating them", root.name, a)
+		}
+		for _, got := range []string{a, b} {
+			if got == root.shared {
+				t.Errorf("%s resolved to the package-wide default %q", root.name, root.shared)
+			}
+		}
+	}
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnCredentials pins the credential half
+// of the same contract. newHubAuthControllerWithStore ignores its state-root
+// argument, so a nil CredsStore lands on the process-wide XDG-derived
+// credentials.toml: two parallel tests calling evener/auth/apiKey/set read
+// each other's keys, and one calling apiKey/clear wipes the other's.
+func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
+	t.Parallel()
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer first.Close()
+	second, secondWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer second.Close()
+
+	shared := cmdutil.CredentialsPath()
+	var paths []string
+	for i, cfg := range []hubcore.WebConfig{firstWeb.cfg, secondWeb.cfg} {
+		if cfg.CredsStore == nil {
+			t.Errorf("server %d has a nil CredsStore; the auth controller falls back to the process-wide store", i)
+			continue
+		}
+		paths = append(paths, cfg.CredsStore.Path())
+		if cfg.CredsStore.Path() == shared {
+			t.Errorf("server %d keeps credentials at the process-wide default %q", i, shared)
+		}
+		if cfg.CredentialsPath != cfg.CredsStore.Path() {
+			t.Errorf("server %d has CredentialsPath %q but a store at %q; a spawned child resolves keys from a different file than the hub writes",
+				i, cfg.CredentialsPath, cfg.CredsStore.Path())
+		}
+	}
+	if len(paths) == 2 && paths[0] == paths[1] {
+		t.Errorf("both servers keep credentials at %q; the fixture is not isolating them", paths[0])
+	}
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnOAuthState pins that a fixture
+// server's auth controller and registry share that server's own state root:
+// an OAuth record under one server's root signs that server in and is
+// invisible to another, so parallel tests never read or overwrite each
+// other's auth/<instance>.json.
+func TestHubRPCTestServerGivesEachTestItsOwnOAuthState(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer first.Close()
+	second, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer second.Close()
+
+	if err := authopenai.SaveAuth(firstWeb.cfg.HubStateRoot, "openai-codex", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Hour),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email",
+		AccessToken:  "stored-access-token",
+		RefreshToken: "stored-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "stored@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	codexStatus := func(name string, srv *httptest.Server) appwire.AuthStatusResponse {
+		client := dialHubRPC(t, srv)
+		defer client.Close()
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("%s Initialize: %v", name, err)
+		}
+		status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+		if err != nil {
+			t.Fatalf("%s AuthStatus: %v", name, err)
+		}
+		return status
+	}
+	if got := codexStatus("first", first); !got.SignedIn || got.ActiveSource != authopenai.AuthSourceOAuth {
+		t.Errorf("first status=%+v, want signed in from the record under its own state root %s", got, firstWeb.cfg.HubStateRoot)
+	}
+	if got := codexStatus("second", second); got.SignedIn || got.HasStoredOAuth {
+		t.Errorf("second status=%+v, want signed out: the first server's record must not be visible to it", got)
+	}
+}
+
+// TestHubRPCTestServerRegistryReadsItsOwnCredentials pins the other half of
+// credential isolation: the store the auth handlers write has to be the store
+// the registry resolves from. A default registry loaded through
+// cmdutil.LoadRegistry reads the process-wide credentials.toml instead, so a
+// key set through evener/auth/apiKey/set lands in the server's own store while
+// the reload behind that same call resolves from the shared file: the caller
+// is told "none" for the key it just stored, and a parallel test's registry
+// answers from whatever the shared file happens to hold.
+func TestHubRPCTestServerRegistryReadsItsOwnCredentials(t *testing.T) {
+	t.Parallel()
+	first := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer first.Close()
+	second := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer second.Close()
+
+	firstClient := dialHubRPC(t, first)
+	defer firstClient.Close()
+	secondClient := dialHubRPC(t, second)
+	defer secondClient.Close()
+	for _, client := range []*appwire.Client{firstClient, secondClient} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+
+	var stored appwire.AuthStatusResponse
+	if err := firstClient.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet,
+		appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-first-server"}, &stored); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	if stored.ActiveSource != "store" {
+		t.Fatalf("first server resolved %q right after storing a key; its registry is not reading the store its handlers write", stored.ActiveSource)
+	}
+
+	var other appwire.AuthStatusResponse
+	if err := secondClient.Request(context.Background(), appwire.MethodEvenerAuthStatus,
+		appwire.AuthStatusParams{Provider: "anthropic"}, &other); err != nil {
+		t.Fatalf("evener/auth/status: %v", err)
+	}
+	if other.ActiveSource == "store" {
+		t.Fatalf("second server resolved a stored key for anthropic; it is reading the first server's credentials")
+	}
+}
+
+// TestHubRPCTestServerRegistryIgnoresTheProcessCredentialsFile pins the last
+// piece of shared state out of the fixture's default registry: loading it must
+// not read the process-wide credentials.toml at all. cmdutil.LoadRegistry
+// loads that file before any caller option applies, so a file that is
+// malformed, has group- or world-readable permissions, or is rewritten by
+// another test failed every fixture server, whatever store the test handed it.
+func TestHubRPCTestServerRegistryIgnoresTheProcessCredentialsFile(t *testing.T) {
+	// t.Setenv, hence no t.Parallel: the process credentials path is
+	// process-wide state, and the testing package resumes parallel tests only
+	// once the sequential ones have finished.
+	broken := filepath.Join(t.TempDir(), "credentials.toml")
+	if err := os.WriteFile(broken, []byte("[[[not credentials\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", broken, err)
+	}
+	t.Setenv(envvars.EVENERCredentialsConfig.Name, broken)
+	if _, err := credentials.LoadStore(cmdutil.CredentialsPath()); err == nil {
+		t.Fatalf("LoadStore(%s) succeeded; this test needs a process credentials file that cannot be loaded", cmdutil.CredentialsPath())
+	}
+
+	srv, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer srv.Close()
+	if err := web.cfg.Registry.Reload(); err != nil {
+		t.Fatalf("registry reload: %v; the fixture registry is still reading the process credentials file", err)
+	}
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var status appwire.AuthStatusResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthStatus,
+		appwire.AuthStatusParams{Provider: "anthropic"}, &status); err != nil {
+		t.Fatalf("evener/auth/status: %v", err)
+	}
+	if status.ActiveSource == "store" {
+		t.Fatalf("anthropic resolved a stored key; the registry is reading credentials this test never wrote")
+	}
 }
 
 // TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods
@@ -9823,26 +11833,37 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 // Auth / Instance / Launch / Plugin / Misc / PluginAutoUpgrade) in both
 // directions.
 //
-// Every named method is then dispatched over the wire and must not answer
-// methodNotFound — reachability the router set alone cannot show — except the
-// handlers listed in notDispatched, which act outside the process.
+// Two dispatches over the wire tie that set to what /rpc actually serves: a
+// registered read-only method (model/list, answered by a LiveModels stub so
+// it never asks a live provider) must not answer methodNotFound, and an
+// unregistered name must. Dispatching every named method instead adds no
+// reachability — /rpc serves the same appRPC whose router the set check
+// inspects — while running for real any handler for which empty params are a
+// valid write.
 func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
-	provCfg := providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
-		},
-	}
-	if err := providercfg.WriteFile(tomlPath, provCfg); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
+	// One store for the registry and the auth controller both: a nil CredsStore
+	// makes newHubAuthControllerWithStore fall back to the on-disk default
+	// store under the ambient HOME/XDG env, which the whole package shares.
+	credsStore := newTestCredentialsStore(t)
+	var liveModelsCalled atomic.Bool
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		ProviderConfig:      &provCfg,
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+		// model/list is the one registered method dispatched below. With
+		// LiveModels unset, NewWebServer falls back to fetchLiveModels, which
+		// loads the default client and asks every discovered provider,
+		// including the implicit Ollama endpoint. The stub keeps the probe
+		// offline and records that the dispatch reached it.
+		LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			liveModelsCalled.Store(true)
+			return nil
+		},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -9855,6 +11876,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	expected := []string{
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
+		appwire.MethodThreadUnsubscribe,
 		appwire.MethodThreadTurnsList,
 		appwire.MethodEvenerSubagentPreview,
 		appwire.MethodThreadStart,
@@ -9871,6 +11893,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadClear,
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
+		appwire.MethodEvenerThreadForceStop,
 		appwire.MethodThreadModelSet,
 		appwire.MethodThreadVisionModelSet,
 		appwire.MethodEvenerThreadNameSet,
@@ -9883,6 +11906,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerAuthLogout,
 		appwire.MethodEvenerAuthList,
 		appwire.MethodEvenerAuthApiKeySet,
+		appwire.MethodEvenerAuthApiKeyClear,
+		appwire.MethodEvenerAuthCredentialJsonSet,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,
 		appwire.MethodEvenerNavigationRead,
@@ -9906,6 +11931,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerLaunchSetLayer,
 		appwire.MethodEvenerLaunchTrustRepo,
 		appwire.MethodEvenerUpgrade,
+		appwire.MethodEvenerUpdateCheck,
+		appwire.MethodEvenerUpdateApply,
 		appwire.MethodModelList,
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,
@@ -9919,13 +11946,19 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerMobilePairing,
 		appwire.MethodEvenerHarnessesList,
 		appwire.MethodEvenerCommandList,
+		appwire.MethodEvenerSpawnSlashCatalog,
 		appwire.MethodEvenerSettingsOverview,
 		appwire.MethodEvenerSettingsTranscriptDisplayGet,
 		appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+		appwire.MethodEvenerSettingsKeybindingsGet,
+		appwire.MethodEvenerSettingsKeybindingsPatch,
+		appwire.MethodEvenerSettingsAgentsDocGet,
+		appwire.MethodEvenerSettingsAgentsDocSet,
 		appwire.MethodEvenerMarketplaceList,
 		appwire.MethodEvenerMarketplaceAdd,
 		appwire.MethodEvenerMarketplaceRemove,
 		appwire.MethodEvenerMarketplaceRefresh,
+		appwire.MethodEvenerMarketplaceEdit,
 		appwire.MethodEvenerMarketplaceBrowse,
 		appwire.MethodEvenerPluginList,
 		appwire.MethodEvenerPluginInstall,
@@ -9945,51 +11978,29 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		t.Errorf("hub handler set differs from the set this test names:\n  named but NOT registered: %v\n  registered but NOT named: %v", missing, extra)
 	}
 
-	// notDispatched are named above but never called: their handlers act
-	// outside this process. evener/upgrade runs the real self-update (fetch and
-	// install over the running binary), and the marketplace, plugin and
-	// auto-upgrade handlers work against the plugin root — which, with no
-	// PluginRoot configured, is the developer's own plugins.DefaultRoot — and
-	// fetch its remote sources. app_plugins_test.go and
-	// app_plugin_autoupgrade_test.go drive those against fixture roots.
-	notDispatched := map[string]bool{
-		appwire.MethodEvenerUpgrade:              true,
-		appwire.MethodEvenerMarketplaceList:      true,
-		appwire.MethodEvenerMarketplaceAdd:       true,
-		appwire.MethodEvenerMarketplaceRemove:    true,
-		appwire.MethodEvenerMarketplaceRefresh:   true,
-		appwire.MethodEvenerMarketplaceBrowse:    true,
-		appwire.MethodEvenerPluginList:           true,
-		appwire.MethodEvenerPluginInstall:        true,
-		appwire.MethodEvenerPluginUpgrade:        true,
-		appwire.MethodEvenerPluginRemove:         true,
-		appwire.MethodEvenerPluginEnable:         true,
-		appwire.MethodEvenerPluginDisable:        true,
-		appwire.MethodEvenerPluginSetAutoUpgrade: true,
-		appwire.MethodEvenerPluginCheckNow:       true,
+	// Two dispatches tie the set above to what /rpc actually serves: /rpc
+	// serves this same appRPC, so landing on a registered method here is what
+	// shows the wire path reaches the router the set check inspected. model/list
+	// is the read-only pick — it answers from the offline registry this test
+	// configured and writes nothing. We only care about the dispatch outcome,
+	// not the response body, so pass a nil out: the handler may succeed or
+	// reject the empty params with some other error; what it must never return
+	// is methodNotFound.
+	registeredErr := client.Request(context.Background(), appwire.MethodModelList, appwire.EmptyParams{}, nil)
+	var registeredWire appwire.WireError
+	if errors.As(registeredErr, &registeredWire) && registeredWire.Code == appwire.CodeMethodNotFound {
+		t.Errorf("method %q is not registered (methodNotFound)", appwire.MethodModelList)
 	}
-
-	for _, method := range expected {
-		if notDispatched[method] {
-			continue
-		}
-		// We only care about the dispatch outcome, not the response body, so
-		// pass a nil out. A registered handler may succeed or reject the empty
-		// params with some other error; what it must never return is
-		// methodNotFound.
-		err := client.Request(context.Background(), method, appwire.EmptyParams{}, nil)
-		var wire appwire.WireError
-		if errors.As(err, &wire) && wire.Code == appwire.CodeMethodNotFound {
-			t.Errorf("method %q is not registered (methodNotFound)", method)
-		}
+	if !liveModelsCalled.Load() {
+		t.Errorf("model/list did not reach the LiveModels stub; the probe is no longer offline")
 	}
 
 	// Sanity check: an unregistered method must report methodNotFound, proving
 	// the assertion above is meaningful.
-	err := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
-		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)
+	unknownErr := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
+	var unknownWire appwire.WireError
+	if !errors.As(unknownErr, &unknownWire) || unknownWire.Code != appwire.CodeMethodNotFound {
+		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", unknownErr, unknownErr)
 	}
 }
 
@@ -10080,5 +12091,37 @@ func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("error = %v, want error containing \"model is required\"", err)
+	}
+}
+
+func TestHubRPCSavedDelegateReadDoesNotClaimMutationAuthority(t *testing.T) {
+	for _, status := range []string{appwire.ThreadStatusActive, appwire.ThreadStatusIdle} {
+		t.Run(status, func(t *testing.T) {
+			cfg, childID := runningSubagentProjectionConfigWithState(t, status)
+			entries := cfg.Roster.List()
+			entries[0].Protocol = appwire.ProtocolVersion
+			entries[0].Endpoint = "ws://unused.invalid/appwire"
+			cfg.Roster = hubcore.NewRosterWithEntries(entries...)
+			sources := appsource.NewRegistry()
+			sources.Add(&pastFallbackRelaySource{
+				thread:  appwire.Thread{ID: childID, Evener: appwire.EvenerThread{Ref: "local:" + childID}},
+				readErr: errors.New("delegate transport failed"),
+			})
+			app := newHubAppServer(cfg, sources)
+			hub := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + childID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Thread.Status.Type != status || response.Thread.Evener.MutationStateAuthoritative {
+				t.Fatalf("saved delegate status=%q mutation authority=%v", response.Thread.Status.Type, response.Thread.Evener.MutationStateAuthoritative)
+			}
+		})
 	}
 }

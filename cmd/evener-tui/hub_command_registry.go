@@ -117,9 +117,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "auth",
-		Summary:       "Show OpenAI auth status",
+		Summary:       "Show a provider instance's credential status",
 		PaletteLabel:  "/auth",
-		PaletteDetail: "show OpenAI auth status",
+		PaletteDetail: "show a provider instance's credential status",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return fetchHubAuthStatus(m.client, authProviderArg(args))
@@ -127,19 +127,24 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "login",
-		Summary:       "Start OpenAI OAuth login",
+		Summary:       "Start OAuth sign-in for a provider instance",
 		PaletteLabel:  "/login",
-		PaletteDetail: "start OpenAI OAuth login",
+		PaletteDetail: "start OAuth sign-in for a provider instance",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
-			return startHubAuthLogin(m.client, authProviderArg(args))
+			provider := authProviderArg(args)
+			if reason := m.hubAuthLoginBlockedReason(provider); reason != "" {
+				m.addSessionSystem(reason)
+				return nil
+			}
+			return startHubAuthLogin(m.client, provider)
 		},
 	},
 	{
 		Name:          "logout",
-		Summary:       "Sign out of OpenAI OAuth",
+		Summary:       "Remove a provider instance's stored credential",
 		PaletteLabel:  "/logout",
-		PaletteDetail: "sign out of OpenAI OAuth",
+		PaletteDetail: "remove a provider instance's stored credential",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return logoutHubAuth(m.client, authProviderArg(args))
@@ -394,26 +399,24 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.ChangeModel }, "source does not advertise change model"),
 		Run: func(m *hubModel, args string) tea.Cmd {
 			level := strings.TrimSpace(args)
+			if !m.detail.SupportsReasoning {
+				m.addSessionSystem("This model does not support reasoning effort.")
+				return nil
+			}
+			levels := sessionEffortLevels(m.detail.ReasoningEffortLevels)
+			choices := effortChoices(levels)
 			if level == "" {
-				if !m.detail.SupportsReasoning {
-					m.addSessionSystem("This model does not support reasoning effort.")
-					return nil
-				}
-				if len(m.detail.ReasoningEffortLevels) == 0 {
-					m.addSessionSystem("No reasoning effort levels available for this model.")
-					return nil
-				}
-				items := make([]tuipick.ModelPickerItem, 0, len(m.detail.ReasoningEffortLevels))
-				for _, l := range m.detail.ReasoningEffortLevels {
-					items = append(items, tuipick.ModelPickerItem{ID: l, Display: l})
+				items := make([]tuipick.ModelPickerItem, 0, len(choices))
+				for _, l := range choices {
+					items = append(items, tuipick.ModelPickerItem{ID: l, Display: effortDisplay(l, levels)})
 				}
 				picker := tuipick.NewModelPicker(items, m.detail.ReasoningEffort, m.width)
 				picker.SetTitle("Select reasoning effort")
 				m.sessionEffortPicker = &picker
 				return nil
 			}
-			if !reasoningEffortLevelKnown(m.detail.ReasoningEffortLevels, level) {
-				m.addSessionSystem(fmt.Sprintf("Unknown reasoning effort %q. Available: %s", level, strings.Join(m.detail.ReasoningEffortLevels, ", ")))
+			if !reasoningEffortLevelSettable(levels, level) {
+				m.addSessionSystem(fmt.Sprintf("Unknown reasoning effort %q. Available: %s", level, strings.Join(choices, ", ")))
 				return nil
 			}
 			ref, ok := m.currentRef()
@@ -479,6 +482,31 @@ var hubCommandRegistry = []hubCommandDefinition{
 			return nil
 		},
 	},
+
+	{
+		Name:          "next-live-session",
+		Summary:       "Switch to the next live session",
+		PaletteLabel:  "/next-live-session",
+		PaletteDetail: "switch to the next live session (alt+shift+right)",
+		Scopes:        hubCommandSession,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			next, cmd := m.switchToAdjacentLiveSession(1)
+			*m = next
+			return cmd
+		},
+	},
+	{
+		Name:          "previous-live-session",
+		Summary:       "Switch to the previous live session",
+		PaletteLabel:  "/previous-live-session",
+		PaletteDetail: "switch to the previous live session (alt+shift+left)",
+		Scopes:        hubCommandSession,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			next, cmd := m.switchToAdjacentLiveSession(-1)
+			*m = next
+			return cmd
+		},
+	},
 	{
 		Name:          "quit",
 		Summary:       "Exit evener-tui",
@@ -507,7 +535,11 @@ func fetchCurrentHubSession(m *hubModel, _ string) tea.Cmd {
 		return nil
 	}
 	m.sessionDetailsRequested = true
-	return fetchHubSession(m.frames, m.client, ref)
+	// The read targets the displayed ref: a navigation that applies while
+	// it is in flight supersedes it, so its response must be droppable
+	// rather than processed as an ordinary session entry (roborev PR #1044
+	// round-18 medium).
+	return m.tagLiveNavRefresh(fetchHubSession(m.frames, m.client, ref), ref.String(), true)
 }
 
 func fetchCurrentHubStatus(m *hubModel, _ string) tea.Cmd {
@@ -583,6 +615,8 @@ func hubCommandHelp(caps hubSessionCapabilities) string {
 	}
 	lines = append(lines,
 		"  ctrl+o           Go to live dashboard",
+		"  alt+shift+right  Next live session",
+		"  alt+shift+left   Previous live session",
 		"  tab / enter      Expand/collapse focused tool call",
 	)
 	return strings.Join(lines, "\n")

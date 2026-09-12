@@ -89,9 +89,9 @@ var stool_unknownNames = []string{
 	"../escape",
 }
 
-// stool_taskActions draws the task_list action across valid + invalid values so
+// stool_taskModes draws the task_list operation across valid + invalid values so
 // both the accept and the reject arms of registerTaskTools run.
-var stool_taskActions = []string{"view", "append", "update", "", "bogus"}
+var stool_taskModes = []string{"add", "update", "view", "both", "", "bogus"}
 
 // FuzzStoolDispatch fuzzes execTool / execToolBatch / the task_list handler.
 func FuzzStoolDispatch(f *testing.F) {
@@ -144,13 +144,14 @@ func FuzzStoolDispatch(f *testing.F) {
 		// one, complete it to trigger auto-advance, complete the rest to hit the
 		// all-done steer), then the fuzzed append/update calls exercise the reject
 		// and view arms.
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"append","tasks":[{"type":"implement","description":"a","prompt":"do a"},{"type":"verify","description":"b","prompt":"do b"}]}`))
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`))
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"update","updates":[{"id":1,"status":"done"}]}`))
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"update","updates":[{"id":2,"status":"done"}]}`))
-		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "append"))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"add":[{"type":"implement","description":"a","prompt":"do a"},{"type":"verify","description":"b","prompt":"do b"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":1,"status":"in_progress"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":1,"status":"done"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":2,"status":"done"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "add"))
 		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "update"))
 		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "view"))
+		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "both"))
 
 		// Entry-cancellation path: execTool must short-circuit to a skipped result
 		// (never a panic) when handed an already-canceled context.
@@ -247,20 +248,28 @@ func stool_execOne(ctx context.Context, t *testing.T, sess *Session, name string
 	}
 }
 
-// stool_taskListArgs marshals a fuzzed task_list argument blob for a specific
-// action, driving the malformed/reject arms (empty batches, non-object entries,
-// bad dependency refs, invalid statuses) that the fixed happy-path calls skip.
-func stool_taskListArgs(r *jobtools_reader, action string) []byte {
-	m := map[string]any{"action": action}
-	switch action {
-	case "append":
-		m["tasks"] = stool_taskItems(r)
+// stool_taskListArgs marshals a fuzzed presence-based task_list argument blob
+// for a specific mode, driving the malformed/reject arms (empty batches,
+// non-object entries, bad dependency refs, invalid statuses) that the fixed
+// happy-path calls skip. Mode "both" sends add and update in one call; "view"
+// sends a bare object; "" and "bogus" drive the unknown-key reject arm via the
+// structured-args path below.
+func stool_taskListArgs(r *jobtools_reader, mode string) []byte {
+	m := map[string]any{}
+	switch mode {
+	case "add":
+		m["add"] = stool_taskItems(r)
 	case "update":
-		m["updates"] = stool_updateItems(r)
+		m["update"] = stool_updateItems(r)
+	case "both":
+		m["add"] = stool_taskItems(r)
+		m["update"] = stool_updateItems(r)
+	case "", "bogus":
+		m[mode] = r.str()
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		return []byte(`{"action":"view"}`)
+		return []byte(`{}`)
 	}
 	return b
 }
@@ -296,12 +305,17 @@ func stool_structuredArgs(r *jobtools_reader, name string) map[string]any {
 	m := map[string]any{}
 	switch name {
 	case "task_list":
-		m["action"] = stool_taskActions[r.intn(len(stool_taskActions))]
-		switch m["action"] {
-		case "append":
-			m["tasks"] = stool_taskItems(r)
+		mode := stool_taskModes[r.intn(len(stool_taskModes))]
+		switch mode {
+		case "add":
+			m["add"] = stool_taskItems(r)
 		case "update":
-			m["updates"] = stool_updateItems(r)
+			m["update"] = stool_updateItems(r)
+		case "both":
+			m["add"] = stool_taskItems(r)
+			m["update"] = stool_updateItems(r)
+		case "", "bogus":
+			m[mode] = r.str()
 		}
 	case "read_file":
 		m["file_path"] = r.str()

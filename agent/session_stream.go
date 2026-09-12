@@ -43,6 +43,13 @@ func sortedPreviewCallIDs(calls map[string]struct{}) []string {
 	return ids
 }
 
+func (s *Session) resetCommunicatePreviews(calls map[string]struct{}) {
+	for callID := range calls {
+		s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		delete(calls, callID)
+	}
+}
+
 // attemptObservation carries one consumeModelStream attempt's phase/stats back
 // to callModel's retry closure, feeding llm.RetryStream's early-stop rules.
 // Populated on every return path, including errors, so a mid-stream failure
@@ -144,9 +151,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			for id := range previewCalls {
-				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: id})
-			}
+			s.resetCommunicatePreviews(previewCalls)
 			panic(recovered)
 		}
 	}()
@@ -158,6 +163,10 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	// rejection streams nothing, so the assistant-text reset (which needs partial
 	// output) never fires and a long rate limit is indistinguishable from a hang.
 	policy.OnRetry = s.emitModelRetry(policy, req, group)
+	// Admission runs here so typed local errors reach the session's warning and
+	// bounded-recovery paths before provider attempt handling. llm.Client repeats
+	// the check immediately before dispatch by design, protecting both paths from
+	// middleware that mutates an already admitted request.
 	if profile.SupportsStreaming() {
 		// Retry the whole open+consume cycle: a retryable failure can surface
 		// at stream open (connect/4xx-5xx) OR mid-stream (truncation, after the
@@ -174,6 +183,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			// discard it so the retry's output replaces rather than appends.
 			OnReset: func() {
 				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+				s.resetCommunicatePreviews(previewCalls)
 			},
 			// FailFastAfter enables both llm.RetryStream early-stop rules: the
 			// streak rule (modelRetryFailFastAfter consecutive consume-phase
@@ -183,7 +193,12 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			FailFastAfter: modelRetryFailFastAfter,
 		}, func(ctx context.Context) (llm.AttemptReport, error) {
 			attemptStart := time.Now()
-			st, err := s.client.Stream(ctx, req)
+			dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
+			if budgetErr != nil {
+				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: budgetErr, Duration: time.Since(attemptStart)}, nil)
+				return llm.AttemptReport{Phase: llm.PhaseOpen}, budgetErr
+			}
+			st, err := s.client.Stream(ctx, dispatchReq)
 			if streamUnavailable(err) || (err == nil && st == nil) {
 				// Nothing was attempted against the provider: the call falls
 				// through to the non-streaming path below, so no attempt is
@@ -234,7 +249,11 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	}
 
 	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
-		return s.client.Complete(ctx, req)
+		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
+		if budgetErr != nil {
+			return llm.Response{}, budgetErr
+		}
+		return s.client.Complete(ctx, dispatchReq)
 	})
 	if err != nil {
 		return sessionModelResponse{}, err
@@ -335,7 +354,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		switch {
 		case contentSeen:
 			obs.Phase = llm.PhaseConsume
-		case errors.Is(err, llm.ErrSSEReadTimeout) || time.Since(attemptStart) >= 30*time.Second:
+		case errors.Is(err, llm.ErrSSEReadTimeout) || errors.Is(err, llm.ErrResponseIdleTimeout) || time.Since(attemptStart) >= 30*time.Second:
 			obs.Phase = llm.PhaseSilentStall
 		default:
 			obs.Phase = llm.PhaseFastReject
