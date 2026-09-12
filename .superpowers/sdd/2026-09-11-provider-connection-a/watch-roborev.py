@@ -57,25 +57,25 @@ def digest(body: str | None) -> str:
 
 def summarize(body: str) -> str:
     """A few lines of triage: the verdict sentence and every finding headline."""
-    lines = [line.rstrip() for line in body.splitlines()]
     out: list[str] = []
-    for index, line in enumerate(lines):
+    for line in body.splitlines():
         stripped = line.strip()
-        if stripped.startswith("**Verdict") or stripped.startswith("## Verdict"):
-            verdict = stripped.lstrip("#").strip()
-            if verdict.startswith("Verdict"):
-                out.append(verdict)
-            else:
-                # "**Verdict:** ..." already carries its text; a bare heading
-                # takes the next non-empty line.
-                following = next((candidate.strip() for candidate in lines[index + 1 :] if candidate.strip()), "")
-                out.append(f"Verdict: {following}")
-            break
+        if (
+            not stripped
+            or stripped.startswith("<!--")  # the sticky marker
+            or stripped.startswith("#")  # "## Verdict" headings carry no text
+            or stripped.startswith("*Reviewers")
+        ):
+            continue
+        if stripped.startswith("**Verdict") or stripped.startswith("Verdict"):
+            out.append(stripped.strip("*").strip())
+        elif "No issues found" in stripped:
+            out.append(f"Verdict: {stripped.strip('*')}")
+        elif stripped.startswith("- **"):
+            out.append(stripped)
     if not out:
-        following = next((line.strip() for line in lines if line.strip() and not line.startswith("#")), "")
-        out.append(f"Verdict: {following}")
-    out.extend(line.strip() for line in lines if line.strip().startswith("- **"))
-    return "\n".join(out)
+        out.append("(no verdict line found; read the full body)")
+    return "\n".join(dict.fromkeys(out))
 
 
 def main() -> int:
