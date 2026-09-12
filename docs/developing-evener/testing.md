@@ -346,8 +346,16 @@ a leader the shell has not reaped yet — a zombie, and still a group member —
 cannot make a clean kill look like a survivor. Each attempt also writes its
 own package list, and only a completed attempt's is promoted to the file the
 rest of the runner reads, so nothing a stopped attempt is still writing can
-reach the run. The process group comes from bash's job control rather than
-`setsid`, which is absent on macOS.
+reach the run.
+
+The process group is made by the spawn: each attempt is `exec`'d through
+`perl`'s `setpgrp(0, 0)`, so the child is its own group leader before it
+becomes `go`. `setsid(1)` would do the same and is not on macOS. `set -m`
+would do it too, but only by turning bash job control on for the whole
+runner, where `run_wave`'s background jobs, the `active_pids` bookkeeping and
+the cleanup traps all depend on the current semantics — so it is not used, and
+no `set -m` appears in the script. The runner therefore needs `perl` on `PATH`
+and says so at startup if it is missing.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
