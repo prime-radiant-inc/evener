@@ -241,29 +241,29 @@ func FuzzFluencyCoverage(f *testing.F) {
 		_ = cliProbeArgs(cliCfg, probeFile{Prompt: "p"}, probeResult{WorkDir: "w", StateDir: "s"})
 
 		cfg := runConfig{model: "p/m", harness: "cli", outDir: filepath.Join(t.TempDir(), "out"), evenerBin: file, timeout: time.Second}
-		_ = runProbe(cfg, probeFile{ID: "runtime"}, 1, nil)
+		_ = runProbe(cfg, probeFile{ID: "runtime"}, 1, nil, nil)
 		cfg = runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(t.TempDir(), "out"), evenerBin: bin, timeout: time.Second, reasoningEffort: "low"}
 		passProbe := probeFile{ID: "pass", Prompt: "hello", Fixture: fixtureSpec{Files: map[string]string{"a.txt": "a"}}, Expect: expectSpec{Calls: []expectedCall{{Tool: "read"}}, FinalContains: []string{"ok"}}}
-		_ = runProbe(cfg, passProbe, 1, map[string]bool{})
-		_ = runProbe(cfg, probeFile{ID: "skip", Skip: map[string]string{"if_unavailable": "missing"}}, 1, nil)
-		_ = runProbe(cfg, probeFile{ID: "fixture", Fixture: fixtureSpec{Files: map[string]string{"../bad": "x"}}}, 1, nil)
+		_ = runProbe(cfg, passProbe, 1, map[string]bool{}, nil)
+		_ = runProbe(cfg, probeFile{ID: "skip", Skip: map[string]string{"if_unavailable": "missing"}}, 1, nil, nil)
+		_ = runProbe(cfg, probeFile{ID: "fixture", Fixture: fixtureSpec{Files: map[string]string{"../bad": "x"}}}, 1, nil, nil)
 		failBin := filepath.Join(t.TempDir(), "fail-evener")
 		mustWrite(t, failBin, "#!/bin/sh\nprintf 'rate limit' >&2\nexit 1\n")
 		if err := os.Chmod(failBin, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		cfg.evenerBin = failBin
-		_ = runProbe(cfg, probeFile{ID: "infra"}, 1, nil)
+		_ = runProbe(cfg, probeFile{ID: "infra"}, 1, nil, nil)
 		plainFailBin := filepath.Join(t.TempDir(), "plain-fail-evener")
 		mustWrite(t, plainFailBin, "#!/bin/sh\nexit 1\n")
 		if err := os.Chmod(plainFailBin, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		cfg.evenerBin = plainFailBin
-		_ = runProbe(cfg, probeFile{ID: "runtime-failure"}, 1, nil)
+		_ = runProbe(cfg, probeFile{ID: "runtime-failure"}, 1, nil, nil)
 		cancelCfg := cfg
 		cancelCfg.timeout = 0
-		_ = runProbe(cancelCfg, probeFile{ID: "timeout"}, 1, nil)
+		_ = runProbe(cancelCfg, probeFile{ID: "timeout"}, 1, nil, nil)
 
 		badOut := filepath.Join(t.TempDir(), "out-file")
 		mustWrite(t, badOut, "x")
@@ -371,7 +371,7 @@ func FuzzFluencyCoverage(f *testing.F) {
 		fakeClient.Register(coverageAdapter{})
 		runnerLoadClient = func(string) (*llm.Client, error) { return fakeClient, nil }
 		liveProbeCfg := runConfig{model: "openai/m", harness: "live", outDir: filepath.Join(t.TempDir(), "live-out"), timeout: time.Second, reasoningEffort: "low"}
-		_ = runProbe(liveProbeCfg, probeFile{ID: "live", Prompt: "hello"}, 1, nil)
+		_ = runProbe(liveProbeCfg, probeFile{ID: "live", Prompt: "hello"}, 1, nil, nil)
 		t.Setenv(envvars.EVENERFluencyModel.Name, "")
 		t.Setenv(envvars.EVENERModel.Name, "")
 		_ = defaultModel()
