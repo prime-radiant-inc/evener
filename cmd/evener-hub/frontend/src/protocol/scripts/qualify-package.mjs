@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,10 +25,10 @@ async function qualify() {
     ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
     consumerDir,
   );
-  // Every module the package ships, and the one it deliberately does not.
-  // docContent.ts calls global fetch against a same-origin hub URL
-  // ("docContent.ts:77"), so it cannot run in a bare Node consumer; it ships
-  // once it takes a base-URL and fetch port.
+  // Every module the package ships. docContent.ts is here too: only its
+  // readDocFile calls global fetch, and it does so at call time, so the module
+  // loads and its URL builders, size cap and error type run in a bare Node
+  // consumer. The runner therefore never calls readDocFile.
   const shippedModules = [
     "index",
     "client",
@@ -46,12 +46,26 @@ async function qualify() {
     "sendQueueAvailability",
     "sessionErrors",
     "stableDelegate",
+    "docContent",
   ];
-  const heldBackModules = ["docContent"];
+  // A module can be built, packed and listed here and still be unreachable: the
+  // files list only decides what tsc emits, and the export checks below name
+  // identifiers, not modules. The installed entry point's own declarations are
+  // the honest record of what it re-exports, so require a re-export specifier
+  // for every shipped module. A module nothing exports fails right here.
+  const indexDeclarations = readFileSync(
+    join(consumerDir, "node_modules/@evener/appwire-client/dist/index.d.ts"),
+    "utf8",
+  );
+  for (const module of shippedModules)
+    assert(
+      module === "index" || indexDeclarations.includes(`from "./${module}"`),
+      `shipped module unreachable from the entry point: ${module}`,
+    );
   // Every runtime export of the package entry point. All four generated
-  // consumer programs are built from this one list, so a module that compiles
-  // in the checkout but is not packed, or is packed but unreachable from the
-  // entry point, fails here instead of in somebody's consumer.
+  // consumer programs are built from this one list, so an export the entry
+  // point stops providing fails here instead of in somebody's consumer.
+  // Whether each shipped MODULE is reachable at all is the check above.
   const runtimeExports = [
     "AppwireClient",
     "APPWIRE_PROTOCOL_VERSION",
@@ -97,6 +111,10 @@ async function qualify() {
     "isActionUnavailable",
     "isThreadNotFound",
     "stableDelegateDisplayStatus",
+    "DOC_FILE_MAX_BYTES",
+    "DocFileError",
+    "docFileRawURL",
+    "docImageURL",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -112,6 +130,7 @@ async function qualify() {
     "NotificationRoutingKey",
     "SendQueueAvailability",
     "StableDelegateState",
+    "DocFileContent",
   ];
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
@@ -145,6 +164,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&path=p");
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 `;
@@ -223,8 +243,6 @@ ${presenceLoop}${smokeCalls}`,
     );
     assert(!entry.endsWith(".ts") || entry.endsWith(".d.ts"), `source leak ${entry}`);
   }
-  for (const module of heldBackModules)
-    assert(!listing.includes(`package/dist/${module}.`), `held-back module shipped: ${module}`);
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
   const serverProtocolVersion = "evener-appwire-v5";
