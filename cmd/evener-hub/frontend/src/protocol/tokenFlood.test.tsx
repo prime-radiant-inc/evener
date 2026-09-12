@@ -10,7 +10,7 @@
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import Session from "../panes/session/Session";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../panes/session/transcript/types";
 import { ClientProvider } from "../shell/clientContext";
