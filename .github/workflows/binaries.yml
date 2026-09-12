@@ -40,7 +40,7 @@ jobs:
           test -s dist/checksums.txt
 
       - name: Upload archives
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: evener-snapshot-artifacts
           path: |
