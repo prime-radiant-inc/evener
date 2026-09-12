@@ -845,7 +845,7 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 		if provider == "" || name == "" {
 			continue
 		}
-		models = append(models, appwire.ModelDescriptor{Provider: provider, Model: name})
+		models = append(models, appwire.ModelDescriptor{Provider: provider, Model: name, Warnings: append([]string(nil), model.Warnings...)})
 	}
 	diagnostics := make([]appwire.ModelListDiagnostic, 0, len(resp.Diagnostics))
 	for _, diag := range resp.Diagnostics {
