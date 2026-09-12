@@ -402,10 +402,15 @@ for pkg, name, secs in tests:
 # make it a no-op rather than three scattered ones that could drift apart.
 
 if bless:
-	# Sorted, so the key order is a function of the package names alone: the
-	# terminal events arrive in completion order, which varies run to run, and
-	# a re-bless of an unchanged tree has to reproduce the file.
-	budget["packages"] = {pkg: round(m, 2) for pkg, m in sorted(sums.items())}
+	# Key order is a function of the checked-in file, not of the run: the
+	# terminal events arrive in completion order, which varies run to run, so a
+	# re-bless of an unchanged tree has to reproduce the file. Recorded packages
+	# keep the order the file already has - re-sorting them would reorder nearly
+	# all of testing-budget.json's packages in a diff that says nothing about
+	# timing - and only packages the file does not mention are ordered by name.
+	order = [pkg for pkg in packages if pkg in sums]
+	order += sorted(pkg for pkg in sums if pkg not in packages)
+	budget["packages"] = {pkg: round(sums[pkg], 2) for pkg in order}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
