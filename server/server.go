@@ -395,6 +395,8 @@ type Server struct {
 	jobsFn                          func(appwire.JobsListParams) (any, error)
 	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc                    func()
+	daemonStatusFunc                func() appwire.DaemonLifecycle
+	daemonRetireFunc                func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
 
 	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
 	// projector calls the lookup from inside Project, which RecordAppEvent

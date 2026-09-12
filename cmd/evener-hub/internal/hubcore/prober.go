@@ -135,6 +135,11 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	sort.Strings(runningSubagentIDs)
 
 	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
+	// Lifecycle status is the explicit typed input to retirement UI: a
+	// detached control read that never marks activity. A failed lifecycle
+	// probe (older daemon, mid-restart race) clears current capability — it
+	// never changes process ownership or this probe's residency verdict.
+	lifecycle, lifecycleFresh := probeDaemonLifecycle(ctx, appClient)
 	return ProbeResult{
 		SessionID:             rootID,
 		Status:                root.Status.Type,
@@ -144,8 +149,22 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		RunningSubagentStates: runningSubagentStates,
 		RunningJobs:           runningJobs,
 		CompletedJobs:         completedJobs,
+		Lifecycle:             lifecycle,
+		LifecycleFresh:        lifecycleFresh,
 		OK:                    true,
 	}
+}
+
+// probeDaemonLifecycle reads the daemon's retirement lifecycle through the
+// typed daemon/status contract. Any error means the capability is unknown
+// (nil, false) — never guessed from thread state.
+func probeDaemonLifecycle(ctx context.Context, client *appwire.Client) (*appwire.DaemonLifecycle, bool) {
+	resp, err := client.DaemonStatus(ctx, appwire.DaemonStatusParams{})
+	if err != nil {
+		return nil, false
+	}
+	lifecycle := resp.Lifecycle
+	return &lifecycle, true
 }
 
 func statusThreadID(thread appwire.Thread) string {

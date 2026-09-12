@@ -1179,6 +1179,8 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodGoalSet, s.handleAppGoalSet)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
+	appserver.HandleTyped(router, appwire.MethodEvenerDaemonStatus, s.handleAppDaemonStatus)
+	appserver.HandleTyped(router, appwire.MethodEvenerDaemonRetire, s.handleAppDaemonRetire)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
 	appserver.HandleTyped(router, appwire.MethodThreadVisionModelSet, s.handleAppThreadVisionModelSet)

@@ -58,6 +58,9 @@ const (
 	MethodEvenerTasksList             = "evener/tasks/list"
 	MethodEvenerJobsList              = "evener/jobs/list"
 	MethodEvenerJobsOutput            = "evener/jobs/output"
+	MethodEvenerDaemonList            = "evener/daemon/list"
+	MethodEvenerDaemonRetire          = "evener/daemon/retire"
+	MethodEvenerDaemonStatus          = "evener/daemon/status"
 	MethodEvenerThreadNameSet         = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
 	MethodEvenerSubagentPreview       = "evener/subagentPreview"
@@ -1675,6 +1678,9 @@ type ThreadCompactStartParams struct {
 
 type ThreadForceStopParams struct {
 	Ref string `json:"ref"`
+	// ExpectedDaemon carries the exact ownership evidence the resident UI
+	// resolved for this daemon; nil preserves existing ref-only callers.
+	ExpectedDaemon *DaemonIdentity `json:"expectedDaemon,omitempty"`
 }
 
 type ThreadShutdownParams struct {

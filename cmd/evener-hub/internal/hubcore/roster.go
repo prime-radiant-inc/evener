@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -46,6 +47,14 @@ type LiveEntry struct {
 	// represented by descendant sessions for the same reason as RunningJobs.
 	CompletedJobs []appwire.EvenerJobInfo
 	Project       identifier.Project // canonical identity resolved at hub ingestion, when available
+	// Lifecycle is the daemon's retirement lifecycle as of the probe that
+	// produced this entry; nil when the daemon could not answer
+	// evener/daemon/status (capability unknown). A failed lifecycle probe
+	// clears capability, never process ownership.
+	Lifecycle *appwire.DaemonLifecycle
+	// LifecycleFresh reports whether Lifecycle (or its absence) came from a
+	// daemon/status answer in that same probe.
+	LifecycleFresh bool
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -58,7 +67,12 @@ type ProbeResult struct {
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
 	CompletedJobs         []appwire.EvenerJobInfo
-	OK                    bool
+	// Lifecycle mirrors LiveEntry.Lifecycle: the retirement lifecycle from
+	// this probe, nil when the daemon could not answer daemon/status.
+	Lifecycle *appwire.DaemonLifecycle
+	// LifecycleFresh reports whether daemon/status answered in this probe.
+	LifecycleFresh bool
+	OK             bool
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -91,7 +105,20 @@ func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
 	out.CompletedJobs = cloneRunningJobs(in.CompletedJobs)
+	out.Lifecycle = cloneDaemonLifecycle(in.Lifecycle)
 	return out
+}
+
+// cloneDaemonLifecycle deep-copies a lifecycle snapshot (including its blocker
+// list) so a roster hand-off can never alias the probe's copy; nil stays nil
+// so "capability unknown" survives intact.
+func cloneDaemonLifecycle(in *appwire.DaemonLifecycle) *appwire.DaemonLifecycle {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Blockers = append([]appwire.DaemonBlocker(nil), in.Blockers...)
+	return &out
 }
 
 // crashedFileRetention is how long Refresh keeps a dead PID's rendezvous file
@@ -297,6 +324,34 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		_, _ = h.Write([]byte{0})
 		completedJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].CompletedJobs...)
 		writeJobs(completedJobs)
+		_, _ = h.Write([]byte{0})
+		// Lifecycle phase transitions (resident -> preparing -> retiring) and
+		// blocker changes must bump the fingerprint exactly like child state:
+		// they change what resident UI surfaces for this daemon.
+		if bySess[id].LifecycleFresh {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		if lifecycle := bySess[id].Lifecycle; lifecycle != nil {
+			_, _ = h.Write([]byte(lifecycle.Phase))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(strconv.FormatInt(lifecycle.TimeoutMillis, 10)))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(lifecycle.EligibleSince))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(lifecycle.Deadline))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(lifecycle.Failure))
+			_, _ = h.Write([]byte{0})
+			for _, blocker := range lifecycle.Blockers {
+				_, _ = h.Write([]byte(blocker.Category))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(blocker.SessionID))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(blocker.DelegateID))
+				_, _ = h.Write([]byte{0})
+			}
+		}
 		_, _ = h.Write([]byte{0})
 	}
 	return h.Sum64()
@@ -829,6 +884,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
 		RunningJobs:           cloneRunningJobs(result.RunningJobs),
 		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
+		Lifecycle:             cloneDaemonLifecycle(result.Lifecycle),
+		LifecycleFresh:        result.LifecycleFresh,
 	}
 }
 

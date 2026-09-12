@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -33,6 +35,8 @@ var daemonRetirementAccessKinds = map[string]string{
 	appwire.MethodGoalSet:                        "mutation",
 	appwire.MethodEvenerSandboxEscalationResolve: "mutation",
 	appwire.MethodThreadShutdown:                 "control",
+	appwire.MethodEvenerDaemonStatus:             "control",
+	appwire.MethodEvenerDaemonRetire:             "control",
 }
 
 func daemonRetirementAccess(method string) (kind string, ok bool) {
@@ -54,6 +58,15 @@ func (s *Server) SetRetirementAdmission(fn func(context.Context, string) (func()
 		if !ok || kind == "control" {
 			return func() {}, nil
 		}
-		return fn(ctx, kind)
+		release, err := fn(ctx, kind)
+		if err != nil && errors.Is(err, agent.ErrRetirementUnavailable) {
+			// The admission fence closed under this request: when a lifecycle
+			// status hook is installed, type the race so the caller can retry
+			// automatically. Without one, pass the sentinel through raw.
+			if status, _ := s.daemonLifecycleHooks(); status != nil {
+				return nil, appwire.LifecycleUnavailable(status().Phase)
+			}
+		}
+		return release, err
 	})
 }

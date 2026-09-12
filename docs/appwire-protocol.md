@@ -114,6 +114,9 @@ no router (reserved).
 | `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `evener/daemon/list` | unimplemented | `DaemonListParams` | `DaemonListResponse` | Lists resident daemons with lifecycle and ownership identity; unimplemented until the hub handler lands. |
+| `evener/daemon/retire` | daemon | `DaemonRetireParams` | `DaemonRetireResponse` | Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle. |
+| `evener/daemon/status` | daemon | `DaemonStatusParams` | `DaemonStatusResponse` | Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility. |
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
@@ -459,6 +462,46 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `commands` | `[]appwire.CommandDescriptor` |  |  |
+
+
+### `DaemonListParams`
+
+_(no fields)_
+
+
+### `DaemonListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `defaultTimeoutMillis` | `int64` |  |  |
+| `daemons` | `[]appwire.DaemonResident` |  |  |
+
+
+### `DaemonRetireParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `identity` | `appwire.DaemonIdentity` |  |  |
+
+
+### `DaemonRetireResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `accepted` | `bool` |  |  |
+| `lifecycle` | `appwire.DaemonLifecycle` |  |  |
+
+
+### `DaemonStatusParams`
+
+_(no fields)_
+
+
+### `DaemonStatusResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `lifecycle` | `appwire.DaemonLifecycle` |  |  |
 
 
 ### `DirsCreateParams`
@@ -1540,6 +1583,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
+| `expectedDaemon` | `*appwire.DaemonIdentity` | yes |  |
 
 
 ### `ThreadForkParams`
