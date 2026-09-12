@@ -148,8 +148,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 			t.Fatal(err)
 		}
 		pctl := newHubPluginsController(pluginRoot)
-		_, _ = pctl.ListMarketplaces()
-		_, _ = pctl.ListPlugins()
+		_, _ = pctl.ListMarketplaces(context.Background())
+		_, _ = pctl.ListPlugins(context.Background())
 		ref := appwire.PluginRefParams{Plugin: "missing", Marketplace: "missing"}
 		_, _ = pctl.Upgrade(ctx, ref)
 		_, _ = pctl.Enable(context.Background(), ref)
@@ -175,7 +175,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		t.Cleanup(func() {
 			pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade = oldList, oldRefresh, oldUpdate
 		})
-		pluginListMarketplaces = func(*plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
+		pluginListMarketplaces = func(context.Context, *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
 			return map[string]plugins.MarketplaceRef{"broken": {}}, nil
 		}
 		pluginRefreshMarketplace = func(context.Context, *plugins.Manager, string) error { return errors.New("refresh") }

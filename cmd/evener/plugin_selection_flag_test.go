@@ -108,11 +108,16 @@ func TestPluginSelectionResumeConflicts(t *testing.T) {
 
 func TestRenderEffectivePluginListJSON(t *testing.T) {
 	resolution := plugins.LaunchPluginResolution{
-		Candidates: []plugins.LaunchPluginCandidate{{
-			Name: "alpha", Version: "1.2.3", Description: "Alpha", Source: plugins.LaunchPluginSourceInstalled,
-			Marketplace: "official", Path: "/plugins/alpha", SkillCount: 1, AgentCount: 2,
-			CommandCount: 3, HookCount: 4, MCPCount: 5,
-		}},
+		Candidates: []plugins.LaunchPluginCandidate{
+			{
+				Name: "alpha", Version: "1.2.3", Description: "Alpha", Source: plugins.LaunchPluginSourceInstalled,
+				Marketplace: "official", Path: "/plugins/alpha", Selected: true, SkillCount: 1, AgentCount: 2,
+				CommandCount: 3, HookCount: 4, MCPCount: 5,
+			},
+			// Off by default: present in the inventory, absent from the
+			// default listing.
+			{Name: "beta", Source: plugins.LaunchPluginSourceInstalled, Marketplace: "official", Path: "/plugins/beta"},
+		},
 		Diagnostics: []plugins.LaunchPluginDiagnostic{{Name: "broken", Message: "invalid", Source: plugins.LaunchPluginSourceInstalled}},
 	}
 	var out bytes.Buffer
@@ -124,7 +129,7 @@ func TestRenderEffectivePluginListJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got.Plugins) != 1 || got.Plugins[0].Name != "alpha" || got.Plugins[0].SkillCount != 1 || got.Plugins[0].MCPCount != 5 {
-		t.Fatalf("plugins = %+v", got.Plugins)
+		t.Fatalf("plugins = %+v, want only the default-selected alpha", got.Plugins)
 	}
 	if len(got.Diagnostics) != 1 || !strings.Contains(got.Diagnostics[0].Message, "invalid") {
 		t.Fatalf("diagnostics = %+v", got.Diagnostics)
@@ -133,7 +138,7 @@ func TestRenderEffectivePluginListJSON(t *testing.T) {
 
 func TestRenderEffectivePluginListHumanIncludesDiagnostics(t *testing.T) {
 	resolution := plugins.LaunchPluginResolution{
-		Candidates:  []plugins.LaunchPluginCandidate{{Name: "alpha", Source: plugins.LaunchPluginSourceDirectory}},
+		Candidates:  []plugins.LaunchPluginCandidate{{Name: "alpha", Source: plugins.LaunchPluginSourceDirectory, Selected: true}},
 		Diagnostics: []plugins.LaunchPluginDiagnostic{{Name: "broken", Path: "/tmp/broken", Message: "invalid manifest"}},
 	}
 	var out bytes.Buffer
