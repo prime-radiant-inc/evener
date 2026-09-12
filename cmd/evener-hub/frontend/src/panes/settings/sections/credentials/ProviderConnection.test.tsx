@@ -628,6 +628,26 @@ test("the originating client's own auth-update echo does not invalidate its save
   expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
   expect(screen.queryByText("Connection or configuration changed")).toBeNull();
 });
+test("the store's own post-save refresh does not invalidate the completed check", async () => {
+  const { user, client } = setup();
+  scriptSave(client);
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "draft");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  // Real timers on purpose: the store schedules its own listing refresh the
+  // moment the save succeeds (250ms debounce), and the flow is now sitting in
+  // its result phase with Continue showing. That refresh is this client's own
+  // change - it must not read as "Connection or configuration changed" and
+  // yank the success away from the user. The fake-timer echo test above cannot
+  // observe this: its save runs under real timers, so the self-refresh is a
+  // real timeout the fake clock never owns.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+  expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+});
 test("a superseding pending refresh cannot authorize a check from discarded metadata", async () => {
   const { user, client } = setup();
   await choose(user);
@@ -640,7 +660,7 @@ test("a superseding pending refresh cannot authorize a check from discarded meta
   await user.type(screen.getByLabelText("API key"), "draft");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   client.on("evener/instance/list", () => newer.promise);
-  let newerFetch!: Promise<void>;
+  let newerFetch!: Promise<boolean>;
   await act(async () => {
     newerFetch = credentialsStore.getState().fetch();
     own.resolve(savedList());

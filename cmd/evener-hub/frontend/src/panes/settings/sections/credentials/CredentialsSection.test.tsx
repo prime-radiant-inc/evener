@@ -266,6 +266,54 @@ describe("the detail sheet", () => {
     expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
     expect(listingsAtRemoval[0]).toEqual([WORK]);
   });
+
+  // fetch() swallows a failed read into the store's error field instead of
+  // rejecting, so a resolved reconcile promise is no confirmation: the
+  // removal report must not fire against a listing that never lost the row.
+  test("a removal whose reconcile read fails reports the failure, not the removal", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    let resolveRemoval!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+    );
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // A listing read issued after the removal supersedes its response.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    fake.on("evener/instance/list", () => {
+      throw new Error("list denied");
+    });
+    await act(async () => {
+      resolveRemoval({ instances: [WORK], availableProviders: [] });
+      // The reconcile read fails outright; wait until the flow settles on
+      // either the honest unconfirmed-removal error or (wrongly) a success.
+      await vi.waitFor(() => {
+        if (!screen.queryByText(/could not be confirmed/) && !screen.queryByText("Removed instance personal")) {
+          throw new Error("no outcome toast yet");
+        }
+      });
+    });
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
+  });
 });
 
 describe("credential verification", () => {

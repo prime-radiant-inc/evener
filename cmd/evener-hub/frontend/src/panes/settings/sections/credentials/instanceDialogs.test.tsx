@@ -331,6 +331,84 @@ describe("AddInstanceDialog", () => {
     expect(listingsAtSuccess[0]).toEqual([WORK2]);
   });
 
+  // fetch() resolves normally even when its response was superseded or the
+  // read failed, so a resolved reconcile is no confirmation: the dialog must
+  // retry while the read keeps losing the race and confirm the row is really
+  // in the listing before steering the guided flow on it.
+  test("a create whose reconcile read loses the race retries before reporting success", async () => {
+    const fake = connectFakeClient();
+    const WORK2 = instance({ name: "work2", providerId: "anthropic" });
+    const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
+    const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
+    let listCalls = 0;
+    let resolveHeldRead!: (value: InstanceListResponse) => void;
+    const heldRead = new Promise<InstanceListResponse>((resolve) => {
+      resolveHeldRead = resolve;
+    });
+    let signalReconcile!: () => void;
+    const reconcileStarted = new Promise<void>((resolve) => {
+      signalReconcile = resolve;
+    });
+    fake.on("evener/instance/list", () => {
+      listCalls += 1;
+      if (listCalls === 3) {
+        signalReconcile();
+        return heldRead; // the dialog's first reconcile read, held in flight
+      }
+      // Calls 1-2: the initial load and the read that supersedes the create.
+      // Call 4: the read that supersedes the first reconcile. Call 5+: fresh.
+      return listCalls <= 4 ? WITHOUT_WORK2 : WITH_WORK2;
+    });
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    let resolveCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    let signalSuccess!: () => void;
+    const successCalled = new Promise<void>((resolve) => {
+      signalSuccess = resolve;
+    });
+    const listingsAtSuccess: InstanceEntry[][] = [];
+    const onSuccess = vi.fn(() => {
+      listingsAtSuccess.push(credentialsStore.getState().instances);
+      signalSuccess();
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // A listing read issued after the create wins the store race, so the
+    // create's own response - the only one carrying the new row - is discarded.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await act(async () => {
+      resolveCreate(WITH_WORK2);
+      // The dialog's first reconcile read is in flight; a concurrent read
+      // issued after it wins the store race too, discarding the reconcile.
+      await reconcileStarted;
+      await credentialsStore.getState().fetch();
+      resolveHeldRead(WITH_WORK2);
+      await successCalled;
+    });
+    expect(onSuccess).toHaveBeenCalledWith("work2");
+    expect(listingsAtSuccess[0]).toEqual([WORK2]);
+  });
+
   test("a create failure shows an inline error and a 'Create failed' toast, without calling onSuccess", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", () => {

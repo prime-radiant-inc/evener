@@ -58,7 +58,17 @@ export interface CredentialsStoreState {
   writesRefused: boolean;
   loading: boolean;
   error: string | null;
-  fetch(): Promise<void>;
+  // A marker that changes ONLY when a state transition came from the store's
+  // own post-mutation refresh (see the auth wrappers below). Subscriptions
+  // that watch for unrelated changes compare it across a transition to tell
+  // this client's own refresh apart from a foreign listing change - the
+  // listing-update twin of the own-echo correlation above.
+  selfRefresh: number;
+  // fetch resolves true when the response it carried was applied to the
+  // listing, false when a newer request superseded it or the read failed
+  // (the failure lands in `error`) - a resolved promise alone is never
+  // proof the listing moved.
+  fetch(): Promise<boolean>;
   // create/edit/remove resolve true when the listing they answered with is
   // the one the store now holds, false when a newer request superseded it.
   // Callers that steer a flow on the strength of their own write (the sheet,
@@ -135,24 +145,42 @@ async function applyMutation(request: () => Promise<InstanceListResponse>): Prom
   }
 }
 
-export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
+let selfRefreshCounter = 0;
+
+// Every listing read - a caller's fetch() and the store's own post-mutation
+// refresh - shares this one read and its ordering guard. `self` marks THIS
+// client's own refresh: each state transition it touches carries a fresh
+// selfRefresh marker (and no other read ever changes it), so a subscription
+// comparing the marker across a transition can tell the client's own refresh
+// apart from a foreign listing change. Resolves true only when the response
+// was applied - a superseded or failed read resolves false without throwing,
+// so a resolved promise alone is never confirmation the listing moved.
+async function readListing(self: boolean): Promise<boolean> {
+  const client = requireClient();
+  requestedList = true;
+  const version = ++requestVersion;
+  const mark = () => (self ? { selfRefresh: ++selfRefreshCounter } : {});
+  credentialsStore.setState({ loading: true, error: null, ...mark() });
+  try {
+    const resp = await client.request("evener/instance/list", {});
+    if (version !== requestVersion || connectionStore.getState().client !== client) return false;
+    credentialsStore.setState({ ...listState(resp), loading: false, ...mark() });
+    return true;
+  } catch (err) {
+    if (version !== requestVersion || connectionStore.getState().client !== client) return false;
+    credentialsStore.setState({ loading: false, error: errorText(err), ...mark() });
+    return false;
+  }
+}
+
+export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   ...emptyListState(),
   loading: false,
   error: null,
+  selfRefresh: 0,
 
   async fetch() {
-    const client = requireClient();
-    requestedList = true;
-    const version = ++requestVersion;
-    set({ loading: true, error: null });
-    try {
-      const resp = await client.request("evener/instance/list", {});
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ ...listState(resp), loading: false });
-    } catch (err) {
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ loading: false, error: errorText(err) });
-    }
+    return readListing(false);
   },
 
   async create(params) {
@@ -182,8 +210,10 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
       const result = await client.request("evener/auth/apiKey/set", { provider, value });
       // The store owns the post-mutation listing refresh: the caller that
       // issued the save may be canceled, hidden, or unmounted before this
-      // resolves, and its own refresh would die with it.
-      scheduleRefetch();
+      // resolves, and its own refresh would die with it. The `self` mark lets
+      // subscriptions (ProviderConnection's invalidation watch) tell this
+      // refresh apart from a foreign listing change.
+      scheduleRefetch(true);
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -196,7 +226,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/credentialJson/set", { provider, value });
-      scheduleRefetch(); // same rationale as setApiKey
+      scheduleRefetch(true); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -209,7 +239,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/apiKey/clear", { provider });
-      scheduleRefetch(); // same rationale as setApiKey
+      scheduleRefetch(true); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -222,7 +252,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/logout", { provider });
-      scheduleRefetch(); // same rationale as setApiKey
+      scheduleRefetch(true); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -240,7 +270,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
-      scheduleRefetch(); // same rationale as setApiKey
+      scheduleRefetch(true); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -263,7 +293,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
       // would silence unrelated same-provider changes tick after tick. An
       // authorized poll also refreshes the listing through the store - the
       // polling dialog may already be closed by the time authorization lands.
-      if (resp.state === "authorized") scheduleRefetch();
+      if (resp.state === "authorized") scheduleRefetch(true);
       else endUnconfirmedAuthMutation(provider);
       return resp;
     } catch (err) {
@@ -369,7 +399,7 @@ let wiredClient: AppwireClientLike | null = null;
 let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 
-function scheduleRefetch(): void {
+function scheduleRefetch(self = false): void {
   clearTimeout(refetchTimer);
   refetchTimer = setTimeout(() => {
     // fetch()'s own requireClient() throws outside its try/catch, by design
@@ -377,10 +407,7 @@ function scheduleRefetch(): void {
     // unobserved background call with nothing awaiting it, so a rare
     // disconnect-during-the-debounce-window race must be swallowed here
     // rather than surfacing as an unhandled rejection.
-    credentialsStore
-      .getState()
-      .fetch()
-      .catch(() => {});
+    readListing(self).catch(() => {});
   }, REFETCH_DEBOUNCE_MS);
 }
 
@@ -448,5 +475,5 @@ export function resetCredentialsStoreForTests(): void {
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
-  credentialsStore.setState({ ...emptyListState(), loading: false, error: null });
+  credentialsStore.setState({ ...emptyListState(), loading: false, error: null, selfRefresh: 0 });
 }

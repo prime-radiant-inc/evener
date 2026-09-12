@@ -37,6 +37,7 @@ import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
@@ -208,9 +209,18 @@ export function CredentialsSection({
       } else {
         const applied = await credentialsStore.getState().remove(name);
         // A superseded removal's listing was discarded by the store's
-        // generation guard - reconcile before reporting the removal, so the
-        // guided owner's reset lands on a listing that actually lost the row.
-        if (!applied) await credentialsStore.getState().fetch();
+        // generation guard - reconcile before reporting the removal, and
+        // confirm the row is really gone from the listing that applied: a
+        // superseded or failed reconcile read resolves like success and must
+        // not be reported as one. The guided owner's reset must not fire on
+        // an unconfirmed listing.
+        if (
+          !applied &&
+          !(await confirmListingState((instances) => !instances.some((instance) => instance.name === name)))
+        ) {
+          toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
+          return;
+        }
         toast.push("success", `Removed instance ${name}`);
         onInstanceRemoved?.(name);
       }

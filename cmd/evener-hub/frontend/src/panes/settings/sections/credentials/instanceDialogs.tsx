@@ -24,6 +24,7 @@ import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } 
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
+import { confirmListingState } from "./reconcileListing";
 
 import { useEditorLifetime } from "./useEditorLifetime";
 
@@ -117,10 +118,18 @@ export function AddInstanceDialog({
         credentialHeader: trimmedCredentialHeader || undefined,
       });
       // The listing a superseded create answered with was discarded by the
-      // store's generation guard - reconcile before steering the guided flow
-      // on the new row. Data refresh deliberately survives an unmount: the
-      // dialog is gone, but the store still owes the caller a current listing.
-      if (!applied) await credentialsStore.getState().fetch();
+      // store's generation guard - reconcile before steering on the create.
+      // fetch() resolves normally even when its response was superseded (a
+      // newer read is in flight) or failed (the error landed in the store),
+      // so a resolved promise is never confirmation the listing moved: retry
+      // until a read actually applies. Whether the created row shows in the
+      // listing that applied is the consumer's call - ProviderConnection's
+      // Configure-provider flow keeps its own reload recovery for a missing
+      // row (a discarded create is its designed path), and the section's add
+      // action only closes the editor. Data refresh deliberately survives an
+      // unmount: the dialog is gone, but the store still owes the caller a
+      // current listing.
+      if (!applied) await confirmListingState(() => true);
       if (!active.current) return;
       toast.push("success", `Created instance ${trimmedName}`);
       onSuccess(trimmedName);

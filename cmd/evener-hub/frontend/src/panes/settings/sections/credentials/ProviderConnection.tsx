@@ -316,6 +316,14 @@ function SelectedConnection({
       }
     });
     const unsubscribeStore = credentialsStore.subscribe((current, previous) => {
+      // The store schedules its own listing refresh the moment this client's
+      // auth mutation succeeds; that refresh is this flow's own change, not an
+      // unrelated one, and it lands while the flow sits in checking/result.
+      // The selfRefresh marker changes only on the store's own refresh, so a
+      // transition that moved it is excluded here - every foreign change
+      // (another client's edit, a reconnect's restore, a failed read's error
+      // field) keeps the marker still and invalidates exactly as before.
+      if (current.selfRefresh !== previous.selfRefresh) return;
       if (
         (["saving", "checking", "result", "review"].includes(phaseRef.current) ||
           (oauth && destination(findSetup(name)) !== destination(baseline))) &&
