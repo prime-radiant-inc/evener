@@ -158,15 +158,6 @@ if [[ ! "$ROOT_PACKAGE_LIST_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_ATTEMPTS must be a positive integer (got %q)\n' "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
 	exit 2
 fi
-# Every bounded attempt is exec'd through perl so it lands in its own process
-# group (see run_bounded_package_list). Checked here rather than discovered
-# there: without this the first attempt fails as an exec error buried in a
-# package-list log, which says nothing about what is missing.
-if ! command -v perl >/dev/null 2>&1; then
-	printf 'run-module-tests.sh: perl is not on PATH. Each bounded go list attempt runs through perl setpgrp(0, 0) so the attempt can be stopped as a process group; setsid(1) would serve as well but is not on macOS. Install perl, or run a module directly with go test.\n' >&2
-	exit 2
-fi
-
 # Seconds to wait for a stopped attempt's process group to empty after each of
 # SIGTERM and SIGKILL. Only a member that ignores or cannot take the signal
 # reaches the end of either wait, so the ordinary stop costs milliseconds. Not
@@ -471,6 +462,16 @@ stop_package_list_group() {
 run_bounded_package_list() {
 	local module="$1" package_list="$2" package_list_stderr attempt attempt_list
 	local list_pid list_pgid started_at list_status descendant survivors stop_status
+	# Every attempt below is exec'd through perl so it lands in its own process
+	# group. Named here rather than discovered at the spawn, where it would fail
+	# as an exec error buried in a package-list log that says nothing about what
+	# is missing — and asked here rather than at startup, because only the
+	# modules that enumerate under the bound need perl at all and a run
+	# scheduling none of them must not be refused for its absence.
+	if ! command -v perl >/dev/null 2>&1; then
+		printf 'run-module-tests.sh: perl is not on PATH. Each bounded go list attempt runs through perl setpgrp(0, 0) so the attempt can be stopped as a process group; setsid(1) would serve as well but is not on macOS. Install perl, or run a module directly with go test.\n' >&2
+		return 2
+	fi
 	package_list_stderr="${package_list}.stderr"
 	# Every attempt appends under its own heading, so the diagnostic still names
 	# one retained log and whoever reads it sees what each attempt said.
