@@ -325,6 +325,22 @@ func TestResolve_LiteralHostWithLocationPathDoesNotWarn(t *testing.T) {
 	}
 }
 
+// A GOOGLE_VERTEX_HOST supplied directly is the authority the user chose, even
+// when it names the location's own host: a path prefix puts something else in
+// front of the regional endpoint, so the rule's route is not the one taken and
+// the location is not what the request reaches.
+func TestResolve_DirectHostWithPathPrefixDoesNotWarn(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.gwproxy]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n[providers.gwproxy.vars]\nGOOGLE_VERTEX_HOST = \"https://europe-west1-aiplatform.googleapis.com/proxy\"\n")
+	res := mustResolve(t, r, "gwproxy/claude-opus-5")
+	if res.Transport.BaseURL != "https://europe-west1-aiplatform.googleapis.com/proxy/v1/projects/p/locations/europe-west1" {
+		t.Fatalf("base URL = %q", res.Transport.BaseURL)
+	}
+	if hasWarning(res, "regional") {
+		t.Fatalf("a supplied host is not the rule's route even when it names the derived host: %+v", res.Warnings)
+	}
+}
+
 func TestResolve_HeadersAndCredential(t *testing.T) {
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "sk", "OPENAI_ORG_ID": "org-1"}, "")
 	res := mustResolve(t, r, "openai/gpt-5.5")
