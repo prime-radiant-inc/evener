@@ -100,6 +100,13 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# --measured skips the producers, so nothing vouches for the packages a bless
+# would record; a rebaseline has to come from a real measurement.
+if [ -n "$measured_override" ] && $bless; then
+	echo "test-timing-budget: --measured skips the measurement, so there is no package completeness to bless from; run a real measurement to rebaseline" >&2
+	exit 2
+fi
+
 # The gate's test-selection surface, shared with run-module-tests.sh and
 # `evener dev coverage-floor` so this ratchet cannot drift into measuring a
 # surface no gate reproduces.
@@ -255,7 +262,10 @@ else
 		# The package-completeness oracle (issue #172) runs inside the parser:
 		# a package in $pkglist with no terminal event in the stream is a
 		# silent drop, and the parse exits nonzero rather than bless around it.
-		if ! go_test_json_to_tsv "$log" "$pkglist" >>"$measured"; then
+		go_rows="$base.rows"
+		if go_test_json_to_tsv "$log" "$pkglist" >"$go_rows"; then
+			cat "$go_rows" >>"$measured"
+		else
 			go_measure_failed=1; continue
 		fi
 	done
@@ -336,7 +346,8 @@ with open(measured_path) as fh:
 			# files at all) still appears in the report and in a blessed
 			# budget — the completeness contract's other half: what the
 			# producer vouches for must be recorded, not just what ran.
-			sums.setdefault(parts[1], 0.0)
+			if parts[1]:
+				sums.setdefault(parts[1], 0.0)
 
 try:
 	with open(budget_path) as fh:
@@ -389,12 +400,15 @@ for pkg, name, secs in tests:
 # make it a no-op rather than three scattered ones that could drift apart.
 
 if bless:
-	budget["packages"] = {pkg: round(m, 2) for pkg, m in sums.items()}
+	# Sorted, so the key order is a function of the package names alone: the
+	# terminal events arrive in completion order, which varies run to run, and
+	# a re-bless of an unchanged tree has to reproduce the file.
+	budget["packages"] = {pkg: round(m, 2) for pkg, m in sorted(sums.items())}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
-		# indent=1 (spaces) is the checked-in file's format: byte-identical
-		# re-serialization. A tab here (issue #172) would reformat all ~130
-		# lines on the first rebaseline and defeat review-the-diff.
+		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
+		# does not reformat all ~130 lines and bury the real change in
+		# whitespace (issue #172).
 		json.dump(budget, fh, indent=1)
 		fh.write("\n")
 	lines.append(f"blessed budget -> {budget_path}")
