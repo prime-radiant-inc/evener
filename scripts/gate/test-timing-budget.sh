@@ -63,8 +63,9 @@
 # everywhere else is warn-only (--local, or --check with $CI unset). Strict
 # fails on a per-package ratio over 1.5x or any ceiling breach; warn-only
 # prints the identical diagnostics, labeled, and always exits 0. Bare
-# measurement (no --check) never fails either way — it is a report, like
-# `evener dev coverage-floor` with neither --check nor --bless.
+# measurement (no --check) fails only on a broken measurement; its ratio and
+# ceiling verdicts are a report, like `evener dev coverage-floor` with neither
+# --check nor --bless.
 #
 # The budget file is a hand-reviewed artifact: raising a package's number is an
 # edit to testing-budget.json in the same commit as whatever earned it, exactly
@@ -256,16 +257,17 @@ else
 			-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
 		gt_status=$?
 		if [ "$gt_status" -ne 0 ]; then
-			echo "test-timing-budget: go test in $m exited nonzero (see $log.stderr)" >&2
+			echo "test-timing-budget: go test in $m exited nonzero (see $log and $log.stderr)" >&2
 			go_measure_failed=1; continue
 		fi
 		# The package-completeness oracle (issue #172) runs inside the parser:
 		# a package in $pkglist with no terminal event in the stream is a
 		# silent drop, and the parse exits nonzero rather than bless around it.
 		go_rows="$base.rows"
-		if go_test_json_to_tsv "$log" "$pkglist" >"$go_rows"; then
-			cat "$go_rows" >>"$measured"
+		if go_test_json_to_tsv "$log" "$pkglist" >"$go_rows" && cat "$go_rows" >>"$measured"; then
+			: # parsed and merged
 		else
+			echo "test-timing-budget: rows for $m could not be parsed and merged into the measurement (see $base.rows and $log.stderr)" >&2
 			go_measure_failed=1; continue
 		fi
 	done
@@ -289,10 +291,10 @@ else
 				# "web" measurement to a later --measured replay instead of the
 				# incomplete run it is.
 				web_rows="$work/vitest-rows.tsv"
-				if vitest_json_to_tsv "$report" >"$web_rows"; then
-					cat "$web_rows" >>"$measured"
+				if vitest_json_to_tsv "$report" >"$web_rows" && cat "$web_rows" >>"$measured"; then
+					: # parsed and merged
 				else
-					echo "test-timing-budget: failed to parse vitest report at $report" >&2
+					echo "test-timing-budget: vitest rows could not be parsed and merged into the measurement (see $report and $web_rows)" >&2
 					go_measure_failed=1
 				fi
 			else
