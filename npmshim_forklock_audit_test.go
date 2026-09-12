@@ -106,23 +106,43 @@ func TestNpmShimWriteGoesThroughForkLock(t *testing.T) {
 	}
 }
 
-// writeExecutableCalls returns npmShimEnv's direct writeExecutable calls.
-func writeExecutableCalls(fn *ast.FuncDecl) []*ast.CallExpr {
-	if fn.Body == nil {
-		return nil
-	}
+// callsIn returns the calls under root that match, in source order. One
+// traversal serves every call shape the audit looks for: a new shape is a
+// matcher, not another copy of the walk.
+func callsIn(root ast.Node, match func(*ast.CallExpr) bool) []*ast.CallExpr {
 	var calls []*ast.CallExpr
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "writeExecutable" {
+	ast.Inspect(root, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && match(call) {
 			calls = append(calls, call)
 		}
 		return true
 	})
 	return calls
+}
+
+// isIdentCall reports whether call is a call of the named plain function —
+// writeExecutable(t, ...), not pkg.Fn(...).
+func isIdentCall(call *ast.CallExpr, name string) bool {
+	ident, ok := call.Fun.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+// isOsCall reports whether call is os.<name>(...).
+func isOsCall(call *ast.CallExpr, name string) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != name {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "os"
+}
+
+// writeExecutableCalls returns npmShimEnv's direct writeExecutable calls.
+func writeExecutableCalls(fn *ast.FuncDecl) []*ast.CallExpr {
+	if fn.Body == nil {
+		return nil
+	}
+	return callsIn(fn.Body, func(call *ast.CallExpr) bool { return isIdentCall(call, "writeExecutable") })
 }
 
 // rawWritePathNonWriteFile returns the modeless os write-call name
@@ -132,22 +152,7 @@ func writeExecutableCalls(fn *ast.FuncDecl) []*ast.CallExpr {
 // fake-bin directory's exec'd content belongs to writeExecutable.
 func rawWritePathNonWriteFile(fn *ast.FuncDecl) string {
 	for _, name := range []string{"Create", "OpenFile", "CreateTemp"} {
-		found := false
-		ast.Inspect(fn, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != name {
-				return true
-			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
-				found = true
-			}
-			return true
-		})
-		if found {
+		if callsIn(fn, func(call *ast.CallExpr) bool { return isOsCall(call, name) }) != nil {
 			return name
 		}
 	}
@@ -157,22 +162,7 @@ func rawWritePathNonWriteFile(fn *ast.FuncDecl) string {
 // rawWriteFileCalls returns npmShimEnv's direct os.WriteFile calls, for the
 // mode audit that follows the any-write refusal.
 func rawWriteFileCalls(fn *ast.FuncDecl) []*ast.CallExpr {
-	var calls []*ast.CallExpr
-	ast.Inspect(fn, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "WriteFile" {
-			return true
-		}
-		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
-			calls = append(calls, call)
-		}
-		return true
-	})
-	return calls
+	return callsIn(fn, func(call *ast.CallExpr) bool { return isOsCall(call, "WriteFile") })
 }
 
 // callMentionsNpmPath reports whether the writeExecutable call's path
@@ -281,7 +271,9 @@ func writeExecutableWriteStmt(fn *ast.FuncDecl) (write ast.Stmt, enclosing []ast
 
 // stmtOSWriteFlat returns the statement's os.WriteFile call only when the
 // call is NOT inside a nested block — a write inside a loop body belongs to
-// the loop's scope, not the function's top level.
+// the loop's scope, not the function's top level. The block guard is the one
+// part of the walk callsIn cannot express: this scan is scope-sensitive, so
+// it keeps its own traversal and shares only the matcher.
 func stmtOSWriteFlat(stmt ast.Stmt) *ast.CallExpr {
 	var found *ast.CallExpr
 	ast.Inspect(stmt, func(n ast.Node) bool {
@@ -291,15 +283,7 @@ func stmtOSWriteFlat(stmt ast.Stmt) *ast.CallExpr {
 		if _, isBlock := n.(*ast.BlockStmt); isBlock {
 			return false // do not descend into nested blocks
 		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "WriteFile" {
-			return true
-		}
-		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
+		if call, ok := n.(*ast.CallExpr); ok && isOsCall(call, "WriteFile") {
 			found = call
 			return false
 		}
@@ -335,49 +319,34 @@ func nestedOSWrite(stmt ast.Stmt) (write ast.Stmt, list []ast.Stmt) {
 // nested blocks — used inside a block scope where the write's own nesting is
 // already accounted for.
 func stmtOSWrite(stmt ast.Stmt) *ast.CallExpr {
-	var found *ast.CallExpr
-	ast.Inspect(stmt, func(n ast.Node) bool {
-		if found != nil {
-			return false
-		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "WriteFile" {
-			return true
-		}
-		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
-			found = call
-			return false
-		}
-		return true
-	})
-	return found
+	if calls := callsIn(stmt, func(call *ast.CallExpr) bool { return isOsCall(call, "WriteFile") }); calls != nil {
+		return calls[0]
+	}
+	return nil
 }
 
 // holdsForkLockAcross reports whether the statements before write in scope
-// acquire the ForkLock read lock — plainly or via a deferred release — and
-// never release it before the write. scope is the statement list the pairing
-// is checked in: fn's top level when the write sits there, or the enclosing
-// block's list (a retry loop's body) when the write is nested. The ordering
-// is the whole point: a plain RUnlock anywhere before the write leaves the
-// write unguarded no matter how many RLocks precede it (the release-before-
-// write mutations — RLock/RUnlock/write, a sandwich re-lock after the write,
-// and a plain RUnlock chasing a deferred one — must all fail).
+// acquire the ForkLock read lock and never release it before the write.
+// scope is the statement list the pairing is checked in: fn's top level when
+// the write sits there, or the enclosing block's list (a retry loop's body)
+// when the write is nested. The ordering is the whole point: a plain RUnlock
+// anywhere before the write leaves the write unguarded no matter how many
+// RLocks precede it (the release-before-write mutations — RLock/RUnlock/write,
+// a sandwich re-lock after the write, and a plain RUnlock chasing a deferred
+// one — must all fail). A deferred release is a release, not an acquisition:
+// a bare `defer RUnlock` with no preceding RLock guards nothing, so it never
+// counts toward the hold.
 func holdsForkLockAcross(fn *ast.FuncDecl, write ast.Stmt, scope []ast.Stmt) bool {
 	list := fn.Body.List
 	if scope != nil {
 		list = scope
 	}
 	locked := false
-	deferGuard := false
 	for _, s := range list {
 		if s == write {
 			// Only the state at the write matters: the lock is held across
 			// it from here until a plain RUnlock or function exit.
-			return locked || deferGuard
+			return locked
 		}
 		switch {
 		case isForkLockCall(s, "RLock"):
@@ -387,14 +356,13 @@ func holdsForkLockAcross(fn *ast.FuncDecl, write ast.Stmt, scope []ast.Stmt) boo
 			// including the deferred-then-plain spelling, whose plain
 			// release is this case.
 			return false
-		case isDeferForkLockCall(s, "RUnlock"):
-			// A deferred release holds the lock past the write and the rest
-			// of the function — a guard for everything after it.
-			deferGuard = true
 		default:
 			if containsForkLockRelease(s) {
 				// A release hidden inside a compound statement (a block, an
 				// if, a loop) before the write is the same unguarded write.
+				// A deferred release is not an ExprStmt, so it correctly
+				// falls through here without counting as a release — the
+				// RLock that must precede it is what establishes the hold.
 				return false
 			}
 		}
@@ -439,15 +407,6 @@ func isForkLockCall(stmt ast.Stmt, method string) bool {
 		return false
 	}
 	return isForkLockSelector(call.Fun, method)
-}
-
-// isDeferForkLockCall reports whether stmt is `defer syscall.ForkLock.<method>()`.
-func isDeferForkLockCall(stmt ast.Stmt, method string) bool {
-	d, ok := stmt.(*ast.DeferStmt)
-	if !ok {
-		return false
-	}
-	return isForkLockSelector(d.Call.Fun, method)
 }
 
 // isForkLockSelector reports whether expr is `syscall.ForkLock.<method>`.
