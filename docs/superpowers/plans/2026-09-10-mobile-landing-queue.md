@@ -4215,3 +4215,48 @@ Two of three reviewers found no issues; the remaining reviewer confirmed the dur
 2. Gates: gofmt, `go vet ./...` in both modules, agent `go test -count=1 ./...` with zero non-ok lines, root `./server/...`, `./internal/apptranscript/...`, `./internal/appprojector/...`, `-race -count=3` on the touched sets, deadline audit, pinned golangci-lint 0 issues in both modules. Run the failing test with `-count=5` before and after.
 3. Do not push. Do not merge main.
 4. Append a "Task 73" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-33-report.md`; reply with status, the diagnosis (which commit introduced the key divergence and why), commit SHAs, one-line test summary, concerns.
+
+## Task 74: PR #1145 round 8 (head 7f96e19, merge-only refresh) — CI tooling flake fix, RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/flake-ci-tools (branch claude/fix-ci-tooling-download-flakes). Flake lane: you push the branch and update PR #1145; you do not merge it. Note: this head differs from the clean round-7 head only by a merge of main; the findings are new reads of unchanged code, and all three are real.
+
+### RoboRev verdict (verbatim, 3 reviewers)
+
+## roborev: Combined Review (`7f96e19`)
+
+## Verdict: Three medium issues found — two hang risks and one signal-cleanup regression.
+
+---
+
+### Medium
+
+- **`scripts/gate/run-module-tests.sh:592-632`** — Race-mode agent discovery bypasses the bound
+  When `AGENT_SHARDS=0` (the mode used by `make test-race`), the agent module skips `run_bounded_package_list` and runs `go test ./...` directly. Package discovery inside that command is still unbounded, so a stalled Go cache can hang the race gate indefinitely.
+  **Fix:** Run the bounded package enumeration for the agent regardless of sharding, then pass the resulting package list to the unsharded `go test` invocation.
+
+- **`scripts/gate/run-module-tests.sh:450`** (interacts with `stop_children:225` / `interrupted:262`) — Orphaned process group on runner SIGTERM
+  The package-list attempt is isolated into its own process group via `perl setpgrp(0,0)`, but the runner's signal cleanup only discovers processes by walking `active_pids` (wave subshell pids) with `process_descendants`. When the whole runner group receives SIGTERM (CI cancellation, supervisor, `kill`), the wave subshell — in the runner's group — is killed directly, while the isolated `go list` group is not. By the time the `interrupted` trap walks the process table, the wave subshell is already gone and the attempt has been reparented (`ppid=1`), so it is never signalled.
+  Reproduced: after `kill -TERM -- -<runner-pgid>`, the trap printed `interrupted by SIGTERM` and the runner exited, but `go list` and its `sleep` child were left running. The old plain `( go list ... ) &` spawn left nothing behind, so this is a regression introduced by the group isolation.
+  **Harm:** An interrupted stalled enumeration is orphaned and keeps holding GOCACHE/GOMODCACHE build/module locks — exactly the poison the group-stop logic exists to prevent.
+  **Fix:** Make the wave subshell (or `run_bounded_package_list`) responsible for its own attempt on signals — e.g. record the live attempt's pgid in a file under `$logdir` and have `stop_children`/`interrupted` kill those groups, or install a `TERM`/`HUP` trap in the wave subshell that calls `stop_package_list_group` on the current attempt before it dies.
+
+- **`scripts/ops/install-golangci-lint.sh:69`** — `curl` with no timeout can hang the retry loop
+  The retry loop does not protect against a `curl` request that connects but hangs without completing. Since `curl -sSfL` has no timeout, the installer can remain stuck forever and never reach the next attempt.
+  **Fix:** Add `--connect-timeout` and `--max-time` to the `curl` invocation and document the per-attempt limit.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 18s | Total: 9m13s*
+
+
+### Coordinator rulings
+
+- **Medium 1 (`AGENT_SHARDS=0` / `make test-race` path skips the bounded enumeration): real, fix.** Run the bounded package enumeration for the agent module regardless of sharding and hand the resulting list to the unsharded `go test` invocation, so the race gate cannot hang on discovery either. Verify with the stalled stand-in under `AGENT_SHARDS=0` (record the run) and that `make test-race`'s normal path still passes.
+- **Medium 2 (isolated `go list` group orphaned when the runner's own group gets SIGTERM): real, regression of the group isolation, fix.** The reviewer reproduced it. Pick the smaller of the two shapes the finding offers: record the live attempt's pgid in a file under `$logdir` and have `stop_children`/`interrupted` stop those groups (through the existing `stop_package_list_group`), or install a TERM/HUP trap in the wave subshell that stops the current attempt before dying. Reproduce the orphan first (`kill -TERM -- -<runner pgid>` with the stalled stand-in; record that `go list` and its child survive), then show they do not after the fix. The fix must not re-introduce `set -m`.
+- **Low-severity in substance, listed as Medium 3 (`curl` without timeouts in the installer): real, fix.** Add `--connect-timeout` and `--max-time` to the fetch with values that make one attempt bounded well inside the retry loop's budget; document the per-attempt limit in the header comment and in testing.md's installer paragraph.
+
+### Requirements
+
+1. One commit per finding; conventional subjects; no trailers.
+2. `git fetch origin main` on its own line, then merge before pushing (main is at least 96dc079d0); `bash -n` both scripts; run the gate once in the bounded path and once with `AGENT_SHARDS=0`.
+3. Push; extend the PR body with "Review round 8" naming the commit per finding and the two reproduction runs.
+4. Append "Round 8" to your report. Reply with status, commit SHAs, pushed head, the orphan before/after lines, concerns.
