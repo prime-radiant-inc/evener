@@ -1025,7 +1025,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Status: appwire.ThreadStatus{Type: status},
 	}
 	if status == appwire.ThreadStatusRestartRequired {
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+		// A restart-required session cannot act, but its saved notes are still
+		// readable: advertise the read capability alone and let the write gate
+		// (and the daemon's admission fence) refuse every mutation.
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: true}
 	}
 	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0) {
 		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))

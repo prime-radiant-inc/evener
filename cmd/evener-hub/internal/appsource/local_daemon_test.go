@@ -597,7 +597,9 @@ func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) 
 // TestLocalDaemonSourceListAdvertisesSharedNotes guards the roster path: a live
 // local session supports shared notes, so ListThreads must advertise the
 // capability instead of making list-derived models report it unsupported until
-// hydration. Read-only aliases and restart-required sessions must not.
+// hydration. A read-only alias must not; a restart-required session keeps only
+// the read capability, because its saved notes are still readable even though
+// every mutation is refused.
 func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{
@@ -623,8 +625,12 @@ func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 	if alias, ok := capsBySession["sess_alias"]; !ok || alias.SharedNotes {
 		t.Fatalf("read-only alias advertised shared notes: %+v (all: %+v)", alias, capsBySession)
 	}
-	if restart, ok := capsBySession["sess_restart"]; !ok || restart.SharedNotes {
-		t.Fatalf("restart-required session advertised shared notes: %+v (all: %+v)", restart, capsBySession)
+	restart, ok := capsBySession["sess_restart"]
+	if !ok || !restart.SharedNotes {
+		t.Fatalf("restart-required session did not keep shared notes readable: %+v (all: %+v)", restart, capsBySession)
+	}
+	if restart.Send || restart.Steer || restart.Rename {
+		t.Fatalf("restart-required session advertised mutations: %+v", restart)
 	}
 }
 
@@ -1086,7 +1092,7 @@ func TestLocalDaemonListPreservesRestartRequiredStatus(t *testing.T) {
 	if thread.Status.Type != appwire.ThreadStatusRestartRequired {
 		t.Fatalf("status=%s", thread.Status.Type)
 	}
-	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true}) {
 		t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
 	}
 	if _, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: "local:owner"}); err == nil {
@@ -1118,7 +1124,7 @@ func TestLocalDaemonListsSessionOnlyRestartRequiredEntry(t *testing.T) {
 			if thread.ID != "owner" || thread.Evener.Ref != "local:owner" || thread.Status.Type != appwire.ThreadStatusRestartRequired {
 				t.Fatalf("thread=%+v", thread)
 			}
-			if thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+			if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true}) {
 				t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
 			}
 		})

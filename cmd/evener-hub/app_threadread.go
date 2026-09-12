@@ -658,6 +658,15 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 	return caps
 }
 
+// readablePastCapabilities advertises what a session whose daemon is not
+// answering can still do: nothing mutating, but its saved shared notes stay
+// readable. The web derives editability from the store's write gate and the
+// daemon fences writes by admission, so advertising the read capability cannot
+// enable an edit.
+func readablePastCapabilities() appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{SharedNotes: true}
+}
+
 func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry) (appwire.Thread, error) {
 	if err := ctx.Err(); err != nil {
 		return appwire.Thread{}, err
@@ -757,10 +766,10 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		if !isDaemonDiscoveryError(ownershipErr) {
 			return appwire.Thread{}, ownershipErr
 		}
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+		thread.Evener.Capabilities = readablePastCapabilities()
 	} else if required {
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+		thread.Evener.Capabilities = readablePastCapabilities()
 	} else {
 		thread = applyHubForkCapability(cfg, thread)
 	}
