@@ -719,6 +719,17 @@ func registerThreadHandlers(
 			resolved = false
 			return attemptStart()
 		}
+		if isLifecycleRetiringError(err) {
+			// The owning daemon refused the mutation because it is retiring and
+			// still owns the session. Resolve the race under existing recovery
+			// authority — admission fences, ownership alias locks, confirmed exit,
+			// one resume — then retry the original request verbatim.
+			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
+				return appwire.TurnStartResponse{}, resumeErr
+			}
+			resolved = false
+			return attemptStart()
+		}
 		if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
 		}
