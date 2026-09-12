@@ -932,6 +932,85 @@ demote a stored owning slot though it is unreachable from every delivered caller
 Task 5 is accepted at `0f105ab65025d1bb37566ea1b71852b363768e23` on base
 `1e7eeb26a`. Tasks 1–4 complete, 6–13 not started.
 
+### Task 5 reopened: per-environment scratch binding identity
+
+Task 6's plan-named end-to-end test (`TestRetirementSharedChildScratchBindingsRestore`,
+plan 776-778) turned out to be unbuildable, and the reason was Task 5's model rather than
+Task 6's fixtures. Plan 646 requires a distinct opaque binding id per distinct owned
+environment, and plan 648 requires that "root's E1 clone and adoption move A's owning slot
+to E1, while C stays on E0; C's subsequent B allocation gives E0/B and E1/A two legitimate
+current slots owned by R". The delivered wiring did the opposite:
+`installScratchRetentionFor` gave the session's *current* environment the session's
+persisted **consumer** binding id (`agent/session_scratch_retention.go`), so a worktree
+clone E1 collapsed onto the parked E0's id. Live manifest inspection showed
+`bindings=1` whose `unsandboxed` slot pointed at the child-minted B, leaving A with no
+owning slot at all — the erasure plan 648 forbids — and plan 654's "root R can resume on
+E1/A while cold C resumes on E0/B" was unreachable. The sandbox/execenv layer already
+supported the correct topology (`TestScratchRetentionBindingMoveConcurrentMint` passed);
+the gap was agent-level wiring, so this was Task 5's spec in Task 5's files. Jesse ruled
+that Task 5 be reopened rather than widening Task 6's ownership.
+
+**Fix round 1, `de025ac17`** (`fix(agent): give each owned environment its own scratch
+binding identity`). An environment with no installed binding now always mints its own
+opaque id; a new `stageScratchSwapBinding` persists the ownership transition — target
+gains the moved owning slots, source keeps its id and its other slots, the consumer's
+current binding moves — in one revision-checked `UpdateScratchBindings` transaction
+*before* `AdoptSessionScratch` takes the handles; and `PinOwnedScratch` no longer writes a
+consumer record (`UpsertScratchBindingOnly`), because a shared environment's mint must not
+re-point its owner's consumer. Genuine RED: `bindings = 1, want two distinct owned
+environments`.
+
+Independent review on a different model re-ran the race suites (exit 0) and reproduced the
+RED itself, and judged the production change sound, minimal and regression-free — but
+returned 3 Important and 3 Minor. F1: a cold resume *into a worktree* left the re-entered
+environment with no binding identity at all, so post-resume swaps staged nothing and A's
+lease was released with no transition persisted (pre-existing, not a regression, and
+probe-proven: `re-entered env binding id=""`, then a fresh third binding id after the
+backswap). F2: the new stage wrote a bare consumer record, and the merge replaces the
+whole record, durably dropping the session's role ids for a seconds-wide window. F3: the
+round-1 report overclaimed what was guaranteed. F4: stage errors now fail closed and abort
+an enter/exit that previously proceeded (defensible under plan 644, disclosed). F5:
+`ScratchRetentionBinding` reported `OwnsLease` without the `HasLease` check its sibling
+performs. F6: two sub-claims were asserted nowhere.
+
+**Fix round 2, `138475608`** (`fix(agent): keep scratch binding identity across worktree
+resume`), with `agent/session_worktree_resume.go` granted by boundary ruling since it is
+the only correct home for F1. The re-entered clone inherits the persisted identity of the
+environment whose scratch it adopted and `worktreeRestoreEnv` takes the parked
+environment's identity; the stage and install paths preserve recorded roles; F5 and F6 are
+fixed. Genuine RED: `re-entered env binding: execenv: no scratch retention binding` where
+the persisted E1 id was required.
+
+Scoped re-review on a different model: **spec compliance Compliant, quality Approved, 0
+Critical / 0 Important / 3 Minor**, each requiring no action. M1: post-resume fresh-mint
+publication rests on an open-gate argument rather than a committed mint test (Task 6 will
+exercise real mints on restored sessions). M2: the `notice` refusal paths are fail-open for
+identity carry, disclosed and unreachable after the empty-id guards. M3: the F6 "child
+consumer" is a manifest record registered through the real
+`installChildScratchRetention` path, **not** a spawned delegate child — Task 6's C1 must
+compose the real child rather than read that test as proof of one.
+
+**Flaky gate root-caused, `1b09535c6`.** The intermittent failures that both fix rounds
+reported were `TestScratchRetentionBindingMoveConcurrentMint`, which asserts that
+`OpenRetainedSessionScratch` must contend while live `*sandbox.SessionScratch` objects hold
+their leases. Those holders become GC-unreachable before the assertions; the lease is an
+`*os.File` inside the lease object, and `os.File`'s finalizer closes that fd — releasing
+the flock — as soon as the holder is collected, so the open legitimately succeeds. It
+reproduced at `de025ac17` as well, so it predates the fix rounds, and it is a test
+artifact: production holds the lease through a session-reachable environment. Decisive
+evidence: `GOGC=1 ... -count=100` gave 9 failures unpatched and 0 with `runtime.KeepAlive`
+pinning the holders. The fix adds 13 lines to the one test file and changes no assertion;
+the sibling audit (`GOGC=1 -race ./sandbox ./execenv -count=5`) is clean, because no other
+test in that surface depends on a lease held by a collectable local. The unrelated
+10-second `retirementAwait` tripwire can also fire under three concurrent race suites; that
+is load sensitivity, not a defect.
+
+Parent verification across all three commits: focused and full `-race` gates exit 0, and
+the canonical `make test` exit 0 with all 8 modules PASS on `de025ac17` and `1b09535c6`.
+
+Task 5 is re-accepted at `1b09535c6` (model = `de025ac17` + `138475608` + `1b09535c6`) on
+base `0f105ab65`. Tasks 1-5 complete, 6-13 in progress.
+
 ## Remaining workflow
 
 Subagent-driven TDD implementation with specification and quality review → fresh
