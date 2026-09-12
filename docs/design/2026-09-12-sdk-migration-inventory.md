@@ -174,7 +174,7 @@ migration has to place.
 | `notifications/{attention,channels,favicon,leader,title}.ts` (295) | OS notification policy, tab title, favicon, Web Locks leader election | none | native uses its own notification stack | PLATFORM-ONLY | `attention.ts` (60) alone is a portable policy function |
 | `panes/spawn/schema.ts` (97), `pluginSelectionState.ts` (79), `harnessModels.ts` (16) | New-session form schema and plugin selection | none | native imports all three (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/spawn/spawnDrafts.ts` (144), `preflight.ts` | Spawn drafts; path/dir preflight | `evener/path/validate`, `evener/dirs/create` | `mobile-native/src/creationDraftRepository.ts` | DUPLICATED | drafts are platform storage; preflight is a client port |
-| `panes/settings/sections/launchShared/schema.ts` (337), `inherited.ts` (44) | Launch-option schema interpretation and inheritance | none | native imports `schema` (3 sites), `pathListAdd` (1) | PACKAGE CANDIDATE (2 consumers) | `schema.ts:8` imports `LaunchConfigLayerName` from the web-only `stores/launchConfig.ts`; that type has to move too |
+| `panes/settings/sections/launchShared/schema.ts` (337), `inherited.ts` (44), `pathListAdd.ts` (54) — 435 total | Launch-option schema interpretation and inheritance | none | native imports `schema` (3 sites), `pathListAdd` (1) | PACKAGE CANDIDATE (2 consumers) | `schema.ts:8` imports `LaunchConfigLayerName` from the web-only `stores/launchConfig.ts`; that type has to move too |
 | `panes/settings/sections/credentials/credentialLabels.ts` (157) | Provider/credential display vocabulary | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/settings/sections/credentials/oauthFlow.ts` (33) | OAuth step sequencing | none | `mobile-native/src/providerSignIn.ts` | DUPLICATED | native opens a system browser; web a popup |
 | `panes/settings/sections/marketplacesPlugins/sourceLabel.ts` (20) | Marketplace source labels | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
@@ -184,7 +184,7 @@ migration has to place.
 | `widgets/disclosure/disclosureStore.ts` (142) | Disclosure open/closed state | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | zustand |
 | `widgets/toast/store.ts` (56) | Toast queue | none | native has its own | PLATFORM-ONLY | — |
 | `auth.ts` (56) | Browser auth token handling for the socket URL | none | `mobile-native` uses expo-secure-store | PLATFORM-ONLY | — |
-| `panes/doc/{docFile,openDoc}.ts` (60) | Doc pane file loading | none (uses `protocol/docContent.ts`) | none | PACKAGE CANDIDATE | `docContent.ts` already exists unpacked and uses `fetch` + absolute URLs |
+| `panes/doc/{docFile,openDoc}.ts` (60) | Doc pane file loading | none (uses `protocol/docContent.ts`) | none | PACKAGE CANDIDATE | `docContent.ts` is browser-shaped in three ways, not one: `docFileRawURL:58` and `docImageURL:97` build **same-origin-relative** `/doc/file?...` and `/doc/image?...` paths (no origin at all, so a native app cannot use them), and `readDocFile:74` calls **global `fetch`** with `credentials: "same-origin"` to carry the hub auth cookie. A device has no cookie jar and no same origin; all three need injection |
 
 ## 4. `mobile/src` (9 modules, 7,615 lines)
 
@@ -209,7 +209,7 @@ names eight runtime modules; the ninth below is dead.
 | --- | --- | --- | --- |
 | `index.ts` (9) | yes | — | SHARED ALREADY |
 | `client.ts` (837) | yes | web (12 sites), native (6) | SHARED ALREADY |
-| `errors.ts` (260) | yes (only 3 of 20 exports via `index.ts`) | web (88), native (13) | SHARED ALREADY |
+| `errors.ts` (260) | yes (only 3 of its 19 exported declarations via `index.ts`) | web (88), native (13) | SHARED ALREADY |
 | `transport.ts` (20) | yes | web (3), native (5) | SHARED ALREADY |
 | `types.gen.ts` (2505) | yes | web (229), native (78) | SHARED ALREADY |
 | `askAnswers.ts` (100) | yes | web (3), native (2) | SHARED ALREADY |
@@ -222,8 +222,8 @@ names eight runtime modules; the ninth below is dead.
 | `sessionErrors.ts` (42) | **no** | web (2), native (2) | PACKAGE CANDIDATE (2 consumers) |
 | `stableDelegate.ts` (12) | **no** | web (3), native (1) | PACKAGE CANDIDATE (2 consumers) |
 | `jobOutput.ts` (35) | **no** | web (2), native (1) | PACKAGE CANDIDATE (2 consumers) |
-| `docContent.ts` (99) | **no** | web (5), native 0 | PACKAGE CANDIDATE — uses `fetch` and absolute URLs; needs a base-URL port |
-| `testing/` (6 files) | **no** | 136 web files, incl. 20 production modules, for `AppwireClientLike` | PACKAGE CANDIDATE — the type must leave `testing/` |
+| `docContent.ts` (99) | **yes, since #1184** | web (5), native 0 | PACKAGE CANDIDATE — the two URL builders ship and are qualified; `readDocFile` needs a fetch/base-URL/auth port (C24) |
+| `testing/` (6 files) | **no** | 136 web files import `testing/fakeClient`; 25 name `AppwireClientLike` | PACKAGE CANDIDATE — the type must leave `testing/` |
 
 ## 6. The package boundary
 
@@ -324,7 +324,7 @@ re-query before acting.
 
 | Plan PR | GitHub | State | What it changed here |
 | --- | --- | --- | --- |
-| A1 | #1184 | open | Ships nine of the ten unpacked modules (`tsconfig.build.json` `files` goes 6 → 15); `docContent.ts` held back to C24 as planned. The qualification runner now smoke-calls every shipped module, not just imports it |
+| A1 | #1184 | open (head `68a1da7c2`) | Ships **all ten** unpacked modules, `docContent.ts` included (`files` goes 6 → 16) — the earlier plan held `docContent` back, but the PR shipped it and the runner asserts `docFileRawURL("s","p")` while deliberately never calling `readDocFile` (`qualify-package.mjs:28-31`). So C24 now owns only the fetch/URL/auth port, not the move. The runner also smoke-calls every other shipped module |
 | A2 | #1188 | open | `protocol/clientLike.ts` declares `AppwireClientLike`, exported from `index.ts` and in the build `files`. 25 importers rewritten, `FakeClient` imports left alone — §0 fact 3 above is corrected to match |
 | A5 | #1186 | **merged** (`2245f9715`) | Deleted the dead `mobile/src/dev/conversationFixtures.ts`, which takes `mobile/src` from the 7,615 lines tabulated in §4 down to 6,841 and made `mobile-native` typecheck every file under `mobile/src`, so the gap that hid it is closed too |
 | B1 | #1189 | open | `protocol/itemFailure.ts`; the web and native predicates were byte-identical in behavior. Surfaced the third predicate now recorded above |
