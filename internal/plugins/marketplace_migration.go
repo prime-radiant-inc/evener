@@ -114,11 +114,13 @@ func (m *Manager) migrateMarketplaceNames() error {
 		if _, recorded := mk[r.To]; !recorded {
 			continue
 		}
-		dirs, err := m.marketplaceDirsKey(r.From)
-		if err != nil {
-			return fmt.Errorf("reading the families an earlier migration recorded: %w", err)
+		// The directories the rename recorded rather than ones recomputed from
+		// From: From's directories have moved since, so resolving them again
+		// would answer with the lexical path.
+		if r.Clone == "" || r.Cache == "" {
+			continue
 		}
-		recordedThisRun[recordedAlias{dirs: dirs, src: r.Source}] = r.To
+		recordedThisRun[recordedAlias{dirs: marketplaceDirs{clone: r.Clone, cache: r.Cache}, src: r.Source}] = r.To
 		kept = append(kept, r)
 	}
 	rec.Renames = kept
@@ -156,7 +158,10 @@ func (m *Manager) migrateMarketplaceNames() error {
 		// Written down before the rename, so a process that stops here still
 		// leaves the family for the next run the way the marker leaves it the
 		// rename itself.
-		rec.Renames = append(rec.Renames, recordedRename{From: name, To: newName, Source: ref.Source})
+		rec.Renames = append(rec.Renames, recordedRename{
+			From: name, To: newName, Source: ref.Source,
+			Clone: dirs.clone, Cache: dirs.cache,
+		})
 		if err := m.saveMigrationRecord(rec); err != nil {
 			return fmt.Errorf("recording the migration of marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
@@ -447,10 +452,18 @@ type migrationRecord struct {
 // recordedRename is one rename the migration made: the name it moved from, the
 // name it took, and the source the moved record names, which is what keeps one
 // marketplace's aliases apart from another's when both derive the one pair.
+//
+// Clone and Cache are the directories the name derived, resolved while they
+// still existed. They are stored rather than recomputed from From because From's
+// directories have moved by the next run: resolving them again answers with the
+// lexical path, which is not what a name reaching the same directory through a
+// symlink derives, so the family would not be recognised.
 type recordedRename struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Source Source `json:"source"`
+	Clone  string `json:"clone"`
+	Cache  string `json:"cache"`
 }
 
 // loadMigrationRecord reads the record the store holds, or the empty one where
@@ -509,8 +522,11 @@ func (m *Manager) removeMigrationRecord() {
 	}
 }
 
-// refusedMarketplaceNames is every recorded name validNameComponent refuses,
-// longest first and otherwise sorted. It is the seed order the migration
+// refusedMarketplaceNames is every recorded name the store will not take as it
+// stands — one validNameComponent refuses, or one no filesystem can hold as the
+// directories it derives, which would leave every operation deriving its paths
+// failing rather than migrating it away — longest first and otherwise sorted. It
+// is the seed order the migration
 // sorts (migrationOrder): a name has to migrate before another only where one
 // of the two relations there says so, and this decides between the names
 // neither relation constrains. Longest first because that is the order the
@@ -519,7 +535,7 @@ func (m *Manager) removeMigrationRecord() {
 func refusedMarketplaceNames(mk Marketplaces) []string {
 	var names []string
 	for name := range mk {
-		if validNameComponent("marketplace", name) != nil {
+		if validNameComponent("marketplace", name) != nil || !nameCanHaveDirectories(name) {
 			names = append(names, name)
 		}
 	}
@@ -1095,16 +1111,35 @@ func (m *Manager) pluginCacheMoves(reg Registry, name, newName string) []pluginC
 	return moves
 }
 
-// installedUnder reports whether any of entries is installed under dir.
+// installedUnder reports whether any of entries is installed under dir. Both
+// sides are resolved, because this asks where files are, not what the store
+// wrote: dir is derived from a name while the entry names a path the store
+// recorded, and a symlink under the cache can make them the same directory
+// without making them the same string. resolveBestEffort answers with the path
+// itself where it is not there, so a recorded path that no longer exists
+// compares as itself — and there is nothing under it to move either way.
 func installedUnder(dir string, entries []InstallEntry) bool {
+	resolved := resolveBestEffort(dir)
 	return slices.ContainsFunc(entries, func(entry InstallEntry) bool {
-		_, under := pathUnder(dir, entry.InstallPath)
-		return under
+		return pathWithinDir(resolved, resolveBestEffort(entry.InstallPath))
 	})
 }
 
+// resolveBestEffort resolves path for a comparison about disk, and answers with
+// the path itself where it cannot: resolveForContainment only fails on
+// filepath.Abs, and a path that is not there keeps its absolute form.
+func resolveBestEffort(path string) string {
+	if resolved, err := resolveForContainment(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
 // anotherKeyInstallsUnder reports whether a registry key other than own has an
-// install under dir.
+// install under dir, physically: see installedUnder for why the comparison is
+// resolved rather than lexical. This is the guard that keeps a rename from
+// taking a plugin directory another marketplace's record still names, and a
+// cache symlink is exactly how two names reach one directory.
 func anotherKeyInstallsUnder(reg Registry, own, dir string) bool {
 	for key, entries := range reg.Plugins {
 		if key != own && installedUnder(dir, entries) {

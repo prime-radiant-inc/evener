@@ -2322,6 +2322,192 @@ func TestMarketplaceNameMigration_OrdersByACacheNestedThroughASymlink(t *testing
 	}
 }
 
+// A name no filesystem can hold as a directory is refused by the store like any
+// other, or the migration leaves it in place and every operation that derives
+// its paths keeps failing on it.
+func TestMarketplaceNameMigration_ASingleNameNoFilesystemCanHoldIsMigrated(t *testing.T) {
+	cases := []struct {
+		what string
+		name string
+	}{
+		{"longer than a component", strings.Repeat("a", 300)},
+		{"a NUL byte", "a\x00b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.what, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			m.Stderr = io.Discard
+			for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := m.saveMarketplaces(Marketplaces{tc.name: {
+				Source:      Source{Kind: SourceURL, URL: "https://example.invalid/x.git"},
+				LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := m.migrateStore(context.Background()); err != nil {
+				t.Fatalf("migrateStore: %v", err)
+			}
+			mk, err := m.loadMarketplaces()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := mk["marketplace"]; !ok || len(mk) != 1 {
+				t.Fatalf("marketplaces = %v, want marketplace alone", mk)
+			}
+			if _, err := m.ListMarketplaces(context.Background()); err != nil {
+				t.Fatalf("ListMarketplaces: %v", err)
+			}
+		})
+	}
+}
+
+// A cache symlink makes one plugin directory reachable under two strings, and
+// the guard that keeps a rename from taking another key's directory has to ask
+// the disk rather than compare the strings: otherwise a refused name's rename
+// moves the owner's live cache and leaves its record pointing at nothing.
+func TestMarketplaceNameMigration_ACacheSymlinkDoesNotLetARenameTakeAnotherKeysPluginDir(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	widget := plantLegacyMarketplace(t, m, "a", "widget")
+	// A refused name whose cache reaches a's through a symlink.
+	if err := os.Symlink(filepath.Join(m.cacheDir(), "a"), filepath.Join(m.cacheDir(), "alias@")); err != nil {
+		t.Fatal(err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk["alias@"] = MarketplaceRef{
+		Source:          mk["a"].Source,
+		InstallLocation: m.marketplaceDir("alias@"),
+		LastUpdated:     time.Date(2031, 4, 2, 0, 0, 0, 0, time.UTC),
+	}
+	if err := m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins[registryKey("widget", "alias@")] = []InstallEntry{{
+		InstallPath: filepath.Join(m.cacheDir(), "alias@", "widget", "sha1"),
+		Version:     "1.0.0",
+		Enabled:     true,
+		Source:      Source{Kind: SourceGitHub, Repo: "o/widget"},
+	}}
+	if err := m.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	// The owner's install is still where its record says it is.
+	mustExist(t, widget)
+	reg, err = m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, entries := range reg.Plugins {
+		for _, entry := range entries {
+			if _, err := os.Stat(entry.InstallPath); err != nil {
+				t.Fatalf("%s points at %s, which does not exist: %v", key, entry.InstallPath, err)
+			}
+		}
+	}
+}
+
+// A refused name can reach the migrated record's directories through symlinks,
+// and those symlinks outlive the rename that moves what is under them. The
+// recorded family has to hold the directories the rename resolved, not ones
+// resolved again from a name whose directories have since moved.
+func TestMarketplaceNameMigration_ALaterAliasThroughASymlinkMergesIntoTheMigratedRecord(t *testing.T) {
+	root := t.TempDir()
+	first := NewManager(root)
+	first.Stderr = io.Discard
+	if err := os.MkdirAll(filepath.Join(first.marketplacesDir(), "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(first.cacheDir(), "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(first.marketplacesDir(), "real"), filepath.Join(first.marketplacesDir(), "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(first.cacheDir(), "real"), filepath.Join(first.cacheDir(), "link")); err != nil {
+		t.Fatal(err)
+	}
+	plantLegacyMarketplace(t, first, "link/x", "widget")
+	if err := first.migrateStore(context.Background()); err != nil {
+		t.Fatalf("first migrateStore: %v", err)
+	}
+	mk, err := first.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["link-x"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want link-x alone", mk)
+	}
+
+	second := NewManager(root)
+	second.Stderr = io.Discard
+	mk, err = second.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk["real/x"] = MarketplaceRef{
+		Source:          mk["link-x"].Source,
+		InstallLocation: second.marketplaceDir("real/x"),
+		LastUpdated:     time.Date(2031, 4, 2, 0, 0, 0, 0, time.UTC),
+	}
+	if err := second.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	// A plugin only the second name records, whose cache the first run moved
+	// with the directory it stood in.
+	writePlugin(t, second.pluginCacheDir("link-x", "gadget", "sha1"), "gadget", nil)
+	reg, err := second.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins[registryKey("gadget", "real/x")] = []InstallEntry{{
+		InstallPath: second.pluginCacheDir("real/x", "gadget", "sha1"),
+		Version:     "1.0.0",
+		Enabled:     true,
+		Source:      Source{Kind: SourceGitHub, Repo: "o/gadget"},
+	}}
+	if err := second.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := second.migrateStore(context.Background()); err != nil {
+		t.Fatalf("second migrateStore: %v", err)
+	}
+	mk, err = second.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["link-x"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want link-x alone: the later alias has to merge, not take a numbered name", mk)
+	}
+	reg, err = second.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, entries := range reg.Plugins {
+		for _, entry := range entries {
+			if _, err := os.Stat(entry.InstallPath); err != nil {
+				t.Fatalf("%s points at %s, which does not exist: %v", key, entry.InstallPath, err)
+			}
+		}
+	}
+}
+
 // The numbered replacement a taken name appends has to fit as well: a derived
 // base can be legal on its own and still overflow once "-2" is added, and the
 // probe for that candidate fails the whole migration.
