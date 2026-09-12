@@ -58,24 +58,19 @@ func reclassifyGemini(res registry.Resolved) func(status int, body []byte, err e
 // project simply lacks access to a model that is valid there, and rewriting
 // that as an endpoint change would hide the real failure.
 func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []byte) (string, bool) {
-	// Only a transport whose host the vertex-location rule derived from the
-	// location reaches a Vertex regional endpoint; a custom transport that
-	// merely reads GOOGLE_VERTEX_LOCATION into its URL is talking to
-	// something else, and rewriting its 404 would misattribute the failure.
-	if res.Transport.HostRule != registry.HostRuleVertexLocation {
-		return "", false
-	}
-	// A directly supplied GOOGLE_VERTEX_HOST (exposed in Vars by buildTransport)
-	// sends the request to that host even when the path still names a regional
-	// location, so the 404 is the supplied host's own failure.
-	if res.Transport.Vars["GOOGLE_VERTEX_HOST"] != "" {
+	// Only a request addressed to the endpoint the vertex-location rule
+	// derived from the location reaches a Vertex regional endpoint; a
+	// transport that merely reads GOOGLE_VERTEX_LOCATION into its own URL is
+	// talking to something else, and rewriting its 404 would misattribute the
+	// failure.
+	loc, derived := res.Transport.VertexDerivedLocation()
+	if !derived {
 		return "", false
 	}
 	if status != http.StatusNotFound || !strings.Contains(string(body), "Publisher model") {
 		return "", false
 	}
-	loc := res.Transport.Vars["GOOGLE_VERTEX_LOCATION"]
-	if loc == "" || loc == "global" || loc == "us" || loc == "eu" {
+	if loc == "global" || loc == "us" || loc == "eu" {
 		return "", false
 	}
 	if !registry.IsVertexGlobalOnly(res.WireID) {

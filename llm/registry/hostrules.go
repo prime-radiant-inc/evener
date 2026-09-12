@@ -158,3 +158,35 @@ func vertexHost(location string) string {
 	}
 	return "https://" + location + "-aiplatform.googleapis.com"
 }
+
+// VertexDerivedLocation reports the location whose endpoint the resolved
+// transport's base URL actually addresses, and false when the request is not
+// addressed to a location-derived Vertex endpoint at all.
+//
+// The vertex-location rule derives the host from the location, but a transport
+// can inherit the rule and still point somewhere else: a literal host in the
+// base URL (even one whose path reads {GOOGLE_VERTEX_LOCATION}), or a
+// GOOGLE_VERTEX_HOST supplied directly. Those requests reach the host they
+// name, so only the endpoint the rule itself derived makes the location the
+// endpoint's business.
+func (t Transport) VertexDerivedLocation() (string, bool) {
+	if t.HostRule != HostRuleVertexLocation {
+		return "", false
+	}
+	loc := t.Vars["GOOGLE_VERTEX_LOCATION"]
+	if loc == "" {
+		return "", false
+	}
+	got, err := url.Parse(t.BaseURL)
+	if err != nil {
+		return "", false
+	}
+	derived, err := url.Parse(vertexHost(loc))
+	if err != nil {
+		return "", false
+	}
+	if got.Scheme != derived.Scheme || got.Host != derived.Host {
+		return "", false
+	}
+	return loc, true
+}

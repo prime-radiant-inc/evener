@@ -309,6 +309,22 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	}
 }
 
+// A base URL with a literal host reaches that host even when its path reads
+// the location: the vertex-location rule produced nothing here, so the
+// location is not the endpoint's problem and must not be warned about. The
+// rule only owns the authority it derives from the location.
+func TestResolve_LiteralHostWithLocationPathDoesNotWarn(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.gwpath]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://gw.example.test/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n")
+	res := mustResolve(t, r, "gwpath/claude-opus-5")
+	if res.Transport.BaseURL != "https://gw.example.test/v1/projects/p/locations/europe-west1" {
+		t.Fatalf("base URL = %q", res.Transport.BaseURL)
+	}
+	if hasWarning(res, "regional") {
+		t.Fatalf("a literal host must not be warned about a location it only reads into its path: %+v", res.Warnings)
+	}
+}
+
 func TestResolve_HeadersAndCredential(t *testing.T) {
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "sk", "OPENAI_ORG_ID": "org-1"}, "")
 	res := mustResolve(t, r, "openai/gpt-5.5")
