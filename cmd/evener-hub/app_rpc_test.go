@@ -11134,7 +11134,11 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 
 func buildRPCParentSessionWithWorkingDir(t *testing.T, stateDir, workingDir string) string {
 	t.Helper()
-	parentID := "02wMz5Txv1C3Hut0M8GCeB"
+	return buildRPCSessionWithWorkingDir(t, stateDir, "02wMz5Txv1C3Hut0M8GCeB", workingDir)
+}
+
+func buildRPCSessionWithWorkingDir(t *testing.T, stateDir, parentID, workingDir string) string {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
