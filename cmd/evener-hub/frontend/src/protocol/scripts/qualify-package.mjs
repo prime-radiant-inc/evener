@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,10 +47,24 @@ async function qualify() {
     "stableDelegate",
     "docContent",
   ];
+  // A module can be built, packed and listed here and still be unreachable: the
+  // files list only decides what tsc emits, and the export checks below name
+  // identifiers, not modules. The installed entry point's own declarations are
+  // the honest record of what it re-exports, so require a re-export specifier
+  // for every shipped module. A module nothing exports fails right here.
+  const indexDeclarations = readFileSync(
+    join(consumerDir, "node_modules/@evener/appwire-client/dist/index.d.ts"),
+    "utf8",
+  );
+  for (const module of shippedModules)
+    assert(
+      module === "index" || indexDeclarations.includes(`from "./${module}"`),
+      `shipped module unreachable from the entry point: ${module}`,
+    );
   // Every runtime export of the package entry point. All four generated
-  // consumer programs are built from this one list, so a module that compiles
-  // in the checkout but is not packed, or is packed but unreachable from the
-  // entry point, fails here instead of in somebody's consumer.
+  // consumer programs are built from this one list, so an export the entry
+  // point stops providing fails here instead of in somebody's consumer.
+  // Whether each shipped MODULE is reachable at all is the check above.
   const runtimeExports = [
     "AppwireClient",
     "APPWIRE_PROTOCOL_VERSION",
