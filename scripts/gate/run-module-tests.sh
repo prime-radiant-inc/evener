@@ -628,7 +628,10 @@ run_module() {
 		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi
-	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
+	if [ "$m" = "agent" ]; then
+		# Both agent modes come through here, because both need the bounded
+		# enumeration; only the sharded one splits the top-level package.
+		#
 		# The agent module's wall time is dominated by its top-level package, one
 		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
 		# opposite -parallel settings. evener dev agent-shards runs those halves as
@@ -655,6 +658,23 @@ run_module() {
 		# until the shards have finished.
 		subpkg_list="$(package_list_path "$m")"
 		run_bounded_package_list "$m" "$subpkg_list" || return 1
+		if [ "$AGENT_SHARDS" -eq 0 ]; then
+			# The unsharded mode, which is what make test-race uses. It used to
+			# fall through to `go test ./...`, whose own package discovery reads
+			# the same GOCACHE and GOMODCACHE with no bound at all — so the race
+			# gate could hang on exactly the stall the bound above exists for.
+			# Handing it the enumerated list makes the bounded walk the only one.
+			local racepkgs=()
+			while IFS= read -r pkg; do
+				racepkgs+=("$pkg")
+			done <"$subpkg_list"
+			if [ "${#racepkgs[@]}" -eq 0 ]; then
+				printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
+				return 1
+			fi
+			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${racepkgs[@]}"
+			return
+		fi
 		# `go run` collapses its child's exit code to 1 and reports the real
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
