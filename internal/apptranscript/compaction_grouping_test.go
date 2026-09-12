@@ -57,12 +57,18 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 			fold(record(schema.TurnSteering, "steering", "turn_active")),
 			record(schema.TurnUserInput, "turn_next", ""),
 		}, []string{"turn_active", "turn_next"}},
-		// The reviewer's leading-replay case: the first record of the tail is
-		// a copy, so a bounded reader whose window opens on it has a
-		// non-opener with no group to join. It must allocate neither a
-		// logical group nor an entry ordinal, or the indexed keys drift from
-		// the full projection's.
-		{"a leading copy allocates no group", []schema.Turn{
+		// The same run with no copy of an OPENER among its copies: this fold
+		// ran mid-turn, so its first copy is an assistant record rather than
+		// the user input the case above copies. It has to join the group
+		// already open instead of starting one of its own, in the indexed
+		// build as in the full one.
+		//
+		// A copy that is the first record of a transcript — a non-opener with
+		// no group to join at all — is not reachable: a fold copies the turns
+		// recorded while it ran (session_compaction.go:195, :257), and each of
+		// those was written to this same transcript by the pair that logged it
+		// (session.go:1727, :1776), so an original always precedes its copy.
+		{"copies with no opener among them preserve the open group", []schema.Turn{
 			fold(replay(record(schema.TurnAssistant, "assistant", ""))),
 			fold(replay(record(schema.TurnRoundTimings, "timing", "turn_active"))),
 			fold(record(schema.TurnSummary, "summary", "turn_active")),
