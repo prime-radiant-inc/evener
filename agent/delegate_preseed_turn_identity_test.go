@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -62,7 +63,12 @@ func TestDelegatePreseededInputCarriesOneTurnIdentity(t *testing.T) {
 	}
 	<-entered
 	defer close(release)
-	<-userInputRecorded
+	// TRIPWIRE: scripted in-process adapter and an in-memory reader, no real
+	// I/O; only fires if the preseeded turn stops emitting USER_INPUT, which
+	// the assertions below are here to diagnose.
+	awaitWithin(t, 10*time.Second, "the preseeded USER_INPUT event reaching the reader", func() {
+		<-userInputRecorded
+	})
 
 	mu.Lock()
 	path := childPath

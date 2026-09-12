@@ -2033,14 +2033,22 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 	s.attachTranscript(writer)
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
+	// The reader is a goroutine; the fold returning orders nothing against it
+	// having consumed the warning. Closing this once it has recorded one is
+	// the completion the assertion awaits.
 	var warnings []string
 	var warningsMu sync.Mutex
+	unanchoredWarned := make(chan struct{})
+	var warnOnce sync.Once
 	go func() {
 		for event := range s.Events() {
 			if data, ok := event.Data.(events.WarningData); ok {
 				warningsMu.Lock()
 				warnings = append(warnings, data.Message)
 				warningsMu.Unlock()
+				if strings.Contains(data.Message, "not anchored") {
+					warnOnce.Do(func() { close(unanchoredWarned) })
+				}
 			}
 		}
 	}()
@@ -2095,6 +2103,11 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 	if indexOfTurnText(resumed, earliest) < 0 {
 		t.Fatalf("the transcript's earliest record %q was discarded even though no marker anchored the fold", earliest)
 	}
+	// TRIPWIRE: scripted in-process adapter and an in-memory reader, no real
+	// I/O; only fires if the warning is never emitted at all.
+	awaitWithin(t, 10*time.Second, "the un-anchored fold's warning reaching the reader", func() {
+		<-unanchoredWarned
+	})
 	warningsMu.Lock()
 	got := append([]string(nil), warnings...)
 	warningsMu.Unlock()
