@@ -1015,3 +1015,11 @@ base `0f105ab65`. Tasks 1-5 complete, 6-13 in progress.
 
 Subagent-driven TDD implementation with specification and quality review → fresh
 competing code-review loop → four-angle code simplification → final gates → PR.
+
+### Task 6 — ACCEPTED (`14983c610d52fdd122753253eeb323f97873363b`)
+
+C1, the one Critical from Task 6's review, is closed. `TestRetirementSharedChildScratchBindingsRestore` is the plan 776-778 test itself: both checkpoints (shared child across the worktree move / retire / age / sweep / cold restore, and the real root backswap to E0 with A retained and readable at its original absolute path), both sandbox modes, a real delegate child through the real create/send/communicate path, a real mint on the restored session, pointer identity asserted on the reconstructed E0 object, and oracles taken from live-reference values. All three round-1 review notes are honored.
+
+The round also fixed a regression the parent found and root-caused: the production change broke `TestRestoreIdleFailureDisposesTheChildScratch` because `ownsFresh` conflated failure-path scratch disposal with environment-ownership recording. The fix decouples them via a `mintedScratch` teardown flag that the reviewer probe-proved load-bearing.
+
+Parent gates on the accepted commit, all re-run by the parent: new test, regressed test, focused family, family under `-race` unaccompanied, and `make test` (8/8 modules) — all exit 0. Independent scoped re-review on a different model: C1 CLOSED, quality Approved, 0 Critical / 0 Important / 3 Minor record-only, carried to the hardening list for the whole-branch review.
