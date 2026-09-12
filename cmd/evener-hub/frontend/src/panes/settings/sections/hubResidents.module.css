@@ -1,0 +1,77 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.heading {
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+  margin: 0;
+  color: var(--ink-hi);
+}
+
+.meta {
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  margin: 0;
+}
+
+.errorBanner {
+  font-size: var(--font-size-ui);
+  color: var(--attention-ink);
+  margin: 0;
+}
+
+/* Responsive horizontal scroll so the table doesn't overflow the pane on
+   narrow viewports — mirrors the existing responsive overflow convention. */
+.tableWrapper {
+  overflow-x: auto;
+  width: 100%;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-ui);
+}
+
+.table th,
+.table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--edge);
+}
+
+.table th {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+}
+
+.blockers {
+  font-size: var(--font-size-ui);
+  color: var(--attention-ink);
+  margin-top: var(--space-1);
+}
+
+.phase {
+  font-size: var(--font-size-ui);
+}
+
+.compatibility {
+  color: var(--ink-mid);
+}
+
+.archived {
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
