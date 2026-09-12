@@ -25,7 +25,8 @@ Five facts that change the shape of the whole migration.
    The other ten runtime modules in that directory (`model.ts`, `reducer.ts`,
    `activityData.ts`, `activityList.ts`, `activityMerge.ts`, `jobOutput.ts`,
    `docContent.ts`, `sendQueueAvailability.ts`, `sessionErrors.ts`,
-   `stableDelegate.ts` — 3,635 lines) are compiled by the apps' own build, never
+   `stableDelegate.ts` — 3,502 lines, per §5's own table) are compiled by the
+   apps' own build, never
    packed, never qualified.
 2. **`index.ts` carries nine export statements and eleven runtime exports**
    (`protocol/index.ts:1-9`): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
@@ -115,7 +116,7 @@ consumers share into a place both can name, not about discovering new sharing.
 | `stores/navigation/revalidator.ts` (467) | Invalidation → refetch scheduling per resource key | none | native re-implements inside `navigationPages.ts` | PACKAGE CANDIDATE | needs an injected scheduler (it currently takes request callbacks, so this is small) |
 | `stores/navigation/selectors.ts` (431) | Derived views over the navigation graph | none | `mobile-native/src/navigationTree.ts` (21) + `rosterSearch.ts` (144) | DUPLICATED | reads `navigationStore` directly; must take state as an argument |
 | `stores/navigation/types.ts` (176) | Resource keys, scopes, offsets, `NavigationBaseInvalidError` | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
-| `stores/navigation/immutable.ts` (25) | `cloneAndDeepFreezeJSON`, `equalJSON` | none | none | PACKAGE CANDIDATE | none |
+| `stores/navigation/immutable.ts` (25) | `cloneAndDeepFreezeJSON`, `equalJSON` | none | none (single consumer) | PACKAGE CANDIDATE | none technically, but it is imported by `codec.ts:8` and `merge.ts:10`, which both move in C1 — so it crosses the boundary with them as a transitive dependency, not on its own merit |
 | `stores/navigation/shutdownConvergence.ts` (56) | Convergence rule for a shutting-down session's rows | none | unsure — I did not find a native twin | PACKAGE CANDIDATE | none |
 | `stores/navigation/testing.ts` (294) | Navigation fixtures/harness | none | native imports this file (7 sites) | PACKAGE CANDIDATE (2 consumers) | a test-only subpath export, or it stays a source-only file |
 | `stores/panelStoreEviction.ts` (80) | Evicting per-ref panel stores when a pane closes | none | none | PLATFORM-ONLY | reads `shell/workspace` pane types; the eviction *trigger* is host-specific |
@@ -250,7 +251,7 @@ Of the qualification runner:
 
 - A second entry in `package.json` `exports` for the state subpath, plus its
   source files in `tsconfig.build.json` `files` (or a switch to `include`).
-- The three generated consumer programs in `qualify-package.mjs:28-58` extended
+- All four generated consumer programs in `qualify-package.mjs` extended
   to import from the new subpath under both ESM and CJS `NodeNext` resolution.
   Today they name every export literally; a subpath doubles that list.
 - A decision about dependencies. The runner installs with `--offline
@@ -278,15 +279,15 @@ duplication survives.
 **A `state/` subpath inside the package is smaller**, and `mobile/src` should
 not move as-is. Reasons, in order of weight:
 
-- `mobile/src` is 7,595 lines of which 4,383 (`state/conversation.ts`,
-  `state/activity.ts`) are zustand stores. Moving them wholesale imports zustand
+- `mobile/src` is 7,595 lines of which 3,864 (`state/conversation.ts` 3,369,
+  `state/activity.ts` 495) are zustand stores. Moving them wholesale imports zustand
   into a zero-dependency package and moves *one* app's state model into a
   package the other app does not use — the duplication would be enshrined, not
   removed.
 - `mobile/src` depends on the package by relative path today; moving it inside
   turns those into intra-package imports, which is a strict improvement, but it
   does nothing for the web, which imports none of it.
-- The shared logic is not in `mobile/src` alone. The 124 non-`protocol` import
+- The shared logic is not in `mobile/src` alone. The 88 non-`protocol` import
   sites from `mobile-native` into the web tree say the opposite: the largest
   already-shared body of code lives in `cmd/evener-hub/frontend/src/{stores,
   panes,keybindings,transcriptDisplay,widgets}`. A `state/` (or better, several:
@@ -297,7 +298,7 @@ not move as-is. Reasons, in order of weight:
 
 Cheapest first step either way: put the unpacked `protocol/*.ts` modules into
 the build and move `AppwireClientLike` out of `protocol/testing/`. That alone
-converts 3,635 lines from "in the folder" to "in the package" and gives every
+converts 3,502 lines from "in the folder" to "in the package" and gives every
 later PR a place to land. Both are now written: see "Since this was written".
 
 ## 7. Counts
