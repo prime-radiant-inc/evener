@@ -2271,7 +2271,9 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// came after would leave that content attributed to the turn before it.
 	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	if reminder != "" {
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
+		// turnID is the owner appendSteeringTurnDurablyForOwner stamped on the
+		// reminder's entry above.
+		s.announceSteeringTurn(turnID, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
 
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)

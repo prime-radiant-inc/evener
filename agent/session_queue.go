@@ -1007,11 +1007,11 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
 			return true
 		}
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		s.announceSteeringTurn(t.OwningTurnID, steeringInjectedDataFromMessage(msg))
 		return true
 	}
 	s.recordTurn(t, t)
-	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	s.announceSteeringTurn(t.OwningTurnID, steeringInjectedDataFromMessage(msg))
 	return true
 }
 
@@ -1042,7 +1042,19 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 	t.SteeringKind = kind
 	t.OwningTurnID = s.activeTurnOwner()
 	s.recordTurn(t, t)
-	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
+	s.announceSteeringTurn(t.OwningTurnID, events.SteeringInjectedData{Text: text, Kind: kind})
+}
+
+// announceSteeringTurn publishes the live event for a steering turn that was
+// just persisted, carrying the SAME owner as the entry. The projector groups
+// an owned steering by that id and otherwise falls back to whatever turn is
+// running when the event arrives — a different turn than the transcript names
+// whenever delivery is delayed past the turn that produced it, or the session
+// is idle. One helper rather than a copy per producer, so a new producer
+// cannot omit the owner by forgetting it.
+func (s *Session) announceSteeringTurn(owningTurnID string, data events.SteeringInjectedData) {
+	data.OwningTurnID = owningTurnID
+	s.emit(events.EventSteeringInjected, data)
 }
 
 // activeTurnOwner names the logical turn anything published right now belongs

@@ -856,7 +856,7 @@ func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []e
 		if i < len(errs) && errs[i] != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: record.kind, OwningTurnID: record.turn.OwningTurnID})
+		s.announceSteeringTurn(record.turn.OwningTurnID, events.SteeringInjectedData{Text: record.text, Kind: record.kind})
 	}
 }
 
