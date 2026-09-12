@@ -196,6 +196,10 @@ export class MutationOutboxIndexedDB {
         const accepted: MutationOptimisticRecord = {
           version: source.version,
           clientMutationId: source.clientMutationId,
+          // Provenance survives the outbox -> optimistic transition: dropping
+          // it here would make the accepted-but-unreflected mutation
+          // unattributed, and every tab would claim it as its own send.
+          originClientId: source.originClientId,
           intentSequence: source.intentSequence,
           createdAt: source.createdAt,
           targetRef: source.targetRef,
@@ -372,6 +376,9 @@ export class MutationOutboxIndexedDB {
         attachments,
         version: 1,
         clientMutationId: nextMutationId,
+        // The resend is a fresh submission by whichever client performed it -
+        // the recovering tab's own identity, not the original sender's.
+        originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
         state: "submitting",

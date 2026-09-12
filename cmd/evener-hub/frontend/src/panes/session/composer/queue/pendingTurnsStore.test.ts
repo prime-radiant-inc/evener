@@ -356,6 +356,37 @@ test("this client's own and unattributed durable sends stay claimed as its submi
   expect(entry?.fromThisClient).toBe(true);
 });
 
+test("another tab's send stays foreign once the receipt settles it into optimistic storage", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Another tab submits; the daemon accepts its send while this tab is open on
+  // the same origin, so this tab's settle transition carries the record from
+  // the shared outbox into optimistic storage.
+  setMutationClientIdentityForTests("tab-a");
+  const foreign = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "other tab's accepted send" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "other tab's accepted send" }] },
+  });
+  expect(foreign.originClientId).toBe("tab-a");
+  setMutationClientIdentityForTests("tab-b");
+  expect(await storage.settleReceipt(foreign.clientMutationId, "pending")).toBe(true);
+  await connect();
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+
+  // The accepted-but-unreflected send must still read as the other tab's:
+  // the settle transition once rebuilt the record without provenance, which
+  // made it unattributed and let this tab claim it for tier-6 routing.
+  const entry = pending.result.current.find((candidate) => candidate.id === foreign.clientMutationId);
+  expect(entry).toBeDefined();
+  expect(entry?.source).toBe("optimistic");
+  expect(entry?.fromThisClient).toBe(false);
+});
+
 test("recovery action wrappers refresh the durable projection", async () => {
   let mutationId = 0;
   const storage = new MutationOutboxIndexedDB({

@@ -192,7 +192,10 @@ test("Mod+Enter on a search result opens in a new tab via window.open", async ()
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
   expect(openSpy).toHaveBeenCalledTimes(1);
-  expect(openSpy).toHaveBeenCalledWith("/s/local%3Alive1", "_blank");
+  // noopener keeps the opened tab from copying this tab's sessionStorage -
+  // the per-client mutation identity lives there, and a shared identity
+  // would let both tabs claim each other's durable sends.
+  expect(openSpy).toHaveBeenCalledWith("/s/local%3Alive1", "_blank", "noopener");
 });
 
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---
