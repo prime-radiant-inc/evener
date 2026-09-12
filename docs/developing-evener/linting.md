@@ -7,7 +7,12 @@ output freshness, compile floors, and the repo secret scan. `make lint` is
 `secret-scan`. Every one of them is required CI.
 
 `golangci-lint` and `gitleaks` are the only external tools the gate needs;
-`make tools` installs the CI-pinned versions from `.tool-versions`. They
+`make tools` installs the CI-pinned versions from `.tool-versions`. The
+golangci-lint install retries a failed download three times with 5s then 10s of
+backoff, and bounds each fetch of the upstream installer at 10s to connect and
+60s in total, so one `make tools-golangci` cannot exceed about 195s; the release
+download the upstream installer performs with its own curl is outside that
+bound. They
 behave differently when absent: a missing `golangci-lint` fails the gate
 outright, while a missing local `gitleaks` warns and returns zero — CI sets
 `EVENER_GITLEAKS_REQUIRED=1` so absence there is a failure rather than a

@@ -27,6 +27,13 @@
 #
 # EVENER_GOLANGCI_INSTALL_ATTEMPTS is the total number of attempts (default 3,
 # a positive integer). Backoff between them is 5s, then 10s, and so on.
+#
+# The fetch of install.sh is bounded at 10s to connect and 60s in total, because
+# a connection that opens and then stalls is not a failed attempt to curl and
+# would sit there forever instead of reaching the retry. Three attempts plus
+# their backoff therefore cannot exceed about 195s. What that does NOT bound is
+# the release download the upstream installer does with its own curl: this
+# script cannot pass options into it, so a stall there is still unbounded.
 set -euo pipefail
 
 installer_url='https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh'
@@ -62,11 +69,13 @@ attempt_log="$attempt_scratch/attempt.stderr"
 
 # pipefail is what makes the fetch of install.sh part of the attempt: without
 # it a failed curl hands `sh` an empty script, which exits 0 and reports a
-# successful install of nothing.
+# successful install of nothing. The timeouts are what make a stalled fetch a
+# failed attempt rather than a hang: curl has none by default, so a connection
+# that opens and then goes quiet never returns and the retry never happens.
 attempt=1
 while :; do
 	: >"$attempt_log"
-	if { curl -sSfL "$installer_url" | sh -s -- -b "$bindir" "v$version"; } 2>"$attempt_log"; then
+	if { curl -sSfL --connect-timeout 10 --max-time 60 "$installer_url" | sh -s -- -b "$bindir" "v$version"; } 2>"$attempt_log"; then
 		cat "$attempt_log" >&2
 		break
 	fi
