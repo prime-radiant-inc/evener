@@ -4035,3 +4035,49 @@ Bounded retry and resilient installer are functionally sound; four issues remain
 2. Before pushing: `git fetch origin main` on its own line, then `git merge --no-ff --no-edit origin/main` (main is at least 9ff969396 now); `bash -n` both scripts; run the new automated test and the gate once in the bounded path (record elapsed time).
 3. Push; extend the PR body with a "Review round 4" section naming the commit per finding and the new test's target.
 4. Append "Round 4" to your report. Reply with status, commit SHAs, pushed head, the new test's command and output summary, concerns.
+
+## Task 70: PR #1096 round 9 (head 7752265) — native checkpoint, RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1096 (branch codex/mobile-native-checkpoint). Files: `mobile-native/src/hubPaths.ts`, `mobile-native/src/transcriptPresentation.ts` and their tests.
+
+### RoboRev verdict (verbatim, 3 reviewers)
+
+## roborev: Combined Review (`7752265`)
+
+## Verdict: Two issues found — one unvalidated hub payload (Medium), one attachment adjacency regression in a fallback path (Low).
+
+---
+
+### **Medium**
+
+- **`mobile-native/src/hubPaths.ts:45-46`** — `load()` publishes `result.data` directly without validating it is a `string[]`. A malformed `evener/paths/complete` response (non-array, or array with non-strings) escapes the `try/catch` and later crashes `HubPathField.tsx` during `state.paths.map` / `basename(path)` / `isDirEntry(path)`. This is inconsistent with adjacent hub-boundary code (`providerSignIn.ts`, `nativePreferences.ts`) which strictly validates hub payloads.
+  - **Fix**: Validate before publishing — check `Array.isArray(result.data)` with every entry a string, and publish the generic path-load error otherwise.
+
+### **Low**
+
+- **`mobile-native/src/transcriptPresentation.ts:181-187`** — When transcript preferences are unavailable, clustered activities are flattened without relocating their source-linked attachments. Since `projectThread` stores clustered attachments after the entire activity cluster, members such as `a` and `b` with attachments render as `[a, b, attachment-a, attachment-b]` instead of keeping each attachment beside its originating activity. This affects the initial preferences-loading state and hubs where transcript preferences are unsupported.
+  - **Fix**: Apply the same `sourceTranscriptKey` attachment mapping and suppression used by the configured path in the no-config fallback, emitting each member followed by its attachments; add a behavioral test covering attachments for multiple clustered members.
+
+---
+
+### **Areas Reviewed as Clean**
+
+The shared portable activity controller (`activityList.ts`), mobile state/services logic (generation fencing, live-vs-reread ownership, per-member truncation/freezing, clustered activity reconciliation), native control classes and persistence/journaling helpers, CI workflow additions, and the `evener-tomlcheck` exclusion change were reviewed and found to be heavily guarded with corresponding test coverage for the notable failure modes. No issues found in these areas.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 11s | Total: 25m4s*
+
+
+### Coordinator rulings
+
+Verify each finding before touching it (Global Constraint 7 for refutations).
+
+- **Medium (`hubPaths.ts` ~45-46 publishes `result.data` without validating `string[]`): real if the publish is unguarded, fix.** Validate the way the adjacent hub-boundary code does (`providerSignIn.ts`, `nativePreferences.ts` — reuse their validation helper if one exists rather than writing a third), publish the generic path-load error otherwise. RED-first: a non-array response and an array with a non-string entry each publish the error and never reach `state.paths`.
+- **Low (`transcriptPresentation.ts` ~181-187 no-config fallback flattens clustered activities without relocating source-linked attachments): real if the fallback emits members without their attachments beside them, fix under the close-the-class rule.** Two encodings of "where an attachment sits relative to its activity" is the shape that costs rounds. Prefer ONE emitter (member followed by its attachments, keyed on `sourceTranscriptKey`) used by both the configured path and the no-config fallback, with the fallback differing only in that it flattens the cluster; mirror the mapping only if sharing needs a bigger change than mirroring (say which and why). RED-first with a behavioural test: two clustered members each with an attachment render as `[a, attachment-a, b, attachment-b]` in the no-config state.
+
+### Requirements
+
+1. One commit per finding, RED output recorded before each fix, no existing test weakened or re-pointed.
+2. `make test-native` green with counts; house style per file.
+3. Do not push. Do not merge main.
+4. Append a "Task 70" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-54-report.md`; reply with status, commit SHAs, one-line test summary, concerns.
