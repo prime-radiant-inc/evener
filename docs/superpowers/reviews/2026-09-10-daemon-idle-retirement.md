@@ -1152,3 +1152,61 @@ Two honesty notes from its report worth keeping: it accepted `-race` and the ful
 retained logs rather than re-running them, per its read-only mandate, and it observed that the
 `cmd/evener-hub` package it re-ran carried Task 9's in-progress edits and reasoned explicitly that they
 were orthogonal files. Task 8 remains accepted; this review corroborates that decision.
+
+### Task 9 — ACCEPTED (`2b14fcd58d` + fix `6e597a544d` + fix `642f23e1fa`)
+
+Resolve retiring-versus-resume without changing recovery authority. Two fix rounds were needed, both
+forced by the parent's canonical gate rather than by review.
+
+**What landed** (4 files, +1152 across the three commits): `awaitRetiredOwner` plus
+`resumeAfterConfirmedRetirement` in the new `app_retirement_resume.go`; the `resumeThreadLocked`
+factorisation so the public wrapper owns alias-lock acquisition and revalidation while the private body
+does discovery/spawn; routing in `app_rpc.go`; and lifecycle wiring in `app_threadlifecycle.go`.
+`awaitRetiredOwner` treats a daemon in phase `retiring` as **exiting-soon awaiting confirmed exit** under
+the existing discovery authority — not merely unreachable — and retries the original
+`appwire.TurnStartParams` including `ClientMutationID` and input bytes, with no new replay API.
+`ErrRetirementUnavailable` over the wire is retryable, not an explicit-resume-required fence.
+
+**Recovery authority is untouched**, as ruled: the path never calls `BeginForceStop`,
+`PersistForceStop` or `ConfirmForceStop`; force-stop and deletion semantics are unchanged. Relay
+ownership remains per subscription: only the old source handle is invalidated, Hub subscribers are
+preserved, the existing `evener/thread/resync` hydration is requested, and neither transcript nor draft
+is cleared.
+
+**Defect 1 — the sequential distinct-ID flake.** The parent's gate caught
+`TestRetirementResumeSequentialDistinctIDsAccepted` failing with `turn is already active` under
+full-suite load while passing 20/20 in isolation. The writer established the ordering from source and
+stopped at the boundary rather than changing production code: `EventTurnEnded` is emitted at
+`agent/session_state.go:232` from inside `processOneInput` (`session_lifecycle.go:1893`), while
+`ActiveTurnID` is cleared only afterwards at `session_client_mutation_queue.go:1459-1461` via
+`session_lifecycle.go:1118`. The parent ruled the ordering **pre-existing** (Task 9 touched only hub-side
+files) and out of scope, and directed the fix to the barrier plan line 1072 already prescribes —
+"settlement event **and journal reflection**". Fix `6e597a544d` (+18/−0) waits on the journal record
+reaching `OperationState == "terminal"`, a real completion signal because that field, the journal
+persist and the fence clear all happen inside one serialized `clientMutations.mutate`. The pre-existing
+window it works around is carried to the whole-branch review.
+
+**Defect 2 — the fixture cleanup race.** The next parent gate failed differently: the test body passed
+but `t.TempDir()`'s `RemoveAll` found `stateDir/sessions` still non-empty, so something the fixture
+started was still writing when cleanup ran. The writer reproduced it with a dedicated repetition harness
+(5 failures, exact signature) and fixed it in `642f23e1fa` (+34/−2) with **real joins, not sleeps**: a
+`wakeWG` tracking the wake-spawned turn goroutines and an `eventsDrained` channel closed by
+`ConsumeEventsLossless`'s drained callback, with cleanup closing the replacement, closing the session,
+waiting for drained, then waiting on the group — registered after the temp dirs so it runs before their
+LIFO removal. Both `−2` lines were verified by the parent to be substitutions that *add* tracking.
+
+**Verification.** Independent review of the implementation (separate provider and model from the
+writer): **spec compliant / quality Approved, 0 Critical, 0 Important, 5 Minor**. It proved the central
+safety property by sabotage rather than argument — three overlay probes, each RED against a
+`-v`-verified GREEN baseline: neutering the exit-confirmation wait, skipping the process `Wait` alone,
+and removing the `ActiveTurnID` accept fence. Scoped re-review of the fix round: **Approved**, defect
+genuinely resolved, real join, nothing weakened, mechanism removed, no production-side leak, 0 Critical /
+0 Important / 7 Minor. Parent gates on the final commit, all run by the parent: canonical `make test`
+exit 0 with all 8 modules PASS and **zero** occurrences of the `directory not empty` signature (and no
+compile-only false greens), plus the race selector run alone (exit 0, both packages).
+
+The twelve minors are record-only and go to the hardening list. Two are explicitly pre-existing rather
+than introduced: `sess.Close`'s internal joins are budgeted (a pathological emitter outliving the budget
+is joined by nothing beyond it), and `buildReplacement` assumes a single launch. Several are evidence
+hygiene: the RED log carries no HEAD marker, and the report's "files named in the log" phrasing goes
+beyond what the artifact shows — the re-reviewer corrected the writer on that rather than accepting it.
