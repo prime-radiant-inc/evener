@@ -298,7 +298,7 @@ stop_children() {
 # stalled `go list` was left running with ppid 1, holding the GOCACHE and
 # GOMODCACHE locks that every later run on the host needs.
 stop_recorded_package_list_groups() {
-	local pgid_file recorded members leader_pgid stop_status
+	local pgid_file recorded members leader_pgid stop_status waited
 	[ -n "$logdir" ] || return 0
 	# A record is dropped only once it has been acted on: a file removed before
 	# the probe takes the only name anyone had for a survivor with it, and a
@@ -308,8 +308,27 @@ stop_recorded_package_list_groups() {
 		[ -e "$pgid_file" ] || continue
 		recorded="$(cat "$pgid_file" 2>/dev/null)"
 		if [ -z "$recorded" ]; then
-			rm -f "$pgid_file"
-			continue
+			# An attempt caught mid-spawn: the file is created before the fork
+			# and filled in by the child before it splits, so waiting for the pid
+			# is the only way to reach what that child is about to become.
+			# Nothing else can name it — it has no group of its own yet, and a
+			# descendant walk that missed the fork will not find it either. The
+			# wait is the stop's own grace, for the same reason: it is how long
+			# this script is willing to spend proving an attempt is not running.
+			waited=0
+			while [ "$waited" -lt "$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))" ]; do
+				sleep 0.1
+				recorded="$(cat "$pgid_file" 2>/dev/null)"
+				[ -n "$recorded" ] && break
+				waited=$((waited + 1))
+			done
+			if [ -z "$recorded" ]; then
+				# No attempt ever got as far as splitting off. Whatever the
+				# parent spawned is still in the runner's own group, which the
+				# signal that brought us here has already reached.
+				rm -f "$pgid_file"
+				continue
+			fi
 		fi
 		# What is recorded is a group, so ask about the group rather than
 		# about its leader alone: `go list` can exit with a child of the
@@ -395,12 +414,13 @@ package_list_path() {
 	esac
 }
 package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
-# Where the attempt records its own process group, before it splits into it.
+# Where an attempt's process group is recorded: created empty by the parent
+# before the fork, filled in by the child before it splits into that group, and
+# removed when the attempt is reaped. An empty one means an attempt is spawning.
 # That group is the one thing the runner's signal cleanup cannot otherwise
 # reach: the attempt is deliberately in a group of its own, so a signal aimed at
 # the runner's group never touches it, and once the wave subshell holding it
 # dies the attempt is reparented to init and stops being anyone's descendant.
-# The file exists from before `go list` starts until the attempt is reaped.
 package_list_pgid_path() { printf '%s.pgid' "$(package_list_path "$1")"; }
 
 # package_list_timeout_diagnostic LOG ATTEMPTS_MADE MODULE — the failure report.
@@ -586,6 +606,17 @@ run_bounded_package_list() {
 		# renamed into place so a reader sees the whole pid or no file at all; a
 		# marker that cannot be written fails the attempt in its stderr log rather
 		# than leaving an untracked group running.
+		# The record exists before the attempt does. A cleanup that walks
+		# descendants can miss a child forked a moment ago, kill the wave subshell
+		# holding it, and find nothing to stop — the child then fills in its pid,
+		# splits into its own group and runs on. So the file is created here,
+		# before the fork, and an empty one means "an attempt is spawning": the
+		# cleanup waits for the pid rather than deciding there is nothing to stop.
+		if ! : >"$(package_list_pgid_path "$module")"; then
+			printf 'run-module-tests.sh: could not create the process-group record %s for attempt %s; not spawning a package list that nothing could stop.\n' \
+				"$(package_list_pgid_path "$module")" "$attempt" >&2
+			return 1
+		fi
 		perl -e '
 			my $pgid_path = shift @ARGV;
 			open my $fh, ">", "$pgid_path.tmp" or die "pgid file $pgid_path: $!\n";
