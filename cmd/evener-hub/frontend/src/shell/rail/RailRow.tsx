@@ -18,7 +18,10 @@
 // rows change height as sessions change state; see SessionRow's own comment for
 // why that trade is deliberate. The one other thing that earns a second line
 // regardless of state is a row's project name, on a session shown flat across
-// projects (Live/Pinned, depth 0) - see SessionRow's showsProject.
+// projects (Live/Pinned, depth 0) - see SessionRow's showsProject. And since
+// watches: a session whose only pending work is an armed watch earns it too, so
+// the count is never invisible on exactly the rows where a watch is the only
+// thing happening (see SessionRow's showsActivity).
 //
 // CLASS.actions (RailRow.module.css) is what makes the "..." trigger (and a
 // project row's "+") quiet: transparent/borderless by default, revealed only
@@ -36,6 +39,7 @@
 // with no hover to reveal them).
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
+import type { NavigationWatchCadence, NavigationWatchSummary } from "../../protocol/types.gen";
 
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -46,6 +50,7 @@ import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
+  activeWatchCount,
   activeWorkSummary,
   type CompletedJobsFoldRailNode,
   displayState,
@@ -58,6 +63,7 @@ import {
   type RailProject,
   type RailSession,
   type SessionRailNode,
+  type WatchRailNode,
 } from "./railNodes";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
@@ -83,6 +89,9 @@ const CLASS = {
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
+  secondLine: requireClass(styles.secondLine, "RailRow.module.css", "secondLine"),
+  watchCount: requireClass(styles.watchCount, "RailRow.module.css", "watchCount"),
+  watchGlyph: requireClass(styles.watchGlyph, "RailRow.module.css", "watchGlyph"),
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
@@ -212,6 +221,58 @@ export function activityGloss(session: RailSession, activity = activeWorkSummary
   }
   if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
+  return parts.join(" · ");
+}
+
+// A watch's cadence in the rail's compact shorthand: seconds in, "10m" out.
+// Deliberately coarse (no "in 4m", no countdown): the runtime keeps a ticker,
+// not a next-fire instant, so there is no honest instant to show - but the
+// PERIOD is real, and that is what these labels carry.
+export function watchDurationLabel(seconds: number | undefined): string {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.round(seconds % 60);
+    return rest > 0 ? `${minutes}m${rest}s` : `${minutes}m`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.round((seconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.round((seconds % 86400) / 3600);
+  return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+}
+
+// One wire cadence row as a phrase a person reads. "after"/"every"/"progress"
+// all carry a period; "output"/"events" are conditions with no period at all,
+// which is exactly why they read "on ..." instead of "every ...".
+export function watchCadenceLabel(cadence: NavigationWatchCadence): string {
+  switch (cadence.kind) {
+    case "after":
+      return `after ${watchDurationLabel(cadence.seconds)}`.trim();
+    case "every":
+    case "progress":
+      return `every ${watchDurationLabel(cadence.seconds)}`.trim();
+    case "output":
+      return "on output";
+    case "events":
+      return "on events";
+    default:
+      // An unrecognized future cadence kind still says SOMETHING honest rather
+      // than rendering an empty second line.
+      return cadence.kind;
+  }
+}
+
+// A watch row's second line: what it is waiting on, and whether it is still
+// armed. One line per watch, never a countdown - see watchDurationLabel.
+// Exported for direct testing of the join, the way activityGloss is.
+export function watchGloss(watch: NavigationWatchSummary): string {
+  const parts = (watch.cadence ?? []).map(watchCadenceLabel).filter((label) => label !== "");
+  parts.push(watch.active ? "armed" : "not armed");
   return parts.join(" · ");
 }
 
@@ -505,8 +566,22 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // above, made for exactly the fact that rule can't otherwise carry.
   const showsProject = info.depth === 0;
   const notStarted = saysNotStarted(session, showsGloss);
-  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs;
-  const gloss = secondLine(session, showsActivity, showsProject, activity);
+  // The session's own armed watches. Not a subtree rollup: the hub keeps each
+  // watch on its receiver's summary, so this is every watch the fold-out below
+  // this row will show - see railNodes' activeWatchCount.
+  const watchCount = activeWatchCount(session);
+  const hasWatches = watchCount > 0;
+  // A watch is pending work, and it is the one kind that can be the ONLY thing
+  // a session has left to do - so it earns the second line on its own. That is
+  // a deliberate amendment to "a quiet row is one line" (the rule at the top of
+  // this file): without it the count would vanish on exactly the session where
+  // a watch is the only thing happening, which is the case this feature exists
+  // for.
+  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs || hasWatches;
+  // The tinted gloss itself still belongs to a signal row (or to a depth-0
+  // row naming its project). A watch-only quiet row's second line is just its
+  // watch count; glossing "idle" beside the count would be noise, not a gloss.
+  const gloss = secondLine(session, showsGloss, showsProject, activity);
   const showsSecondLine = showsActivity || showsProject;
   // Only a genuine signal row (showsGloss) carries a state to tint - the
   // depth-0-only "just the project name" line (showsProject with no signal)
@@ -543,8 +618,27 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           <TrailingChevron info={info} />
         </span>
         {showsSecondLine && (
-          <span data-testid="rail-row-activity" className={activityClass} title={gloss}>
-            {gloss}
+          // The second line: the watch count and/or the tinted activity gloss,
+          // as siblings. The count is its OWN element rather than text inside
+          // the gloss so it keeps neutral ink - the gloss's activityClass
+          // (alive/attention/danger) must not tint a watch, which is pending
+          // work and not one of the four attention hues. It also leads the
+          // line, so it precedes the branch that tails the gloss (the
+          // deliberate ellipsis sacrifice) and can never be what ellipsis eats.
+          <span className={CLASS.secondLine}>
+            {hasWatches && (
+              <span data-testid="rail-row-watches" className={CLASS.watchCount}>
+                {/* The gloss shares the line's separator convention: the count
+                    carries it only when something follows, so a watch-only
+                    line ends with the word, not a dangling "·". */}
+                {`${watchCount} watch${watchCount === 1 ? "" : "es"}${gloss !== "" ? " ·" : ""}`}
+              </span>
+            )}
+            {gloss !== "" && (
+              <span data-testid="rail-row-activity" className={activityClass} title={gloss}>
+                {gloss}
+              </span>
+            )}
           </span>
         )}
       </span>
@@ -748,6 +842,62 @@ function JobRow({ node }: { node: JobRailNode }) {
   );
 }
 
+// The clock a watch row leads with, DRAWN rather than typed: the app's font
+// ranges stop at U+2215, so a "◷" (or any other clock code point) falls back
+// to a system font - and the rail's accessible name is name-from-content, so a
+// typed glyph would be announced as a stray character rather than as "watch"
+// (see review synthesis §7). aria-hidden because the visually-hidden "Watch:"
+// beside it is the word assistive tech should read.
+function WatchGlyph() {
+  return (
+    <svg
+      data-testid="rail-row-watch-glyph"
+      className={CLASS.watchGlyph}
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// The title a watch row shows: the note the watch was armed with - the reason
+// a person wrote down. The id is the fallback for a note the wire omitted or
+// truncated to nothing, so a row is never blank.
+function watchTitle(watch: NavigationWatchSummary): string {
+  return watch.note?.trim() || watch.id;
+}
+
+// A live watch in its receiver session's fold-out. Quieter than a job row by
+// design: pending work is inventory, not attention - neutral ink, no signal
+// dot, no actions menu, nothing to click. The row's accessible name comes from
+// its content, so the drawn clock is aria-hidden and the visually-hidden
+// "Watch:" supplies the word.
+function WatchRow({ node }: { node: WatchRailNode }) {
+  const { watch } = node;
+  return (
+    <span className={CLASS.railRow} data-testid="rail-row-watch" data-watch-id={watch.id}>
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <WatchGlyph />
+          <span className={CLASS.srOnly}>Watch:</span>
+          {/* The note ellipsizes, so it carries its own full text as a title
+              tooltip - the same contract every other truncating line here
+              keeps. */}
+          <span className={CLASS.label} title={watchTitle(watch)}>
+            {watchTitle(watch)}
+          </span>
+        </span>
+        <span data-testid="rail-row-watch-status" className={CLASS.activity}>
+          {watchGloss(watch)}
+        </span>
+      </span>
+    </span>
+  );
+}
+
 function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode; info: TreeRowInfo }) {
   return (
     <DisclosureFoldRow label={`Completed jobs (${node.count})`} testId="rail-row-completed-jobs-fold" info={info} />
@@ -758,7 +908,8 @@ function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode;
 // maxSidebarSessionsPerTier). Its text starts at the same x as every other
 // row's, with no dot or chevron of its own. Project overflow rows activate a
 // bounded fetch for the capped-away tier rows; synthetic child overflow
-// remains an honest non-actionable count.
+// remains an honest non-actionable count - and a capped watch list reuses the
+// same row with `suffix: "more watches"` instead of the tier cap's "older".
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
   return (
     <span className={CLASS.railRow}>
@@ -770,7 +921,7 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
         data-testid="rail-row-overflow"
         className={CLASS.overflow}
         onClick={info.activate}
-      >{`+${node.count} older`}</span>
+      >{`+${node.count} ${node.suffix ?? "older"}`}</span>
     </span>
   );
 }
@@ -824,6 +975,8 @@ export const RailRow = memo(function RailRow({ node, info, actions, resourceErro
       return LoadingRow();
     case "job":
       return <JobRow node={node} />;
+    case "watch":
+      return <WatchRow node={node} />;
     case "inactiveFold":
       return <InactiveFoldRow node={node} info={info} />;
     case "completedJobsFold":
