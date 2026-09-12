@@ -324,12 +324,12 @@ package_list_path() {
 	esac
 }
 package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
-# Where a module records the process group of the attempt it has running right
-# now. That group is the one thing the runner's signal cleanup cannot otherwise
+# Where the attempt records its own process group, between setpgrp and exec.
+# That group is the one thing the runner's signal cleanup cannot otherwise
 # reach: the attempt is deliberately in a group of its own, so a signal aimed at
 # the runner's group never touches it, and once the wave subshell holding it
 # dies the attempt is reparented to init and stops being anyone's descendant.
-# The file exists for exactly as long as the attempt does.
+# The file exists from before `go list` starts until the attempt is reaped.
 package_list_pgid_path() { printf '%s.pgid' "$(package_list_path "$1")"; }
 
 # package_list_timeout_diagnostic LOG ATTEMPTS_MADE MODULE — the failure report.
@@ -493,10 +493,21 @@ run_bounded_package_list() {
 		# active_pids, and stop_children and cleanup signal and wait on exactly
 		# those — all of it shaped by whether monitor mode is on. Nothing here is
 		# worth making the rest of the script run under different job semantics.
-		perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' \
-			-- go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
+		# The attempt records its own group, between setpgrp and exec, because a
+		# parent that records it afterwards has a window in which the group exists
+		# and nothing names it: a signal arriving there kills the wave subshell
+		# before it writes the file, and the cleanup then has nothing to stop. A
+		# pgid file that cannot be written fails the attempt in its stderr log
+		# rather than leaving an untracked group running.
+		perl -e '
+			setpgrp(0, 0);
+			my $pgid_path = shift @ARGV;
+			open my $fh, ">", $pgid_path or die "pgid file $pgid_path: $!\n";
+			print $fh $$ or die "pgid file $pgid_path: $!\n";
+			close $fh or die "pgid file $pgid_path: $!\n";
+			exec @ARGV or die "exec: $!\n";
+		' -- "$(package_list_pgid_path "$module")" go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
-		printf '%s' "$list_pid" >"$(package_list_pgid_path "$module")"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
