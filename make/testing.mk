@@ -157,9 +157,12 @@ vet:
 ##   it measures the same surface ROOT_FULL=1 make test proves.
 ## fails-when: A broken measurement — go list or go test exiting nonzero, or a
 ##   go list package with no terminal event in the stream — is nonzero in every
-##   mode, and --bless refuses it. Under CHECK=1 in a CI-shaped environment a
-##   package over 1.5x its budget or any per-test ceiling breach is nonzero too;
-##   a missing or empty budget file always exits zero.
+##   mode, and --bless refuses it. A bless writes every package it measured and
+##   preserves the rest of the file, so a narrowed run refreshes part of the
+##   file instead of deleting the entries it did not measure. Under CHECK=1 in a
+##   CI-shaped environment a package over 1.5x its budget or any per-test
+##   ceiling breach is nonzero too; a missing or empty budget file always
+##   exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

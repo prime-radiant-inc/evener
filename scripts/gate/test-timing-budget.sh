@@ -73,6 +73,11 @@
 # that edit, not an automatic ratchet — unlike the coverage floors, a timing
 # budget legitimately gets SMALLER as the suite gets faster, so blessing resets
 # every measured package to the fresh number rather than keeping the max.
+#
+# A bless writes every package it measured and leaves the rest of the file
+# alone: a narrowed run (--modules, --no-web, or a frontend that is not checked
+# out) refreshes the packages it measured instead of deleting the ones it did
+# not, so a rebaseline can never drop a budget nobody measured this time.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -408,9 +413,15 @@ if bless:
 	# keep the order the file already has - re-sorting them would reorder nearly
 	# all of testing-budget.json's packages in a diff that says nothing about
 	# timing - and only packages the file does not mention are ordered by name.
-	order = [pkg for pkg in packages if pkg in sums]
-	order += sorted(pkg for pkg in sums if pkg not in packages)
-	budget["packages"] = {pkg: round(sums[pkg], 2) for pkg in order}
+	#
+	# A bless records what this run measured and never deletes an entry it did
+	# not measure: a narrowed run (--modules, --no-web, or a frontend that is
+	# not checked out) would otherwise silently drop every package it skipped
+	# from the one file whose whole job is to be the checked-in baseline.
+	order = list(packages) + sorted(pkg for pkg in sums if pkg not in packages)
+	budget["packages"] = {
+		pkg: (round(sums[pkg], 2) if pkg in sums else packages[pkg]) for pkg in order
+	}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
