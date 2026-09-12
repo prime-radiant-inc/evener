@@ -30,8 +30,13 @@ state-store extraction has been approved by this landing task."
    into the package "for later" adds a boundary and buys nothing. The 18
    single-consumer candidates in the inventory stay where they are until a
    second consumer arrives in the same PR. This is why phase C schedules 24
-   relocations and not 51. Two deliberate exceptions are labelled where they
-   occur: `secureUUID.ts` (moves inside D26) and `docContent.ts` (C24).
+   relocations and not 51. Three deliberate exceptions are labelled where they
+   occur: `secureUUID.ts` (moves inside D26), `docContent.ts` (C24), and
+   `stores/navigation/immutable.ts` (C1). The third is a different kind:
+   a **transitive dependency**. `codec.ts:8` and `merge.ts:10` both import it,
+   so it crosses the boundary with them or they arrive broken. Rule 7 is about
+   not creating a boundary for its own sake; carrying a 25-line dependency
+   across one already being drawn does not create one.
 
 ## Rows that stay put, permanently
 
@@ -52,9 +57,9 @@ browser or device storage, DOM event routing, dockview, `window.location`, or
 | # | Title | Scope | Oracle | Lines | Deps | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
 | A1 | Ship the nine unpacked protocol modules | In: `protocol/tsconfig.build.json` (`files` goes 6 → 15), `package.json` exports, `index.ts`, `scripts/qualify-package.mjs`. Out: every app file. Deleted: nothing | `make test-api-package`, extended so **all four** generated consumer programs (`esm.mts`:29, `commonjs.cts`:51, `esm-runtime.mjs`:76, `commonjs-runtime.cjs`:85) exercise each newly shipped module under ESM and CJS. The pre-A1 baseline is nine export statements / **eleven** runtime exports — scope off symbols, not statements, and derive the list from one shared manifest rather than retyping it four times | ~200 | — | A module that compiles under `lib: ["ES2022","DOM"]` but needs a browser global at runtime ships silently if the runner only imports it; **#1184 answers this by smoke-calling every shipped module**. `docContent.ts` is held back to C24 for the same reason |
-| A2 | Move `AppwireClientLike` out of `protocol/testing/` | In: new `protocol/clientLike.ts`, **exported from `index.ts` and added to the build `files`** so a package-name import can resolve it; the **25** files that import the type rewritten. Out: the ~111 files that import `FakeClient` — those keep their `testing/fakeClient` import. Deleted: the declaration at `testing/fakeClient.ts:40` | `tsc --noEmit` in both apps; `make test-api-package` for the new export; `make test-web` + `make test-native` otherwise unchanged | ~150 | A1 | Rewriting all 136 `fakeClient` importers would break every test that constructs a `FakeClient`. The type is structural, so a partial rewrite still compiles; grep for the old path in the same PR |
-| A3 | Relocate the package to a top-level directory and alias it | In: `git mv` of `protocol/`, plus **every hard-coded reference to the old path**, which is eight functional files in four categories — generator: `appwire/doc.go:29` (the `go:generate` `-out`); gates: `make/testing.mk:58` (`test-api-package`) and `make/linting.mk:190` (the generated-output freshness list); Go tests: `internal/appwirets/emit_test.go:658`, `appwire/protocol_test.go:335,360`, `makefiletargets_audit_test.go:1073`; CI: `.github/workflows/ci.yml:57,60` and `.github/workflows/ios-testflight.yml:74`. Then `tsconfig.paths`, `vite.config`, `vitest.config`, `mobile-native/tsconfig*.json`, Metro config, the five browser-guard runners. Deleted: nothing | all four gates plus `make generate` and `make lint` — the freshness gate in `make/linting.mk:190` is the one that catches a missed generator path | ~320 | A1, decision 3 | **The reviewer's High finding: without these, the next `make generate` writes `types.gen.ts` to the deleted location and the package gate `cd`s into a directory that no longer exists.** Six further mentions are comments (`appwire/doc.go:8`, `internal/appwirets/main.go:2`, `cmd/evener-tui/hub_model.go:215`, `cmd/evener-hub/e2e_control_invariant_test.go:276`, `server/appwire_runtime_test.go:487`, `server/appwire_turns.go:530`, `agent/session_events.go:120`; eight in all) — update them for accuracy, but nothing breaks if one is missed. Metro and the guard bundlers resolve independently of `tsc`; a green `make test-web` does not prove `make test-web-browser` resolves the alias |
-| A4 | Rewrite deep relative imports to the package name | In: ~700 import sites across both apps (506 web, 202 native). Deleted: nothing | all four gates; no test assertion changes, only test imports | ~800 (import lines only) | A3 | Large mechanical diff hides a semantic edit. Review with `--stat` plus a check that the non-import diff is empty |
+| A2 | Move `AppwireClientLike` out of `protocol/testing/` | In: new `protocol/clientLike.ts`, **exported from `index.ts` and added to the build `files`** so a package-name import can resolve it; the **25** files that import the type rewritten. Out: the ~111 files that import `FakeClient` — those keep their `testing/fakeClient` import. Deleted: the declaration at `testing/fakeClient.ts:40`. `protocol/testing/` stays where it is and keeps its ~111 `FakeClient` importers untouched — A3 moves it and A4 renames those imports, see below | `tsc --noEmit` in both apps; `make test-api-package` for the new export; `make test-web` + `make test-native` otherwise unchanged | ~150 | A1 | Rewriting all 136 `fakeClient` importers would break every test that constructs a `FakeClient`. The type is structural, so a partial rewrite still compiles; grep for the old path in the same PR |
+| A3 | Relocate the package to a top-level directory and alias it | In: `git mv` of `protocol/`, plus **every hard-coded reference to the old path**, which is eight functional files in four categories — generator: `appwire/doc.go:29` (the `go:generate` `-out`); gates: `make/testing.mk:58` (`test-api-package`) and `make/linting.mk:190` (the generated-output freshness list); Go tests: `internal/appwirets/emit_test.go:658`, `appwire/protocol_test.go:335,360`, `makefiletargets_audit_test.go:1073`; CI: `.github/workflows/ci.yml:57,60` and `.github/workflows/ios-testflight.yml:74`. Then `tsconfig.paths`, `vite.config`, `vitest.config`, `mobile-native/tsconfig*.json`, Metro config, the five browser-guard runners. **`protocol/testing/` moves with the directory** and stays out of the tarball; the aliases resolve a second in-repo specifier for it (see "Where test support lives"). Deleted: nothing | all four gates plus `make generate` and `make lint` — the freshness gate in `make/linting.mk:190` is the one that catches a missed generator path | ~320 | A1, decision 3 | **The reviewer's High finding: without these, the next `make generate` writes `types.gen.ts` to the deleted location and the package gate `cd`s into a directory that no longer exists.** Seven further mentions are comments — `appwire/doc.go:8` (a second line in a file A3 already edits), `internal/appwirets/main.go:2`, `cmd/evener-tui/hub_model.go:215`, `cmd/evener-hub/e2e_control_invariant_test.go:276`, `server/appwire_runtime_test.go:487`, `server/appwire_turns.go:530`, `agent/session_events.go:120` — sitting in six files beyond the eight functional ones, so fourteen files name the path in all (searching `*.go`, `*.mk`, `*.yml`, `*.yaml`, `*.sh`, `Makefile`). Update them for accuracy, but nothing breaks if one is missed. Metro and the guard bundlers resolve independently of `tsc`; a green `make test-web` does not prove `make test-web-browser` resolves the alias |
+| A4 | Rewrite deep relative imports to the package name (test support included) | In: ~856 import statements across both apps — 652 web, 204 native, counted as lines matching `from "<any prefix>protocol/<module>"` under `cmd/evener-hub/frontend/src` and `from "<any prefix>cmd/evener-hub/frontend/src/"` under `mobile-native`/`mobile`, tests included. Deleted: nothing | all four gates; no test assertion changes, only test imports | ~950 (import lines only) | A3 | Large mechanical diff hides a semantic edit. Review with `--stat` plus a check that the non-import diff is empty. This PR is also where the ~111 `FakeClient` imports get their permanent specifier; leaving them on a relative path into a moved directory is the failure mode the reviewer caught |
 | A5 | Delete the dead native conversation fixtures | Deleted: `mobile/src/dev/conversationFixtures.ts` (774 lines). Also widen `mobile-native` typechecking to every file under `mobile/src`, closing the gap that hid it | `make test-native` | ~780 (deletion) | — | **Merged as #1186 (`2245f9715`).** None; it had no importer and two dangling type imports |
 
 A5 is independent and can land first if it is convenient.
@@ -86,7 +91,7 @@ with the module and stays the oracle. Sizes are move + import-rewrite lines.
 
 | # | Module moved | Lines | Deps | Risk |
 | --- | --- | --- | --- | --- |
-| C1 | `stores/navigation/{codec,merge,types,immutable}.ts` (1151) | ~1250 | A4 | `codec.ts` deep-freezes; a bundler that strips `Object.freeze` in production changes behavior no test sees |
+| C1 | `stores/navigation/{codec,merge,types,immutable}.ts` (1151) | ~1250 | A4 | `immutable.ts` (25) has one consumer and moves only as a transitive dependency of `codec.ts:8` and `merge.ts:10` — the rule-7 exception is deliberate, see rule 7. `codec.ts` deep-freezes; a bundler that strips `Object.freeze` in production changes behavior no test sees |
 | C2 | `stores/navigation/testing.ts` (294) | ~340 | C1 | Needs a `testing` subpath that ships built, or it stays a source-only file — decide in C1 |
 | C3 | `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1445) | ~1550 | A4, **decision 1** | `registry.ts:6` imports `zustand/vanilla` and `chord.ts:12` imports `tinykeys`; a zero-dependency package cannot pack them. Either hide both behind app adapters (the store shape from decision 1, and a `parseKeybinding` port) or add and qualify both as package dependencies. `registry.ts` is also a module-level singleton; the move must turn it into a factory or two apps share one registry in a test process |
 | C4 | `transcriptDisplay/config.ts` (603) | ~700 | A4 | Encoding is a pinned localStorage contract (`prefs.ts` comment on commit 932eeddca); do not touch `encodeLocalConfig` |
@@ -154,6 +159,28 @@ The web store's exported shape and its `.test.ts` are the contract (rule 4).
 | D27 | `mutationDispatcher.ts` (251) over the port | native's in-memory retry path | ~500 | D26 | High. Serialized per-ref dispatch, blocked/unknown receipts, and "never blindly replay a write after reconnect" (#1116). Connection loss during a mutation is exactly what tests do not cover |
 | D28 | `stores/connection.ts` (107) lifecycle | `ConnectionProvider.tsx` | ~400 | D27, A2 | High. Reconnect rewiring, heartbeat and terminal-protocol handling; a wrong handler set leaves a live app silently stale |
 
+## Where test support lives
+
+`protocol/testing/` (`fakeClient.ts`, `fakeSocket.ts`, `hubWireFixtures.ts`,
+`notifications.ts`, `tokenFlood.ts`) has ~111 importers across both apps and is
+deliberately **not** in the tarball — `tsconfig.build.json` has never listed it,
+and the qualification runner asserts the tarball carries no source files.
+
+The decision: **test support stays inside the package directory, under
+`testing/`, and is addressed by a non-shipped in-repo specifier.** A2 does not
+touch it. A3 moves it along with everything else and teaches the same aliases a
+second entry (`@evener/appwire-client/testing` → `<package>/testing`, resolved by
+`tsconfig.paths`, Vite, vitest, Metro and the guard runners, and absent from
+`package.json` `exports`). A4 rewrites the ~111 imports onto that specifier in
+the same sweep as the runtime ones.
+
+The rejected alternative is hoisting the fakes into each app's own test tree.
+That forks `FakeClient` — whose whole value is checking scripted methods against
+`METHOD_NAMES` from the generated catalog (`fakeClient.ts:20-30`) — into two
+copies that can disagree with each other and with the hub. If a future consumer
+outside this repo needs the fakes, the answer is a published `testing` subpath,
+which is a separate decision and not needed by either app.
+
 ## Temporary seams
 
 Exactly two, each with its removal PR named.
@@ -209,7 +236,7 @@ web app nominally owns; I do not recommend it, but it is defensible if the move
 churn is judged worse than the asymmetry.
 
 A fourth question is settled by the inventory rather than needing a ruling:
-`mobile/src` should not move into the package as a unit. Its 4,383 lines of
+`mobile/src` should not move into the package as a unit. Its 3,864 lines of
 zustand stores are one app's state model, and the largest already-shared body of
 code is in the web tree, not in `mobile/src`. It dissolves module by module
 through D21–D24 and the directory is deleted at the end of D24.
