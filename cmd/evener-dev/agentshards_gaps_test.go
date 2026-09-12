@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -54,6 +55,53 @@ func TestRunAgentShardsBadParallel(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "must be a positive integer") {
 		t.Fatalf("stderr = %q, want 'must be a positive integer'", buf.String())
+	}
+}
+
+// TestRunAgentShardsBadSurveyParallel covers the envPositiveInt error path for
+// AGENT_SHARD_SURVEY_PARALLEL in runAgentShards.
+func TestRunAgentShardsBadSurveyParallel(t *testing.T) {
+	t.Setenv("AGENT_SHARD_COUNT", "2")
+	t.Setenv("AGENT_SHARD_PARALLEL", "1")
+	t.Setenv("AGENT_SHARD_SURVEY_PARALLEL", "-2")
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+	code := runAgentShards(nil)
+	w.Close()
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	if code != 1 {
+		t.Fatalf("runAgentShards with bad survey parallel = %d, want 1", code)
+	}
+	if !strings.Contains(buf.String(), "must be a positive integer") {
+		t.Fatalf("stderr = %q, want 'must be a positive integer'", buf.String())
+	}
+}
+
+// TestSurveyArgsCarryParallelismAndSkip pins the survey's argument list: the
+// parallelism the caller asks for must reach the test binary, and the skip and
+// short passthroughs must stay attached.
+func TestSurveyArgsCarryParallelismAndSkip(t *testing.T) {
+	got := surveyArgs(2, "Flaky", true)
+	want := []string{"-test.count=1", "-test.parallel", "2", "-test.run", "^(Test|Example)", "-test.v", "-test.skip", "Flaky", "-test.short"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("surveyArgs(2, Flaky, true) = %q, want %q", got, want)
+	}
+	got = surveyArgs(6, "", false)
+	want = []string{"-test.count=1", "-test.parallel", "6", "-test.run", "^(Test|Example)", "-test.v"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("surveyArgs(6, \"\", false) = %q, want %q", got, want)
+	}
+	// A config built without runAgentShards leaves the field zero.
+	got = surveyArgs(0, "", false)
+	want = []string{"-test.count=1", "-test.parallel", "6", "-test.run", "^(Test|Example)", "-test.v"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("surveyArgs(0, \"\", false) = %q, want %q", got, want)
 	}
 }
 
