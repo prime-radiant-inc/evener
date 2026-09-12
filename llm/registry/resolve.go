@@ -491,8 +491,12 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	warnings = append(warnings, rec.notes...)
 	if transport.HostRule == HostRuleVertexLocation {
 		// The location the URL was actually built with (buildTransport's
-		// Vars), whichever mapping supplied it.
-		if loc, ok := transport.Vars["GOOGLE_VERTEX_LOCATION"]; ok && loc != "global" && loc != "us" && loc != "eu" {
+		// Vars), whichever mapping supplied it — but only when the host is
+		// the one the rule derived from that location: a directly supplied
+		// GOOGLE_VERTEX_HOST (buildTransport exposes it in Vars) sends the
+		// request elsewhere even when the path still reads the location, and
+		// the location is not that endpoint's problem.
+		if loc, ok := transport.Vars["GOOGLE_VERTEX_LOCATION"]; ok && transport.Vars["GOOGLE_VERTEX_HOST"] == "" && loc != "global" && loc != "us" && loc != "eu" {
 			if detail, ok := vertexGlobalOnlyDetail(hit.wireID); ok {
 				warnings = append(warnings, fmt.Sprintf("regional Vertex location %q %s; use global, us, or eu for %s", loc, detail, hit.wireID))
 			}

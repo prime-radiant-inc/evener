@@ -65,6 +65,12 @@ func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []by
 	if res.Transport.HostRule != registry.HostRuleVertexLocation {
 		return "", false
 	}
+	// A directly supplied GOOGLE_VERTEX_HOST (exposed in Vars by buildTransport)
+	// sends the request to that host even when the path still names a regional
+	// location, so the 404 is the supplied host's own failure.
+	if res.Transport.Vars["GOOGLE_VERTEX_HOST"] != "" {
+		return "", false
+	}
 	if status != http.StatusNotFound || !strings.Contains(string(body), "Publisher model") {
 		return "", false
 	}

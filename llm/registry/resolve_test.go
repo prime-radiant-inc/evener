@@ -298,6 +298,15 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res := mustResolve(t, r, "directhost/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1/custom" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "" {
 		t.Fatalf("a directly supplied host must not expose or warn about the location: %+v", res)
 	}
+	// A host supplied directly is used as-is even when the URL still reads the
+	// location into its path: the request reaches the supplied host, not the
+	// location-derived endpoint, so neither the warning nor a 404 remedy may
+	// claim the location is the problem.
+	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.gateway]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n[providers.gateway.vars]\nGOOGLE_VERTEX_HOST = \"https://gw.example.test\"\n")
+	if res := mustResolve(t, r, "gateway/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1/projects/p/locations/europe-west1" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "europe-west1" || res.Transport.Vars["GOOGLE_VERTEX_HOST"] != "https://gw.example.test" {
+		t.Fatalf("a directly supplied host must keep the path location without the regional warning: %+v", res)
+	}
 }
 
 func TestResolve_HeadersAndCredential(t *testing.T) {
