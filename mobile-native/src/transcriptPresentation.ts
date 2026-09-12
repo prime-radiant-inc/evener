@@ -123,7 +123,9 @@ function activityMode(
 // Without transcript preferences nothing is hidden or summarised: every
 // activity shows in full until the hub's config arrives, or forever on a hub
 // that does not support it.
-const FULL_PRESENTATION: ActivityPresentation = { mode: "full" };
+// One object stands under every activity id in that map, so it is readonly:
+// nothing may edit one row's presentation and move the rest with it.
+const FULL_PRESENTATION = { mode: "full" } as const;
 
 function memberItem(
 	member: ActivityMember,

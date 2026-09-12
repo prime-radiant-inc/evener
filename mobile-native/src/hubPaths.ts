@@ -8,9 +8,7 @@ interface PathState {
 
 // The hub's reply is untrusted wire data: the field maps over it and calls
 // basename on every entry, so anything but a list of strings is a crash
-// downstream rather than a bad suggestion. Validated here the way the other
-// hub boundaries validate theirs (providerSignIn, nativePreferences), which
-// each keep a local predicate rather than sharing one.
+// downstream rather than a bad suggestion.
 function isPathList(value: unknown): value is string[] {
   return (
     Array.isArray(value) && value.every((entry) => typeof entry === "string")
