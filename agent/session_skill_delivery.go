@@ -24,10 +24,11 @@ type skillDeliveryCommit struct {
 	Outcomes               []schema.SkillActivationOutcome
 	SatisfiedInvocationIDs []string
 
-	// reloaded reports that prepare appended typed activation notification
-	// turns to the real history; the caller rebuilds the request so the
-	// restored carriers join this dispatch.
-	reloaded bool
+	// appendedNotifications reports that prepare appended typed activation
+	// notification turns to the real history — restored carriers AND failure
+	// explanations alike; the caller rebuilds the request so every appended
+	// notification joins this dispatch.
+	appendedNotifications bool
 }
 
 // completeSkillContentPresent reports whether the request carries one complete
@@ -244,9 +245,11 @@ func (s *Session) finalizeSkillDeliveryFailure(invocationIDs ...string) {
 // shape (fold, projection, restore) is reloaded from its recorded source under
 // the invocation's route policy and re-admitted through a typed causal
 // activation notification appended to the real history; the caller rebuilds
-// the request when commit.reloaded is set. A reload failure records an
-// explicit failed outcome and finalizes the obligation — never a false
-// delivery. It never starts another compact/reload cycle.
+// the request when commit.appendedNotifications is set. A reload failure
+// records an explicit failed outcome and finalizes the obligation — never a
+// false delivery — and its explanation is an appended notification too, so
+// the model hears it in the dispatch that finalizes the obligation. It never
+// starts another compact/reload cycle.
 func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Profile, turns []schema.Turn, req llm.Request) (llm.Request, skillDeliveryCommit, error) {
 	_ = profile
 	_ = turns
@@ -293,6 +296,7 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				llm.User(systemNotificationf("Skill %q is no longer available from %s: %v", obligation.Identity.Name, obligation.Identity.Source, err)),
 				outcome, obligation)
 			failed = append(failed, obligation.InvocationID)
+			commit.appendedNotifications = true
 			continue
 		}
 		item := batch.Items[0]
@@ -329,12 +333,12 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		}
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
-		commit.reloaded = true
+		commit.appendedNotifications = true
 	}
 	if len(failed) > 0 {
 		s.finalizeSkillDeliveryFailure(failed...)
 	}
-	if commit.reloaded || len(failed) > 0 {
+	if commit.appendedNotifications {
 		// Obligation identity corrections and failure finalizations must be
 		// durable before a retry or restart can lose them.
 		if err := s.saveMeta(); err != nil {

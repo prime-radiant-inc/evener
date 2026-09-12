@@ -414,14 +414,16 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// against the actual projected request. A carrier lost to folding or
 	// projection is reloaded from its recorded source and re-admitted through
 	// a typed causal notification appended to the real history; the request
-	// then rebuilds so the restored carrier joins this dispatch. The commit
-	// itself lands at callModel's final budget seam.
+	// then rebuilds so the restored carrier joins this dispatch. A failed
+	// reload appends its own explanation notification, and the same rebuild
+	// carries it: the model hears why in the dispatch that finalized the
+	// obligation. The commit itself lands at callModel's final budget seam.
 	deliveryReq, deliveryCommit, deliveryErr := s.prepareSkillDelivery(ctx, profile, historyTurns, req)
 	if deliveryErr != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, deliveryErr
 	}
 	req = deliveryReq
-	if deliveryCommit.reloaded {
+	if deliveryCommit.appendedNotifications {
 		if _, err := rebuildForAppendedSkillTurns(); err != nil {
 			return profile, sys, history, req, fullHistory, reasoningEffort, err
 		}
