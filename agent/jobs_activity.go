@@ -1381,6 +1381,10 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision, resume)
 		if !ok {
 			markActivityEnvelopeTooLarge(&tree.Root, len(raw))
+			// The error is part of what makes this page incomplete, and
+			// completeness is derived from the branch: aggregate again so the
+			// counts a reader trusts agree with it.
+			recomputeActivitySession(&tree.Root)
 			return tree, nil
 		}
 		if !dropped.unrepresentable {

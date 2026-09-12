@@ -1615,6 +1615,9 @@ func TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry(t *tes
 		}
 		if tree.Root.Branch.Error != "" {
 			branchErrors = append(branchErrors, tree.Root.Branch.Error)
+			if tree.Root.Counts.Complete {
+				t.Fatalf("page %d reports %q and still calls itself complete: %+v", pages, tree.Root.Branch.Error, tree.Root.Counts)
+			}
 		}
 		next := tree.Root.Branch.Continuation
 		if next == "" {

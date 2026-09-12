@@ -481,6 +481,33 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 	}
 }
 
+// TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts pins that
+// a page reporting its own fixed parts as over the limit says so in its
+// counts too. Completeness is derived from the branch, so an error written
+// after the last aggregation leaves a page that carries a failure and calls
+// itself complete — a reader trusting the summary never looks at the error.
+func TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts(t *testing.T) {
+	t.Parallel()
+	// No entries at all: nothing is dropped, so nothing else marks the page
+	// incomplete on the way.
+	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root",
+		Label:   strings.Repeat("p", activityMaxEncodedBytes+(16<<10)),
+		Entries: []appwire.JobActivityEntry{},
+	}}
+
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Root.Branch.Error == "" {
+		t.Fatal("expected the page to report that it cannot carry an entry")
+	}
+	if got.Root.Counts.Complete {
+		t.Fatalf("counts = %+v, want Complete false alongside branch error %q", got.Root.Counts, got.Root.Branch.Error)
+	}
+}
+
 // TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit pins that the
 // message a skip writes is measured as part of the page. The diagnostic and
 // the advanced token are bytes the client receives like any other, so a page
