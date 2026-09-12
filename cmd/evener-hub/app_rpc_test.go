@@ -11911,6 +11911,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginSetAutoUpgrade,
 		appwire.MethodEvenerPluginCheckNow,
 		appwire.MethodEvenerPluginPreview,
+		appwire.MethodEvenerDaemonList,
+		appwire.MethodEvenerDaemonRetire,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does
