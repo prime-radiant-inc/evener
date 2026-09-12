@@ -1,11 +1,12 @@
 # @evener/appwire-client
 
 The framework independent TypeScript client for Evener's AppWire protocol. It
-has no runtime dependencies and exports the client, transport contract,
-generated protocol types, wire errors and their session classifiers, the pure
-question formatter, the thread view model and its notification reducer, the
-activity tree parser, merge and disclosure rules, the job log tail parser, the
-send/queue availability table, and the stable delegate status rule.
+has no runtime dependencies and exports the client, the connection seam
+applications program against, the transport contract, generated protocol types,
+wire errors and their session classifiers, the pure question formatter, the
+thread view model and its notification reducer, the activity tree parser, merge
+and disclosure rules, the job log tail parser, the send/queue availability
+table, and the stable delegate status rule.
 
 Build and qualify from this directory with `npm run qualification`. The runner
 packs the package, installs that tarball into a temporary consumer, checks ESM
