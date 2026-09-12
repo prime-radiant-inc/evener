@@ -3,11 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,15 +210,140 @@ func TestRetirementReleaseFailureAfterCommitStaysRetiring(t *testing.T) {
 	if err := c.Abort(claim, "prepare_failed"); !errors.Is(err, ErrRetirementUnavailable) {
 		t.Fatalf("Abort after failed release = %v, want ErrRetirementUnavailable", err)
 	}
+	// A failed release never reopens admission: reads still refuse.
+	if _, err := c.Borrow(); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("Borrow after failed release = %v, want ErrRetirementUnavailable", err)
+	}
 }
 
-// TestRetirementSharedChildScratchBindingsRestore is the Task 5 re-review N1
-// carry-forward. Two consumers share one binding: prepare reacquires the single
-// allocation, the root adopts it, and a DISTINCT child consumer resolves the
-// original path through the lease-less borrow branch
+// TestRetirementReleaseRefusesAfterTerminalClose pins the API contract that
+// succeeded only when THIS call performed the non-terminal release. If a
+// terminal Close already consumed the session's single teardown pass, the
+// release must error before any side effect rather than report a vacuous
+// success over a terminally stopped tree.
+func TestRetirementReleaseRefusesAfterTerminalClose(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, _, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %v %v", claim, err)
+	}
+	prepared, err := c.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Commit(claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DrainReaders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// A terminal Close consumes the one teardown pass first.
+	root.Close()
+	before, err := os.ReadFile(root.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.ReleaseForRetirement(context.Background(), prepared); err == nil {
+		t.Fatal("ReleaseForRetirement reported success after a terminal Close spent the teardown pass")
+	}
+	after, err := os.ReadFile(root.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("refused post-Close release still changed the transcript")
+	}
+	// The terminal Close did not touch the controller; the release must not
+	// reopen admission or run a second teardown.
+	if snap := c.Snapshot(); snap.Phase != "retiring" {
+		t.Fatalf("phase after refused post-Close release = %q, want retiring", snap.Phase)
+	}
+}
+
+// TestRetirementDeferredCloseAfterReleaseIsNoOp pins plan 803: closeOnce/terminal
+// ownership must not let a later deferred Close execute a destructive second
+// pass after a successful non-terminal release.
+func TestRetirementDeferredCloseAfterReleaseIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, _, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %v %v", claim, err)
+	}
+	prepared, err := c.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Commit(claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DrainReaders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.ReleaseForRetirement(context.Background(), prepared); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	before, err := os.ReadFile(root.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root has no retention owner")
+	}
+	manifestBefore, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifestBefore.Released {
+		t.Fatal("retirement released the scratch manifest")
+	}
+	// A deferred Close must be a no-op: no terminal transcript evidence, no
+	// phase change, no stop/disposal/unlock (the manifest stays unreleased).
+	root.Close()
+	after, err := os.ReadFile(root.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("deferred Close after retirement ran a destructive second pass on the transcript")
+	}
+	if snap := c.Snapshot(); snap.Phase != "retiring" {
+		t.Fatalf("phase after deferred Close = %q, want retiring", snap.Phase)
+	}
+	manifestAfter, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifestAfter.Released {
+		t.Fatal("deferred Close after retirement released the retained scratch manifest")
+	}
+}
+
+// TestRetirementSharedConsumerBorrowUnit is the unit-level half of the Task 5
+// re-review N1 carry-forward: two consumers share one binding, prepare
+// reacquires the single allocation, the root adopts it, and a DISTINCT child
+// consumer resolves the original path through the lease-less borrow branch
 // (session_scratch_retention.go adoptRetainedScratchFor). The lease is free
-// after the root releases, proving release precedes restore.
-func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
+// after the root releases, proving release precedes restore. The real
+// root/delegate/worktree end-to-end checkpoint lives in
+// TestRetirementSharedChildScratchBindingsRestore.
+func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	owner, ok := root.scratchRetentionOwner()
@@ -228,6 +355,7 @@ func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
 	artifact := filepath.Join(scratch.Dir, "shared-child.bin")
 	want := []byte("shared-child-artifact")
 	if err := os.WriteFile(artifact, want, 0o600); err != nil {
@@ -349,6 +477,22 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 	if manifest.Released {
 		t.Fatal("a live root already has a Released tombstone")
 	}
+	// Negative control: an unreleased sibling in the same base must survive the
+	// very same aged sweep, proving the sweep collects on Released authorization
+	// rather than deleting every aged directory.
+	unreleasedOwner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "unreleased-sibling"}
+	unreleased, err := sandbox.NewSessionScratch(filepath.Dir(scratchDir), dir)
+	if err != nil {
+		t.Fatalf("create unreleased sibling: %v", err)
+	}
+	if err := unreleased.Pin(unreleasedOwner, sandbox.ScratchReference{Dir: unreleased.Dir, Kind: sandbox.ScratchKindUnsandboxed}); err != nil {
+		t.Fatalf("pin unreleased sibling: %v", err)
+	}
+	if err := unreleased.Retain(); err != nil {
+		t.Fatalf("retain unreleased sibling: %v", err)
+	}
+	unreleasedDir := unreleased.Dir
+	t.Cleanup(func() { _ = os.RemoveAll(unreleasedDir) })
 	root.Close()
 	manifest, err = sandbox.LoadScratchRetention(owner)
 	if err != nil {
@@ -361,11 +505,17 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 	if err := os.Chtimes(scratchDir, aged, aged); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chtimes(unreleasedDir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
 	if err := sandbox.SweepCrashedSessionScratch(dir); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 	if _, err := os.Stat(scratchDir); !os.IsNotExist(err) {
 		t.Fatalf("released terminal scratch not collected: %v", err)
+	}
+	if _, err := os.Stat(unreleasedDir); err != nil {
+		t.Fatalf("unreleased sibling was collected by the same sweep: %v", err)
 	}
 }
 
@@ -377,33 +527,40 @@ func readFileOrEmpty(path string) ([]byte, error) {
 	return data, err
 }
 
-// retirementPreservationFixture is a real-git root with a real delegate lane and
-// a required scratch artifact created through the child's own environment. It
-// captures the original durable records and git occupancy markers so both can
-// be compared before and after a non-terminal retirement.
+// retirementPreservationFixture is a real-git root with a genuinely TWO-LEVEL
+// delegate chain: the root creates an isolated delegate, and that delegate
+// creates a second isolated delegate, each ending through the real
+// communicate/result path. It carries one clean and one tracked-dirty occupied
+// lane, a required scratch artifact per child environment, and captures the
+// original durable records and git occupancy markers so both can be compared
+// before and after a non-terminal retirement.
 type retirementPreservationFixture struct {
-	t               *testing.T
-	repo            *wtRepo
-	root            *Session
-	controller      *RetirementController
-	rootID          string
-	delegateID      string
-	childID         string
-	child           *Session
-	lanePath        string
-	artifactPath    string
-	artifactBytes   []byte
-	rootTranscript  string
-	childTranscript string
-	primaryBefore   retirementPrimaryFiles
-	gitMarker       string
-	laneHead        string
-	laneStatus      string
+	t              *testing.T
+	repo           *wtRepo
+	root           *Session
+	controller     *RetirementController
+	rootID         string
+	delegateIDs    []string
+	childIDs       []string
+	childRuntimes  []*Session
+	lanePaths      []string
+	artifactPaths  []string
+	artifactBytes  [][]byte
+	rootTranscript string
+	primaryBefore  retirementPrimaryFiles
+	laneBlocks     map[string]string
+	laneHeads      []string
+	laneStatuses   []string
 }
 
 func retirementFixtureConfig() SessionConfig {
 	cfg := worktreeTestSessionConfig()
 	cfg.MaxSubagentDepth = 2
+	// The minimal worktree registry removes the `delegate` tool from children
+	// (hasConfiguredDelegateCapability), which would make a genuine two-level
+	// chain impossible. Use the full registry so the first delegate can create
+	// the second through its real turn.
+	cfg.testOnly.minimalWorktreeToolRegistry = false
 	return cfg
 }
 
@@ -458,57 +615,206 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 	if err := c.AttachRoot(root); err != nil {
 		t.Fatal(err)
 	}
+	f := &retirementPreservationFixture{t: t, repo: repo, root: root, controller: c, rootID: root.ID(), rootTranscript: root.TranscriptPath()}
 
-	// A real delegate with a real isolation lane, ended through the real
-	// communicate/result path.
-	result := root.createDelegate(context.Background(), delegateArgs{Task: "retirement-lane-delegate", Isolation: "worktree"})
-	if result.Err != nil {
-		t.Fatalf("create isolated delegate: %v", result.Err)
+	// Level 1: the root creates an isolated delegate.
+	f.addIsolatedChild(root, "retirement-lane-one")
+	// Level 2: the first delegate creates another isolated delegate from its own
+	// real run, driven by a scripted provider that issues a real `delegate` tool
+	// call routed by the structural request SessionID. This is what actually
+	// reaches depth 2.
+	root.client.Register(&nestedDelegateAdapter{
+		fakeAdapter:      fakeAdapter{name: "openai"},
+		creatorSessionID: f.childIDs[0],
+		nestedTask:       "retirement-lane-two",
+	})
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), f.delegateIDs[0], "create a nested delegate", 0)
+	if outcome.result.Err != nil {
+		t.Fatalf("send nested-create to first delegate: %v", outcome.result.Err)
 	}
-	retirementSettleDelegate(t, root, result)
-	child := root.delegateController.residentDelegateRuntime(result.DelegateID)
-	if child == nil {
-		t.Fatal("isolated delegate runtime missing")
+	// Settle the first delegate's turn (and, transitively, the nested child's
+	// result) through the real result path before restoring the base adapter.
+	retirementSettleDelegate(t, root, delegateResult{DelegateID: f.delegateIDs[0], ChildSessionID: f.childIDs[0]})
+	// Drain the nested result's notification through one more real root turn so
+	// the tree reaches quiescence.
+	if _, err := root.ProcessInput(context.Background(), "drain-nested-notification", nil); err != nil {
+		t.Fatalf("drain nested notification: %v", err)
 	}
-	childEnv, ok := child.env.(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatal("isolated delegate has no local environment")
+	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	secondID, secondChildID := f.nestedDelegateUnder(f.delegateIDs[0])
+	if secondID == "" {
+		t.Fatal("first delegate did not create a nested delegate")
 	}
-	if childEnv.SessionScratchDir() == "" {
-		if _, err := childEnv.ExecCommand(context.Background(), "true", 5000, childEnv.WorkingDirectory(), nil); err != nil {
-			t.Fatalf("mint child scratch: %v", err)
-		}
-	}
-	scratchDir := childEnv.SessionScratchDir()
-	if scratchDir == "" {
-		t.Fatal("child minted no scratch")
-	}
-	if err := root.installChildScratchRetention(childEnv, result.ChildSessionID); err != nil {
-		t.Fatalf("install child retention: %v", err)
-	}
-	artifact := filepath.Join(scratchDir, "required-artifact.bin")
-	want := []byte("nested-cold-restore-artifact")
-	if err := os.WriteFile(artifact, want, 0o600); err != nil {
+	f.recordIsolatedChild(secondID, secondChildID, "retirement-lane-two")
+	// One clean and one tracked-dirty occupied lane.
+	if err := os.WriteFile(filepath.Join(f.lanePaths[1], "README.md"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	lanePath := childEnv.WorkingDirectory()
-	head := strings.TrimSpace(wtGit(t, lanePath, "rev-parse", "HEAD"))
-	status := wtGit(t, lanePath, "status", "--porcelain=v1")
 
-	f := &retirementPreservationFixture{
-		t: t, repo: repo, root: root, controller: c, rootID: root.ID(),
-		delegateID: result.DelegateID, childID: result.ChildSessionID, child: child,
-		lanePath: lanePath, artifactPath: artifact, artifactBytes: want,
-		rootTranscript: root.TranscriptPath(), childTranscript: child.TranscriptPath(),
-		gitMarker: retirementPorcelain(t, repo.mainRoot), laneHead: head, laneStatus: status,
+	f.laneBlocks = retirementLaneBlocks(t, repo.mainRoot)
+	for i := range f.lanePaths {
+		f.laneHeads = append(f.laneHeads, strings.TrimSpace(wtGit(t, f.lanePaths[i], "rev-parse", "HEAD")))
+		f.laneStatuses = append(f.laneStatuses, wtGit(t, f.lanePaths[i], "status", "--porcelain=v1"))
 	}
 	f.primaryBefore = readRetirementPrimaryFiles(t, repo.stateDir)
 	return f
 }
 
+// nestedDelegateUnder returns the delegate whose descriptor names parentID as
+// its parent (the real depth-2 identity the controller recorded).
+func (f *retirementPreservationFixture) nestedDelegateUnder(parentID string) (delegateID, childSessionID string) {
+	f.t.Helper()
+	f.root.delegateController.mu.Lock()
+	defer f.root.delegateController.mu.Unlock()
+	for id, aggregate := range f.root.delegateController.durable {
+		if aggregate.Descriptor.ParentDelegateID == parentID {
+			return id, aggregate.Descriptor.ChildSessionID
+		}
+	}
+	return "", ""
+}
+
+// nestedDelegateAdapter is a scripted provider. For exactly one creator child
+// session it issues a real `delegate` tool call (worktree isolation) on that
+// session's first turn, then ends; every other session ends through the real
+// communicate/result path. Routing is by the structural Request.SessionID, never
+// by prompt prose.
+type nestedDelegateAdapter struct {
+	fakeAdapter
+	creatorSessionID string
+	nestedTask       string
+	mu               sync.Mutex
+	issued           bool
+}
+
+func (a *nestedDelegateAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	if req.SessionID == a.creatorSessionID {
+		a.mu.Lock()
+		first := !a.issued
+		a.issued = true
+		a.mu.Unlock()
+		if first {
+			raw, err := json.Marshal(map[string]any{"prompt": a.nestedTask, "isolation": "worktree"})
+			if err != nil {
+				return llm.Response{}, err
+			}
+			return toolCallResponse(llm.ToolCallData{ID: "nested-create-" + a.nestedTask, Name: "delegate", Arguments: raw}), nil
+		}
+	}
+	response := communicateWithDefaultOutput("nested-result")
+	response.Provider, response.Model = a.name, req.Model
+	return response, nil
+}
+
+// addIsolatedChild creates one isolated delegate under owner, settles it through
+// the real result path, mints and pins a required scratch artifact through the
+// child's own environment, and records the live lane/scratch/bytes.
+func (f *retirementPreservationFixture) addIsolatedChild(owner *Session, task string) {
+	f.t.Helper()
+	result := owner.createDelegate(context.Background(), delegateArgs{Task: task, Isolation: "worktree"})
+	if result.Err != nil {
+		f.t.Fatalf("create isolated delegate %q: %v", task, result.Err)
+	}
+	retirementSettleDelegate(f.t, f.root, result)
+	f.recordIsolatedChild(result.DelegateID, result.ChildSessionID, task)
+}
+
+// recordIsolatedChild records one already-created isolated child: it mints and
+// pins a required scratch artifact through the child's own live environment and
+// captures the lane/scratch/bytes from the live environment, never the manifest.
+func (f *retirementPreservationFixture) recordIsolatedChild(delegateID, childSessionID, task string) {
+	f.t.Helper()
+	child := f.root.delegateController.residentDelegateRuntime(delegateID)
+	if child == nil {
+		f.t.Fatalf("delegate %q runtime missing", task)
+	}
+	childEnv, ok := child.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		f.t.Fatalf("delegate %q has no local environment", task)
+	}
+	if childEnv.SessionScratchDir() == "" {
+		if _, err := childEnv.ExecCommand(context.Background(), "true", 5000, childEnv.WorkingDirectory(), nil); err != nil {
+			f.t.Fatalf("mint delegate %q scratch: %v", task, err)
+		}
+	}
+	scratchDir := childEnv.SessionScratchDir()
+	if scratchDir == "" {
+		f.t.Fatalf("delegate %q minted no scratch", task)
+	}
+	f.t.Cleanup(func() { _ = os.RemoveAll(scratchDir) })
+	if err := f.root.installChildScratchRetention(childEnv, childSessionID); err != nil {
+		f.t.Fatalf("install delegate %q retention: %v", task, err)
+	}
+	lanePath := childEnv.WorkingDirectory()
+	artifact := filepath.Join(scratchDir, task+".bin")
+	want := []byte("nested-cold-restore-artifact:" + task)
+	if err := os.WriteFile(artifact, want, 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	f.delegateIDs = append(f.delegateIDs, delegateID)
+	f.childIDs = append(f.childIDs, childSessionID)
+	f.childRuntimes = append(f.childRuntimes, child)
+	f.lanePaths = append(f.lanePaths, lanePath)
+	f.artifactPaths = append(f.artifactPaths, artifact)
+	f.artifactBytes = append(f.artifactBytes, want)
+}
+
+// assertLanesUnchanged verifies every original occupancy marker, lane and
+// tracked bytes is byte-identical to the captured live reference. label names
+// the checkpoint in failure messages.
+func (f *retirementPreservationFixture) assertLanesUnchanged(label string) {
+	f.t.Helper()
+	current := retirementLaneBlocks(f.t, f.repo.mainRoot)
+	for i, lanePath := range f.lanePaths {
+		want, ok := f.laneBlocks[lanePath]
+		if !ok {
+			f.t.Fatalf("no captured porcelain block for lane %q", lanePath)
+		}
+		got, present := current[lanePath]
+		if !present {
+			f.t.Fatalf("%s removed lane %q from the worktree registry", label, lanePath)
+		}
+		if got != want {
+			f.t.Fatalf("%s changed lane %q occupancy marker:\nbefore:\n%s\nafter:\n%s", label, lanePath, want, got)
+		}
+		if !strings.Contains(got, "locked ") {
+			f.t.Fatalf("%s left lane %q unlocked", label, lanePath)
+		}
+		if !f.repo.lanePresent(lanePath) {
+			f.t.Fatalf("%s removed the required lane %q", label, lanePath)
+		}
+		if got := strings.TrimSpace(wtGit(f.t, lanePath, "rev-parse", "HEAD")); got != f.laneHeads[i] {
+			f.t.Fatalf("%s changed lane %q HEAD: %q != %q", label, lanePath, got, f.laneHeads[i])
+		}
+		if got := wtGit(f.t, lanePath, "status", "--porcelain=v1"); got != f.laneStatuses[i] {
+			f.t.Fatalf("%s changed lane %q status: %q != %q", label, lanePath, got, f.laneStatuses[i])
+		}
+	}
+}
+
 func retirementPorcelain(t *testing.T, mainRoot string) string {
 	t.Helper()
 	return wtGit(t, mainRoot, "worktree", "list", "--porcelain")
+}
+
+// retirementLaneBlocks returns each worktree's own porcelain block keyed by its
+// exact path, so a comparison targets the original occupancy lanes without being
+// perturbed by an unrelated main-checkout HEAD change or a seeded lane.
+func retirementLaneBlocks(t *testing.T, mainRoot string) map[string]string {
+	t.Helper()
+	blocks := map[string]string{}
+	for _, chunk := range strings.Split(retirementPorcelain(t, mainRoot), "\n\n") {
+		trimmed := strings.TrimSpace(chunk)
+		if trimmed == "" {
+			continue
+		}
+		for _, line := range strings.Split(trimmed, "\n") {
+			if path, ok := strings.CutPrefix(line, "worktree "); ok {
+				blocks[strings.TrimSpace(path)] = trimmed
+			}
+		}
+	}
+	return blocks
 }
 
 // retire runs the exact preparation/commit/release sequence and requires the
@@ -552,10 +858,13 @@ func (f *retirementPreservationFixture) foreignSweep() {
 	if f.repo.lanePresent(seedPath) {
 		f.t.Error("the intervening foreign sweep did not collect a collectible foreign lane")
 	}
+	// The sweep must not have touched any original occupancy marker or lane.
+	f.assertLanesUnchanged("foreign sweep")
 }
 
 // assertRestored restores a fresh root from the durable state and cold-sends to
-// the same delegate, requiring the original lane, scratch path and artifact.
+// EVERY recorded delegate id, requiring each original lane, scratch path and
+// artifact, and then re-verifies every git occupancy marker/registry entry.
 func (f *retirementPreservationFixture) assertRestored() *Session {
 	f.t.Helper()
 	meta, err := schema.LoadSessionMeta(f.repo.stateDir, f.rootID)
@@ -571,53 +880,136 @@ func (f *retirementPreservationFixture) assertRestored() *Session {
 	if restored.ID() != f.rootID {
 		f.t.Fatalf("restored another root: %s", restored.ID())
 	}
-	outcome := (delegateRuntime{owner: restored}).send(context.Background(), f.delegateID, "read-artifact", 0)
-	if outcome.result.Err != nil {
-		f.t.Fatalf("cold send: %v", outcome.result.Err)
+	for i, delegateID := range f.delegateIDs {
+		if i == 0 {
+			// A direct delegate is cold-sent from the restored root.
+			outcome := (delegateRuntime{owner: restored}).send(context.Background(), delegateID, "read-artifact", 0)
+			if outcome.result.Err != nil {
+				f.t.Fatalf("cold send to %s: %v", delegateID, outcome.result.Err)
+			}
+		} else {
+			// A descendant delegate is controllable only by its direct parent, so
+			// it is cold-sent from the already-restored parent's own live turn.
+			f.coldSendThroughParent(restored, i)
+		}
+		rchild := restored.delegateController.residentDelegateRuntime(delegateID)
+		if rchild == nil {
+			f.t.Fatalf("cold delegate %s was not restored", delegateID)
+		}
+		rchildEnv, ok := rchild.env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			f.t.Fatalf("restored child %s has no local environment", delegateID)
+		}
+		if got := filepath.Clean(rchildEnv.WorkingDirectory()); got != filepath.Clean(f.lanePaths[i]) {
+			f.t.Fatalf("restored child %s lane = %q, want original %q", delegateID, got, f.lanePaths[i])
+		}
+		// The required artifact was created through the child's environment; it
+		// must remain readable at its original absolute path. (Symbolic
+		// scratch-path adoption across a worktree move is the shared-child
+		// checkpoint's proof; here the lane branch/ownership and the same IDs are
+		// the nested-restore oracle.)
+		got, err := os.ReadFile(f.artifactPaths[i])
+		if err != nil || !bytes.Equal(got, f.artifactBytes[i]) {
+			f.t.Fatalf("required artifact lost at %q: bytes=%q err=%v", f.artifactPaths[i], got, err)
+		}
 	}
-	rchild := restored.delegateController.residentDelegateRuntime(f.delegateID)
-	if rchild == nil {
-		f.t.Fatal("cold delegate was not restored")
-	}
-	rchildEnv, ok := rchild.env.(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		f.t.Fatal("restored child has no local environment")
-	}
-	if got := filepath.Clean(rchildEnv.WorkingDirectory()); got != filepath.Clean(f.lanePath) {
-		f.t.Fatalf("restored child lane = %q, want original %q", got, f.lanePath)
-	}
-	if got := filepath.Clean(rchildEnv.SessionScratchDir()); got != filepath.Clean(filepath.Dir(f.artifactPath)) {
-		f.t.Fatalf("restored child scratch = %q, want original %q", got, filepath.Dir(f.artifactPath))
-	}
-	got, err := os.ReadFile(f.artifactPath)
-	if err != nil || !bytes.Equal(got, f.artifactBytes) {
-		f.t.Fatalf("required artifact lost at %q: bytes=%q err=%v", f.artifactPath, got, err)
-	}
+	// The restored tree must re-adopt every recorded lane marker unchanged.
+	f.assertLanesUnchanged("cold restore")
 	return restored
 }
 
+// coldSendThroughParent reconstructs the i-th (nested) delegate by driving its
+// direct parent's real turn: the scripted adapter has the parent issue a
+// delegate_send with a blocking wait, which cold-restores the child through the
+// real send path.
+func (f *retirementPreservationFixture) coldSendThroughParent(restored *Session, i int) {
+	f.t.Helper()
+	parentID := f.delegateIDs[i-1]
+	senderChildID := f.childIDs[i-1]
+	if restored.delegateController.residentDelegateRuntime(parentID) == nil {
+		f.t.Fatalf("parent delegate %s was not restored before its child", parentID)
+	}
+	restored.client.Register(&nestedSendAdapter{
+		fakeAdapter:      fakeAdapter{name: "openai"},
+		senderSessionID:  senderChildID,
+		targetDelegateID: f.delegateIDs[i],
+	})
+	outcome := (delegateRuntime{owner: restored}).send(context.Background(), parentID, "resolve-nested-child", 0)
+	if outcome.result.Err != nil {
+		f.t.Fatalf("start parent %s turn: %v", parentID, outcome.result.Err)
+	}
+	sub := restored.subagents.get(senderChildID)
+	if sub == nil {
+		f.t.Fatalf("parent subagent %s missing", senderChildID)
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second): // TRIPWIRE: the parent turn's own completion channel is the mechanism; this only bounds a deadlock in the fixture.
+		f.t.Fatal("parent delegate turn did not finish")
+	}
+	if _, err := restored.ProcessInput(context.Background(), "settle-nested-restore", nil); err != nil {
+		f.t.Fatalf("settle nested restore: %v", err)
+	}
+	restored.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+}
+
+// nestedSendAdapter is a scripted provider that has exactly one sender child
+// issue a blocking delegate_send to a target delegate on its first turn, then
+// ends. Routing is by the structural Request.SessionID.
+type nestedSendAdapter struct {
+	fakeAdapter
+	senderSessionID  string
+	targetDelegateID string
+	mu               sync.Mutex
+	issued           bool
+}
+
+func (a *nestedSendAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	if req.SessionID == a.senderSessionID {
+		a.mu.Lock()
+		first := !a.issued
+		a.issued = true
+		a.mu.Unlock()
+		if first {
+			raw, err := json.Marshal(map[string]any{"to": a.targetDelegateID, "message": "read-nested-artifact", "max_wait_ms": 30000})
+			if err != nil {
+				return llm.Response{}, err
+			}
+			return toolCallResponse(llm.ToolCallData{ID: "nested-send", Name: "delegate_send", Arguments: raw}), nil
+		}
+	}
+	response := communicateWithDefaultOutput("nested-send-result")
+	response.Provider, response.Model = a.name, req.Model
+	return response, nil
+}
+
 // TestRetirementPreservationNestedColdRestore is the real-git end-to-end proof:
-// a root with a resident delegate lane and required scratch artifact retires
+// a root with a genuinely two-level delegate chain (one clean and one
+// tracked-dirty occupied lane, a required scratch artifact per child) retires
 // non-terminally, an intervening foreign sweep leaves every original occupancy
-// marker intact, and a fresh root cold-sends to the same delegate which resolves
-// its original lane and artifact.
+// marker intact, and a fresh root cold-sends to BOTH delegates which resolve
+// their original lanes and artifacts.
 func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 	f := newRetirementPreservationFixture(t)
+	if len(f.delegateIDs) != 2 || len(f.lanePaths) != 2 || len(f.artifactPaths) != 2 {
+		t.Fatalf("fixture depth = %d delegates / %d lanes, want a two-level chain", len(f.delegateIDs), len(f.lanePaths))
+	}
+	if parent := f.root.delegateController.durable[f.delegateIDs[1]].Descriptor.ParentDelegateID; parent != f.delegateIDs[0] {
+		t.Fatalf("second delegate parent = %q, want first delegate %q (not a nested chain)", parent, f.delegateIDs[0])
+	}
+	if f.laneStatuses[1] == "" {
+		t.Fatal("second occupied lane must be tracked-dirty")
+	}
+	if f.laneStatuses[0] != "" {
+		t.Fatal("first occupied lane must be clean")
+	}
 	f.retire()
 
 	// The durable git occupancy markers are unchanged by retirement.
-	if got := retirementPorcelain(t, f.repo.mainRoot); got != f.gitMarker {
-		t.Fatalf("retirement changed the worktree registry:\nbefore:\n%s\nafter:\n%s", f.gitMarker, got)
-	}
-	if !f.repo.lanePresent(f.lanePath) {
-		t.Fatal("retirement removed the required delegate lane")
-	}
-	if got := strings.TrimSpace(wtGit(t, f.lanePath, "rev-parse", "HEAD")); got != f.laneHead {
-		t.Fatalf("retirement changed lane HEAD: %q != %q", got, f.laneHead)
-	}
-	if got := wtGit(t, f.lanePath, "status", "--porcelain=v1"); got != f.laneStatus {
-		t.Fatalf("retirement changed lane status: %q != %q", got, f.laneStatus)
-	}
+	f.assertLanesUnchanged("retirement")
 	// Release appended no terminal transcript evidence.
 	if got, err := os.ReadFile(f.rootTranscript); err != nil || len(got) == 0 {
 		t.Fatalf("root transcript unreadable: %v", err)
@@ -641,8 +1033,21 @@ func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 			t.Fatalf("primary record %q changed across retirement", name)
 		}
 	}
-	// No terminal session state may be persisted: the root and child metadata
-	// still name the same sessions and neither is closed.
+	// A newly created primary record would be a durable stop/cancel/watch-drop/
+	// disposal event written to a new file. Only the tolerated writes the plan
+	// sanctions (a final .meta.json save, the scratch manifest revision bump, and
+	// process-local lock/temp files) may appear.
+	for name := range after {
+		if _, existed := before[name]; existed {
+			continue
+		}
+		if toleratedRetirementPrimaryAddition(name) {
+			continue
+		}
+		t.Fatalf("retirement created a new primary record %q", name)
+	}
+	// No terminal session state may be persisted: the root and every child
+	// metadata still names the same session.
 	rootMeta, err := schema.LoadSessionMeta(f.repo.stateDir, f.rootID)
 	if err != nil {
 		t.Fatalf("root meta after retirement: %v", err)
@@ -650,32 +1055,33 @@ func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 	if rootMeta.ID != f.rootID {
 		t.Fatalf("root meta after retirement = %+v", rootMeta)
 	}
-	childMeta, err := schema.LoadSessionMeta(f.repo.stateDir, f.childID)
-	if err != nil {
-		t.Fatalf("child meta after retirement: %v", err)
-	}
-	if childMeta.ID != f.childID {
-		t.Fatalf("child meta id = %q, want %q", childMeta.ID, f.childID)
+	for _, childID := range f.childIDs {
+		childMeta, err := schema.LoadSessionMeta(f.repo.stateDir, childID)
+		if err != nil {
+			t.Fatalf("child %s meta after retirement: %v", childID, err)
+		}
+		if childMeta.ID != childID {
+			t.Fatalf("child meta id = %q, want %q", childMeta.ID, childID)
+		}
 	}
 
 	f.foreignSweep()
-	// The foreign sweep must not have touched the original occupancy markers or
-	// required lane.
-	if got := retirementPorcelain(t, f.repo.mainRoot); got == "" {
-		t.Fatal("worktree registry unreadable after foreign sweep")
-	}
-	if !f.repo.lanePresent(f.lanePath) {
-		t.Fatal("foreign sweep collected a locked original lane")
-	}
-	if got := strings.TrimSpace(wtGit(t, f.lanePath, "rev-parse", "HEAD")); got != f.laneHead {
-		t.Fatalf("foreign sweep changed lane HEAD: %q != %q", got, f.laneHead)
-	}
-	if got := wtGit(t, f.lanePath, "status", "--porcelain=v1"); got != f.laneStatus {
-		t.Fatalf("foreign sweep changed lane status: %q != %q", got, f.laneStatus)
-	}
 
 	restored := f.assertRestored()
 	defer restored.Close()
+}
+
+// toleratedRetirementPrimaryAddition reports whether name is a legitimate
+// addition the plan sanctions: process-local lock/temp files, the root scratch
+// manifest (whose revision bumps on adoption), and executed ATIF output.
+func toleratedRetirementPrimaryAddition(name string) bool {
+	if strings.HasSuffix(name, ".lock") || strings.Contains(name, ".tmp-") {
+		return true
+	}
+	if strings.HasPrefix(filepath.ToSlash(name), "scratch-retention/") {
+		return true
+	}
+	return false
 }
 
 // TestRetirementForeignSweepPreservesOccupiedLanes is the plan's sweep-scoped
@@ -684,25 +1090,17 @@ func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 // collecting an independently seeded collectible foreign lane.
 func TestRetirementForeignSweepPreservesOccupiedLanes(t *testing.T) {
 	f := newRetirementPreservationFixture(t)
-	// Tracked-dirty lane: a real modification to a tracked file.
-	if err := os.WriteFile(filepath.Join(f.lanePath, "README.md"), []byte("dirty\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dirtyStatus := wtGit(t, f.lanePath, "status", "--porcelain=v1")
-	if dirtyStatus == "" {
-		t.Fatal("lane is not tracked-dirty")
+	if f.laneStatuses[1] == "" {
+		t.Fatal("second occupied lane must be tracked-dirty")
 	}
 	f.retire()
+	f.assertLanesUnchanged("retirement")
 
 	f.foreignSweep()
-	if !f.repo.lanePresent(f.lanePath) {
-		t.Fatal("foreign sweep removed an occupied dirty lane")
-	}
-	if got := wtGit(t, f.lanePath, "status", "--porcelain=v1"); got != dirtyStatus {
-		t.Fatalf("foreign sweep changed dirty lane status: %q != %q", got, dirtyStatus)
-	}
-	if !f.repo.branchExists(t, f.delegateID) {
-		t.Fatal("foreign sweep deleted the occupied lane branch")
+	for _, id := range f.delegateIDs {
+		if !f.repo.branchExists(t, id) {
+			t.Fatalf("foreign sweep deleted the occupied lane branch %s", id)
+		}
 	}
 	restored := f.assertRestored()
 	defer restored.Close()

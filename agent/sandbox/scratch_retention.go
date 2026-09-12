@@ -609,11 +609,29 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 			// which acquires the lease before deciding.
 			continue
 		}
-		removeErr := os.Remove(filepath.Join(dir, scratchPinName))
-		if removeErr != nil && !os.IsNotExist(removeErr) {
-			failures = append(failures, fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, removeErr))
+		// Re-verify identity under the held lease: remove the pin only when it is
+		// still this owner's own pin for this directory and kind. A pin that was
+		// replaced or is malformed is left for the collector, never deleted on
+		// doubt.
+		pin, pinErr := readScratchDirectoryPin(dir)
+		switch {
+		case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
+			removeErr := os.Remove(filepath.Join(dir, scratchPinName))
+			if removeErr != nil && !os.IsNotExist(removeErr) {
+				failures = append(failures, fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, removeErr))
+			}
+		case os.IsNotExist(pinErr):
+			// Already absent; nothing to remove.
+		default:
+			if pinErr != nil {
+				failures = append(failures, fmt.Errorf("sandbox: retention pin for %q is unreadable; left for the collector: %w", dir, pinErr))
+			} else {
+				failures = append(failures, fmt.Errorf("sandbox: retention pin for %q is not this owner's; left for the collector", dir))
+			}
 		}
-		_ = lease.Release()
+		if releaseErr := lease.Release(); releaseErr != nil {
+			failures = append(failures, fmt.Errorf("sandbox: release retention lease for %q: %w", dir, releaseErr))
+		}
 	}
 	return errors.Join(failures...)
 }

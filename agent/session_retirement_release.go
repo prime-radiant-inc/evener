@@ -31,7 +31,11 @@ const (
 
 // retirementReleaseFault injects deterministic failures at the non-terminal
 // release boundary, after Commit and before the corresponding side effect. It
-// is nil in production.
+// is nil in production. Because it is a package-global, tests that set it MUST
+// NOT run in parallel with any test that releases or closes a session; the
+// agent package's tests are sequential today. Its "transcript_close" point is
+// evaluated only under the retirement policy, so it can never affect a terminal
+// close.
 var retirementReleaseFault func(point string) error
 
 func retirementReleaseFailure(point string) error {
@@ -39,6 +43,19 @@ func retirementReleaseFailure(point string) error {
 		return nil
 	}
 	return retirementReleaseFault(point)
+}
+
+// errRetirementTeardownSpent means the session's single release pass (a terminal
+// Close or an earlier non-terminal release) already consumed closeOnce, so this
+// call cannot perform the non-terminal release it was asked for.
+var errRetirementTeardownSpent = errors.New("retirement release: the session teardown pass was already spent")
+
+// retirementTeardownSpent reports whether the session is already closing/closed,
+// i.e. the one teardown pass is spent or in flight. It is side-effect-free.
+func (s *Session) retirementTeardownSpent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closingOrClosedLocked()
 }
 
 // ReleaseForRetirement is the free-function form of the non-terminal release
@@ -65,6 +82,12 @@ func (s *Session) ReleaseForRetirement(ctx context.Context, prepared *Retirement
 		c.setReleaseFailure()
 		return err
 	}
+	// Re-check with no lock held: a Close racing validation must not let a
+	// refused release consume the preparation or touch any child.
+	if s.retirementTeardownSpent() {
+		c.setReleaseFailure()
+		return errRetirementTeardownSpent
+	}
 	// The preparation is one-use: marking it released first makes a concurrent
 	// or repeated release refuse before it can double-close a runtime.
 	prepared.released = true
@@ -72,6 +95,10 @@ func (s *Session) ReleaseForRetirement(ctx context.Context, prepared *Retirement
 	if err := retirementReleaseFailure("before_release"); err != nil {
 		c.setReleaseFailure()
 		return err
+	}
+	if s.retirementTeardownSpent() {
+		c.setReleaseFailure()
+		return errRetirementTeardownSpent
 	}
 
 	// Release the exact resident children leaf-first (prepared.sessions is
@@ -126,6 +153,12 @@ func (s *Session) validateRetirementRelease(prepared *RetirementPreparation) (*R
 	}
 	if prepared.released {
 		return nil, errors.New("retirement release: preparation already released")
+	}
+	// A terminal Close or an earlier release has already consumed the single
+	// teardown pass. Error here — before any side effect — rather than reporting
+	// a vacuous success over a stopped tree.
+	if s.retirementTeardownSpent() {
+		return nil, errRetirementTeardownSpent
 	}
 	c := prepared.claim.controller
 	if c == nil {

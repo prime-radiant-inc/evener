@@ -98,6 +98,12 @@ func (s *Session) releaseRuntime(ctx context.Context, cleanupEnv bool, policy ru
 		releaseErr = s.releaseRuntimeOnce(ctx, cleanupEnv, policy)
 	})
 	if !ran {
+		// A terminal Close or an earlier release already owns the one pass.
+		// Terminal callers keep their void/no-op contract; a retirement caller
+		// must see that its release did not happen.
+		if policy == releaseRetirement {
+			return errRetirementTeardownSpent
+		}
 		return nil
 	}
 	return releaseErr
@@ -643,10 +649,16 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, cleanupEnv bool, polic
 			s.mcpMgr.Close()
 		}
 
-		if err := retirementReleaseFailure("transcript_close"); err != nil {
-			releaseErr = errors.Join(releaseErr, err)
-		} else if err := s.closeAttachedTranscript(); err != nil && retirement {
-			releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
+		if retirement {
+			// The fault seam is evaluated only under the non-terminal policy, so a
+			// set fault can never skip the terminal close's transcript close.
+			if err := retirementReleaseFailure("transcript_close"); err != nil {
+				releaseErr = errors.Join(releaseErr, err)
+			} else if err := s.closeAttachedTranscript(); err != nil {
+				releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
+			}
+		} else {
+			_ = s.closeAttachedTranscript()
 		}
 
 		if !retirement {
