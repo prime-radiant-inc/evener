@@ -107,7 +107,7 @@ func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
 
 	hist := makeSteeringSeed(4)
-	_, commit := s.runPreCompactHook(context.Background(), &hist)
+	_, commit := s.runPreCompactHook(context.Background(), &hist, "")
 
 	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
 	goalIdx := indexOfSteering(hist, "Ship the feature")
@@ -141,12 +141,12 @@ func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
 	s := newTestSession(t)
 	s.setPinnedNote("REMEMBER: do X")
 	hist := makeSteeringSeed(4)
-	_, commit := s.runPreCompactHook(context.Background(), &hist)
+	_, commit := s.runPreCompactHook(context.Background(), &hist, "")
 	if commit == nil {
 		t.Fatal("expected a non-nil commit from the first pass")
 	}
 	commit()
-	_, commit = s.runPreCompactHook(context.Background(), &hist)
+	_, commit = s.runPreCompactHook(context.Background(), &hist, "")
 	if commit != nil {
 		t.Fatal("second pass found no pinned note (already committed-cleared) — expected a nil commit, nothing to defer")
 	}
@@ -170,7 +170,7 @@ func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
 
 	hist := makeSteeringSeed(4)
-	records, _ := s.runPreCompactHook(context.Background(), &hist)
+	records, _ := s.runPreCompactHook(context.Background(), &hist, "")
 
 	if got := kindOfSteeringRecord(records, noteHandoffPrefix); got != events.SteeringKindNoteHandoff {
 		t.Errorf("note handoff kind = %q, want %q", got, events.SteeringKindNoteHandoff)
@@ -199,7 +199,7 @@ func TestRunPreCompactHook_PersistsKindOnTheTurn(t *testing.T) {
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
 
 	hist := makeSteeringSeed(4)
-	s.runPreCompactHook(context.Background(), &hist)
+	s.runPreCompactHook(context.Background(), &hist, "")
 
 	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
 	goalIdx := indexOfSteering(hist, "Ship the feature")
@@ -232,7 +232,7 @@ func TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind(t *testing.
 	s.hookRunner = runner
 
 	hist := makeSteeringSeed(2)
-	records, _ := s.runPreCompactHook(context.Background(), &hist)
+	records, _ := s.runPreCompactHook(context.Background(), &hist, "")
 
 	if got := kindOfSteeringRecord(records, "plugin context"); got != events.SteeringKindPrecompactHook {
 		t.Errorf("plugin ModelContext kind = %q, want %q", got, events.SteeringKindPrecompactHook)

@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -422,21 +423,6 @@ func environmentTurnsRemoved(previous map[string]int, published []schema.Turn) b
 	return false
 }
 
-// compactionRecordOwnerKey carries the fold's owner from stageCompactionEffects
-// down to runPreCompactHook, which needs it for the one record the fold does
-// not write itself: its PreCompact hook's completion, emitted through the
-// session's hook-runner callback rather than through the fold's staging.
-type compactionRecordOwnerKey struct{}
-
-func withCompactionRecordOwner(ctx context.Context, owner string) context.Context {
-	return context.WithValue(ctx, compactionRecordOwnerKey{}, owner)
-}
-
-func compactionRecordOwnerFromContext(ctx context.Context) string {
-	owner, _ := ctx.Value(compactionRecordOwnerKey{}).(string)
-	return owner
-}
-
 // noteClaimRegistrarKey carries the fold staging's registrar for the
 // pinned-note claim from stageCompactionEffects down to runPreCompactHook.
 type noteClaimRegistrarKey struct{}
@@ -481,7 +467,6 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// to keep. See publishFoldTransaction for why the copies are written
 	// first and schema.Turn.CompactionFoldID for what the tag claims.
 	foldID := mintCompactionFoldID()
-	ctx = withCompactionRecordOwner(ctx, compactionOwner)
 	var existingArtifacts []schema.Turn
 	if history != nil {
 		for _, turn := range *history {
@@ -585,7 +570,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			if !preCompactRan {
 				preCompactRan = true
 				var records []steeringTurnRecord
-				records, noteCommit = s.runPreCompactHook(ctx, history)
+				records, noteCommit = s.runPreCompactHook(ctx, history, compactionOwner)
 				for i := len(*history) - len(records); i < len(*history); i++ {
 					(*history)[i].OwningTurnID = compactionOwner
 				}
@@ -727,22 +712,6 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	return ctx, emitFn, commit, injectedTurns
 }
 
-// beginFoldHookOwner names the fold whose PreCompact hook is about to run and
-// returns the restore its caller must run when the hook is done. Restoring the
-// PREVIOUS value rather than clearing keeps two folds' hooks from erasing each
-// other's name when they overlap.
-func (s *Session) beginFoldHookOwner(owner string) func() {
-	s.mu.Lock()
-	previous := s.foldHookOwner
-	s.foldHookOwner = owner
-	s.mu.Unlock()
-	return func() {
-		s.mu.Lock()
-		s.foldHookOwner = previous
-		s.mu.Unlock()
-	}
-}
-
 func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn) bool {
 	for i, candidate := range *existing {
 		if reflect.DeepEqual(candidate, turn) {
@@ -780,7 +749,7 @@ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn
 // content before publish is even attempted. A losing, retried fold re-runs
 // the hook again next attempt — the same re-execution
 // foldWithForceCompact's retry already accepts for the rest of the fold.
-func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn) (records []steeringTurnRecord, commit func()) {
+func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn, owner string) (records []steeringTurnRecord, commit func()) {
 	if history == nil {
 		return nil, nil
 	}
@@ -789,11 +758,10 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
 	if s.hookRunner != nil {
 		// The completion this hook emits goes out through the session's
 		// hook-runner callback, which has no idea a fold is running. Name the
-		// fold for its duration so emitHookCompleted stamps the record with
-		// the owner the fold's other records carry.
-		restore := s.beginFoldHookOwner(compactionRecordOwnerFromContext(ctx))
-		compactResult := s.hookRunner.RunPreCompact(s.apiLogContext(ctx), s.hookInput(plugin.HookPreCompact))
-		restore()
+		// fold on THIS run so the runner stamps its completion with the owner
+		// the fold's other records carry, and every hook dispatched by any
+		// other run keeps its own.
+		compactResult := s.hookRunner.RunPreCompact(hooks.WithRecordOwner(s.apiLogContext(ctx), owner), s.hookInput(plugin.HookPreCompact))
 		for _, m := range compactResult.ModelContext {
 			messages = append(messages, preCompactMessage{text: wrapHookContext(m), kind: events.SteeringKindPrecompactHook})
 		}

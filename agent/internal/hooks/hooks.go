@@ -154,6 +154,26 @@ func (r *Runner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
 	r.onEvent = fn
 }
 
+// recordOwnerKey carries the owner of the records a run's hooks produce.
+type recordOwnerKey struct{}
+
+// WithRecordOwner names the logical turn that owns the records produced by the
+// hooks dispatched under ctx, which the runner stamps on each completion it
+// reports. A fold's PreCompact hook is one of the fold's records, and the
+// fold's goroutine can outlive the turn it staged under, so the turn executing
+// when that hook completes is not who the record belongs to. The name rides on
+// the run's own context, so a hook dispatched by any other run — on its own
+// goroutine, possibly at the same moment — is untouched by it. Unnamed, a
+// completion carries no owner and the caller decides.
+func WithRecordOwner(ctx context.Context, owner string) context.Context {
+	return context.WithValue(ctx, recordOwnerKey{}, owner)
+}
+
+func recordOwner(ctx context.Context) string {
+	owner, _ := ctx.Value(recordOwnerKey{}).(string)
+	return owner
+}
+
 // SetSandboxWrapper confines every command hook this runner spawns to the
 // session's sandbox policy. A nil wrapper leaves hooks unconfined (today's
 // behavior); the secret scrub on hook env still applies regardless.
@@ -597,12 +617,13 @@ func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName st
 			elapsed := time.Since(start)
 			if r.onEvent != nil {
 				r.onEvent(events.EventHookEnd, events.HookEndData{
-					Event:      string(event),
-					HookType:   h.Type,
-					Matcher:    h.Matcher,
-					PluginName: h.PluginName,
-					ExitCode:   results[idx].RawExitCode,
-					DurationMS: elapsed.Milliseconds(),
+					OwningTurnID: recordOwner(ctx),
+					Event:        string(event),
+					HookType:     h.Type,
+					Matcher:      h.Matcher,
+					PluginName:   h.PluginName,
+					ExitCode:     results[idx].RawExitCode,
+					DurationMS:   elapsed.Milliseconds(),
 				})
 			}
 		}(i, hook)
