@@ -789,7 +789,7 @@ func buildModelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []
 		if rawModelID {
 			id = model
 		}
-		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: modelInfoMetaTail(option)})
+		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display, Group: provider, Meta: modelInfoMetaTail(option), Warnings: append([]string(nil), option.Warnings...)})
 	}
 	return items
 }

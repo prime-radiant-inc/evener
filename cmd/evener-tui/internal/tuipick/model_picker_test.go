@@ -1,10 +1,14 @@
 package tuipick
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 )
 
 func TestModelPicker_FilterAndSelect(t *testing.T) {
@@ -161,12 +165,182 @@ func TestModelPicker_DisabledItemRendersReasonAndCannotSelect(t *testing.T) {
 	if mp.done || mp.selected != "" {
 		t.Fatalf("disabled row should keep picker open without selection: done=%v selected=%q", mp.done, mp.selected)
 	}
-
 	tm, _ = mp.Update(tea.KeyMsg{Type: tea.KeyDown})
 	tm, _ = tm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mp = tm.(ModelPicker)
 	if !mp.done || mp.selected != "ollama/llama3" {
 		t.Fatalf("enabled row selection done=%v selected=%q, want ollama/llama3", mp.done, mp.selected)
+	}
+}
+
+// A registry warning (e.g. a global-only model under a regional Vertex
+// location) renders as a dim note under the row while the row stays
+// selectable: it is information, not a disabled or removed option.
+func TestModelPicker_WarningRendersUnderRowAndStaysSelectable(t *testing.T) {
+	const note = `regional location cannot serve this model`
+	items := []ModelPickerItem{
+		{ID: "vertex/gemini-3.8-flash", Display: "gemini-3.8-flash", Warnings: []string{note}},
+	}
+	p := NewModelPicker(items, "", 80)
+
+	plain := ansiPattern.ReplaceAllString(p.View(), "")
+	lines := strings.Split(plain, "\n")
+	var row, warningLine string
+	for _, line := range lines {
+		if strings.Contains(line, "gemini-3.8-flash") {
+			row = line
+		}
+		if strings.Contains(line, note) {
+			warningLine = line
+		}
+	}
+	if row == "" {
+		t.Fatal("no row for the model in view")
+	}
+	if strings.Contains(row, note) {
+		t.Fatalf("the warning must render on its own line, not on the row: %q", row)
+	}
+	if warningLine == "" {
+		t.Fatalf("picker did not render the warning as its own line:\n%s", plain)
+	}
+
+	selectedModel, _ := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	selected := selectedModel.(ModelPicker)
+	if !selected.Done() || selected.Selected() != "vertex/gemini-3.8-flash" {
+		t.Fatalf("a warned row must stay selectable: done:%v selected:%q", selected.Done(), selected.Selected())
+	}
+}
+
+// windowLines is renderBody's model window as the overlay frame renders it:
+// the body wrapped to the frame's content width, minus the filter line and its
+// blank separator and the optional "N items total" trailer. A warning longer
+// than the frame is wide occupies the terminal lines it really occupies.
+func windowLines(t *testing.T, m ModelPicker) (lines []string, trailer bool) {
+	t.Helper()
+	body := strings.TrimRight(ansi.Wrap(m.renderBody(), tuiprim.OverlayContentWidth(m.overlayWidth()), ""), "\n")
+	lines = strings.Split(body, "\n")
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "Filter:") || lines[1] != "" {
+		t.Fatalf("unexpected body preamble:\n%s", body)
+	}
+	lines = lines[2:]
+	if n := len(lines); n > 0 && strings.Contains(lines[n-1], "items total") {
+		trailer = true
+		lines = lines[:n-1]
+	}
+	return lines, trailer
+}
+
+// A warned row is taller than a plain one, so the window is budgeted in
+// rendered lines: a list of warned models must not push the rows and the
+// footer past the overlay's intended height.
+func TestModelPicker_WarnedRowsStayWithinTheBodyBudget(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{
+			ID:       fmt.Sprintf("m%d", i),
+			Display:  fmt.Sprintf("m%d", i),
+			Warnings: []string{"regional location cannot serve this model"},
+		}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.cursor = 10
+
+	lines, trailer := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+	if !trailer {
+		t.Fatalf("a windowed list must still say how many items it has:\n%s", p.renderBody())
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "> m10") {
+		t.Fatalf("the cursor's row must stay in the window:\n%s", p.renderBody())
+	}
+}
+
+// Group headers are rendered lines too: the budget counts them, not just rows.
+func TestModelPicker_GroupHeadersCountTowardTheBodyBudget(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{ID: fmt.Sprintf("m%d", i), Display: fmt.Sprintf("m%d", i), Group: fmt.Sprintf("g%d", i)}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.cursor = 10
+
+	lines, _ := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+}
+
+// The warning a regional Vertex location actually emits is longer than the
+// overlay is wide, and the frame wraps it. The budget must count the terminal
+// lines an item really occupies, or a few warned rows still push the rows and
+// the footer off the screen.
+func TestModelPicker_WrappedWarningsStayWithinTheBodyBudget(t *testing.T) {
+	const note = `regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash`
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{
+			ID:       fmt.Sprintf("m%d", i),
+			Display:  fmt.Sprintf("m%d", i),
+			Warnings: []string{note},
+		}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.cursor = 10
+
+	lines, _ := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "> m10") {
+		t.Fatalf("the cursor's row must stay in the window:\n%s", p.renderBody())
+	}
+}
+
+// A cursor can outlive the list it indexes: a filter narrows the list under a
+// cursor that was set while the list was longer. The window clamps it instead
+// of indexing past the end.
+func TestModelPicker_StaleCursorStillRendersABoundedWindow(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{
+			ID:       fmt.Sprintf("m%d", i),
+			Display:  fmt.Sprintf("m%d", i),
+			Warnings: []string{"regional location cannot serve this model"},
+		}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.filter = "m1" // matches m1 and m10..m19: 11 items for a cursor at 15
+	p.cursor = 15
+
+	lines, _ := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+}
+
+// The clamped cursor is the row the picker is on: it is highlighted, and Enter
+// selects it. A stale cursor that only the windowing clamped left no
+// highlighted row and made Enter a no-op.
+func TestModelPicker_StaleCursorHighlightsAndSelects(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{ID: fmt.Sprintf("m%d", i), Display: fmt.Sprintf("m%d", i)}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.filter = "m1" // m1 and m10..m19: 11 items for a cursor at 15
+	p.cursor = 15
+
+	lines, _ := windowLines(t, p)
+	if !strings.Contains(strings.Join(lines, "\n"), "> m19") {
+		t.Fatalf("the clamped cursor's row must be highlighted:\n%s", p.renderBody())
+	}
+
+	tm, _ := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	selected := tm.(ModelPicker)
+	if !selected.Done() || selected.Selected() != "m19" {
+		t.Fatalf("Enter must select the highlighted row: done=%v selected=%q", selected.Done(), selected.Selected())
 	}
 }
 
