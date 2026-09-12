@@ -1,21 +1,23 @@
 package hub
 
 import (
-	"os"
-	"path/filepath"
 	"runtime"
-	"strings"
 
-	authopenai "primeradiant.com/evener/auth/openai"
-	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/cmdutil"
 )
 
-func openAIStateDirFromEnvList(env []string) string {
-	return openAIStateDirFromLookup(runtime.GOOS, func(key string) (string, bool) {
-		return envLookup(env, key)
-	})
-}
-
+// openAIStateDirFromEnvMap resolves evener's state root for the hub auth
+// controller out of a caller-supplied environment, so a launch env can redirect
+// it with XDG_STATE_HOME or by overriding the home directory. The whole chain —
+// the state home, the home directory and its Windows spelling, and the
+// fallback when no home can be found — lives in cmdutil and is resolved against
+// the supplied env rather than the process env, so the hub lands on the same
+// root the rest of evener would (#1012).
+//
+// It used to resolve the chain itself and had drifted from
+// cmdutil.DefaultStateRoot in two places: on Windows it also accepted
+// HOMEDRIVE+HOMEPATH, which os.UserHomeDir does not, and with no home at all it
+// fell back to os.TempDir() rather than ".".
 func openAIStateDirFromEnvMap(env map[string]string) string {
 	return openAIStateDirFromLookup(runtime.GOOS, func(key string) (string, bool) {
 		value, ok := env[key]
@@ -23,23 +25,10 @@ func openAIStateDirFromEnvMap(env map[string]string) string {
 	})
 }
 
+// openAIStateDirFromLookup resolves the state root from a supplied environment
+// lookup and OS. openAIStateDirFromEnvMap passes the host OS; taking goos as an
+// argument keeps cmdutil's per-OS home spelling drivable from any host in tests.
+// The chain itself is cmdutil's, so the hub keeps no resolution logic of its own.
 func openAIStateDirFromLookup(goos string, lookup func(string) (string, bool)) string {
-	if stateHome, ok := lookup(envvars.XDGStateHome.Name); ok && strings.TrimSpace(stateHome) != "" {
-		return authopenai.DefaultStateDirWithStateHome(stateHome)
-	}
-	if goos == "windows" {
-		if userProfile, ok := lookup(envvars.UserProfile.Name); ok && strings.TrimSpace(userProfile) != "" {
-			return filepath.Join(strings.TrimSpace(userProfile), ".local", "state", "evener")
-		}
-		drive, hasDrive := lookup(envvars.HomeDrive.Name)
-		path, hasPath := lookup(envvars.HomePath.Name)
-		if hasDrive && hasPath && strings.TrimSpace(drive) != "" && strings.TrimSpace(path) != "" {
-			return filepath.Join(strings.TrimSpace(drive)+strings.TrimSpace(path), ".local", "state", "evener")
-		}
-		return filepath.Join(os.TempDir(), ".local", "state", "evener")
-	}
-	if home, ok := lookup(envvars.Home.Name); ok && strings.TrimSpace(home) != "" {
-		return filepath.Join(strings.TrimSpace(home), ".local", "state", "evener")
-	}
-	return filepath.Join(os.TempDir(), ".local", "state", "evener")
+	return cmdutil.StateRootFromLookup(goos, lookup)
 }
