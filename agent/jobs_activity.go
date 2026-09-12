@@ -1360,7 +1360,14 @@ func (r activityTrimResume) offsetAt(path []string) int {
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
 // encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs,
 // revision, and resume feed every continuation trimming mints — see
-// trimActivityTrailingEntry.
+// trimActivityTrailingEntry. Dropping an entry is also the only evidence
+// available about WHY the page was too big: an entry that leaves the page
+// within the limit is what did not fit, and is skipped when no later page
+// could carry it either; one that does not is left for a page that
+// re-targets its session. When the page is still over the limit with
+// nothing left to drop, the response's own fixed parts — labels,
+// diagnostics, the ancestor chain's delegate metadata — are what exceed it,
+// and no continuation can lead anywhere.
 func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) (appwire.JobActivityTree, error) {
 	for {
 		recomputeActivitySession(&tree.Root)
@@ -1371,10 +1378,73 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		if !trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision, resume) {
+		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision, resume)
+		if !ok {
+			markActivityEnvelopeTooLarge(&tree.Root, len(raw))
+			return tree, nil
+		}
+		if !dropped.unrepresentable {
+			continue
+		}
+		recomputeActivitySession(&tree.Root)
+		without, err := json.Marshal(tree)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		if len(without) <= activityMaxEncodedBytes {
+			skipActivityTrimmedEntry(dropped, rootID, delegatesEpoch, jobsEpochs, revision)
 			return tree, nil
 		}
 	}
+}
+
+// markActivityEnvelopeTooLarge reports a page that cannot carry a single
+// entry and withdraws its continuation: every page this token produced would
+// be this same one, so the client is told what is wrong instead of being
+// handed a loop. size is the encoded length of the entry-less response.
+func markActivityEnvelopeTooLarge(session *appwire.JobActivitySession, size int) {
+	if session == nil {
+		return
+	}
+	session.Branch.Continuation = ""
+	appendActivityBranchError(&session.Branch, fmt.Sprintf("activity response is %d bytes with no entries rendered, over the %d-byte limit", size, activityMaxEncodedBytes))
+}
+
+// activityTrimmedEntry is one entry the size trim dropped, and enough to
+// re-mint its session's continuation once the tree has been re-encoded
+// without it. unrepresentable marks the drop that emptied the page's own
+// target: only there does the tree tell you whether the entry itself was
+// what did not fit, since nothing else remained to shrink.
+type activityTrimmedEntry struct {
+	session         *appwire.JobActivitySession
+	path            []string
+	ref             string
+	index           int
+	unrepresentable bool
+}
+
+// skipActivityTrimmedEntry advances the dropped entry's session past it and
+// names it: no page can carry this entry, so a continuation pointing back at
+// it would render the same page and mint the same token forever.
+func skipActivityTrimmedEntry(dropped activityTrimmedEntry, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) {
+	if dropped.session == nil {
+		return
+	}
+	mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+	appendActivityBranchError(&dropped.session.Branch, dropped.ref+" is too large to render in one response and was skipped")
+}
+
+func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, resumeIndex int, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) {
+	dropped.session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
+		Version:        activityContinuationV1,
+		RootID:         rootID,
+		SessionID:      dropped.session.SessionID,
+		Path:           append([]string(nil), dropped.path...),
+		ResumeIndex:    resumeIndex,
+		JobsEpoch:      jobsEpochs[dropped.session.SessionID],
+		DelegatesEpoch: delegatesEpoch,
+		Revision:       revision,
+	})
 }
 
 // trimActivityTrailingEntry drops the deepest, last entry from session's
@@ -1391,44 +1461,38 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 // actually detect a rewrite — or, for a live root, a mutation — that raced
 // this trim. resume locates the page's own starting position so a mint
 // lands in the trimmed session's entry numbering — see activityTrimResume.
-func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) bool {
+// The dropped entry is reported back so the caller, which owns the encoded
+// size, can decide whether that entry was what did not fit — trimming from
+// the tail cannot tell on its own.
+func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) (activityTrimmedEntry, bool) {
 	if session == nil || len(session.Entries) == 0 {
-		return false
+		return activityTrimmedEntry{}, false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision, resume) {
-			return true
+		if dropped, ok := trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision, resume); ok {
+			return dropped, true
 		}
 	}
-	resumeIndex := resume.offsetAt(path) + i
-	if i == 0 && resume.targets(path) {
-		// Trimming works from the tail, so an entry at index 0 is the only
-		// one this session's page still holds — and in the page's own target
-		// nothing else can shrink around it: the resumed page renders the
-		// same entry, trims it again, and mints the same token forever.
-		// Advance past it instead, and say which entry the client will never
-		// see. A DEEPER session reaching index 0 says only that this page ran
-		// out of room; the continuation minted below re-targets that session,
-		// and the ancestors' own entries are gone from that page, so the
-		// entry is delivered there rather than lost here.
-		resumeIndex++
-		appendActivityBranchError(&session.Branch, activityEntryRef(*entry)+" is too large to render in one response and was skipped")
+	// An entry at index 0 of the page's own target leaves the page with
+	// nothing else to shrink: whether the response still exceeds the limit
+	// without it is exactly the question of whether this entry is
+	// representable at all, and only the caller can answer it. A DEEPER
+	// session reaching index 0 says only that this page ran out of room —
+	// the continuation minted here re-targets that session, whose own page
+	// carries none of the ancestors' weight.
+	dropped := activityTrimmedEntry{
+		session:         session,
+		path:            append([]string(nil), path...),
+		ref:             activityEntryRef(*entry),
+		index:           resume.offsetAt(path) + i,
+		unrepresentable: i == 0 && resume.targets(path),
 	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
-	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version:        activityContinuationV1,
-		RootID:         rootID,
-		SessionID:      session.SessionID,
-		Path:           append([]string(nil), path...),
-		ResumeIndex:    resumeIndex,
-		JobsEpoch:      jobsEpochs[session.SessionID],
-		DelegatesEpoch: delegatesEpoch,
-		Revision:       revision,
-	})
-	return true
+	mintActivityTrimContinuation(dropped, rootID, dropped.index, delegatesEpoch, jobsEpochs, revision)
+	return dropped, true
 }
 
 // activityEntryRef names an entry for an operator-facing branch error: an

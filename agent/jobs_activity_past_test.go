@@ -1565,3 +1565,75 @@ func TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage(t 
 		t.Fatalf("branch errors %q name no skipped entry, want one naming job_oversized", branchErrors)
 	}
 }
+
+// TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry pins
+// what a page reports when its own fixed parts — here a session label, which
+// is the user's opening prompt when a session has no name — already exceed
+// the response limit. Dropping the last entry is what a size trim does when
+// the page is too big, but an entry alone on the page is not thereby the
+// reason the page is too big: reporting a small job as too large to render
+// is a false diagnosis, and re-pointing the continuation past it drops a
+// renderable entry for good. Nothing can be rendered here at all, so the
+// page has to say that and stop rather than hand out a token that produces
+// this same page forever.
+func TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedenveloperoot"
+	started := time.Unix(11000, 0).UTC()
+	events := make([]jobstore.Event, 0, 2)
+	for i := range 2 {
+		ts := started.Add(time.Duration(i) * time.Second)
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: "small job",
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: rootID, ProfileID: "openai", Model: "gpt-5.2",
+		OriginalPrompt: strings.Repeat("p", activityMaxEncodedBytes+(256<<10)),
+		CreatedAt:      time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	continuation := ""
+	pages := 0
+	var branchErrors []string
+	for {
+		pages++
+		if pages > 4 {
+			t.Fatalf("walked %d pages without terminating -- a page that can render nothing must not hand out a continuation", pages)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if len(tree.Root.Entries) != 0 {
+			t.Fatalf("page %d rendered %d entries, want none -- the label alone is over the limit", pages, len(tree.Root.Entries))
+		}
+		if tree.Root.Branch.Error != "" {
+			branchErrors = append(branchErrors, tree.Root.Branch.Error)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		continuation = next
+	}
+	if len(branchErrors) == 0 {
+		t.Fatal("no page reported why it rendered nothing")
+	}
+	for _, branchError := range branchErrors {
+		if strings.Contains(branchError, "job_0") {
+			t.Fatalf("branch error %q blames a small job for an oversized response envelope", branchError)
+		}
+		if !strings.Contains(branchError, "no entries rendered") {
+			t.Fatalf("branch error %q does not report the response's own size", branchError)
+		}
+	}
+	if pages != 1 {
+		t.Fatalf("walked %d pages, want 1 -- nothing can be rendered, so there is nothing to continue to", pages)
+	}
+}

@@ -484,10 +484,10 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 func TestTrimActivityTrailingEntry_EmptyReturnsFalse(t *testing.T) {
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
-	if trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}) {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}); ok {
 		t.Error("empty entries should return false")
 	}
-	if trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0, activityTrimResume{}) {
+	if _, ok := trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0, activityTrimResume{}); ok {
 		t.Error("nil session should return false")
 	}
 }
@@ -506,7 +506,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
 		},
 	}
-	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}) {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}); !ok {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	// The recursive call trims the child's entry and returns true; the
@@ -547,7 +547,7 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 		},
 	}
 	jobsEpochs := map[string]uint64{"root": 7, "child": 42}
-	if !trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17, activityTrimResume{}) {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17, activityTrimResume{}); !ok {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	if child.Branch.Continuation == "" {
@@ -647,7 +647,7 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	// The page resumed the child, one hop down, at its sixth entry: j1 and
 	// j2 are the child's entries 5 and 6.
 	resume := activityTrimResume{depth: 1, index: 5}
-	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume); !ok {
 		t.Fatal("expected the child's trailing entry to be trimmed")
 	}
 	cont, err := decodeActivityContinuation(child.Branch.Continuation, "root")
@@ -658,12 +658,18 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 		t.Fatalf("child ResumeIndex = %d, want 6 (the child's own entry after j1, not this page's index 1)", cont.ResumeIndex)
 	}
 
-	// The child's last remaining entry is trimmed next: the child IS the
-	// page's target, so this one is skipped — past its own position, not
-	// past this page's index 0.
-	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
+	// The child's last remaining entry is trimmed next. It empties the
+	// page's own target, so the caller may find it unrepresentable and skip
+	// it: that skip lands past the entry's own position, not past this
+	// page's index 0.
+	lastChildEntry, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume)
+	if !ok {
 		t.Fatal("expected the child's remaining entry to be trimmed")
 	}
+	if !lastChildEntry.unrepresentable {
+		t.Fatal("the child is the page's target and kept nothing back, so its drop must be offered for a skip")
+	}
+	skipActivityTrimmedEntry(lastChildEntry, "root", 0, nil, 0)
 	skipped, err := decodeActivityContinuation(child.Branch.Continuation, "root")
 	if err != nil {
 		t.Fatalf("decode child continuation after the skip: %v", err)
@@ -676,9 +682,14 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	}
 
 	// Now the root's own delegate entry: the root is not the session the
-	// page resumed, so its mint carries no offset and no skip.
-	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
+	// page resumed, so its mint carries no offset, and its drop is never
+	// offered for a skip.
+	rootEntry, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume)
+	if !ok {
 		t.Fatal("expected the root's delegate entry to be trimmed")
+	}
+	if rootEntry.unrepresentable {
+		t.Fatal("the root is not the page's target, so an entry alone there is not thereby unrenderable")
 	}
 	rootCont, err := decodeActivityContinuation(session.Branch.Continuation, "root")
 	if err != nil {
