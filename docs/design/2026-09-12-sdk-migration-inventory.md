@@ -27,7 +27,13 @@ Five facts that change the shape of the whole migration.
    `docContent.ts`, `sendQueueAvailability.ts`, `sessionErrors.ts`,
    `stableDelegate.ts` — 3,635 lines) are compiled by the apps' own build, never
    packed, never qualified.
-2. **`index.ts` exports nine symbols** (`protocol/index.ts:1-9`), and
+2. **`index.ts` carries nine export statements and eleven runtime exports**
+   (`protocol/index.ts:1-9`): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
+   `ConnectionClosedError`, `RequestTimeoutError`, `WireError`,
+   `rpcURLFromLocation`, `composeAskAnswers`, `METHOD_NAMES`,
+   `NOTIFICATION_NAMES`, `STEERING_KINDS`, `THREAD_ITEM_EVENT_KINDS`, plus the
+   type-only re-exports. Count symbols, not statements: an executor scoping work
+   off "nine" under-scopes. And
    `package.json:12-18` declares one export path (`"."`). Everything both apps
    actually import is a deep relative path into the source tree: 229 web sites on
    `protocol/types.gen`, 129 on `protocol/model`, 88 on `protocol/errors`, 15 on
@@ -38,24 +44,35 @@ Five facts that change the shape of the whole migration.
    `AppwireClientLike` is declared at `protocol/testing/fakeClient.ts:40`;
    136 web files import from `protocol/testing/fakeClient`, 20 of them
    production modules (`stores/threads.ts:24`, `shell/clientContext.tsx:10`, …).
-   `protocol/testing/` is not in the build `files` list.
+   `protocol/testing/` is not in the build `files` list. Of those 136 files,
+   only **25** import `AppwireClientLike` itself (27 files name the type; the
+   other two are its declaration and `FakeClient`). The rest import `FakeClient`
+   and keep that import wherever the type moves.
 4. **The package has zero runtime dependencies** (`protocol/package.json` has no
    `dependencies`). Both consumers' stores are zustand
    (`cmd/evener-hub/frontend/package.json` and `mobile-native/package.json`
    both depend on `zustand ^5`). A shared *state* core cannot keep the
    zero-dependency property and use zustand.
-5. **The qualification runner hard-codes the export list three times.**
-   `protocol/scripts/qualify-package.mjs:28-58` writes `esm.mts`, `commonjs.cts`
-   and `esm-runtime.mjs` naming each of the nine exports literally. Any new
-   export or subpath has to be added there in the same change.
+5. **The qualification runner hard-codes the export list four times.**
+   `protocol/scripts/qualify-package.mjs` writes four consumer files —
+   `esm.mts` (line 29), `commonjs.cts` (51), `esm-runtime.mjs` (76) and
+   `commonjs-runtime.cjs` (85) — each naming all eleven runtime exports
+   literally. Any new export or subpath has to be added to all four in the same
+   change. The list should be derived from one shared manifest instead.
 
 The unexpected finding: **the native app already imports 30+ web frontend
-modules by relative path.** `mobile-native/src` reaches into
-`cmd/evener-hub/frontend/src/` at 202 import sites, of which 124 are not
-`protocol/` at all — `transcriptDisplay/config` (10), `stores/navigation/testing`
-(7), `stores/composerInput` (6), `panes/session/composer/slashCompletion` (5),
+modules by relative path.** `mobile-native` reaches into
+`cmd/evener-hub/frontend/src/` at **204 import statements**, of which **88** are
+not `protocol/` at all, spread over **39 distinct web modules** —
+`transcriptDisplay/config` (10), `stores/navigation/testing` (7),
+`stores/composerInput` (6), `panes/session/composer/slashCompletion` (5),
 `panes/session/composer/attachments/limits` (5), `widgets/codeblock/ansi` (4),
-`stores/navigation/codec` (4), `shell/reasoningEffort` (4), and more. The web
+`stores/navigation/codec` (4), `shell/reasoningEffort` (4), and more.
+Counting method, so the figures are reproducible: lines under `mobile-native`
+matching `from "<any prefix>cmd/evener-hub/frontend/src/`, tests included,
+`node_modules` excluded; "non-`protocol`" drops the lines whose path contains
+`src/protocol/`. An earlier draft of this document said "202 / 124"; 124 was an
+arithmetic error and the per-module breakdown above always summed to 88. The web
 imports nothing from `mobile/src`. So the dependency is already one-directional
 and already deep; the migration is mostly about *relocating* modules two
 consumers share into a place both can name, not about discovering new sharing.
@@ -92,7 +109,7 @@ consumers share into a place both can name, not about discovering new sharing.
 | `stores/mutationDispatcher.ts` (251) | Serialized per-ref dispatch of outbox records, blocked/unknown handling | none (dispatches by `MethodName`) | `mobile/src/state/conversation.ts:299-315` (`ConversationMutationState`, in-memory only) | DUPLICATED | needs the storage interface below; native's twin has no durability at all |
 | `stores/mutationOutbox.ts` (241) | Outbox record shapes, discovery reasons, recovery kinds | none | none | PACKAGE CANDIDATE | pure types + helpers; parametrize over a storage port |
 | `stores/mutationOutboxIndexedDB.ts` (562) | IndexedDB persistence of the outbox | none | `mobile-native/src/draftRepository.ts` (303, expo-sqlite) | PLATFORM-ONLY | never moves; it is the implementation behind the storage port |
-| `stores/navigation/store.ts` (867) | Navigation resource graph, attention, pagination | `evener/navigation/{read,invalidated}`, `evener/attention/changed` | `mobile-native/src/navigationPages.ts` (394) + `navigationActions.ts` (302) + `navigationReveal.ts` (131) + `pinNavigation.ts` (171) | DUPLICATED | store core without zustand |
+| `stores/navigation/store.ts` (867) | Navigation resource graph, attention, pagination | `evener/navigation/{read,invalidated}`, `evener/attention/changed` | `mobile-native/src/navigationPages.ts` (394) + `navigationActions.ts` (302) + `navigationReveal.ts` (131) + `pinNavigation.ts` (171) | DUPLICATED | store core without zustand (`store.ts:1-2`), plus a host persistence port: `store.ts:203` calls `loadExpansion()` in the initial state, and `shell/rail/railExpansion.ts:40,68` is `localStorage` |
 | `stores/navigation/codec.ts` (786) | Snapshot/delta decode, normalization, deep freeze | none | native imports this file (4 sites) | PACKAGE CANDIDATE (2 consumers) | none — already pure |
 | `stores/navigation/merge.ts` (164) | Delta application onto a normalized graph | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
 | `stores/navigation/revalidator.ts` (467) | Invalidation → refetch scheduling per resource key | none | native re-implements inside `navigationPages.ts` | PACKAGE CANDIDATE | needs an injected scheduler (it currently takes request callbacks, so this is small) |
@@ -109,7 +126,7 @@ consumers share into a place both can name, not about discovering new sharing.
 | `stores/testing/stalledIndexedDB.ts` (33) | A deliberately stalled IDB double | none | none | PLATFORM-ONLY | — |
 | `stores/transcriptDisplay.ts` (707) | Hub + local transcript-display config, viewport-aware | `evener/settings/transcriptDisplay/{get,patch,changed}` | `mobile-native/src/nativePreferences.ts` (839) | DUPLICATED | depends on `shell/useIsMobile` and localStorage; the hub half is portable, the local half is not |
 
-## 3. Web state/projection/logic outside `stores/` (47 rows)
+## 3. Web state/projection/logic outside `stores/` (48 rows)
 
 The web has 497 non-test TS/TSX files and 87,278 lines outside `protocol/`.
 Most are React components and CSS modules and are out of scope. These are the
@@ -121,14 +138,14 @@ migration has to place.
 | `transcriptDisplay/config.ts` (603) | Transcript display config: wire↔local encode/decode, presets, fingerprint | none | native imports this file (10 sites) | PACKAGE CANDIDATE (2 consumers) | none — pure |
 | `transcriptDisplay/projector.ts` (415) | `ThreadModel` → display entries at a content level; failure/interaction classification | none | `mobile/src/conversation/project.ts` (787), whose comment at line ~108 says it "mirrors the web frontend's hasItemFailure/hasFailureStatus/isNonZeroExit predicate (projector.ts:118-130) exactly" | DUPLICATED | this is the clearest duplication in the repo — one side says so in a comment |
 | `transcriptDisplay/renderContext.tsx` (246) | React context for the projector | none | none | PLATFORM-ONLY | React |
-| `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1445) | Chord grammar, default table, override delta application, semantic validation | none | native imports `defaults`, `display`, `registry`, `validation` (1 site each) | PACKAGE CANDIDATE (2 consumers) | `registry.ts` is a module-level singleton; needs an instance factory |
+| `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1445) | Chord grammar, default table, override delta application, semantic validation | none | native imports `defaults`, `display`, `registry`, `validation` (1 site each) | PACKAGE CANDIDATE (2 consumers) | `registry.ts:6` imports `zustand/vanilla` and `chord.ts:12` imports `tinykeys` — a zero-dependency package cannot take them as-is; `registry.ts` is also a module-level singleton needing an instance factory |
 | `keybindings/dispatcher.ts` (197) | Keydown routing through tinykeys | none | native has its own | PLATFORM-ONLY | DOM events |
 | `panes/session/chrome/taskData.ts` (102) | Narrows `TaskListResponse.data` (typed `unknown`) to `TaskRow[]` | none | `mobile/src/services/activity.ts` `TaskGroup`/`deriveOpenTaskCount` (different source: `TaskAggregate` on the Thread) | DUPLICATED | same user-facing counts from two wire sources; unify on one |
 | `panes/session/chrome/taskGroups.ts` (24) | Status partition for the tasks panel | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/chrome/taskTime.ts` (28) | Task recency/completion formatting | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/chrome/activityRows.ts` (208) | `ActivityTree` → flat display rows | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/chrome/{activityFormat,statusFormat,detailsAccounting}.ts` (243) | Activity/status labels; token and cost accounting | none | `mobile/src/services/activity.ts` `UsageSummary`/`projectUsage` | DUPLICATED | pick one accounting implementation |
-| `panes/session/composer/slashCompletion.ts` (334) | Inline `/`-completion parser | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
+| `panes/session/composer/slashCompletion.ts` (334) | Inline `/`-completion parser | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | imports `slashCommandInvocation` from `shell/palette/catalogCommands.ts:13`; that helper must cross the boundary first or with it |
 | `panes/session/composer/submitRouting.ts` (50) | send/queue/steer/drain routing decision | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `protocol/sendQueueAvailability` (also unpacked) |
 | `panes/session/composer/attachments/limits.ts` (29) | 8 files / 8 MiB attachment caps | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/composer/attachments/textareaMarkers.ts` (60) | `[image N]` marker splicing | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
@@ -139,6 +156,7 @@ migration has to place.
 | `panes/session/composer/queue/pendingReconcile.ts` (137) | Reconciling optimistic turns against `ThreadModel` | none | `mobile/src/conversation/project.ts` `projectQueue` (line 759) | DUPLICATED | pure; unify with `projectQueue` |
 | `panes/session/composer/draft.ts` (76) | Per-ref sticky composer drafts | none | `mobile-native/src/{nativeDrafts,draftRepository}.ts` (318) | PLATFORM-ONLY | localStorage vs expo-sqlite; the *rule* is one line |
 | `panes/session/composer/recovery/recoveryDraft.ts` (76) | Failed-mutation record → restorable composer draft | none | unsure — native recovery path not verified | PACKAGE CANDIDATE | depends on `useAttachments`' `PendingAttachment` type |
+| `panes/session/transcript/toolRenderers.ts:189` `toolCallFailed` (6) | A third settled-item failure predicate, registry-driven | none | the shared `protocol/itemFailure.ts` introduced by PR #1189 | DUPLICATED | does not trim `error`, does not treat `interrupted` as failure, ignores `exitCode`, and adds a per-tool `descriptor.failed` hook the other two have no equivalent for. Filed as issue #1190; 43 files reach the renderer registry |
 | `panes/session/transcript/{toolRuns,toolSupersession,turnFailure}.ts` (247) | Tool-run folding, supersession, turn-failure classification | none | `mobile/src/conversation/project.ts` `clusterActivities` (line 528) | DUPLICATED | pure on both sides |
 | `panes/session/transcript/messages/{format,systemGrouping,turnMeta}.ts` (212) | Message formatting, system-notice grouping, turn metadata | none | native imports `format` (1 site); `systemGrouping` ≈ `project.ts` `systemFamily` | DUPLICATED | pure |
 | `panes/session/transcript/tools/subagentModuleStore.ts` (138) | Per-delegate presentation state | none | `mobile-native/src/delegateDetails.ts` (116) | DUPLICATED | uses `protocol/stableDelegate.ts` (unpacked) |
@@ -154,11 +172,11 @@ migration has to place.
 | `notifications/{attention,channels,favicon,leader,title}.ts` (295) | OS notification policy, tab title, favicon, Web Locks leader election | none | native uses its own notification stack | PLATFORM-ONLY | `attention.ts` (60) alone is a portable policy function |
 | `panes/spawn/schema.ts` (97), `pluginSelectionState.ts` (79), `harnessModels.ts` (16) | New-session form schema and plugin selection | none | native imports all three (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/spawn/spawnDrafts.ts` (144), `preflight.ts` | Spawn drafts; path/dir preflight | `evener/path/validate`, `evener/dirs/create` | `mobile-native/src/creationDraftRepository.ts` | DUPLICATED | drafts are platform storage; preflight is a client port |
-| `panes/settings/sections/launchShared/schema.ts` (337), `inherited.ts` (44) | Launch-option schema interpretation and inheritance | none | native imports `schema` (3 sites), `pathListAdd` (1) | PACKAGE CANDIDATE (2 consumers) | none |
+| `panes/settings/sections/launchShared/schema.ts` (337), `inherited.ts` (44) | Launch-option schema interpretation and inheritance | none | native imports `schema` (3 sites), `pathListAdd` (1) | PACKAGE CANDIDATE (2 consumers) | `schema.ts:8` imports `LaunchConfigLayerName` from the web-only `stores/launchConfig.ts`; that type has to move too |
 | `panes/settings/sections/credentials/credentialLabels.ts` (157) | Provider/credential display vocabulary | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/settings/sections/credentials/oauthFlow.ts` (33) | OAuth step sequencing | none | `mobile-native/src/providerSignIn.ts` | DUPLICATED | native opens a system browser; web a popup |
 | `panes/settings/sections/marketplacesPlugins/sourceLabel.ts` (20) | Marketplace source labels | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
-| `widgets/modelCatalog/{catalogClient,catalogView,pickerRows,scopedCatalog}.ts` (339) | Model catalog fetch, scoping, picker rows | none (catalog via threads.ts `listModels`) | native imports `pickerRows` and `types` (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
+| `widgets/modelCatalog/{catalogClient,catalogView,pickerRows,scopedCatalog}.ts` (339) | Model catalog fetch, scoping, picker rows | none (catalog via threads.ts `listModels`) | native imports `pickerRows` and `types` (2 sites) | PACKAGE CANDIDATE (2 consumers) | `pickerRows.ts:18` is built on `catalogView.ts` helpers; the two move together |
 | `widgets/codeblock/ansi.ts` (439) | ANSI → styled spans | none | native imports this file (4 sites) | PACKAGE CANDIDATE (2 consumers) | depends on `anser`, a runtime dependency the package does not have |
 | `widgets/pathfield/pathRows.ts` (156) | Path completion rows | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `widgets/disclosure/disclosureStore.ts` (142) | Disclosure open/closed state | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | zustand |
@@ -215,7 +233,7 @@ Three different ways, only one of which is qualified.
    `protocol/scripts/qualify-package.mjs`: `npm pack`, install outside the
    checkout, ESM + CJS type-check and runtime import, declaration check, then the
    shipped examples against a scripted `ws` server. This exercises exactly the
-   nine `index.ts` exports.
+   eleven `index.ts` runtime exports, across four generated consumer programs.
 2. **Deep relative import from the web** (`../protocol/model`,
    `../protocol/reducer`, `../protocol/testing/fakeClient`). Compiled by Vite and
    `tsc --noEmit` in `make test-web`. Nothing checks these files stay packable.
@@ -277,22 +295,35 @@ not move as-is. Reasons, in order of weight:
 - `mobile/src` can then dissolve module by module into that subpath, which is
   the same motion as the web stores' and can share the sequence.
 
-Cheapest first step either way: put the ten unpacked `protocol/*.ts` modules
-into the build and move `AppwireClientLike` out of `protocol/testing/`. That
-alone converts 3,635 lines from "in the folder" to "in the package" and gives
-every later PR a place to land.
+Cheapest first step either way: put the unpacked `protocol/*.ts` modules into
+the build and move `AppwireClientLike` out of `protocol/testing/`. That alone
+converts 3,635 lines from "in the folder" to "in the package" and gives every
+later PR a place to land. Both are now written: see "Since this was written".
 
 ## 7. Counts
 
 | Class | Rows |
 | --- | --- |
 | SHARED ALREADY | 6 |
-| DUPLICATED | 36 |
+| DUPLICATED | 37 |
 | PACKAGE CANDIDATE | 51 (of which 33 already have two consumers via deep relative import) |
 | PLATFORM-ONLY | 11 |
 | dead code | 1 |
-| **Total rows** | **105** |
+| **Total rows** | **106** |
 
-Rows cover 32 web `stores/` modules, 47 rows for web modules outside `stores/`
+Rows cover 32 web `stores/` modules, 48 rows for web modules outside `stores/`
 (several rows group a directory), 9 `mobile/src` modules, and 17 rows for
 `protocol/` (its 16 top-level modules plus the `testing/` directory).
+
+## Since this was written
+
+Recorded 2026-09-12, after the first execution PRs. Statuses are as observed;
+re-query before acting.
+
+| Plan PR | GitHub | State | What it changed here |
+| --- | --- | --- | --- |
+| A1 | #1184 | open | Ships nine of the ten unpacked modules (`tsconfig.build.json` `files` goes 6 → 15); `docContent.ts` held back to C24 as planned. The qualification runner now smoke-calls every shipped module, not just imports it |
+| A2 | #1188 | open | `protocol/clientLike.ts` declares `AppwireClientLike`, exported from `index.ts` and in the build `files`. 25 importers rewritten, `FakeClient` imports left alone — §0 fact 3 above is corrected to match |
+| A5 | #1186 | **merged** (`2245f9715`) | Deleted the dead `mobile/src/dev/conversationFixtures.ts` and made `mobile-native` typecheck every file under `mobile/src`, so the gap that hid it is closed too |
+| B1 | #1189 | open | `protocol/itemFailure.ts`; the web and native predicates were byte-identical in behavior. Surfaced the third predicate now recorded above |
+| — | #1190 | open issue | The `toolRenderers.ts:189` divergence |
