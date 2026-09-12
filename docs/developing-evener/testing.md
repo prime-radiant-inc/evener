@@ -328,7 +328,8 @@ The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
 actually use (affinity- and cgroup-quota-aware, not the host's advertised
 count) minus the 1-minute load average rounded up, clamped to at least one and
-at most four.
+at most four. A checkout where the helper cannot be read falls back to a flat
+four, which is what the gate used before the helper existed.
 The four is a ceiling, not a fixed pool. Vitest's own default pool is
 `os.availableParallelism()`, which oversubscribed a 10-core host under the
 combined load of `make test`'s sibling Go streams and starved otherwise causal

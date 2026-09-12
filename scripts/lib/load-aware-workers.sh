@@ -29,14 +29,14 @@
 # "max", or -1 (v1's unlimited spelling). A pure function of its inputs.
 #
 # load_aware_cgroup_cores [CGROUP_FILE MOUNTINFO_FILE] — print the most
-# restrictive finite CPU quota along this process's cgroup ancestry, or an
-# empty string when there is none. The two files default to /proc/self/cgroup
-# and /proc/self/mountinfo. Reading only the hierarchy root is not enough:
-# under a nested cgroup (a systemd CPUQuota slice, for example) the root says
-# "max" while the limit lives several levels down, so the clamp would silently
-# do nothing in exactly the environment it exists for. A private cgroup
-# namespace, by contrast, delegates a subtree whose root the mountinfo entry
-# names, and the walk stops there rather than above it.
+# restrictive finite CPU quota this process is subject to, or an empty string
+# when there is none. The two files default to /proc/self/cgroup and
+# /proc/self/mountinfo. Reading only the hierarchy root is not enough: under a
+# nested cgroup (a systemd CPUQuota slice, for example) the root says "max"
+# while the limit lives several levels down. Reading only one hierarchy is not
+# enough either: a hybrid host can mount v2 while binding the cpu controller
+# to v1. So both hierarchies are walked from the process's membership up to
+# the mount point that exposes it, and the most restrictive finite limit wins.
 #
 # load_aware_load1 — print this machine's 1-minute load average, or an empty
 # string when nothing can answer. Linux reads /proc/loadavg; Darwin's
@@ -192,31 +192,46 @@ load_aware_cgroup_cores_from() {
 	_law_cg=${1-}
 	_law_mi=${2-}
 
-	_law_version=v2
-	_law_relpath="$(load_aware_cgroup_relpath "$_law_cg" v2)"
-	_law_mount="$(load_aware_cgroup_mount "$_law_mi" v2)"
-	if [ -z "$_law_relpath" ] || [ -z "$_law_mount" ]; then
-		_law_version=v1
-		_law_relpath="$(load_aware_cgroup_relpath "$_law_cg" v1)"
-		_law_mount="$(load_aware_cgroup_mount "$_law_mi" v1)"
-	fi
+	_law_best=
+	for _law_version in v2 v1; do
+		_law_hierarchy="$(load_aware_cgroup_hierarchy_cores "$_law_cg" "$_law_mi" "$_law_version")"
+		if [ -n "$_law_hierarchy" ]; then
+			if [ -z "$_law_best" ] || [ "$_law_hierarchy" -lt "$_law_best" ]; then
+				_law_best="$_law_hierarchy"
+			fi
+		fi
+	done
+	printf '%s' "$_law_best"
+}
+
+# load_aware_cgroup_hierarchy_cores CGROUP_FILE MOUNTINFO_FILE VERSION — the
+# most restrictive finite quota in one hierarchy, or empty. Both hierarchies
+# are evaluated because presence is not the same as a finite limit: a hybrid
+# host can mount the v2 unified hierarchy while binding the cpu controller to
+# v1, and committing to v2 on sight would find "max" there and never consult
+# the v1 quota that actually applies.
+load_aware_cgroup_hierarchy_cores() {
+	_law_cg=${1-}
+	_law_mi=${2-}
+	_law_version=${3-v2}
+
+	_law_relpath="$(load_aware_cgroup_relpath "$_law_cg" "$_law_version")"
+	_law_mount="$(load_aware_cgroup_mount "$_law_mi" "$_law_version")"
 	if [ -z "$_law_relpath" ] || [ -z "$_law_mount" ]; then
 		printf ''
 		return 0
 	fi
 
-	# mountinfo field 5 is the mount point; field 4 is the delegated root the
-	# walk must not ascend past.
+	# mountinfo field 5 is the mount point. The membership path is relative to
+	# the root the mount exposes AT that mount point, so the walk starts at
+	# mount point + membership and stops at the mount point itself. Field 4 is
+	# where that root already begins, not a directory beneath the mount.
 	set -- $_law_mount
 	_law_mpoint=${1-/}
-	_law_mroot=${2-/}
-	[ "$_law_mroot" = / ] && _law_mroot=
-
 	_law_dir="$(load_aware_join "$_law_mpoint" "$_law_relpath")"
 	_law_dir=${_law_dir%/}
 	[ -n "$_law_dir" ] || _law_dir=/
-	_law_stop="$(load_aware_join "$_law_mpoint" "$_law_mroot")"
-	_law_stop=${_law_stop%/}
+	_law_stop=${_law_mpoint%/}
 	[ -n "$_law_stop" ] || _law_stop=/
 
 	_law_best=

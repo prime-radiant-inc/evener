@@ -53,5 +53,8 @@ test.each(["test", "test:coverage"])("the %s script sizes vitest from spare capa
   expect(script, `"${name}" must pass the helper's computed count, not merely source it`).toContain(
     '--maxWorkers="$maxWorkers"',
   );
+  expect(script, `"${name}" must fall back to a fixed ceiling when the helper is unavailable`).toContain(
+    "maxWorkers=4",
+  );
   expect(script, `"${name}" must not pin a fixed worker count`).not.toMatch(/--maxWorkers=\d/);
 });

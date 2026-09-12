@@ -203,6 +203,54 @@ func TestLoadAwareCgroupV1Quota(t *testing.T) {
 	}
 }
 
+// TestLoadAwareCgroupHybridPrefersTheFiniteQuota is the hybrid case: the v2
+// unified hierarchy is mounted, so a v2 membership and mount both exist, but
+// the cpu controller lives in v1 and only v1 states a finite quota. Committing
+// to v2 on sight finds "max" there and reports the host's full core count.
+func TestLoadAwareCgroupHybridPrefersTheFiniteQuota(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	v2Mount := filepath.Join(root, "cgroup2")
+	writeFixtureFile(t, filepath.Join(v2Mount, "slice", "cpu.max"), "max 100000\n")
+	v1Mount := filepath.Join(root, "cpu")
+	v1Leaf := filepath.Join(v1Mount, "v1leaf")
+	writeFixtureFile(t, filepath.Join(v1Leaf, "cpu.cfs_quota_us"), "100000\n")
+	writeFixtureFile(t, filepath.Join(v1Leaf, "cpu.cfs_period_us"), "100000\n")
+	membership := filepath.Join(root, "self-cgroup")
+	writeFixtureFile(t, membership, "0::/slice\n5:cpu,cpuacct:/v1leaf\n")
+	mountinfo := filepath.Join(root, "mountinfo")
+	writeFixtureFile(t, mountinfo, fmt.Sprintf(
+		"29 23 0:26 / %s rw - cgroup2 cgroup2 rw\n31 23 0:27 / %s rw - cgroup cgroup rw,cpu,cpuacct\n",
+		v2Mount, v1Mount))
+
+	got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+	if got != "1" {
+		t.Errorf("load_aware_cgroup_cores_from = %q, want %q (the v1 quota)", got, "1")
+	}
+}
+
+// TestLoadAwareCgroupNonRootMountBoundary pins the walk boundary when
+// mountinfo's root field is not "/". The membership path is relative to the
+// root the mount exposes at the mount point, so the walk must stop at the
+// mount point itself; treating root as a directory beneath it skips the
+// delegated root's own limit.
+func TestLoadAwareCgroupNonRootMountBoundary(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mount := filepath.Join(root, "cgroup")
+	writeFixtureFile(t, filepath.Join(mount, "cpu.max"), "200000 100000\n")
+	writeFixtureFile(t, filepath.Join(mount, "child", "cpu.max"), "max 100000\n")
+	membership := filepath.Join(root, "self-cgroup")
+	writeFixtureFile(t, membership, "0::/child\n")
+	mountinfo := filepath.Join(root, "mountinfo")
+	writeFixtureFile(t, mountinfo, fmt.Sprintf("29 23 0:26 /delegated %s rw - cgroup2 cgroup2 rw\n", mount))
+
+	got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+	if got != "2" {
+		t.Errorf("load_aware_cgroup_cores_from = %q, want %q", got, "2")
+	}
+}
+
 // TestRunModuleTestsUsesLoadAwareBudgets guards the wiring: the Go gate's
 // parallelism budgets must size to spare capacity through this library rather
 // than a fixed number, or the helper is dead code and a fleet of concurrent
