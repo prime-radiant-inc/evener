@@ -37,3 +37,19 @@ test.each(["typecheck", "build"])("the %s script type-checks without the increme
 test("the warm-cache typecheck is still available, under a name that says it is the fast one", () => {
   expect(scripts["typecheck:fast"]).toBe("tsc --noEmit");
 });
+
+// A fixed worker count sized every concurrent gate run as if it were alone on
+// the machine: vitest's own default pool is os.availableParallelism(), so the
+// hardcoded four was a ceiling, not a floor, and a fleet of runs multiplied it.
+// The scripts now read the machine's spare capacity through the shared helper,
+// which keeps four on an idle host and backs off as the load average rises.
+test.each(["test", "test:coverage"])("the %s script sizes vitest from spare capacity", (name) => {
+  const script = scripts[name];
+  expect(script, `package.json has no "${name}" script`).toBeDefined();
+  expect(
+    script,
+    `"${name}" must source scripts/lib/load-aware-workers.sh so concurrent gate runs share the machine`,
+  ).toContain("load-aware-workers.sh");
+  expect(script).toContain("load_aware_workers");
+  expect(script, `"${name}" must not pin a literal worker count`).not.toContain("--maxWorkers=4");
+});

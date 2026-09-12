@@ -32,6 +32,7 @@ set -uo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
+. "$script_dir/../lib/load-aware-workers.sh"
 
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
@@ -105,9 +106,27 @@ AGENT_SHARDS=${AGENT_SHARDS:-1}
 # TestMain), so the pattern never touches the execve argument list. 8 shards
 # keep cost-balanced packing from putting too many cheap tests in one shard.
 export AGENT_SHARD_COUNT=${AGENT_SHARD_COUNT:-8}
-ROOT_P=${ROOT_P-6}
-AGENT_PARALLEL=${AGENT_PARALLEL-6}
-AGENT_P=${AGENT_P-4}
+
+# These defaults are load-aware (scripts/lib/load-aware-workers.sh), not fixed.
+# On an idle machine they are the historical budgets, 6/6/4 plus go's own
+# default -p, so the wave design above is unchanged. As the 1-minute load
+# average rises they shrink toward one, because this script is only one of
+# several gate runs a busy host may be executing at once: agent worktree
+# sessions, CI, and a hand-run `make test` all reach here, and a fixed budget
+# let each of them claim the whole machine. An explicit environment override
+# still wins, so test-race's AGENT_PARALLEL=6 is honored as written.
+CORES=$(load_aware_cores)
+ROOT_P=${ROOT_P-$(load_aware_workers 6)}
+AGENT_PARALLEL=${AGENT_PARALLEL-$(load_aware_workers 6)}
+AGENT_P=${AGENT_P-$(load_aware_workers 4)}
+# Modules with no explicit -p run at go's own default (GOMAXPROCS). Only pass
+# an explicit, load-aware -p when it is below the core count, so an idle run
+# keeps go's default exactly and a loaded one backs off.
+GO_P=$(load_aware_workers 0)
+GO_P_FLAG=
+if [ -n "$CORES" ] && [ "$GO_P" -lt "$CORES" ]; then
+	GO_P_FLAG="-p $GO_P"
+fi
 
 # Root discovery is normally quick, but it can block forever when the configured
 # Go caches live on a stalled volume. Keep that failure bounded without changing
@@ -351,7 +370,7 @@ module_extra() {
 			printf '%s' "$extra"
 			;;
 		*)
-			printf ''
+			printf '%s' "$GO_P_FLAG"
 			;;
 	esac
 }
