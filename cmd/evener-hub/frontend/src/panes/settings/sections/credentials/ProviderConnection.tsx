@@ -554,6 +554,10 @@ function SelectedConnection({
     setConfigured(true);
     setConfigure(false);
     setSaved(false);
+    // The adopted instance is a different connection: a host-access choice
+    // made for the previous one does not describe it, and inheriting it would
+    // skip this instance's credential submission entirely.
+    setHost(false);
     setMissingCredential(false);
     setError("");
     setReview(null);

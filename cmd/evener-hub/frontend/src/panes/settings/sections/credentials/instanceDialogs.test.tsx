@@ -1,8 +1,13 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
+import type {
+  AuthStatusResponse,
+  InstanceEntry,
+  InstanceListResponse,
+  ProviderDescriptor,
+} from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -428,8 +433,14 @@ describe("AddInstanceDialog", () => {
       connectionStore.setState({ state: "idle", client: null });
     });
     await user.click(screen.getByRole("button", { name: "Check again" }));
-    expect(await screen.findByText(/no client connected/)).toBeTruthy();
-    expect(screen.queryByText(/could not confirm work2/)).toBeNull();
+    // The dropped connection makes the read reject, which is an unapplied
+    // attempt, not a confirmation: the dialog reports what it can support
+    // (the row is not confirmed) rather than the store's internal failure
+    // text, and it keeps the name so Check again still works once the host is
+    // back.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    expect(screen.queryByText(/no client connected/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
   // The applied path is not automatically a confirmation either: the store's
@@ -685,6 +696,41 @@ describe("ApiKeyDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("API key saved for work").length).toBeGreaterThan(0);
+  });
+
+  test("a saved key whose listing read is lost is still reported as saved", async () => {
+    const fake = connectFakeClient();
+    let save!: (value: AuthStatusResponse) => void;
+    fake.on(
+      "evener/auth/apiKey/set",
+      () =>
+        new Promise<AuthStatusResponse>((resolve) => {
+          save = resolve;
+        }),
+    );
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic" })}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    // Dropped connection during the save: the credential write succeeded, and
+    // the follow-up listing read rejecting must not turn it into "Save failed".
+    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    await act(async () =>
+      save({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false }),
+    );
+    expect(onSuccess).toHaveBeenCalled();
+    expect(within(screen.getByRole("dialog")).queryByText(/no client connected/)).toBeNull();
   });
 
   test("a failure shows an inline error and a 'Save failed' toast", async () => {

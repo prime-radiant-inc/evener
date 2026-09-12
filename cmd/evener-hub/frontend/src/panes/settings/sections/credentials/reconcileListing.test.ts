@@ -49,4 +49,21 @@ describe("confirmListingState", () => {
 
     expect(confirmed).toBe(true);
   });
+
+  // A dropped connection makes fetch() reject before readListing's own error
+  // handling (requireClient throws outside its try - see credentials.ts's
+  // contract). That rejection must stay inside the retry loop: the helper's
+  // contract is a boolean, and a caller steering a flow on it treats a
+  // rejection as an unhandled failure rather than the "could not confirm"
+  // outcome it actually is.
+  test("a read that rejects is one more failed attempt, not an escape", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => EMPTY);
+    await credentialsStore.getState().fetch();
+    connectionStore.setState({ state: "idle", client: null });
+
+    const confirmed = await confirmListingState(() => true);
+
+    expect(confirmed).toBe(false);
+  });
 });

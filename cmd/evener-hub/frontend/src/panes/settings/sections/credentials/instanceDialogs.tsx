@@ -24,7 +24,7 @@ import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } 
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
-import { confirmListingState } from "./reconcileListing";
+import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 import { useEditorLifetime } from "./useEditorLifetime";
 
@@ -186,30 +186,28 @@ export function AddInstanceDialog({
   // Re-confirms a create whose first reconcile could not see the instance.
   // Only the listing read is retried: the create itself already succeeded on
   // the host, so re-issuing it could fail on an instance that exists.
+  // confirmCreate cannot reject - confirmListingState owns a lost read (no
+  // client) as one more unapplied attempt - so the only outcomes here are
+  // confirmed and not-confirmed.
   async function handleCheckAgain(): Promise<void> {
     const instanceName = unconfirmedName;
     if (!instanceName) return;
     setBusy(true);
-    try {
-      const confirmed = await confirmCreate(instanceName);
-      if (!active.current) return;
-      if (!confirmed) {
-        setError(`The provider list still does not show ${instanceName}. Check again.`);
-        return;
-      }
-      setError(null);
-      setUnconfirmedName(null);
-      toast.push("success", `Created instance ${instanceName}`);
-      onSuccess(instanceName);
-    } catch (err) {
-      // A dropped connection rejects the read (requireClient's contract). Keep
-      // the unconfirmed name so the user can retry once it is back, and show
-      // the failure the way the initial submit does.
-      if (!active.current) return;
-      setError(errorText(err));
-    } finally {
-      if (active.current) setBusy(false);
+    const confirmed = await confirmCreate(instanceName);
+    if (!active.current) return;
+    setBusy(false);
+    if (!confirmed) {
+      // "Could not confirm", never "does not show": a read that never applied
+      // (a dropped connection) says nothing about what the listing holds. The
+      // connection banner owns that story, and the unconfirmed name is kept so
+      // Check again still works once the host is back.
+      setError(`The provider list could not confirm ${instanceName}. Check again.`);
+      return;
     }
+    setError(null);
+    setUnconfirmedName(null);
+    toast.push("success", `Created instance ${instanceName}`);
+    onSuccess(instanceName);
   }
 
   return (
@@ -375,7 +373,7 @@ function CredentialValueDialog({
     try {
       await submit(instance.name, trimmed);
       if (!active.current) return;
-      await credentialsStore.getState().fetch();
+      await refreshListingAfterMutation();
       if (!active.current) return;
       toast.push("success", successText);
       onSuccess();

@@ -14,9 +14,16 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
-// A static import of the connector's own module (not the chunk loader, not the
-// boundary): `import ... from "…/ConnectProviderDialog"`.
-const STATIC_IMPORT = /^\s*import\b[^;]*?from\s+["'][^"']*\/ConnectProviderDialog["']/m;
+// A static value reference to the connector's own module (not the chunk
+// loader, not the boundary): a named/default import (`import ... from
+// "…/ConnectProviderDialog"`, possibly spanning lines), a side-effect import
+// (`import "…/ConnectProviderDialog"`), or a re-export (`export ... from
+// "…/ConnectProviderDialog"`). Type-only forms (`import type`, `export type`)
+// are erased before the bundler sees them and must not be flagged. A specifier
+// list that is inline-type-only (`import { type X } from …`) is still flagged;
+// that is rare, and erring toward reporting is the safe direction.
+const STATIC_IMPORT =
+  /^[ \t]*(?:import\s+(?!type\s)[\s\S]*?\sfrom\s+|import\s+(?!type\s)|export\s+(?!type\s)[\s\S]*?\sfrom\s+)["'][^"']*\/ConnectProviderDialog["']/m;
 
 function sourceFiles(dir) {
   const out = [];
@@ -37,4 +44,26 @@ test("the connect-provider dialog is only ever imported dynamically", () => {
     [],
     `a static ConnectProviderDialog import collapses its lazy chunk (and the stale-chunk recovery with it): ${offenders.join(", ")}`,
   );
+});
+
+// The real-tree scan above only fires if someone writes the offense; these
+// samples pin what the matcher must recognize. A side-effect import or a
+// re-export collapses the lazy chunk exactly like a named import, while an
+// erased `import type`/`export type` never reaches the bundle (TypeScript's
+// own emit strips it), so flagging one would be a false positive that teaches
+// readers to distrust this guard.
+test("the static-reference matcher covers value references and skips erased types", () => {
+  const flagged = (source) => STATIC_IMPORT.test(source);
+
+  assert.equal(flagged('import { ConnectProviderDialog } from "../x/ConnectProviderDialog";'), true);
+  assert.equal(flagged('import ConnectProviderDialog from "../x/ConnectProviderDialog";'), true);
+  assert.equal(flagged('import {\n  ConnectProviderDialog,\n} from "../x/ConnectProviderDialog";'), true);
+  assert.equal(flagged('import "../x/ConnectProviderDialog";'), true);
+  assert.equal(flagged('export { ConnectProviderDialog } from "../x/ConnectProviderDialog";'), true);
+  assert.equal(flagged('export * from "../x/ConnectProviderDialog";'), true);
+
+  assert.equal(flagged('import type { ConnectProviderDialogProps } from "../x/ConnectProviderDialog";'), false);
+  assert.equal(flagged('export type { ConnectProviderDialogProps } from "../x/ConnectProviderDialog";'), false);
+  assert.equal(flagged('const load = () => import("../x/ConnectProviderDialog");'), false);
+  assert.equal(flagged('import { other } from "../x/somethingElse";'), false);
 });

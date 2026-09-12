@@ -37,7 +37,7 @@ import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
-import { confirmListingState } from "./reconcileListing";
+import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
@@ -199,12 +199,12 @@ export function CredentialsSection({
     try {
       if (kind === "clear") {
         await credentialsStore.getState().logout(name);
-        await credentialsStore.getState().fetch();
+        await refreshListingAfterMutation();
         toast.push("success", `Credentials cleared for ${name}`);
       } else if (kind === "clearStoredKey") {
         const label = clearsCredentialJson(name) ? "Stored credential JSON" : "Stored key";
         await credentialsStore.getState().clearStoredKey(name);
-        await credentialsStore.getState().fetch();
+        await refreshListingAfterMutation();
         toast.push("success", `${label} cleared for ${name}`);
       } else {
         const applied = await credentialsStore.getState().remove(name);

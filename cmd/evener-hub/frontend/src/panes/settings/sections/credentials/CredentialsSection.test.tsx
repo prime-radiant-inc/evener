@@ -2,7 +2,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
+import type {
+  AuthLogoutResponse,
+  AuthTestResponse,
+  InstanceEntry,
+  InstanceListResponse,
+} from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -756,6 +761,47 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     // scope this second click to the dialog's own Clear/confirm button.
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
     await screen.findByText("Credentials cleared for work");
+  });
+
+  test("a cleared credential whose listing read is lost is still reported as cleared", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let logout!: (value: AuthLogoutResponse) => void;
+    fake.on(
+      "evener/auth/logout",
+      () =>
+        new Promise<AuthLogoutResponse>((resolve) => {
+          logout = resolve;
+        }),
+    );
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Clear" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    // Dropped connection during the clear: the logout succeeded, and the
+    // follow-up listing read rejecting must not report "Clear failed".
+    await act(async () => {
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    });
+    await act(async () => {
+      logout({
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      });
+    });
+    // The handler continues past the lost listing read over a few more
+    // microtasks; flush them inside act before asserting.
+    await act(async () => {});
+    await screen.findByText("Credentials cleared for work");
+    expect(screen.queryByText(/Clear failed/)).toBeNull();
   });
 
   // #713: a stray stored key shadowed behind an active OAuth login needs an

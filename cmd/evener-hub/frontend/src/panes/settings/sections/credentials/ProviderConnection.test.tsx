@@ -763,6 +763,26 @@ test("switching to existing host access does not send the new key or claim authe
   );
 });
 
+test("adopting a created instance drops a prior host-access choice instead of inheriting it", async () => {
+  const { user, client } = setup(savedList("anthropic"));
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "unused-draft");
+  await user.click(screen.getByText("Advanced settings"));
+  await user.click(screen.getByRole("button", { name: "Use existing host access" }));
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Configure another instance" }));
+  await user.selectOptions(screen.getByLabelText("Base provider"), "openai");
+  await user.type(screen.getByLabelText("Name"), "openai-team");
+  const row = { ...catalogue[1]!.setup!, name: "openai-team", implicit: false };
+  client.on("evener/instance/create", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
+  await user.click(screen.getByRole("button", { name: "Create" }));
+  // openai-team is a different connection with no host-access choice of its
+  // own; inheriting anthropic's would skip its credential submission and let
+  // the check resolve access the host never had for it.
+  expect(await screen.findByLabelText("API key")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Use a new credential" })).toBeNull();
+});
+
 test("review regression: discarded cross-provider create clears the old credential draft on reload", async () => {
   const { user, client } = setup();
   await choose(user, "Anthropic");
