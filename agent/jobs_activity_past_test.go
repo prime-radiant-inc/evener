@@ -1042,3 +1042,78 @@ func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOve
 		}
 	}
 }
+
+// TestLoadSessionJobActivityTree_SizeTrimAdvancesPastEntryLargerThanAPage
+// pins paging progress across an entry whose own encoding exceeds
+// activityMaxEncodedBytes: no page can ever carry it, so the size trim must
+// advance past it — reporting the omission through Branch.Error — instead of
+// re-minting a continuation that points back at the same entry and hands the
+// client an identical page forever. The fixture is one oversized shell job
+// followed by an ordinary one; walking every minted continuation must reach
+// the ordinary job exactly once and terminate.
+func TestLoadSessionJobActivityTree_SizeTrimAdvancesPastEntryLargerThanAPage(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedentryroot"
+	oversizedStarted := time.Unix(3000, 0).UTC()
+	normalStarted := oversizedStarted.Add(time.Second)
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: oversizedStarted, JobID: "job_oversized",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &oversizedStarted, Description: strings.Repeat("x", activityMaxEncodedBytes+(256<<10)),
+		},
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: normalStarted, JobID: "job_normal",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &normalStarted, Description: "reachable after the oversized job",
+		},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	var branchErrors []string
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > 4 {
+			t.Fatalf("walked %d pages without terminating -- resume is looping instead of advancing past the oversized entry", pages)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		if tree.Root.Branch.Error != "" {
+			branchErrors = append(branchErrors, tree.Root.Branch.Error)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		if next == continuation {
+			t.Fatalf("page %d re-minted page %d's continuation %q -- the client can never advance past the oversized entry", pages, pages-1, next)
+		}
+		continuation = next
+	}
+	if len(delivered) != 1 || delivered[0] != "job_normal" {
+		t.Fatalf("delivered %v across %d pages, want exactly [job_normal] -- the oversized entry is unrepresentable and everything after it must still arrive once", delivered, pages)
+	}
+	if len(branchErrors) == 0 {
+		t.Fatal("no page reported a branch error -- skipping an entry must be visible to the client")
+	}
+	named := false
+	for _, branchError := range branchErrors {
+		if strings.Contains(branchError, "job_oversized") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("branch errors %q name no skipped entry, want one naming job_oversized", branchErrors)
+	}
+}

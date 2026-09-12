@@ -1354,6 +1354,17 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 			return true
 		}
 	}
+	resumeIndex := i
+	if i == 0 {
+		// Trimming works from the tail, so an entry at index 0 is the only
+		// one this session's page still holds: it blew the size budget with
+		// nothing else competing for it, and a continuation pointing back at
+		// it would render the same page and mint the same token forever.
+		// Advance past it instead, and say which entry the client will never
+		// see.
+		resumeIndex = i + 1
+		appendActivityBranchError(&session.Branch, activityEntryRef(*entry)+" is too large to render in one response and was skipped")
+	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
 	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
@@ -1361,12 +1372,26 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 		RootID:         rootID,
 		SessionID:      session.SessionID,
 		Path:           append([]string(nil), path...),
-		ResumeIndex:    i,
+		ResumeIndex:    resumeIndex,
 		JobsEpoch:      jobsEpochs[session.SessionID],
 		DelegatesEpoch: delegatesEpoch,
 		Revision:       revision,
 	})
 	return true
+}
+
+// activityEntryRef names an entry for an operator-facing branch error: an
+// entry carries no name of its own, so the underlying job or delegate ID is
+// what makes the omission findable in the journals.
+func activityEntryRef(entry appwire.JobActivityEntry) string {
+	switch {
+	case entry.Job != nil:
+		return fmt.Sprintf("job %q", entry.Job.JobID)
+	case entry.Delegate != nil:
+		return fmt.Sprintf("delegate %q", entry.Delegate.DelegateID)
+	default:
+		return fmt.Sprintf("entry of kind %q", entry.Kind)
+	}
 }
 
 func recomputeActivitySession(session *appwire.JobActivitySession) {
