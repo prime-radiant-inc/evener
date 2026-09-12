@@ -2627,8 +2627,14 @@ func TestMarketplaceNameMigration_ARecoveryThatRollsBackRemovesTheMarker(t *test
 		return orig(path, data, perm)
 	}
 
-	if err := m.migrateStore(context.Background()); err == nil {
+	err := m.migrateStore(context.Background())
+	if err == nil {
 		t.Fatal("expected the recovery's marketplaces write to fail")
+	}
+	// The error has to carry the save failure the rollback was recovering
+	// from; wrapping a nil here would report a cause that never happened.
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("recovery error = %v, want the failed save it rolled back from", err)
 	}
 	marketplaceAtomicWriteFile = orig
 	mustNotExist(t, renameMarkerFile(m))
@@ -3573,5 +3579,114 @@ func TestMarketplaceNameMigration_MergesAnAliasPastASameBaseStranger(t *testing.
 	}
 	if got := mk["a-b-2"].Source.URL; got != "https://example.invalid/other.git" {
 		t.Fatalf("a-b-2's source = %q, want the marketplace deriving its own directories", got)
+	}
+}
+
+// A marker naming a destination the store cannot hold as a directory names no
+// rename this store left in flight: finishing it would put a clone where no
+// operation could derive it. It is stale, dropped with a warning, and the store
+// it names is left alone.
+func TestMarketplaceNameMigration_DropsAMarkerWhoseDestinationCannotBeADirectory(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a", "widget")
+	plantRenameMarker(t, m, "a", strings.Repeat("b", 300))
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mustNotExist(t, renameMarkerFile(m))
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["a"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want a untouched", mk)
+	}
+}
+
+// The same holds when the later alias reaches those directories through another
+// symlink: the record kept the directories as they were, and a path whose leaf
+// has moved still resolves through the symlinks above it.
+func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheMigratedRecord(t *testing.T) {
+	root := t.TempDir()
+	first := NewManager(root)
+	first.Stderr = io.Discard
+	if err := os.MkdirAll(filepath.Join(first.marketplacesDir(), "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(first.cacheDir(), "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Two links reach the one directory, and neither is the name that migrates.
+	for _, link := range []string{"link", "link2"} {
+		if err := os.Symlink(filepath.Join(first.marketplacesDir(), "real"), filepath.Join(first.marketplacesDir(), link)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(first.cacheDir(), "real"), filepath.Join(first.cacheDir(), link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plantLegacyMarketplace(t, first, "link/x", "widget")
+	if err := first.migrateStore(context.Background()); err != nil {
+		t.Fatalf("first migrateStore: %v", err)
+	}
+	mk, err := first.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["link-x"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want link-x alone", mk)
+	}
+
+	second := NewManager(root)
+	second.Stderr = io.Discard
+	mk, err = second.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk["link2/x"] = MarketplaceRef{
+		Source:          mk["link-x"].Source,
+		InstallLocation: second.marketplaceDir("link2/x"),
+		LastUpdated:     time.Date(2031, 4, 2, 0, 0, 0, 0, time.UTC),
+	}
+	if err := second.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, second.pluginCacheDir("link-x", "gadget", "sha1"), "gadget", nil)
+	reg, err := second.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins[registryKey("gadget", "link2/x")] = []InstallEntry{{
+		InstallPath: second.pluginCacheDir("link2/x", "gadget", "sha1"),
+		Version:     "1.0.0",
+		Enabled:     true,
+		Source:      Source{Kind: SourceGitHub, Repo: "o/gadget"},
+	}}
+	if err := second.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := second.migrateStore(context.Background()); err != nil {
+		t.Fatalf("second migrateStore: %v", err)
+	}
+	mk, err = second.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["link-x"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want link-x alone: the alias through the other link has to merge", mk)
+	}
+	reg, err = second.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, entries := range reg.Plugins {
+		for _, entry := range entries {
+			if _, err := os.Stat(entry.InstallPath); err != nil {
+				t.Fatalf("%s points at %s, which does not exist: %v", key, entry.InstallPath, err)
+			}
+		}
 	}
 }

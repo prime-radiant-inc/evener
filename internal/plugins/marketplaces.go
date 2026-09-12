@@ -714,11 +714,15 @@ func (m *Manager) refuseSourceInStore(path string) error {
 	return nil
 }
 
-// resolveForContainment canonicalises a path for pathWithinDir: absolute
-// always, and physical when the path exists, so a symlinked store root cannot
-// hide a containment that the filesystem would honour. A path that does not
-// exist keeps its absolute form — there is nothing on disk for a later step to
-// destroy.
+// resolveForContainment canonicalises a path for a comparison about disk:
+// absolute always, and physical when the path exists, so a symlinked store root
+// cannot hide a containment that the filesystem would honour. A path that does
+// not exist is resolved through the nearest ancestor that does, with the rest
+// appended: symlinks above a missing leaf are still how the filesystem would
+// read the path, and a directory an earlier migration moved leaves its former
+// path comparing as wherever the symlinks above it point rather than as its own
+// lexical string. The result is still a path nothing is at, so there is nothing
+// on disk for a later step to destroy.
 func resolveForContainment(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -727,7 +731,18 @@ func resolveForContainment(path string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		return resolved, nil
 	}
-	return abs, nil
+	missing := ""
+	for dir := abs; ; {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs, nil
+		}
+		missing = filepath.Join(filepath.Base(dir), missing)
+		dir = parent
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, missing), nil
+		}
+	}
 }
 
 // pathUnder is where under dir a path sits, and whether it is under dir at

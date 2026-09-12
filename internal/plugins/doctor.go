@@ -301,8 +301,9 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	// Doctor reads the file as recorded, without the store lock that would
 	// rename an entry like this (lockStore), so the rename is still pending.
 	// It is the whole finding: every other remediation would name a name
-	// that is about to change.
-	if validNameComponent("marketplace", name) != nil {
+	// that is about to change. The predicate is the migration's, so doctor
+	// cannot call a name healthy that the next lock holder would rename.
+	if pendingMigration(name) {
 		return DoctorFinding{
 			Level: LevelWarn, Category: catMarketplace,
 			Message:     name + ": recorded under a name the store no longer accepts; the next plugin operation renames it",

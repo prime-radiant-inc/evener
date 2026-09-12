@@ -283,9 +283,9 @@ func (m *Manager) recoverMarkedRename() error {
 			// attempt then finds nothing to move and nothing to undo. Whatever
 			// is still under the destination is what the marker is keeping, so
 			// anything there leaves it in place.
-			moved, err := m.dirsUnder(marker.To)
-			if err != nil {
-				return fail(err)
+			moved, statErr := m.dirsUnder(marker.To)
+			if statErr != nil {
+				return fail(statErr)
 			}
 			if !moved {
 				m.removeRenameMarker()
@@ -367,7 +367,10 @@ func (marker renameMarker) namesNoRename() error {
 	if marker.From == "" || marker.To == "" {
 		return fmt.Errorf("a rename names the marketplace it renames and the name it takes, and this names %q and %q", marker.From, marker.To)
 	}
-	return validNameComponent("marketplace", marker.To)
+	if pendingMigration(marker.To) {
+		return fmt.Errorf("a rename takes a name the store can hold as a directory, and this names %q", marker.To)
+	}
+	return nil
 }
 
 // loadRenameMarker reads the marker the store holds, or nil where there is
@@ -522,10 +525,18 @@ func (m *Manager) removeMigrationRecord() {
 	}
 }
 
+// pendingMigration reports whether a recorded name is one the migration will
+// rename: the store's own rules refuse it, or no filesystem holds it as the
+// directories it derives. It is the one predicate the migration, doctor and the
+// marker check all ask, so none of them can disagree about which names are
+// about to change — a name doctor called healthy is one the next lock holder
+// would rename.
+func pendingMigration(name string) bool {
+	return validNameComponent("marketplace", name) != nil || !nameCanHaveDirectories(name)
+}
+
 // refusedMarketplaceNames is every recorded name the store will not take as it
-// stands — one validNameComponent refuses, or one no filesystem can hold as the
-// directories it derives, which would leave every operation deriving its paths
-// failing rather than migrating it away — longest first and otherwise sorted. It
+// stands — done by pendingMigration — longest first and otherwise sorted. It
 // is the seed order the migration
 // sorts (migrationOrder): a name has to migrate before another only where one
 // of the two relations there says so, and this decides between the names
@@ -535,7 +546,7 @@ func (m *Manager) removeMigrationRecord() {
 func refusedMarketplaceNames(mk Marketplaces) []string {
 	var names []string
 	for name := range mk {
-		if validNameComponent("marketplace", name) != nil || !nameCanHaveDirectories(name) {
+		if pendingMigration(name) {
 			names = append(names, name)
 		}
 	}

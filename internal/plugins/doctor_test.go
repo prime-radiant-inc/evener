@@ -859,3 +859,37 @@ func dirNames(t *testing.T, dir string) []string {
 	slices.Sort(names)
 	return names
 }
+
+// Doctor's predicate is the migration's, so a name the migration will rename is
+// never one doctor calls healthy: a single component no filesystem can hold is
+// a pending rename like any other.
+func TestDoctor_ASingleNameNoFilesystemCanHoldIsAPendingRename(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	name := strings.Repeat("a", 300)
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.saveMarketplaces(Marketplaces{name: {
+		Source:      Source{Kind: SourceURL, URL: "https://example.invalid/x.git"},
+		LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Category == catMarketplace && strings.Contains(f.Message, "no longer accepts") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("findings = %+v, want the pending rename for a name no filesystem can hold", findings)
+	}
+}
