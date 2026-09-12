@@ -104,6 +104,19 @@ func TestDetailsDrawerSharedNotesSection(t *testing.T) {
 		t.Fatalf("live-empty section missing ghost trigger:\n%s", got)
 	}
 
+	// Capability set + restart-required + empty: read-only copy, no trigger.
+	got = strip(detailsDrawer{Detail: hubSessionDetail{
+		Live:         true,
+		State:        appwire.ThreadStatusRestartRequired,
+		Capabilities: hubSessionCapabilities{SharedNotes: true},
+	}}.View())
+	if !strings.Contains(got, "No shared notes") {
+		t.Fatalf("restart-required empty section missing inert copy:\n%s", got)
+	}
+	if strings.Contains(got, "Add a note with /notes") {
+		t.Fatalf("restart-required empty section rendered the edit trigger:\n%s", got)
+	}
+
 	// Capability set + ended + empty: section renders inert text, no trigger.
 	got = strip(detailsDrawer{Detail: hubSessionDetail{
 		Capabilities: hubSessionCapabilities{SharedNotes: true},
@@ -113,6 +126,29 @@ func TestDetailsDrawerSharedNotesSection(t *testing.T) {
 	}
 	if strings.Contains(got, "Add a note with /notes") {
 		t.Fatalf("ended-empty section rendered the live trigger:\n%s", got)
+	}
+}
+
+// TestSharedNotesCommandUnavailableWhenRestartRequired pins the write half of
+// the capability split: a restart-required session keeps SharedNotes readable,
+// which must not advertise /notes (nor let it dispatch) while every mutation is
+// refused.
+func TestSharedNotesCommandUnavailableWhenRestartRequired(t *testing.T) {
+	caps := hubSessionCapabilities{SharedNotes: true}
+	var notes hubCommandDefinition
+	for _, command := range hubCommandsForScope(hubCommandSession) {
+		if command.Name == "notes" {
+			notes = command
+		}
+	}
+	if notes.Name == "" {
+		t.Fatal("/notes command not registered")
+	}
+	if available, reason := hubCommandAvailable(notes, hubCommandContext{mode: hubModeSession, caps: caps, live: true, state: appwire.ThreadStatusIdle}); !available {
+		t.Fatalf("live idle session did not advertise /notes: %s", reason)
+	}
+	if available, reason := hubCommandAvailable(notes, hubCommandContext{mode: hubModeSession, caps: caps, live: true, state: appwire.ThreadStatusRestartRequired}); available {
+		t.Fatalf("restart-required session advertised /notes: %s", reason)
 	}
 }
 

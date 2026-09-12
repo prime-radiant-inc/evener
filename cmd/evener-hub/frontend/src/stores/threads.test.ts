@@ -4569,6 +4569,15 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
   });
 
+  test("removeURL refuses a session the write gate rejects and sends nothing", async () => {
+    const fake = connectMutationClient();
+    const ref = "ref_readonly";
+    fake.on("thread/read", (params) => readResponse(params.ref ?? ref, { status: { type: "restartRequired" } }));
+    await threadsStore.getState().ensureThread(ref);
+    await expect(threadsStore.getState().removeURL(ref, "url_1")).rejects.toThrow(/cannot accept notes/i);
+    expect(fake.calls.filter((call) => call.method === "urls/remove")).toEqual([]);
+  });
+
   test("setHumanNote does not overwrite a newer authoritative hydration", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));

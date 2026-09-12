@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 )
@@ -26,6 +27,11 @@ type hubCommandContext struct {
 	// rendering, so capability alone would fire resume-first writes on
 	// read-only past sessions.
 	live bool
+	// state is the session's ThreadStatus type. Restart-required sessions
+	// keep the read capability too, so liveness alone still advertises writes
+	// the daemon refuses; mutating notes commands require a state that can
+	// actually change notes.
+	state string
 }
 
 type hubCommandDefinition struct {
@@ -564,10 +570,19 @@ func sharedNotesLiveAvailable(ctx hubCommandContext) (bool, string) {
 	if !ctx.caps.SharedNotes {
 		return false, "source does not advertise shared notes"
 	}
-	if !ctx.live {
-		return false, "session is not live"
+	if !sharedNotesWritable(ctx.live, ctx.state) {
+		return false, "session cannot change notes"
 	}
 	return true, ""
+}
+
+// sharedNotesWritable reports whether the shared-notes surface accepts edits.
+// The SharedNotes capability is retained wherever saved notes stay readable —
+// ended sessions and restart-required sessions — so it gates reading alone; a
+// session that can actually change notes must also be live and must not be
+// waiting behind a restart, where the daemon refuses every mutation.
+func sharedNotesWritable(live bool, state string) bool {
+	return live && state != appwire.ThreadStatusRestartRequired
 }
 
 func capabilityAvailable(check func(hubSessionCapabilities) bool, reason string) func(hubCommandContext) (bool, string) {

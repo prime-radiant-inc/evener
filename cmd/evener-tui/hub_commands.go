@@ -1167,7 +1167,7 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 // never wipe the note (nor wake the agent with a steer for a clear nobody
 // asked for).
 func (m *hubModel) runHubNotes(args string) tea.Cmd {
-	if !m.detail.Live {
+	if !sharedNotesWritable(m.detail.Live, m.detail.State) {
 		m.addSessionSystem("Note editing is not available for this session.")
 		return nil
 	}

@@ -2816,9 +2816,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async removeURL(ref, id) {
+    const model = trackedThreadModel(ref);
+    if (!canWriteHumanNote(model)) throw new Error("Session cannot accept notes");
     const client = requireClient();
     try {
-      const model = trackedThreadModel(ref);
       const response = await client.request("urls/remove", {
         ref,
         clientMutationId: createSecureUUID(),
