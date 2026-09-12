@@ -11,5 +11,22 @@
     "lib": ["ES2022", "DOM"],
     "types": []
   },
-  "files": ["index.ts", "client.ts", "errors.ts", "transport.ts", "types.gen.ts", "askAnswers.ts"]
+  "files": [
+    "index.ts",
+    "client.ts",
+    "errors.ts",
+    "transport.ts",
+    "types.gen.ts",
+    "askAnswers.ts",
+    "activityData.ts",
+    "activityList.ts",
+    "activityMerge.ts",
+    "jobOutput.ts",
+    "model.ts",
+    "reducer.ts",
+    "sendQueueAvailability.ts",
+    "sessionErrors.ts",
+    "stableDelegate.ts",
+    "docContent.ts"
+  ]
 }
