@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../../panes/session/composer/askDock/askDockStore";
+import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/pendingTurnsStore";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import ComposerSurfaceSection from "./composer";
 
@@ -11,8 +12,12 @@ afterEach(() => {
   localStorage.clear();
 });
 
-test("each themed composer has a dedicated pane-width fixture and retains editable drafts and question selection", () => {
+test("each themed composer has a dedicated pane-width fixture and retains editable drafts and question selection", async () => {
   const { container } = render(<ComposerSurfaceSection />);
+  // The section's mount effect seeds threadsStore with three real composer
+  // fixtures; that schedules the pending-turns projection, which publishes
+  // asynchronously. Own its tracked completion before the test body ends.
+  await flushPendingTurnsProjectionForTests();
   const panes = container.querySelectorAll("[data-theme]");
   expect(panes).toHaveLength(2);
   for (const pane of panes) {
@@ -25,7 +30,10 @@ test("each themed composer has a dedicated pane-width fixture and retains editab
     if (!drafted || !pending) throw new Error("missing gallery fixture");
     const input = within(drafted).getByRole("textbox") as HTMLTextAreaElement;
     expect(input.value).toContain("CHANGELOG");
-    input.focus();
+    // focus() blurs the previously focused pane's textarea; the Composer's
+    // blur handler (handleTextareaBlur) updates state in response, so the
+    // raw DOM focus call must be owned.
+    act(() => input.focus());
     fireEvent.change(input, { target: { value: "Keep this editable" } });
     expect(input.value).toBe("Keep this editable");
     expect(document.activeElement).toBe(input);

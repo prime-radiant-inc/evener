@@ -167,6 +167,11 @@ func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var got []string
+	deps.provisionSandbox = func(_ *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
+		got = append([]string(nil), cfg.PluginDirs...)
+		return errors.New("stop after config")
+	}
 
 	err := runServeWithDeps([]string{
 		"--model", "openai/gpt-test",
@@ -175,8 +180,14 @@ func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.
 		"--plugin-root", hubRoot,
 		"--enabled-plugins=alpha",
 	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable: alpha: no valid plugin candidate") {
-		t.Fatalf("serve error = %v, want disabled hub-root selection failure", err)
+	if err == nil || !strings.Contains(err.Error(), "stop after config") {
+		t.Fatalf("serve error = %v", err)
+	}
+	// Off by default is not unavailable: the explicit selection loads the
+	// plugin from the hub-validated root, and the ambient registry's same-name
+	// copy stays out.
+	if !reflect.DeepEqual(got, []string{hubInstalledDir}) {
+		t.Fatalf("session plugin dirs = %v, want the hub-root copy %v", got, []string{hubInstalledDir})
 	}
 }
 

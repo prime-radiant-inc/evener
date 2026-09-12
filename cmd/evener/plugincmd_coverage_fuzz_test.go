@@ -22,7 +22,7 @@ type pluginManagerReplay struct {
 func (m *pluginManagerReplay) SeedDefaultMarketplaces(context.Context) (bool, error) {
 	return false, m.err
 }
-func (m *pluginManagerReplay) ListMarketplaces() (plugins.Marketplaces, error) {
+func (m *pluginManagerReplay) ListMarketplaces(context.Context) (plugins.Marketplaces, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -36,7 +36,7 @@ func (m *pluginManagerReplay) RefreshMarketplace(context.Context, string) error 
 func (m *pluginManagerReplay) Browse(context.Context, string) (plugins.Catalog, error) {
 	return plugins.Catalog{Name: "market", Plugins: []plugins.CatalogPlugin{{Name: "plug", Description: "desc"}}, SkippedPlugins: []string{"skip"}}, m.err
 }
-func (m *pluginManagerReplay) List() ([]plugins.ListItem, error) {
+func (m *pluginManagerReplay) List(context.Context) ([]plugins.ListItem, error) {
 	if m.err != nil {
 		return nil, m.err
 	}

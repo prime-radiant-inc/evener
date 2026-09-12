@@ -324,12 +324,21 @@ npm/network access or an existing compatible worktree install, so an
 unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
 
-The frontend unit gate caps Vitest at four workers because `make test` runs it
-beside the Go test waves. Vitest's host-sized default pool oversubscribed a
-10-core host under that combined load and starved otherwise causal IndexedDB
-mutation completions past their test deadlines. The fixed upper bound leaves
-capacity for the sibling streams; it does not widen a timeout or replace an
-awaitable completion with polling.
+The frontend unit gate sizes Vitest from the machine's spare capacity through
+`scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
+actually use (affinity- and cgroup-quota-aware, not the host's advertised
+count) minus the 1-minute load average rounded up, clamped to at least one and
+at most four. A checkout where the helper cannot be read falls back to a flat
+four, which is what the gate used before the helper existed.
+The four is a ceiling, not a fixed pool. Vitest's own default pool is
+`os.availableParallelism()`, which oversubscribed a 10-core host under the
+combined load of `make test`'s sibling Go streams and starved otherwise causal
+IndexedDB mutation completions past their test deadlines; the ceiling keeps
+capacity for those siblings. Sizing below the ceiling on an already-loaded host
+extends the same reasoning to the other gate runs sharing it, which a fixed
+count could not see. Both are start-time readings of a lagging metric, not
+admission control: runs that begin together can still stack. Neither lever
+widens a timeout or replaces an awaitable completion with polling.
 Vitest file isolation prevents worker-count or file assignment from sharing
 module stores, panes, or mocks; per-file teardown is still required for timers,
 clients, and listeners.

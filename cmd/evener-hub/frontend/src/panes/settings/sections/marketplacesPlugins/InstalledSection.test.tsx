@@ -73,7 +73,7 @@ test("shows broken/disabled/auto-upgrade badges only when applicable", () => {
   });
   render(<InstalledSection onSelect={() => {}} />);
   expect(screen.getByText("broken")).toBeTruthy();
-  expect(screen.getByText("disabled")).toBeTruthy();
+  expect(screen.getByText("off by default")).toBeTruthy();
   expect(screen.getByText("auto-upgrade")).toBeTruthy();
 });
 
@@ -82,7 +82,7 @@ test("no badges render for a healthy, enabled, non-auto-upgrading plugin", () =>
   extensionsStore.setState({ plugins: [LINTER] });
   render(<InstalledSection onSelect={() => {}} />);
   expect(screen.queryByText("broken")).toBeNull();
-  expect(screen.queryByText("disabled")).toBeNull();
+  expect(screen.queryByText("off by default")).toBeNull();
   expect(screen.queryByText("auto-upgrade")).toBeNull();
 });
 

@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -103,7 +104,7 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 		t.Error("LastUpdated not set after Add")
 	}
 
-	listResp, err := ctl.ListMarketplaces()
+	listResp, err := ctl.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -185,9 +186,8 @@ func TestPlugins_Marketplace_Browse(t *testing.T) {
 
 // Browsing a marketplace classifies the manager's refusals the way adding,
 // editing, removing and refreshing one do. Browse takes a name from the caller,
-// so an unknown one is the caller's mistake; and its lazy fetch derives a store
-// directory from the name the entry is recorded under, so an entry recorded
-// under a name the store cannot carry is refused rather than cloned over.
+// so an unknown one is the caller's mistake — including the name an entry was
+// recorded under before the store renamed it.
 func TestPlugins_Marketplace_BrowseRefusalsAreWireErrors(t *testing.T) {
 	ctl := newTestPluginsController(t)
 	ctx := context.Background()
@@ -200,13 +200,13 @@ func TestPlugins_Marketplace_BrowseRefusalsAreWireErrors(t *testing.T) {
 		}
 	})
 
-	// A registry an older evener or a hand edit left with a traversing key.
-	// Unlike removal's, browse's guard sits on the lazy-clone branch alone, so
-	// the plant must be an unfetched non-directory pointer to reach it — a
-	// directory source is "fetched" where it stands and derives no store path.
-	// The url source names a path that does not exist, so even a browse that
-	// skipped the guard would fail its clone locally rather than reach out.
+	// A marketplaces file an older evener or a hand edit left with a
+	// traversing name. Taking the store lock renames such an entry before the
+	// browse looks it up, so the recorded name is unknown by then and the
+	// listing shows what it became. The url source names a path that does not
+	// exist, so nothing here reaches out.
 	t.Run("browsing an entry recorded under a traversing name", func(t *testing.T) {
+		ctl.mgr.Stderr = io.Discard
 		store := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins")
 		if err := os.MkdirAll(store, 0o755); err != nil {
 			t.Fatal(err)
@@ -225,6 +225,13 @@ func TestPlugins_Marketplace_BrowseRefusalsAreWireErrors(t *testing.T) {
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("Browse = %v, want an InvalidParams wire error", err)
+		}
+		list, err := ctl.ListMarketplaces(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Marketplaces) != 1 || list.Marketplaces[0].Name != "escape" {
+			t.Fatalf("marketplaces = %+v, want the one entry renamed to escape", list.Marketplaces)
 		}
 	})
 }
@@ -266,7 +273,7 @@ func TestPlugins_ConcurrentAddMarketplace_NoLostUpdate(t *testing.T) {
 		}
 	}
 
-	resp, err := ctl.ListMarketplaces()
+	resp, err := ctl.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -285,7 +292,7 @@ func TestPlugins_ConcurrentAddMarketplace_NoLostUpdate(t *testing.T) {
 
 func TestPlugins_ListPlugins_Empty(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	resp, err := ctl.ListPlugins()
+	resp, err := ctl.ListPlugins(context.Background())
 	if err != nil {
 		t.Fatalf("ListPlugins: %v", err)
 	}
