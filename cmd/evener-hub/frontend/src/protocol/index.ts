@@ -31,6 +31,11 @@ export { composeAskAnswers } from "./askAnswers";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
+export type { DocFileContent, DocFileErrorKind } from "./docContent";
+// readDocFile is deliberately absent: it hardcodes a relative URL and the
+// browser fetch global, so no Node or native consumer of this package can call
+// it. It joins the entry point when it takes a base-URL and fetch port.
+export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
 export { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";

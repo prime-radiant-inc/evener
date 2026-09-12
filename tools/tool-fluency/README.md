@@ -173,7 +173,7 @@ expect:
   final_contains: "FLUENCY_123"
 metrics:
   max_tool_calls: 2
-  first_call_tool: read_file
+  wants_investigative_call_count: true
 ```
 
 ### Future-tool probe
@@ -199,9 +199,19 @@ expect:
     type: command
     command: ["go", "test", "./..."]
 metrics:
-  max_validation_errors: 0
-  max_unnecessary_calls: 1
+  wants_investigative_call_count: true
+  wants_repeated_read_or_grep_count: true
 ```
+
+The `metrics:` block is strictly validated: the recognized keys are
+`max_tool_calls` (a manifest-local threshold) and the `wants_*` flags
+(`wants_investigative_call_count`, `wants_repeated_read_or_grep_count`,
+`wants_tool_round_of_first_test_run`, `wants_tool_round_of_first_source_edit`,
+`wants_premature_fix_before_red_test_flag`). An unrecognized key fails at
+load time rather than parsing into a map nothing reads. Metrics are
+computed from the run's transcript with provider wire names resolved to
+canonical tool names, and each wanted metric is reported on the result's
+`metrics` field.
 
 If a future tool has no semantic oracle, the runner may still report schema,
 availability, selection, and argument fluency, but the probe result must be

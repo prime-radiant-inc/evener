@@ -27,6 +27,7 @@
     "reducer.ts",
     "sendQueueAvailability.ts",
     "sessionErrors.ts",
-    "stableDelegate.ts"
+    "stableDelegate.ts",
+    "docContent.ts"
   ]
 }
