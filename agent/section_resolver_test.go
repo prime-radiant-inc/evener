@@ -733,10 +733,10 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 func TestIdentitySection_CleanupRuleScopedToDeliverables(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "coordinator",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "coordinator",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	section := resolver.Section("identity", promptData{Provider: "openai", Agent: "coordinator"})
 
