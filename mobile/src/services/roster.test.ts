@@ -83,6 +83,7 @@ function makeThread(over: Partial<Thread> = {}): Thread {
         shutdown: true,
         changeModel: true,
         changeVisionModel: true,
+        sharedNotes: false,
         queue: true,
         goal: true,
         rename: true,
