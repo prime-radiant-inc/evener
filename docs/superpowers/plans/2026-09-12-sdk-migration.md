@@ -30,7 +30,8 @@ state-store extraction has been approved by this landing task."
    into the package "for later" adds a boundary and buys nothing. The 18
    single-consumer candidates in the inventory stay where they are until a
    second consumer arrives in the same PR. This is why phase C schedules 24
-   relocations and not 51.
+   relocations and not 51. Two deliberate exceptions are labelled where they
+   occur: `secureUUID.ts` (moves inside D26) and `docContent.ts` (C24).
 
 ## Rows that stay put, permanently
 
@@ -40,7 +41,8 @@ These never move, and a PR that proposes moving one is wrong:
 `keybindings/dispatcher.ts`, `transcriptDisplay/renderContext.tsx`,
 `shell/{workspace,routing,paneRegistry,chromeStore,deletedSessionPanes,sessionCycle}.ts`,
 `notifications/{channels,favicon,leader,title}.ts`, `widgets/toast/store.ts`,
-`panes/session/composer/draft.ts`, `auth.ts`, and on the native side
+`panes/session/composer/draft.ts`, `shell/rail/railExpansion.ts`, `auth.ts`,
+and on the native side
 `draftRepository.ts`, `nativeLocation.ts`, `nativeImagePicker.ts`. They are
 browser or device storage, DOM event routing, dockview, `window.location`, or
 `expo-*`. `widgets/codeblock/ansi.ts` also stays put — see decision 1.
@@ -49,22 +51,25 @@ browser or device storage, DOM event routing, dockview, `window.location`, or
 
 | # | Title | Scope | Oracle | Lines | Deps | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| A1 | Ship the nine unpacked protocol modules | In: `protocol/tsconfig.build.json`, `package.json` exports, `index.ts`, `scripts/qualify-package.mjs`. Out: every app file. Deleted: nothing | `make test-api-package`, extended so the three generated consumer programs import each newly shipped module under ESM and CJS | ~200 | — | A module that compiles under `lib: ["ES2022","DOM"]` but needs a browser global at runtime ships silently; the runner only imports. `docContent.ts` is held back to C24 for exactly this reason |
-| A2 | Move `AppwireClientLike` out of `protocol/testing/` | In: new `protocol/clientLike.ts`, all 136 importers rewritten. Deleted: the declaration in `testing/fakeClient.ts:40` | `tsc --noEmit` in both apps; `make test-web` + `make test-native` unchanged otherwise | ~150 | A1 | None found — tsc catches every miss. The type is structural, so a partial rewrite still compiles; grep for the old path in the same PR |
-| A3 | Relocate the package to a top-level directory and alias it | In: `git mv` of `protocol/` to the agreed path, `tsconfig.paths`, `vite.config`, `vitest.config`, `mobile-native/tsconfig*.json`, Metro config, the five browser-guard runners. Deleted: nothing | all four gates | ~250 | A1, decision 3 | Metro and the guard bundlers resolve independently of `tsc`; a working `make test-web` does not prove `make test-web-browser` resolves the alias |
+| A1 | Ship the nine unpacked protocol modules | In: `protocol/tsconfig.build.json` (`files` goes 6 → 15), `package.json` exports, `index.ts`, `scripts/qualify-package.mjs`. Out: every app file. Deleted: nothing | `make test-api-package`, extended so **all four** generated consumer programs (`esm.mts`:29, `commonjs.cts`:51, `esm-runtime.mjs`:76, `commonjs-runtime.cjs`:85) exercise each newly shipped module under ESM and CJS. The pre-A1 baseline is nine export statements / **eleven** runtime exports — scope off symbols, not statements, and derive the list from one shared manifest rather than retyping it four times | ~200 | — | A module that compiles under `lib: ["ES2022","DOM"]` but needs a browser global at runtime ships silently if the runner only imports it; **#1184 answers this by smoke-calling every shipped module**. `docContent.ts` is held back to C24 for the same reason |
+| A2 | Move `AppwireClientLike` out of `protocol/testing/` | In: new `protocol/clientLike.ts`, **exported from `index.ts` and added to the build `files`** so a package-name import can resolve it; the **25** files that import the type rewritten. Out: the ~111 files that import `FakeClient` — those keep their `testing/fakeClient` import. Deleted: the declaration at `testing/fakeClient.ts:40` | `tsc --noEmit` in both apps; `make test-api-package` for the new export; `make test-web` + `make test-native` otherwise unchanged | ~150 | A1 | Rewriting all 136 `fakeClient` importers would break every test that constructs a `FakeClient`. The type is structural, so a partial rewrite still compiles; grep for the old path in the same PR |
+| A3 | Relocate the package to a top-level directory and alias it | In: `git mv` of `protocol/`, plus **every hard-coded reference to the old path**, which is eight functional files in four categories — generator: `appwire/doc.go:29` (the `go:generate` `-out`); gates: `make/testing.mk:58` (`test-api-package`) and `make/linting.mk:190` (the generated-output freshness list); Go tests: `internal/appwirets/emit_test.go:658`, `appwire/protocol_test.go:335,360`, `makefiletargets_audit_test.go:1073`; CI: `.github/workflows/ci.yml:57,60` and `.github/workflows/ios-testflight.yml:74`. Then `tsconfig.paths`, `vite.config`, `vitest.config`, `mobile-native/tsconfig*.json`, Metro config, the five browser-guard runners. Deleted: nothing | all four gates plus `make generate` and `make lint` — the freshness gate in `make/linting.mk:190` is the one that catches a missed generator path | ~320 | A1, decision 3 | **The reviewer's High finding: without these, the next `make generate` writes `types.gen.ts` to the deleted location and the package gate `cd`s into a directory that no longer exists.** Six further mentions are comments (`appwire/doc.go:8`, `internal/appwirets/main.go:2`, `cmd/evener-tui/hub_model.go:215`, `cmd/evener-hub/e2e_control_invariant_test.go:276`, `server/appwire_runtime_test.go:487`, `server/appwire_turns.go:530`, `agent/session_events.go:120`; eight in all) — update them for accuracy, but nothing breaks if one is missed. Metro and the guard bundlers resolve independently of `tsc`; a green `make test-web` does not prove `make test-web-browser` resolves the alias |
 | A4 | Rewrite deep relative imports to the package name | In: ~700 import sites across both apps (506 web, 202 native). Deleted: nothing | all four gates; no test assertion changes, only test imports | ~800 (import lines only) | A3 | Large mechanical diff hides a semantic edit. Review with `--stat` plus a check that the non-import diff is empty |
-| A5 | Delete the dead native conversation fixtures | Deleted: `mobile/src/dev/conversationFixtures.ts` (774 lines) | `make test-native` | ~780 (deletion) | — | None. It has no importer and two dangling type imports, so it is never typechecked today |
+| A5 | Delete the dead native conversation fixtures | Deleted: `mobile/src/dev/conversationFixtures.ts` (774 lines). Also widen `mobile-native` typechecking to every file under `mobile/src`, closing the gap that hid it | `make test-native` | ~780 (deletion) | — | **Merged as #1186 (`2245f9715`).** None; it had no importer and two dangling type imports |
 
 A5 is independent and can land first if it is convenient.
 
-## Phase B — lowest-risk duplicated logic (7 PRs)
+## Phase B — lowest-risk duplicated logic (8 PRs)
 
-Each collapses one rule that is provably written twice. All pure functions; no
-wire calls, no storage, no React.
+Each collapses one rule that is provably written twice — three times, for the
+failure predicate. All pure functions; no wire calls, no storage, no React.
+B1b is numbered out of sequence so the later D-phase references to B2-B7 stay
+valid; it runs immediately after B1.
 
 | # | Title | Scope | Oracle | Lines | Deps | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| B1 | One settled-item failure predicate | In: new `itemFailure.ts` in the package. Deleted: the predicate in `transcriptDisplay/projector.ts:118-130` and `toolCallFailed`/`isInProgressStatus` in `mobile/src/conversation/project.ts:114-133` | `transcriptDisplay/projector.test.ts` and `mobile/src/conversation/project.test.ts` both keep their assertions and both point at the shared module | ~120 | A1 | Low. `project.ts`'s own comment says it mirrors the web predicate "exactly"; if it does not, the two test files disagree and the PR surfaces it |
+| B1 | One settled-item failure predicate | In: new `itemFailure.ts` in the package. Deleted: the predicate in `transcriptDisplay/projector.ts:118-130` and `toolCallFailed`/`isInProgressStatus` in `mobile/src/conversation/project.ts:114-133` | `transcriptDisplay/projector.test.ts` and `mobile/src/conversation/project.test.ts` both keep their assertions and both point at the shared module | ~120 | A1 | **Open as #1189.** The two predicates turned out identical in behavior. It also surfaced a third — see B1b |
+| B1b | Reconcile the renderer registry's own failure predicate | In: `panes/session/transcript/toolRenderers.ts:189` `toolCallFailed`, rewritten to call `hasItemFailure` with the per-tool `descriptor.failed` hook layered on top — or, if the renderer is meant to classify differently, the difference named in a comment and pinned by a test. Deleted: whichever of the two rules is wrong | `toolRenderers.test.ts`, `toolCallItem` tests, and `protocol/itemFailure.test.ts`; `make test-web-browser`'s transcript guard for the rendered result | ~140 | B1 | Issue #1190. The renderer today does not trim `error`, does not treat `interrupted` as a failure, and ignores `exitCode`, so this PR changes what the web marks failed. 43 files reach the registry. Decide the intent before writing code — this is a behavior question, not a refactor |
 | B2 | One task row parser and grouping | In: package `taskData.ts` absorbing `panes/session/chrome/{taskData,taskGroups,taskTime}.ts`. Deleted: `deriveOpenTaskCount` and `TaskGroup` in `mobile/src/services/activity.ts:415-433` | `taskData.test.ts`, `taskGroups.test.ts`, `mobile/src/services/activity.test.ts` | ~280 | A1 | Medium. The two sides read different wire fields — web parses `TaskListResponse.data` (`unknown`), native reads `TaskAggregate` off the Thread. The shared module must accept both inputs or the PR must pick one and prove the counts match |
 | B3 | One usage and cost accounting | In: package `usage.ts`. Deleted: `panes/session/chrome/detailsAccounting.ts` body, `projectUsage` in `mobile/src/services/activity.ts` | `detailsAccounting.test.ts`, `mobile/src/services/activity.test.ts` | ~180 | A1 | Low. Rounding and context-pressure thresholds differ; a snapshot difference is a real behavior change, not a test to relax |
 | B4 | One system-notice family classification | In: package `systemNotice.ts`. Deleted: `messages/systemGrouping.ts` classifier, `systemFamily` in `project.ts:70-77` | `systemGrouping.test.ts`, `project.test.ts` | ~160 | A1 | Low. The two `eventKind` sets are not identical today — reconciling them changes what the web hides |
@@ -83,28 +88,28 @@ with the module and stays the oracle. Sizes are move + import-rewrite lines.
 | --- | --- | --- | --- | --- |
 | C1 | `stores/navigation/{codec,merge,types,immutable}.ts` (1151) | ~1250 | A4 | `codec.ts` deep-freezes; a bundler that strips `Object.freeze` in production changes behavior no test sees |
 | C2 | `stores/navigation/testing.ts` (294) | ~340 | C1 | Needs a `testing` subpath that ships built, or it stays a source-only file — decide in C1 |
-| C3 | `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1445) | ~1550 | A4 | `registry.ts` is a module-level singleton; the move must turn it into a factory or two apps share one registry in a test process |
+| C3 | `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1445) | ~1550 | A4, **decision 1** | `registry.ts:6` imports `zustand/vanilla` and `chord.ts:12` imports `tinykeys`; a zero-dependency package cannot pack them. Either hide both behind app adapters (the store shape from decision 1, and a `parseKeybinding` port) or add and qualify both as package dependencies. `registry.ts` is also a module-level singleton; the move must turn it into a factory or two apps share one registry in a test process |
 | C4 | `transcriptDisplay/config.ts` (603) | ~700 | A4 | Encoding is a pinned localStorage contract (`prefs.ts` comment on commit 932eeddca); do not touch `encodeLocalConfig` |
 | C5 | `stores/composerInput.ts` (27) | ~90 | A4 | None |
 | C6 | `stores/attachmentMarkers.ts` (48) | ~110 | C5 | None |
 | C7 | `composer/attachments/textareaMarkers.ts` (60) | ~120 | C6 | None |
 | C8 | `composer/attachments/limits.ts` (29) | ~90 | A4 | None |
-| C9 | `composer/slashCompletion.ts` (334) | ~400 | A4 | Carries a third-party port under `LICENSES/beautiful-ui.txt`; the attribution comment moves with it |
+| C9 | `composer/slashCompletion.ts` (334) | ~400 | A4, **C15** | It imports `slashCommandInvocation` from `shell/palette/catalogCommands.ts:13`, which C15 moves; a package module cannot keep that relative import. Either take the C15 dependency (as ordered here) or co-move the one helper. Also carries a third-party port under `LICENSES/beautiful-ui.txt`; the attribution comment moves with it |
 | C10 | `composer/submitRouting.ts` (50) | ~110 | A1 (needs `sendQueueAvailability` shipped) | None |
 | C11 | `composer/askDock/deriveAskQuestions.ts` (95) | ~160 | A1 | Reads `ThreadModel`; blocked until A1 ships `model.ts` |
 | C12 | `composer/askDock/reconcileBatches.ts` (76) | ~140 | C11 | None |
 | C13 | `panes/session/chrome/activityRows.ts` (208) | ~270 | A1 | None |
 | C14 | `shell/rail/sessionState.ts` (41) | ~100 | A4 | None |
-| C15 | `shell/palette/catalogCommands.ts` (37) | ~100 | A4 | None |
+| C15 | `shell/palette/catalogCommands.ts` (37) | ~100 | A4 | None. **Lands before C9**, which imports it — the C-numbers are identifiers, not a strict running order |
 | C16 | `shell/reasoningEffort.ts` (30) | ~100 | A4 | None |
 | C17 | `panes/spawn/{schema,pluginSelectionState,harnessModels}.ts` (192) | ~270 | A4 | None |
-| C18 | `settings/launchShared/{schema,inherited,pathListAdd}.ts` (~400) | ~480 | A4 | None |
+| C18 | `settings/launchShared/{schema,inherited,pathListAdd}.ts` (~400), plus `LaunchConfigLayerName` | ~520 | A4 | `schema.ts:8` imports `LaunchConfigLayerName` from the web-only `stores/launchConfig.ts`, and D7 (which moves that store) comes much later. The type moves into the package in this PR and `stores/launchConfig.ts` re-imports it — a type move, not a compatibility shim |
 | C19 | `settings/credentials/credentialLabels.ts` (157) | ~220 | A4 | None |
 | C20 | `settings/marketplacesPlugins/sourceLabel.ts` (20) | ~80 | A4 | None |
-| C21 | `widgets/modelCatalog/{pickerRows,types}.ts` (~180) | ~250 | A4 | None |
+| C21 | `widgets/modelCatalog/{pickerRows,catalogView,types}.ts` (~270) | ~350 | A4 | `pickerRows.ts:18` is built on `catalogView.ts` helpers, so `catalogView.ts` moves with it; leaving it behind strands a relative import across the boundary. `catalogClient.ts` and `scopedCatalog.ts` stay (they hold the fetch) |
 | C22 | `widgets/pathfield/pathRows.ts` (156) | ~220 | A4 | None |
 | C23 | `widgets/disclosure/disclosureStore.ts` (142) | ~210 | decision 1 | zustand; blocked on the store-shape ruling |
-| C24 | `docContent.ts` gains a base-URL/fetch port and ships | ~180 | A1 | It calls global `fetch` against absolute hub URLs; the port is the behavior change, not the move |
+| C24 | `docContent.ts` gains a base-URL/fetch port and ships | ~180 | A1 | **Rule-7 exception, deliberate:** `docContent.ts` has web 5 / native 0 consumers, so rule 7 would normally hold it back. It moves anyway because it is already inside the package directory and A1 held it back only for the `fetch` port — shipping it finishes A1 rather than starting a new boundary. It calls global `fetch` against absolute hub URLs; the port is the behavior change, not the move |
 
 Three modules that look like relocations are deliberately not here.
 `stores/secureUUID.ts` has one consumer today and moves inside D26, where the
@@ -133,7 +138,7 @@ The web store's exported shape and its `.test.ts` are the contract (rule 4).
 | D11 | `stores/extensions.ts` plugins | `installedPlugins.ts` (102) | ~350 | D10 | Medium |
 | D12 | `stores/extensions.ts` dirs and MCP | — | ~300 | D11 | Low |
 | D13 | `stores/navigation/revalidator.ts` (467) | invalidation logic in `navigationPages.ts` | ~600 | C1 | Medium. Needs an injected scheduler; a wrong one produces refetch storms under load that no unit test shows |
-| D14 | `stores/navigation/store.ts` (867) | `navigationPages.ts` (394), `navigationReveal.ts` (131) | ~1300 | D13, decision 1 | High. Pagination, attention and base invalidation interact; `NavigationBaseInvalidError` recovery is the sharp edge |
+| D14 | `stores/navigation/store.ts` (867) | `navigationPages.ts` (394), `navigationReveal.ts` (131) | ~1450 | D13, decision 1 | High. Two dependencies do not cross the boundary as-is: `store.ts:1-2` imports `zustand`/`zustand/vanilla`, and `store.ts:203` calls `loadExpansion()` from `shell/rail/railExpansion.ts`, which reads `localStorage` at lines 40/68 — at store-creation, i.e. module init, so merely importing the package would throw on a device. This PR **defines an explicit host persistence port** (`readExpansion`/`writeExpansion` supplied by the host) and keeps both the zustand hook and the `localStorage` implementation in platform adapters; native supplies an `expo` one. Getting this wrong either crashes native consumers at import or silently drops web rail-expansion persistence. Pagination, attention and base invalidation interact; `NavigationBaseInvalidError` recovery is the other sharp edge |
 | D15 | `stores/navigation/selectors.ts` (431) | `navigationTree.ts`, `rosterSearch.ts` (165) | ~600 | D14 | Medium. Selectors read the store directly today and must take state as an argument |
 | D16 | `mobile/src/services/roster.ts` (114) folded onto navigation reads | `navigationActions.ts` pin/archive half (302) | ~450 | D15 | Medium. `thread/list` and `evener/navigation/read` answer the same question differently; this PR picks one |
 | D17 | Activity tree state: web adopts `activityList.ts` | `stores/activityPanel.ts` body (371) | ~600 | A1, C13 | High. Continuation grafting (`activityMerge.ts`) and retained-tree behavior across a thread replacement is the bug #1096 already fixed once |
@@ -168,15 +173,17 @@ Nothing else gets a compatibility layer. In particular, no PR adds a
 **1. Does the package take runtime dependencies, or stay at zero?**
 It has none today (`protocol/package.json`), and the qualification runner
 installs the tarball with `--offline --ignore-scripts`, so every dependency has
-to resolve in a temp directory. Both apps' stores are zustand; two candidate
-modules (`disclosureStore.ts`, `widgets/codeblock/ansi.ts` via `anser`) carry
-dependencies today.
+to resolve in a temp directory. Three dependencies are in the way, not one:
+`zustand` (`stores/navigation/store.ts:1-2`, `keybindings/registry.ts:6`,
+`widgets/disclosure/disclosureStore.ts`), `tinykeys` (`keybindings/chord.ts:12`)
+and `anser` (`widgets/codeblock/ansi.ts`).
 *Recommendation: stay at zero.* Ship framework-free stores (a
 `getState`/`subscribe`/`setState` triple — which is what `zustand/vanilla`'s
 `createStore` already gives the web, so the web adapters are near-trivial) and
-let each app wrap them. Leave `ansi.ts` where it is; native already imports it
-by relative path and moving it buys one import site for one dependency. This
-decision gates C23 and every phase-D store.
+let each app wrap them. Take `tinykeys`' `parseKeybinding` as an injected port
+in C3 rather than a dependency. Leave `ansi.ts` where it is; native already
+imports it by relative path and moving it buys one import site for one
+dependency. This decision gates C3, C23 and every phase-D store.
 
 **2. One view model or two layers?**
 The web goes wire → `ThreadModel` (`reducer.ts` + `model.ts`) → display entries
@@ -209,10 +216,10 @@ through D21–D24 and the directory is deleted at the end of D24.
 
 ## Honest total
 
-**64 PRs. Roughly 29,000 lines changed.**
+**65 PRs. Roughly 29,300 lines changed.**
 
-Phase A 5 PRs / ~2,200 lines. Phase B 7 / ~1,500. Phase C 24 / ~7,900.
-Phase D 28 / ~18,100.
+Phase A 5 PRs / ~2,300 lines. Phase B 8 / ~1,640. Phase C 24 / ~8,000.
+Phase D 28 / ~18,300.
 
 Net, the tree should shrink by roughly 6,000–8,000 lines: about 3,900 lines of
 native twins deleted outright (`providerInstances`, `providerSignIn`,
@@ -226,3 +233,19 @@ Treat these numbers as ±40%. Phase D's four transcript PRs (D21–D24, ~4,700
 lines) and the three mutation PRs (D26–D28, ~1,500) are where the estimate is
 weakest, because both are cases where two implementations disagree today and
 nobody has yet written down which one is right.
+
+## Status as of 2026-09-12
+
+Observed, not assumed; re-query before acting. Nothing in phases C or D has
+started.
+
+| Plan PR | GitHub | State |
+| --- | --- | --- |
+| A1 | #1184 | open — nine modules shipped, `docContent` held to C24, runner smoke-calls every module |
+| A2 | #1188 | open — `clientLike.ts` shipped and exported from `index.ts`, 25 importers rewritten |
+| A5 | #1186 | merged as `2245f9715` |
+| B1 | #1189 | open — the two predicates were identical; surfaced B1b |
+| B1b | #1190 | issue filed, no PR |
+
+A3 and A4 are unstarted and are the next blockers: nothing in phase C can land
+until the package has a name both apps can import.
