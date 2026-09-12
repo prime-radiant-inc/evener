@@ -210,9 +210,13 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	// dead transcript claims nothing and loses nothing, and answering it with an
 	// error would turn every poll into a logged failure for the rest of the
 	// session's life; the start path takes the same shape by checking after its
-	// runnable test. The queue depth is read rather than popped because popping
-	// is the durable act this guard exists to prevent.
-	if s.QueueDepth() > 0 || s.hasPendingUserSteering() {
+	// runnable test. Parked work is idle work for this purpose: a Stop holds the
+	// queue and the steering rail, and both claims below refuse a held entry, so
+	// asking the claims' own predicates is what keeps the refusal and the claim
+	// from disagreeing about what counts as work. Predicates rather than the
+	// claims themselves because claiming is the durable act this guard exists to
+	// prevent.
+	if s.wakeHasClaimableWork() {
 		if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
 			return "", false, err
 		}
@@ -302,33 +306,55 @@ func steeringCarrierTurnIDFromContext(ctx context.Context) string {
 // treats every case the same way -- stand down -- because the steering that
 // prompted the wake, if still queued, stays queued for whichever turn runs
 // next; nothing is lost by waiting.
+// wakeHasClaimableWork reports whether this wake has work it could actually
+// take, by the same predicates the two claims below decide with.
+func (s *Session) wakeHasClaimableWork() bool {
+	snapshot := s.clientMutations.snapshot()
+	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot)
+}
+
+// steeringCarrierClaimable reports whether claimSteeringCarrierTurn may take a
+// carrier turn. Like queueHeadClaimable it is the whole of that decision, so a
+// caller asking whether this session has steering it could actually run asks the
+// question the claim asks.
+//
+// A Stop parks pending user steering until the user asks for something to run,
+// the same way QueueHeld parks the input queue. Claiming the steering carrier
+// while it is parked would hand the steer to a turn the Stop just ended, so it
+// is refused -- mirroring popQueueHead's QueueHeld gate (issue #174). The steer
+// stays in PendingExecutions/SteeringOrder; nothing moves, so its causal
+// provenance is never at risk (issue #146, Option C).
+func steeringCarrierClaimable(snapshot *clientMutationSnapshot) bool {
+	if snapshot.InterruptFence != nil || snapshot.ActiveTurnID != "" || snapshot.SteeringHeld {
+		return false
+	}
+	return claimableSteeringCarrierTurnID(snapshot) != ""
+}
+
+// claimableSteeringCarrierTurnID names the reserved turn the first eligible
+// pending steer already owns, or "" when no steer is ready to carry one.
+func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
+	for _, id := range snapshot.SteeringOrder {
+		pending, exists := snapshot.PendingExecutions[id]
+		if !exists || pending.ExecutionState != "accepted" || pending.TurnID == "" {
+			continue
+		}
+		return pending.TurnID
+	}
+	return ""
+}
+
 func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return "", false
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if snapshot.InterruptFence != nil || snapshot.ActiveTurnID != "" {
+		if !steeringCarrierClaimable(snapshot) {
 			return nil
 		}
-		// A Stop parks pending user steering until the user asks for something to
-		// run, the same way QueueHeld parks the input queue. Claiming the steering
-		// carrier here would hand the steer to a turn the Stop just ended, so it
-		// is refused -- mirroring popQueueHead's QueueHeld gate (issue #174). The
-		// steer stays in PendingExecutions/SteeringOrder; nothing moves, so its
-		// causal provenance is never at risk (issue #146, Option C).
-		if snapshot.SteeringHeld {
-			return nil
-		}
-		for _, id := range snapshot.SteeringOrder {
-			pending, exists := snapshot.PendingExecutions[id]
-			if !exists || pending.ExecutionState != "accepted" || pending.TurnID == "" {
-				continue
-			}
-			snapshot.ActiveTurnID = pending.TurnID
-			turnID = pending.TurnID
-			return nil
-		}
+		snapshot.ActiveTurnID = claimableSteeringCarrierTurnID(snapshot)
+		turnID = snapshot.ActiveTurnID
 		return nil
 	}); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v", err)})
