@@ -551,20 +551,26 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
+		local subpkgs=()
+		local pkg subpkg_list
+		# The bounded enumeration runs before the shards, not after, and the
+		# order is the bound. What this module has to survive is a stalled cache
+		# volume, where every go invocation blocks, so whichever go invocation
+		# runs first decides whether the module fails inside the bound or hangs
+		# outside it. `go run ./cmd/evener-dev/bin` reads the same GOCACHE and
+		# GOMODCACHE and has no bound of its own, and it cannot borrow this one:
+		# it runs the agent test suite rather than discovering packages, so a
+		# discovery-sized budget would turn a slow test run into a failure — a
+		# new flake in place of the one this bound removes. Ordering costs
+		# nothing, because the two are independent and the list is not read
+		# until the shards have finished.
+		subpkg_list="$(package_list_path "$m")"
+		run_bounded_package_list "$m" "$subpkg_list" || return 1
 		# `go run` collapses its child's exit code to 1 and reports the real
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
 		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
-		local subpkgs=()
-		local pkg subpkg_list
-		# Through the same bound as the root module's: this `go list` reads the
-		# same GOCACHE/GOMODCACHE, so a stalled volume would hang it exactly as
-		# it hangs root discovery — and it runs after the root bound has already
-		# been reported, where an unbounded hang is the one thing that bound
-		# cannot help with.
-		subpkg_list="$(package_list_path "$m")"
-		run_bounded_package_list "$m" "$subpkg_list" || return 1
 		while IFS= read -r pkg; do
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done <"$subpkg_list"
