@@ -258,7 +258,9 @@ describe("AddInstanceDialog", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "https://x" });
-      return { instances: [], availableProviders: [] };
+      // The hub's create returns the full updated listing, so the applied
+      // response carries the new row (the dialog verifies it).
+      return { instances: [instance({ name: "work", providerId: "anthropic" })], availableProviders: [] };
     });
     const onSuccess = vi.fn();
     const user = userEvent.setup();
@@ -430,6 +432,32 @@ describe("AddInstanceDialog", () => {
     expect(screen.queryByText(/could not confirm work2/)).toBeNull();
   });
 
+  // The applied path is not automatically a confirmation either: the store's
+  // own listing is the applied response, and it must actually hold the row.
+  test("a create whose applied listing omits the row is not reported as success", async () => {
+    const fake = connectFakeClient();
+    const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_WORK2);
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    fake.on("evener/instance/create", () => WITHOUT_WORK2);
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
   // A resolved reconcile is only confirmation if the listing it applied
   // actually contains the created row: reporting success on a listing that
   // never showed the instance closes the editor on a connection the host may
@@ -593,7 +621,7 @@ describe("AddInstanceDialog", () => {
         protocol: "openai-responses",
         surface: "generic",
       });
-      return { instances: [], availableProviders: [] };
+      return { instances: [instance({ name: "work", providerId: "anthropic" })], availableProviders: [] };
     });
     const onSuccess = vi.fn();
     const user = userEvent.setup();

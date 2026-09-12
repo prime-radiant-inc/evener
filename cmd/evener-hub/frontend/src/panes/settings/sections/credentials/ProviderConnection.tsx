@@ -460,7 +460,14 @@ function SelectedConnection({
       setError("This connection needs configuration before it can be checked. Open the full editor.");
       return;
     }
-    if (!target) return;
+    // needsConfiguration already covers a missing target, so this is the type
+    // narrowing. If it is ever reached, fail like any other failed refresh
+    // rather than returning with the phase still "refreshing".
+    if (!target) {
+      setPhase("idle");
+      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      return;
+    }
     if (
       destination(baseline) !== destination(target) ||
       target.activeSource !== (expectedSource ?? baseline?.activeSource)

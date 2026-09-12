@@ -150,7 +150,15 @@ export function AddInstanceDialog({
       // the dialog stays open with a re-confirm path rather than re-issuing
       // the create. Data refresh deliberately survives an unmount: the dialog
       // is gone, but the store still owes the caller a current listing.
-      if (!applied && !(await confirmCreate(trimmedName))) {
+      // The store's own listing IS the applied response when the write won the
+      // race, so it can be checked directly; only a superseded write has to be
+      // re-read. Either way the row must be visible before the create is
+      // reported, or the editor would close on an instance the listing never
+      // showed.
+      const confirmed = applied
+        ? credentialsStore.getState().instances.some((instance) => instance.name === trimmedName)
+        : await confirmCreate(trimmedName);
+      if (!confirmed) {
         if (!active.current) return;
         if (onUnconfirmedCreate) {
           onUnconfirmedCreate(trimmedName);

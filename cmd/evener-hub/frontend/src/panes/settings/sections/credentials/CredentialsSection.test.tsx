@@ -314,6 +314,30 @@ describe("the detail sheet", () => {
     });
     expect(onInstanceRemoved).not.toHaveBeenCalled();
   });
+
+  // The applied path is not automatically a confirmation either: the store's
+  // own listing is the applied response, and it must actually have lost the row.
+  test("a removal whose applied listing still holds the row is not reported as removed", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    fake.on("evener/instance/remove", () => ({ instances: [WORK, PERSONAL], availableProviders: [] }));
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy());
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
+  });
 });
 
 describe("credential verification", () => {

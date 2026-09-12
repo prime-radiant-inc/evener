@@ -22,6 +22,15 @@ const STORAGE_KEY = "evener-hub.mutation-client-identity";
 let fallbackIdentity: string | undefined;
 let testIdentity: string | undefined;
 
+/** A fresh storeable identity. crypto.randomUUID is the codebase's existing
+ * strong identifier source (mutation ids use it); the random/timestamp string
+ * remains the fallback for contexts that do not expose it. */
+function newClientIdentity(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid !== undefined) return `mutation-client-${uuid}`;
+  return `mutation-client-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+}
+
 /** The identity of THIS client (page) for durable mutation provenance. Stamped
  * on every record this client enqueues and compared against records read back
  * out of the shared outbox. */
@@ -33,7 +42,7 @@ export function ownClientId(): string {
   } catch {
     // Best-effort: the fallback below keeps this page's identity consistent.
   }
-  fallbackIdentity ??= `mutation-client-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  fallbackIdentity ??= newClientIdentity();
   try {
     globalThis.sessionStorage?.setItem(STORAGE_KEY, fallbackIdentity);
   } catch {

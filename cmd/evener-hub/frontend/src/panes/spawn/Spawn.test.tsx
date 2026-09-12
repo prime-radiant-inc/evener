@@ -3375,6 +3375,160 @@ test("entering onboarding for one draft scope does not suppress the fallback for
   await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
 });
 
+test("onboarding a second draft scope does not forget the first scope's explicit choice", async () => {
+  const user = userEvent.setup();
+  // Both scopes start with a credentialed default so nothing auto-fills while
+  // onboarding is opened; the first scope's default turns uncredentialed only
+  // after both have been onboarded, which is when the fallback would replace
+  // its (still explicit) choice.
+  const uncredentialedDirs = new Set<string>();
+  const fake = readyClient((f) => {
+    f.on("evener/instance/list", () => ({
+      instances: [],
+      availableProviders: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          protocol: "openai-chat",
+          auth: "bearer",
+          implicit: true,
+          authModes: ["apiKey"],
+          setup: {
+            name: "openai",
+            providerId: "openai",
+            protocol: "openai-chat",
+            auth: "bearer",
+            implicit: true,
+            isDefault: false,
+            activeSource: "none",
+            hasStoredOAuth: false,
+            credentialRequired: true,
+            authModes: ["apiKey"],
+            baseUrl: "https://provider.example/v1",
+          },
+        },
+      ],
+    }));
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    }));
+    f.on("evener/launch/resolve", ({ cwd }) => ({
+      effective: { model: uncredentialedDirs.has(cwd) ? "openai/gpt-5.5" : "anthropic/claude-opus-4" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  for (const dir of ["/tmp/first-draft", "/tmp/second-draft"]) {
+    await setWorkingDir(user, dir);
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+    await user.click(screen.getByRole("button", { name: "Connect provider" }));
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
+    await user.keyboard("{Escape}");
+  }
+
+  uncredentialedDirs.add("/tmp/first-draft");
+  await setWorkingDir(user, "/tmp/first-draft");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  // The first draft's onboarding choice still stands, so the substitute
+  // fallback must not fill its model in: the pane asks for an explicit choice.
+  expect(modelTrigger().textContent).toContain("Choose a model");
+  expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
+});
+
+test("an Advanced-options model override after onboarding satisfies the requirement", async () => {
+  const user = userEvent.setup();
+  let saved = false;
+  const setup = {
+    name: "openai",
+    providerId: "openai",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: true,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    authModes: ["apiKey"],
+    baseUrl: "https://provider.example/v1",
+  };
+  const client = readyClient((fake) => {
+    fake.on("evener/launch/schema", () => ({
+      options: [
+        { field: "model", wireField: "model", label: "Model", group: "general", kind: "modelPicker", perLaunch: true },
+      ],
+    }));
+    fake.on("evener/instance/list", () => {
+      const row = { ...setup, activeSource: saved ? "store" : "none", hasStoredFile: saved };
+      return {
+        instances: saved ? [row] : [],
+        availableProviders: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            protocol: row.protocol,
+            auth: row.auth,
+            implicit: true,
+            authModes: ["apiKey"],
+            setup: row,
+          },
+        ],
+      };
+    });
+    fake.on("model/list", () => ({
+      data: saved ? [{ provider: "openai", model: "from-server", displayName: "Server choice" }] : [],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return {
+        provider,
+        supported: true,
+        signedIn: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+      };
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    // The resolved default is non-empty and uncredentialed, and it does NOT
+    // follow the Advanced override: the requirement must be satisfied by the
+    // override itself rather than by waiting for a re-resolve.
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "missing/old-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await setWorkingDir(user, "/tmp/guided-override");
+  await user.click(screen.getByRole("button", { name: "Connect provider" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+  await user.click(await screen.findByRole("button", { name: "OpenAI" }));
+  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await screen.findByRole("option", { name: /Server choice/ });
+  await user.keyboard("{Escape}");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const modelPickers = screen.getAllByRole("button", { name: /change model/i });
+  await user.click(modelPickers[modelPickers.length - 1]!);
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "from");
+  await user.click((await screen.findAllByRole("option", { name: /Server choice/ }))[0]!);
+
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+});
+
 test("keeps the form usable and leaves Model at '(default)' when no provider is credentialed at all", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {

@@ -208,16 +208,14 @@ export function CredentialsSection({
         toast.push("success", `${label} cleared for ${name}`);
       } else {
         const applied = await credentialsStore.getState().remove(name);
-        // A superseded removal's listing was discarded by the store's
-        // generation guard - reconcile before reporting the removal, and
-        // confirm the row is really gone from the listing that applied: a
-        // superseded or failed reconcile read resolves like success and must
-        // not be reported as one. The guided owner's reset must not fire on
-        // an unconfirmed listing.
-        if (
-          !applied &&
-          !(await confirmListingState((instances) => !instances.some((instance) => instance.name === name)))
-        ) {
+        // The store's own listing IS the applied response when the removal won
+        // the race, so it can be checked directly; only a superseded removal
+        // has to be re-read. Either way the row must be gone from the listing
+        // before the removal is reported, or the guided owner's reset fires on
+        // a listing that never lost it.
+        const removed = (instances: InstanceEntry[]) => !instances.some((instance) => instance.name === name);
+        const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
+        if (!confirmed) {
           toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
           return;
         }

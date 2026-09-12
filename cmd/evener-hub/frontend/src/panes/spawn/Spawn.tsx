@@ -225,12 +225,12 @@ function SpawnForm({
   const providerSetup = useProviderSetup();
   const [connectingProvider, setConnectingProvider] = useState(false);
   const [modelHandoff, setModelHandoff] = useState<{ name?: string }>();
-  // Save/reload can make new models appear before Continue. Once this draft
+  // Save/reload can make new models appear before Continue. Once a draft scope
   // enters onboarding, do not substitute the legacy untouched-model fallback
-  // for its explicit choice, including after cancellation. The scope recorded
-  // is the draft's own harness+directory, so the suppression ends when the
-  // draft's scope does (see openProviderSetup below).
-  const providerChoiceScope = useRef<string | null>(null);
+  // for its explicit choice, including after cancellation. Scopes are tracked
+  // as a set, not one slot: onboarding draft B must not forget that draft A
+  // also made an explicit choice (see openProviderSetup below).
+  const providerChoiceScopes = useRef<Set<string>>(new Set());
   const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
   const providerConnected = useCallback(
     (name?: string) => {
@@ -262,7 +262,7 @@ function SpawnForm({
   // pane mount still gets its own default, and a connection-driven re-render -
   // which never changes the draft scope - cannot clear the choice.
   const openProviderSetup = useCallback(() => {
-    providerChoiceScope.current = `${harness}\0${cwd}`;
+    providerChoiceScopes.current.add(`${harness}\0${cwd}`);
     setConnectingProvider(true);
   }, [harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
@@ -275,6 +275,11 @@ function SpawnForm({
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
   const [advancedOverrides, setAdvancedOverrides] = useDraftField(draft, "advancedOverrides");
+  // The model that will actually launch: an Advanced-options override first,
+  // then the top-level chip, then the hub's resolved default (schema.ts's
+  // resolveScalars). Derived once here so the requirement check, the effort
+  // ladder, and submission all judge the same value.
+  const advancedModel = typeof advancedOverrides.model === "string" ? advancedOverrides.model.trim() : "";
   const [advancedValues, setAdvancedValues] = useDraftField(draft, "advancedValues");
   const [advancedErrors, setAdvancedErrors] = useDraftField(draft, "advancedErrors");
   const readAdvancedValues = useCallback(() => draft.fields.getState().advancedValues, [draft]);
@@ -574,7 +579,8 @@ function SpawnForm({
   // honest fallback - the resolved default may name a provider with no
   // credentials, and submitting it is a certain thread/start failure. A valid
   // /model invocation still bootstraps past this (slashModelBootstrap below).
-  const modelRequired = model === "" && (noDefaultModel || providerChoiceScope.current === `${harness}\0${cwd}`);
+  const modelRequired =
+    model === "" && advancedModel === "" && (noDefaultModel || providerChoiceScopes.current.has(`${harness}\0${cwd}`));
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
@@ -898,7 +904,7 @@ function SpawnForm({
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
           const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
           const fallback = models[0];
-          if (!defaultCredentialed && fallback && providerChoiceScope.current !== `${harness}\0${cwd}`) {
+          if (!defaultCredentialed && fallback && !providerChoiceScopes.current.has(`${harness}\0${cwd}`)) {
             setModel(`${fallback.provider}/${fallback.model}`);
           }
         },
@@ -919,7 +925,7 @@ function SpawnForm({
   // same precedence thread/start applies (floor §1.11, schema.ts's
   // resolveScalars): an Advanced-options model override first, then the
   // top-level chip, then the hub's resolved default for this cwd.
-  const advancedModel = typeof advancedOverrides.model === "string" ? advancedOverrides.model.trim() : "";
+  // advancedModel itself is derived above, next to the override state.
   const effortModel = [advancedModel, model, resolvedDefaultModel].find((candidate) => candidate !== "") ?? "";
   const knownEffortLevels = catalogEffortLevels(
     effortModel === ""
