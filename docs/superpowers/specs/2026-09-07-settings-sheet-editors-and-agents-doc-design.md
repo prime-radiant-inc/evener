@@ -264,6 +264,25 @@ error names both files and the marketplace whose plugins the registry still
 keys under the new name; `evener-doctor`'s plugin check already reports
 registry entries that name no marketplace.
 
+Only the rename target is validated, because the recorded name always is:
+taking the store lock (`lockStore`, which every mutation and lazy fetch goes
+through) first renames any marketplace an older evener recorded under a name
+`validNameComponent` refuses — one carrying `@`, one of the scratch names
+`.staging`/`.old`, or one that is not a single non-traversing path component.
+The new name follows one rule (`migratedMarketplaceName`): path separators
+split the name and `.`/`..` components go, the rest joined by `-`; every `@`
+becomes `-`; a scratch name loses its dot; nothing left, or still refused,
+becomes `marketplace`; a name a recorded marketplace, a clone or cache
+directory, or a registry key already occupies gets `-2`, `-3`, …. Refused
+names migrate longest first, so a longer name's keys have moved before a
+shorter name's `@<name>` suffix is re-keyed. Each entry moves and saves the
+way step 3 and step 5 do, with the same rollback; a failure names the entry
+and fails the lock acquisition. A name that is not a path component derives
+directories outside the store, so its record and keys change and nothing
+moves. One stderr line per rename names the old and new name. `ListMarketplaces`
+reads without the lock and, on seeing a refused name, takes it and reads
+again; `evener-doctor` stays read-only and reports the rename as pending.
+
 The frontend `extensionsStore` gains `editMarketplace(params)` and drops
 the browse cache entry for the old name after a rename.
 

@@ -1484,7 +1484,7 @@ describe("ConversationStore", () => {
             toolName: "shell",
             status: "completed",
             output: "updated",
-            outputImages: [{ id: "new", url: "https://hub.test/new" }],
+            outputImages: [{ source: "new", url: "https://hub.test/new" }],
           },
         },
       } as AnyNotification);
@@ -1498,7 +1498,10 @@ describe("ConversationStore", () => {
       );
       expect(items.filter((item) => item.id === "call-first")).toHaveLength(1);
       expect(
-        items.find((item) => item.id === "call-first:attachments")?.items,
+        items.find(
+          (item): item is Extract<MobileTimelineItem, { kind: "attachments" }> =>
+            item.kind === "attachments" && item.id === "call-first:attachments",
+        )?.items,
       ).toEqual([{ id: "call-first:out:0", src: "https://hub.test/new" }]);
       expect(
         items.find((item) => item.id === "call-later:attachments"),
@@ -1563,7 +1566,7 @@ describe("ConversationStore", () => {
             transcriptKey: "later",
             toolName: "shell",
             status: "inProgress",
-            outputImages: [{ id: "new", url: "https://hub.test/new" }],
+            outputImages: [{ source: "new", url: "https://hub.test/new" }],
           },
         },
       } as AnyNotification);
@@ -1687,7 +1690,7 @@ describe("ConversationStore", () => {
         method: "item/completed",
         params: {
           threadId: "thread-1", ref: "ref-1", turnId: "t1",
-          item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ id: "new", url: "new" }] },
+          item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ source: "new", url: "new" }] },
         },
       } as AnyNotification);
       release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
@@ -1695,7 +1698,10 @@ describe("ConversationStore", () => {
       const items = store.getState().conversation?.items ?? [];
       const activity = items.find((item) => item.kind === "activity");
       expect(activity?.kind === "activity" ? activity.members?.find((member) => member.transcriptKey === "later")?.detail.output : undefined).toBe("updated");
-      expect(items.find((item) => item.kind === "attachments" && item.sourceTranscriptKey === "later")?.items).toEqual([{ id: "new-wire-later:out:0", src: "new" }]);
+      expect(items.find(
+        (item): item is Extract<MobileTimelineItem, { kind: "attachments" }> =>
+          item.kind === "attachments" && item.sourceTranscriptKey === "later",
+      )?.items).toEqual([{ id: "new-wire-later:out:0", src: "new" }]);
     });
 
     it("splits a failed member out of a hydrated cluster", async () => {
