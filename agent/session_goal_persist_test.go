@@ -19,10 +19,13 @@ func TestGoalPersist_MetaPopulated(t *testing.T) {
 	now := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
 	store := sess.getOrCreateGoalStore()
 	store.Set("refactor the world", now)
-	// Advance to a progressed state so madeProgressOnce=true and Iterations=2,
-	// NoProgressStreak=1.
-	store.RecordContinuation(true /*progressed*/, now.Add(time.Minute))
-	store.RecordContinuation(false /*progressed*/, now.Add(2*time.Minute))
+	// Advance to a progressed state so madeProgressOnce=true and Iterations=2.
+	// Slice 2 derives the streak from ledger advancement (the entry's own
+	// Advancement flag), not from a bare digest heuristic: the second fold
+	// repeats the first turn's fingerprint+hash+digest exactly, so it reads
+	// non-advancing and the streak is 1.
+	store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "probe", ObservationClass: "ok", ObservationHash: "h1", StateDigest: "d1", Mutated: true}, false, now.Add(time.Minute))
+	store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "probe", ObservationClass: "ok", ObservationHash: "h1", StateDigest: "d1"}, false, now.Add(2*time.Minute))
 
 	meta := sess.Meta()
 
@@ -76,9 +79,9 @@ func TestGoalPersist_RestoreRoundTrip(t *testing.T) {
 	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
 	store := sess.getOrCreateGoalStore()
 	store.Set("ship the feature", now)
-	store.RecordContinuation(true, now.Add(time.Minute))
-	store.RecordContinuation(false, now.Add(2*time.Minute))
-	store.RecordContinuation(false, now.Add(3*time.Minute))
+	store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "probe", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d", Mutated: true}, false, now.Add(time.Minute))
+	store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "probe", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d"}, false, now.Add(2*time.Minute))
+	store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "probe", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d"}, false, now.Add(3*time.Minute))
 
 	meta := sess.Meta()
 	if meta.Goal == nil {
@@ -88,7 +91,7 @@ func TestGoalPersist_RestoreRoundTrip(t *testing.T) {
 	// Restore into a fresh store.
 	fresh := goal.NewStore()
 	g := meta.Goal
-	fresh.Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
+	fresh.RestoreSnapshot(goalRestoreToStore(g, g.UpdatedAt))
 
 	snap, ok := fresh.Snapshot()
 	if !ok {
@@ -109,8 +112,9 @@ func TestGoalPersist_RestoreRoundTrip(t *testing.T) {
 }
 
 // TestGoalPersist_RestorePreservesMadeProgressOnce verifies that after
-// Restore, the madeProgressOnce grace flag is correctly reinstated: a
-// no-progress turn AFTER restore accrues the streak (not the grace period).
+// Restore, the ledger tier is correctly reinstated: a restored fresh-tier
+// goal still stalls at K=6 (not blocked early), proving the window survived
+// the round-trip.
 func TestGoalPersist_RestorePreservesMadeProgressOnce(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
@@ -127,19 +131,67 @@ func TestGoalPersist_RestorePreservesMadeProgressOnce(t *testing.T) {
 	}
 
 	fresh := goal.NewStore()
-	fresh.Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
+	fresh.RestoreSnapshot(goalRestoreToStore(g, g.UpdatedAt))
 
-	// With madeProgressOnce=true, consecutive no-progress turns must accrue the
-	// streak. Fire goal.NoProgressLimit no-progress turns; the store should
-	// transition to blocked.
-	for i := range goal.NoProgressLimit {
-		fresh.RecordContinuation(false, now.Add(time.Duration(i+2)*time.Minute))
+	// A restored v1 snapshot with madeProgressOnce=true restores the advanced
+	// tier (K=3) with an empty window: K−1 identical non-advancing turns stay
+	// active, the K-th nudges, and the next blocks — the advanced-tier bound,
+	// not the old NoProgressLimit=3 breaker and not the fresh K=6 tier.
+	stall := goal.TurnOutcome{ActionFingerprint: "probe", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d"}
+	for i := range goal.RepetitionThresholdAdvanced - 1 {
+		if snap, active := fresh.RecordContinuation(stall, false, now.Add(time.Duration(i+2)*time.Minute)); !active || snap.Status != goal.StatusActive {
+			t.Fatalf("residual turn %d = (%v, %v), want active", i+1, snap.Status, active)
+		}
 	}
-	snap, ok := fresh.Snapshot()
+	if snap, active := fresh.RecordContinuation(stall, false, now.Add(time.Duration(goal.RepetitionThresholdAdvanced+1)*time.Minute)); !active || snap.Status != goal.StatusActive {
+		t.Fatalf("K-th turn = (%v, %v), want the nudge (still active)", snap.Status, active)
+	}
+	if snap, active := fresh.RecordContinuation(stall, false, now.Add(time.Duration(goal.RepetitionThresholdAdvanced+2)*time.Minute)); active || snap.Status != goal.StatusBlocked {
+		t.Fatalf("post-nudge turn = (%v, %v), want blocked", snap.Status, active)
+	}
+}
+
+// TestGoalPersist_LegacyExpiryBackfill pins M3 (round-13): pre-upgrade
+// snapshots persist expiry fires with Expiry unset (omitempty) and the
+// "wait expired: ..." trigger. After restore the lease-expiry entry carries
+// Expiry=true — so claimedPredicateFire-equivalent behavior holds (no
+// advancement through timer refires) — while the synthetic deadline entry
+// (WaitID "deadline") is NOT backfilled through this path (it keys on
+// WaitID separately in claimedPredicateFire).
+func TestGoalPersist_LegacyExpiryBackfill(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	g := &schema.GoalSnapshot{
+		Objective: "legacy expiry",
+		Status:    string(goal.StatusActive),
+		CreatedAt: now,
+		UpdatedAt: now.Add(time.Minute),
+		Budgets: &schema.GoalBudgetsSnapshot{
+			MaxContinuations: goal.DefaultMaxContinuations,
+			Deadline:         now.Add(goal.DefaultGoalDeadline),
+		},
+		PendingWake: []schema.GoalPendingWakeSnapshot{
+			{WaitID: "wait_1", Trigger: "wait expired: timer", FiredAt: now, Kind: string(goal.WaitUntilTime)},
+			{WaitID: goal.DeadlineWakeID, Trigger: "deadline exceeded (waiting on timer)", FiredAt: now},
+		},
+	}
+
+	fresh := goal.NewStore()
+	fresh.RestoreSnapshot(goalRestoreToStore(g, now.Add(time.Minute)))
+	full, ok := fresh.GoalSnapshot()
 	if !ok {
-		t.Fatal("store should still have a goal")
+		t.Fatal("restored store must have a goal")
 	}
-	if snap.Status != goal.StatusBlocked {
-		t.Errorf("Status: got %v, want blocked (streak should have accrued after restore)", snap.Status)
+	if len(full.PendingWake) != 2 {
+		t.Fatalf("restored pendingWake = %+v, want 2 entries", full.PendingWake)
+	}
+	if !full.PendingWake[0].Expiry {
+		t.Fatalf("legacy lease-expiry entry must backfill Expiry=true: %+v", full.PendingWake[0])
+	}
+	if full.PendingWake[1].Expiry {
+		t.Fatalf("synthetic deadline entry must not backfill Expiry through this path (WaitID-keyed): %+v", full.PendingWake[1])
+	}
+	if claimedPredicateFire(full.PendingWake[:1]) {
+		t.Fatal("backfilled lease-expiry entry must not count as predicate advancement")
 	}
 }

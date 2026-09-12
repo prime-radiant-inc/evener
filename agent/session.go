@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
@@ -214,6 +215,15 @@ type Session struct {
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.
 	goalUpdateMu sync.Mutex
+	// goalEventGen is the monotonic goal-event generation: bumped under
+	// goalUpdateMu on every goal mutation that publishes a GOAL_UPDATED event,
+	// captured alongside the mutation's snapshot, and checked just before the
+	// emit. A newer generation means a newer mutation already published, so a
+	// stale emit suppresses itself instead of regressing consumers (spec §7
+	// commit order). Best-effort: a race that slips past the check still
+	// carries the emission-time re-read (emitGoalUpdated) or the current
+	// full-shape read (emitCurrentGoalState), never fabricated state.
+	goalEventGen atomic.Uint64
 
 	// --- native worktree occupancy (spec §7) ---
 	//
@@ -645,6 +655,62 @@ type Session struct {
 	// dependents already drained still kicks — and cleared by SetGoal/ClearGoal
 	// (a retarget voids a pending hold). Guarded by s.mu.
 	goalDependentsHeld bool
+	// goalWaitTimer is the coalesced wait timer for a parked goal (spec §2): a
+	// single sclock timer armed to the earliest live wait deadline (slice-1
+	// subset of the §2 four-way min — poll/parked-total/deadline projection
+	// arrives with Task 4's persistence). Its callback claims expiry into
+	// pendingWake and kicks outside the lock. Disarmed on Set/Clear/CancelWait
+	// so no post-clear stale fire can re-park the goal (spec §3). Guarded by
+	// s.mu; nil when no wait timer is armed.
+	goalWaitTimer clock.Timer
+	// goalWaitTimerGen strands superseded timer callbacks: every re-arm bumps
+	// it, and a callback whose generation mismatches drops without claiming
+	// (the disarm race in spec §2 routes to the honest loss notice instead of
+	// a stale wake). Guarded by s.mu.
+	goalWaitTimerGen uint64
+	// goalTerminalPending latches a terminal-flagged rule-1 drive (spec §1 R7
+	// M-I1): the wake turn ran while a budget was also exceeded, so the next
+	// gate evaluates budget/deadline rules before rule 1 — on breach it blocks
+	// with the corresponding verdict (fresh pendingWake dropped with the honest
+	// loss notice), otherwise it clears the latch and proceeds to rule 1.
+	// Persisted to schema in Task 4; session-local until then. Guarded by s.mu.
+	goalTerminalPending bool
+	// goalWakeDelivered records claimed-but-consumed wake batches by wait_id
+	// (spec §2 fired_epoch dedupe in session form): a timer callback or
+	// notification that finds its wait already delivered drops without
+	// re-claiming, so a refire collapses to one wake. Entries accumulate until
+	// the wake turn's tail fold consumes them (DrainPendingWakeIDs per kicked
+	// batch; superseded batches drain at their no-op turn's tail). Cleared on
+	// Clear; on retarget (Set) only unclaimed live state resets — claimed
+	// entries survive marked Superseded. Guarded by s.mu.
+	goalWakeDelivered map[string]bool
+	// goalSupersededArmed flags that the gate just drove the superseded no-op
+	// evaluation turn (spec §3): its tail consumes the marked batch and
+	// re-arms the current objective without folding stall signal. Set at
+	// drive time (batch marked delivered), consumed at the turn's tail.
+	// Guarded by s.mu.
+	goalSupersededArmed bool
+	// goalWatchdog carries the quiet-goal watchdog's per-goal state (spec §6):
+	// the current park/active stretch anchor, the per-stretch notice count,
+	// and the rolling 24h notice timestamps for the per-goal ceiling. Parked
+	// goals run zero turns, so the watchdog evaluates on a poll seam
+	// (checkGoalWatchdog) with sclock time — never on a model turn. Guarded
+	// by s.mu.
+	goalWatchdog goalWatchdogState
+	// goalDelta tracks the last-driven condition truth + terminal markers for
+	// the spec §6 direction-4 delta frame (condition flips + new terminal
+	// events/output since last evaluation, not full state). Guarded by s.mu.
+	goalDeltaLastConds []goal.ConditionCheck
+	// goalTurnEvidence is the per-turn accumulator for the slice-2 ledger fold
+	// (spec §4): every tool round appends its per-call (fingerprint, class,
+	// hash) evidence here. The gate's plain-drive branch commits it under
+	// goalUpdateMu into the persisted ledger; the evidence is cleared when a
+	// turn starts, when a non-fold branch wins (park, hold, wait-attributable
+	// wake paths), and when no goal is current. Guarded by s.mu. The folded
+	// TurnOutcome is pre-scoped by construction: the state digest arrives from
+	// buildGoalTurnOutcome/goalStateDigest (job/delegate/watch/wait/file
+	// names+sizes+mtimes) — never history.
+	goalTurnEvidence []goalTurnCallEvidence
 	// kickFunc, when set via SetKickFunc, lets an idle SetGoal start the goal
 	// loop immediately by feeding the first continuation prompt back into the
 	// serve loop's input channel. It is a callback because the agent module must
@@ -1730,6 +1796,23 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.attentionMu.Unlock()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	// Owner-visible output is watchdog activity (spec §6 signal 3): an
+	// assistant turn with user-facing text restarts the quiet clock, so a
+	// goal that keeps reporting never notifies. Tool-only turns (no text)
+	// and non-assistant kinds leave the stretch running. Outside the locks
+	// (the reset takes s.mu itself).
+	//
+	// Loose hook by design (fix-9 M7): this fires on ANY assistant turn
+	// with text — including continuation-turn text the projector may not
+	// surface to the owner — not on strictly owner-projected output. Any
+	// model text production counts as not-quiet, which errs toward fewer
+	// notices (a spurious reset only delays a notice; a missed reset would
+	// false-positive on an advancing goal). If watchdog notices go missing
+	// on reporting goals, the follow-up is to move this hook to the
+	// projector — until then the loose hook stands.
+	if live.Kind == schema.TurnAssistant && len(persisted.Message.Text()) > 0 {
+		s.noteGoalWatchdogOwnerOutput(s.sclock().Now())
 	}
 }
 

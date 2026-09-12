@@ -1045,3 +1045,192 @@ func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
 		t.Errorf("task_list items additionalProperties = %v, want false", items["additionalProperties"])
 	}
 }
+
+func TestDefGoalWaitShape(t *testing.T) {
+	def := DefGoalWait()
+	if def.Name != "goal_wait" {
+		t.Fatalf("name = %q, want goal_wait", def.Name)
+	}
+	required(t, def, "goal_wait", []string{"kind"})
+	props := def.Parameters["properties"].(map[string]any)
+	kind, ok := props["kind"].(map[string]any)
+	if !ok {
+		t.Fatalf("goal_wait missing kind property")
+	}
+	enum, ok := kind["enum"].([]string)
+	if !ok {
+		t.Fatalf("kind enum = %T, want []string", kind["enum"])
+	}
+	for _, want := range []string{"until_time", "until_job", "until_delegate", "until_approval", "until_event", "until_child"} {
+		if !slices.Contains(enum, want) {
+			t.Fatalf("kind enum = %v, want %q", enum, want)
+		}
+	}
+	for _, prop := range []string{"target", "event_subtype", "matcher", "label", "timeout_seconds"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("goal_wait missing property %q", prop)
+		}
+	}
+	// Stale-subtype shrink (round-14 LOW): the advertised enum carries
+	// file_modified only — http_match (issue #1061) and external_label
+	// (issue #1063) stay named in the description text but are no longer
+	// offered values. Validation keeps REJECTING them (store + tool layer).
+	if subtype, ok := props["event_subtype"].(map[string]any); !ok {
+		t.Fatal("goal_wait missing event_subtype property")
+	} else if enum, ok := subtype["enum"].([]string); !ok {
+		t.Fatalf("event_subtype enum = %T, want []string", subtype["enum"])
+	} else if len(enum) != 1 || enum[0] != "file_modified" {
+		t.Fatalf("event_subtype enum = %v, want [file_modified]", enum)
+	} else if desc, _ := subtype["description"].(string); !strings.Contains(desc, "1061") || !strings.Contains(desc, "1063") {
+		t.Fatalf("event_subtype description %q must keep the removal notes", desc)
+	}
+	timeout, ok := props["timeout_seconds"].(map[string]any)
+	if !ok {
+		t.Fatalf("goal_wait missing timeout_seconds property")
+	}
+	if timeout["type"] != "integer" {
+		t.Fatalf("timeout_seconds type = %v, want integer", timeout["type"])
+	}
+}
+
+// TestDefGoalWaitPerKindShapes pins the Task-9 prompt-diff appendix (spec
+// §7): the goal_wait description documents per-kind predicate shapes in the
+// tool description — the stage-1 nudge is the backstop, not the
+// introduction.
+func TestDefGoalWaitPerKindShapes(t *testing.T) {
+	desc := DefGoalWait().Description
+	for _, shape := range []string{
+		"until_time: no target",
+		"until_job: target = the supervised job id",
+		"until_delegate: target = the delegate id",
+		"until_approval: target = the approval content key",
+		"until_event file_modified: target = the file path",
+		"until_child: target = the known descendant session id",
+	} {
+		if !strings.Contains(desc, shape) {
+			t.Fatalf("goal_wait description missing per-kind shape %q:\n%s", shape, desc)
+		}
+	}
+}
+
+// TestDefGoalWaitApprovalKeyEncoding pins the round-14 MEDIUM docs: the
+// until_approval target is the two-half "header\\x00question" key, and a bare
+// single half matches only a header-empty-or-question-empty ask.
+func TestDefGoalWaitApprovalKeyEncoding(t *testing.T) {
+	desc := DefGoalWait().Description
+	for _, want := range []string{`"header\x00question"`, "ambiguous-by-construction"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("goal_wait description missing approval-key note %q:\n%s", want, desc)
+		}
+	}
+	props := DefGoalWait().Parameters["properties"].(map[string]any)
+	target, ok := props["target"].(map[string]any)
+	if !ok {
+		t.Fatal("goal_wait missing target property")
+	}
+	targetDesc, _ := target["description"].(string)
+	for _, want := range []string{`"header\x00question"`, "a bare single half matches only a header-empty-or-question-empty ask"} {
+		if !strings.Contains(targetDesc, want) {
+			t.Fatalf("goal_wait target description missing approval-key note %q: %q", want, targetDesc)
+		}
+	}
+	props2 := DefGoalExpect().Parameters["properties"].(map[string]any)
+	target2, ok := props2["target"].(map[string]any)
+	if !ok {
+		t.Fatal("goal_expect missing target property")
+	}
+	targetDesc2, _ := target2["description"].(string)
+	for _, want := range []string{`"header\x00question"`, "a bare single half matches only a header-empty-or-question-empty ask"} {
+		if !strings.Contains(targetDesc2, want) {
+			t.Fatalf("goal_expect target description missing approval-key note %q: %q", want, targetDesc2)
+		}
+	}
+}
+
+// TestDefGoalExpectPerKindShapes pins the Task-9 prompt-diff appendix for
+// goal_expect: registrable v1 condition shapes plus the check-on-claim
+// timing note.
+func TestDefGoalExpectPerKindShapes(t *testing.T) {
+	desc := DefGoalExpect().Description
+	for _, shape := range []string{
+		"file check: target = the file path",
+		"until_job: target = the supervised job id",
+		"until_delegate: target = the delegate id",
+		"check-on-claim only",
+	} {
+		if !strings.Contains(desc, shape) {
+			t.Fatalf("goal_expect description missing per-kind shape %q:\n%s", shape, desc)
+		}
+	}
+}
+
+func TestDefGoalCancelWaitShape(t *testing.T) {
+	def := DefGoalCancelWait()
+	if def.Name != "goal_cancel_wait" {
+		t.Fatalf("name = %q, want goal_cancel_wait", def.Name)
+	}
+	required(t, def, "goal_cancel_wait", []string{"wait_id"})
+	props := def.Parameters["properties"].(map[string]any)
+	if _, ok := props["wait_id"]; !ok {
+		t.Fatalf("goal_cancel_wait missing wait_id property")
+	}
+}
+
+func TestDefGoalExpectShape(t *testing.T) {
+	def := DefGoalExpect()
+	if def.Name != "goal_expect" {
+		t.Fatalf("name = %q, want goal_expect", def.Name)
+	}
+	required(t, def, "goal_expect", []string{"desc"})
+	props := def.Parameters["properties"].(map[string]any)
+	for _, prop := range []string{"desc", "kind", "target", "event_subtype", "matcher"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("goal_expect missing property %q", prop)
+		}
+	}
+	// Dead-param removal (round-17 MEDIUM): timeout_seconds promised a TTL
+	// the check-on-claim verifier never reads, and label was read then
+	// discarded — both silently promised behavior that does not exist. The
+	// schema (additionalProperties:false) must not advertise them, so
+	// registry callers are rejected instead of silently ignored. goal_wait's
+	// timeout_seconds/label are live and pinned by TestDefGoalWaitShape.
+	for _, prop := range []string{"timeout_seconds", "label"} {
+		if _, ok := props[prop]; ok {
+			t.Fatalf("goal_expect must not advertise dead property %q", prop)
+		}
+	}
+	kind, ok := props["kind"].(map[string]any)
+	if !ok {
+		t.Fatal("goal_expect missing kind property")
+	}
+	enum, ok := kind["enum"].([]string)
+	if !ok {
+		t.Fatalf("kind enum = %T, want []string", kind["enum"])
+	}
+	for _, want := range []string{"until_job", "until_delegate", "until_approval", "until_event", "until_child"} {
+		if !slices.Contains(enum, want) {
+			t.Fatalf("kind enum = %v, want %q (no until_time: timers are waits, not claim conditions)", enum, want)
+		}
+	}
+	// Stale-subtype shrink (round-14 LOW): the event_subtype enum carries
+	// file_modified only (description keeps the http/external-label removal
+	// notes; validation keeps rejecting them).
+	if subtype, ok := props["event_subtype"].(map[string]any); !ok {
+		t.Fatal("goal_expect missing event_subtype property")
+	} else if enum, ok := subtype["enum"].([]string); !ok {
+		t.Fatalf("event_subtype enum = %T, want []string", subtype["enum"])
+	} else if len(enum) != 1 || enum[0] != "file_modified" {
+		t.Fatalf("event_subtype enum = %v, want [file_modified]", enum)
+	}
+	// v1 restriction (fix-1/4 I1): the schema enum keeps all kinds (validation
+	// rejects approval/child/http/external-label with named reasons), but the
+	// descriptions must state the restriction.
+	kindDesc, _ := kind["description"].(string)
+	if !strings.Contains(kindDesc, "until_approval and until_child reject") {
+		t.Fatalf("kind description %q must state the v1 restriction", kindDesc)
+	}
+	def2 := DefGoalExpect()
+	if !strings.Contains(def2.Description, "until_approval, until_child, http_match, and external_label are rejected") {
+		t.Fatalf("goal_expect description %q must state the v1 restriction", def2.Description)
+	}
+}

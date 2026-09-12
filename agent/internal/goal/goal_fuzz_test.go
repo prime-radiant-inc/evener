@@ -3,6 +3,7 @@
 package goal
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -25,7 +26,7 @@ func FuzzGoalStoreTerminalPersistence(f *testing.F) {
 			if i < len(operations) {
 				op = operations[i]
 			}
-			snap, active := store.RecordContinuation(op&1 != 0, start.Add(time.Duration(i+1)*time.Second))
+			snap, active := store.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d"}, op&1 != 0, start.Add(time.Duration(i+1)*time.Second))
 			if !active || snap.Status != StatusActive {
 				t.Fatalf("pre-terminal continuation %d unexpectedly stopped: %+v active=%v", i, snap, active)
 			}
@@ -58,7 +59,7 @@ func FuzzGoalStoreTerminalPersistence(f *testing.F) {
 			now := terminalAt.Add(time.Duration(i+1) * time.Second)
 			switch op % 3 {
 			case 0:
-				snap, active := store.RecordContinuation(op&0x80 != 0, now)
+				snap, active := store.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d"}, op&0x80 != 0, now)
 				if active || snap.Status != terminal {
 					t.Fatalf("terminal continuation reversed state: %+v active=%v", snap, active)
 				}
@@ -83,48 +84,25 @@ func FuzzGoalStoreTerminalPersistence(f *testing.F) {
 }
 
 type fuzzGoalPersistence struct {
-	objective        string
-	status           string
-	stopReason       string
-	iterations       int
-	noProgressStreak int
-	madeProgressOnce bool
-	created          time.Time
-	updated          time.Time
-	ok               bool
+	persisted PersistedGoal
+	ok        bool
 }
 
 func captureFuzzGoal(store *Store) fuzzGoalPersistence {
-	objective, status, stopReason, iterations, noProgressStreak, madeProgressOnce, created, updated, ok := store.PersistSnapshot()
+	persisted, ok := store.PersistSnapshot()
 	return fuzzGoalPersistence{
-		objective:        objective,
-		status:           status,
-		stopReason:       stopReason,
-		iterations:       iterations,
-		noProgressStreak: noProgressStreak,
-		madeProgressOnce: madeProgressOnce,
-		created:          created,
-		updated:          updated,
-		ok:               ok,
+		persisted: persisted,
+		ok:        ok,
 	}
 }
 
 func restoreFuzzGoal(store *Store, persisted fuzzGoalPersistence) {
-	store.Restore(
-		persisted.objective,
-		persisted.status,
-		persisted.stopReason,
-		persisted.iterations,
-		persisted.noProgressStreak,
-		persisted.madeProgressOnce,
-		persisted.created,
-		persisted.updated,
-	)
+	store.RestoreSnapshot(persisted.persisted)
 }
 
 func assertFuzzGoalPersistence(t *testing.T, phase string, got, want fuzzGoalPersistence) {
 	t.Helper()
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s persistence = %+v, want %+v", phase, got, want)
 	}
 }

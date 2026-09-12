@@ -394,6 +394,10 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		// already fired is joined below via sweepWG instead — spec §P3).
 		s.stopLaneResidueSweepTimer()
 		s.stopLaneReLockRetryTimer()
+		// Slice-1 goal wait timer (spec section 3): a close that begins before
+		// the earliest wait deadline cancels the wake outright; the closing
+		// flag plus the generation bump strand an in-flight callback.
+		s.stopGoalWaitTimer()
 
 		// Step 3: join the in-flight-dispose WaitGroup with NO locks held, then
 		// join any in-flight P3 open-pass residue sweep before this session's own
@@ -712,6 +716,7 @@ func (s *Session) discardRestoredCandidate() {
 		}
 		s.stopLaneResidueSweepTimer()
 		s.stopLaneReLockRetryTimer()
+		s.stopGoalWaitTimer()
 
 		if s.jobManager != nil && s.jobManager.store != nil {
 			_ = s.jobManager.store.Close()
@@ -1459,6 +1464,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
 	s.askPending = nil
+	// Slice-2 ledger: a new turn starts a new evidence window — drop any
+	// residue the previous turn's gate did not consume (a non-fold branch
+	// already clears, so this is the backstop, not the mechanism).
+	s.goalTurnEvidence = nil
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -1851,6 +1860,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if persistErr := errors.Join(s.persistToolResults(ctx, calls, results), sessionLifecycleFault(ctx, "persist_tools")); persistErr != nil {
 			return "", progressed, persistErr
 		}
+
+		// Slice-2 ledger evidence (spec §4): every executed round appends
+		// its per-call (fingerprint, class, hash) evidence for the gate
+		// fold. Recorded regardless of persist outcome — evidence is about
+		// what the turn DID.
+		s.recordGoalTurnEvidence(calls, results)
 
 		timings.Persistence = time.Since(tPhaseStart)
 

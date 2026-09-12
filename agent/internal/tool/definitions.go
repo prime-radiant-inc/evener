@@ -1021,6 +1021,131 @@ func DefAskUser() llm.ToolDefinition {
 	}
 }
 
+// DefGoalWait returns the tool definition for goal_wait (spec section 2:
+// model-declared wait registration). The model names a wait kind plus its
+// predicate: kind selects the source (until_time | until_job | until_delegate
+// | until_approval | until_event | until_child); target carries the kind's
+// target identity (job id, delegate id, child session id, file path, or
+// approval content key); event_subtype selects the until_event flavor
+// (file_modified only — http_match removed, issue #1061; external_label
+// removed, issue #1063); matcher carries the event matcher body
+// (capped at 1KB); label is the chip-rendered short label (capped at 256
+// chars, restricted printable charset); timeout_seconds is the lease
+// time-to-live (default 600,
+// cap 86400). Registration validates fail-closed: hallucinated targets are
+// rejected with the reason named, never parked; a retained-terminal
+// job/delegate fires immediately with the terminal outcome instead of
+// parking. (No harness-auto registration path exists in this slice — every
+// wait is model-declared through this tool.)
+func DefGoalWait() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "goal_wait",
+		Description: `Park the active session goal on a waited event instead of polling for it. ` +
+			`The goal burns zero turns while parked and wakes exactly once when the wait fires or expires. ` +
+			`Use until_time to sleep until a deadline; until_job/until_delegate to wait on a supervised job or delegate you own; ` +
+			`until_approval to wait on a live ask_user question you asked; ` +
+			`until_event file_modified to wait on a file inside the session sandbox changing; ` +
+			`until_child to wait on a known descendant session's terminal report. ` +
+			`Per-kind predicate shapes (target carries the kind's identity): ` +
+			`until_time: no target (timeout_seconds alone sets the deadline). ` +
+			`until_job: target = the supervised job id (must be running, or retained-terminal inside the record window for immediate catch-up). ` +
+			`until_delegate: target = the delegate id (must be running/settling/stopping, or retained-terminal for catch-up). ` +
+			`until_approval: target = the approval content key: the two-half "header\x00question" key (NUL-joined header + question; root session only). ` +
+			`A bare single-half key matches only a header-empty-or-question-empty ask (ambiguous-by-construction, noted in the wake excerpt). ` +
+			`until_event file_modified: target = the file path inside the session sandbox (must exist and stat), event_subtype = "file_modified". ` +
+			`until_child: target = the known descendant session id (fires only on the child's terminal report). ` +
+			`Hallucinated targets are rejected with the reason named; a retained-terminal job/delegate fires immediately with its terminal outcome.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"kind": map[string]any{
+					"type":        "string",
+					"description": "Wait kind: until_time | until_job | until_delegate | until_approval | until_event | until_child.",
+					"enum":        []string{"until_time", "until_job", "until_delegate", "until_approval", "until_event", "until_child"},
+				},
+				"target":        map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, or approval content key (until_approval: the two-half \"header\\x00question\" key; a bare single half matches only a header-empty-or-question-empty ask). Empty for until_time."},
+				"event_subtype": map[string]any{"type": "string", "description": "until_event flavor: file_modified only (http_match removed, see issue #1061; external_label removed, see issue #1063).", "enum": []string{"file_modified"}},
+				"matcher":       map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
+				"label":         map[string]any{"type": "string", "description": "Chip-rendered short label (max 256 chars, printable). Defaults per kind when empty."},
+				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400,
+					"description": "Lease time-to-live in seconds (default 600, max 86400)."},
+			},
+			"required": []string{"kind"},
+		},
+	}
+}
+
+// DefGoalCancelWait returns the tool definition for goal_cancel_wait (spec
+// section 7): remove one live wait lease by wait_id. Cancel removes the live
+// lease only and disarms its timer; an already-claimed pendingWake entry
+// still drives once with the cancellation noted - cancel never silently
+// swallows a consumed fire.
+func DefGoalCancelWait() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "goal_cancel_wait",
+		Description: `Cancel one live goal wait by wait_id. ` +
+			`The live lease is removed and its timer disarmed; cancelling the last live lease returns the goal to active. ` +
+			`An already-claimed (fired) wait still drives its wake turn once - cancel never swallows a consumed fire.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"wait_id": map[string]any{"type": "string", "description": "The wait_id of the live lease to cancel (returned by goal_wait)."},
+			},
+			"required": []string{"wait_id"},
+		},
+	}
+}
+
+// DefGoalExpect returns the tool definition for goal_expect (spec section
+// 6, v1 scope per fix-1/4 I1): register one stop-claim condition (desc +
+// predicate) for conditional verification. Registrable kinds are file
+// (until_event/file_modified, the default for empty kind), until_job, and
+// until_delegate only; until_approval, until_child, http_match, and
+// external_label reject with a named reason (their substrates are out of
+// scope for v1). Registration runs the identical section-2 validation +
+// attach-scan snapshot at registration (hallucinated conditions rejected
+// immediately with the reason named); the verifier evaluates the named
+// conditions check-on-claim only (update_goal("complete") rejects with the
+// failing condition named). Expect-conditions never feed the ledger
+// mid-episode.
+func DefGoalExpect() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "goal_expect",
+		Description: `Register one stop-claim condition for the active session goal. ` +
+			`update_goal("complete") verifies every registered condition and rejects with the failing condition named; ` +
+			`goals without conditions complete by self-declare. ` +
+			`Registrable conditions in v1 (fix-1/4 I1): file checks (until_event/file_modified; empty kind means a file check on target), ` +
+			`until_job, and until_delegate only. until_approval, until_child, http_match, and external_label are rejected with the reason named. ` +
+			`Per-kind predicate shapes (target carries the kind's identity): ` +
+			`file check: target = the file path inside the session sandbox (empty kind means this). ` +
+			`until_job: target = the supervised job id. ` +
+			`until_delegate: target = the delegate id. ` +
+			`Conditions evaluate check-on-claim only (no continuous ticks — waits' predicates are the continuous subgoal-evidence source). ` +
+			`Hallucinated targets are rejected with the reason named; conditions never feed the progress ledger.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"desc":          map[string]any{"type": "string", "description": "Condition name; the verifier names it on rejection."},
+				"kind":          map[string]any{"type": "string", "description": "Condition kind (v1: until_job | until_delegate | until_event; until_approval and until_child reject). Empty means a file check on target.", "enum": []string{"until_job", "until_delegate", "until_approval", "until_event", "until_child"}},
+				"target":        map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, or approval content key (until_approval: the two-half \"header\\x00question\" key; a bare single half matches only a header-empty-or-question-empty ask)."},
+				"event_subtype": map[string]any{"type": "string", "description": "until_event flavor (v1: file_modified only; http_match and external_label reject).", "enum": []string{"file_modified"}},
+				"matcher":       map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
+				// NOTE: goal_expect takes no timeout_seconds or label.
+				// Conditions are check-on-claim (no lease TTL exists to set),
+				// and desc already names the condition — the removed fields
+				// promised behavior the verifier never reads, so the schema
+				// (additionalProperties:false) rejects them instead of
+				// silently ignoring them. goal_wait's timeout/label are live
+				// and untouched.
+			},
+			"required": []string{"desc"},
+		},
+	}
+}
+
 // DefUpdateGoal returns the tool definition for update_goal.
 // The model calls this to declare the active goal complete or blocked.
 func DefUpdateGoal() llm.ToolDefinition {

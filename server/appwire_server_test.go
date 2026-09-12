@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -294,6 +295,94 @@ func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("resp=%v, want error when goalFunc unwired", resp.Kind())
+	}
+}
+
+// TestServerAppWireGoalSetResumeRoutesToResumeFunc pins the /goal resume
+// routing (spec §7, fix-9 M6): goal/set with Resume=true reaches the resume
+// callback with the objective text + extend fields — never goalFunc (whose
+// retarget semantics would destroy the blocked goal it should recover).
+func TestServerAppWireGoalSetResumeRoutesToResumeFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var goalCalls []string
+	srv.SetGoalFunc(func(objective string) (bool, error) {
+		goalCalls = append(goalCalls, objective)
+		return true, nil
+	})
+	var resumeCalls []appwire.GoalSetParams
+	srv.SetGoalResumeFunc(func(objective, extendBudget string, extendValue int64) (bool, error) {
+		resumeCalls = append(resumeCalls, appwire.GoalSetParams{Objective: objective, ExtendBudget: extendBudget, ExtendValue: extendValue})
+		return true, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
+		Ref:          "local:th_1",
+		Objective:    "finish the deploy",
+		Resume:       true,
+		ExtendBudget: "deadline",
+		ExtendValue:  3600,
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
+	}
+	if out := resp.Response.Result.(appwire.GoalSetResponse); !out.Started {
+		t.Fatalf("started=%v, want true", out.Started)
+	}
+	if len(goalCalls) != 0 {
+		t.Fatalf("goalFunc calls=%v, want none (resume must not retarget)", goalCalls)
+	}
+	if len(resumeCalls) != 1 || resumeCalls[0].Objective != "finish the deploy" || resumeCalls[0].ExtendBudget != "deadline" || resumeCalls[0].ExtendValue != 3600 {
+		t.Fatalf("resumeCalls=%+v, want the objective text + extend fields", resumeCalls)
+	}
+}
+
+// TestServerAppWireGoalSetResumeWithoutFuncIsUnavailable pins the nil resume
+// callback: Resume=true with no resume func wired is Unavailable (not a
+// silent fallthrough to goalFunc).
+func TestServerAppWireGoalSetResumeWithoutFuncIsUnavailable(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var goalCalls []string
+	srv.SetGoalFunc(func(objective string) (bool, error) {
+		goalCalls = append(goalCalls, objective)
+		return true, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
+		Ref:    "local:th_1",
+		Resume: true,
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want error when goalResumeFunc unwired", resp.Kind())
+	}
+	if len(goalCalls) != 0 {
+		t.Fatalf("goalFunc calls=%v, want none (no fallthrough on unwired resume)", goalCalls)
+	}
+}
+
+// TestServerAppWireGoalSetResumePropagatesError pins error propagation: a
+// resume callback failure (e.g. the renewal rejection naming the exhausted
+// budget) surfaces as the message error.
+func TestServerAppWireGoalSetResumePropagatesError(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetGoalResumeFunc(func(_, _ string, _ int64) (bool, error) {
+		return false, errors.New("cannot resume: maxContinuations exhausted; retry with --extend continuations <value>")
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
+		Ref:    "local:th_1",
+		Resume: true,
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want the resume error propagated", resp.Kind())
 	}
 }
 
@@ -965,7 +1054,9 @@ func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
 					}
 					return
 				}
-				if params.Goal == nil || *params.Goal != *want {
+				// DeepEqual (not ==): GoalState now carries the WaitingOn
+				// slice, which is not comparable with ==.
+				if params.Goal == nil || !reflect.DeepEqual(*params.Goal, *want) {
 					t.Fatalf("%s goal = %+v, want %+v", name, params.Goal, want)
 				}
 				return
@@ -1008,7 +1099,7 @@ func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s thread/read after goal update: %v", reader.name, err)
 		}
-		if read.Thread.Evener.Goal == nil || *read.Thread.Evener.Goal != *wantSet {
+		if read.Thread.Evener.Goal == nil || !reflect.DeepEqual(*read.Thread.Evener.Goal, *wantSet) {
 			t.Fatalf("%s read goal = %+v, want %+v", reader.name, read.Thread.Evener.Goal, wantSet)
 		}
 	}

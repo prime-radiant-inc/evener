@@ -98,6 +98,8 @@ func TestNewDerivesCorrectKind(t *testing.T) {
 		{"GoalContinuation", events.GoalContinuationData{Text: "continue"}, events.EventGoalContinuation},
 		{"GoalEnded", events.GoalEndedData{Status: "done", Iterations: 1}, events.EventGoalEnded},
 		{"GoalUpdated", events.GoalUpdatedData{Goal: &events.GoalStateData{Objective: "ship", Status: "active"}}, events.EventGoalUpdated},
+		{"GoalWaiting", events.GoalWaitingData{Count: 1, NearestLabel: "alpha"}, events.EventGoalWaiting},
+		{"GoalResumed", events.GoalResumedData{WaitIDs: []string{"wait_1"}}, events.EventGoalResumed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -328,5 +330,15 @@ func TestTurnEnded_KindAndPayload(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"turn_duration_ms":1234`) {
 		t.Errorf("marshaled event missing turn_duration_ms: %s", b)
+	}
+}
+
+func TestGoalWatchdogEventKind(t *testing.T) {
+	ev := events.New(events.GoalWatchdogData{Kind: "park-start", NearestLabel: "alpha"})
+	if ev.Kind != events.EventGoalWatchdog {
+		t.Fatalf("New(GoalWatchdogData).Kind = %q, want %q", ev.Kind, events.EventGoalWatchdog)
+	}
+	if ev.Kind != "GOAL_WATCHDOG" {
+		t.Fatalf("wire string = %q, want GOAL_WATCHDOG", ev.Kind)
 	}
 }

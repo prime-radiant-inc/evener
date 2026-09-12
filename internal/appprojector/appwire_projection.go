@@ -397,9 +397,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		var state *appwire.GoalState
 		if data.Goal != nil {
 			state = &appwire.GoalState{
-				Objective:  data.Goal.Objective,
-				Status:     data.Goal.Status,
-				Iterations: data.Goal.Iterations,
+				Objective:                data.Goal.Objective,
+				Status:                   data.Goal.Status,
+				Iterations:               data.Goal.Iterations,
+				WaitingOn:                goalWaitStates(data.Goal.WaitingOn),
+				NearestDeadlineUnixMilli: data.Goal.NearestDeadlineUnixMilli,
+				NearestLabel:             data.Goal.NearestLabel,
+				UsedContinuations:        data.Goal.UsedContinuations,
+				MaxContinuations:         data.Goal.MaxContinuations,
+				Stage:                    data.Goal.Stage,
 			}
 		}
 		return []AppNotification{p.notification(appwire.NotifyEvenerGoalUpdated, appwire.GoalUpdatedParams{
@@ -407,6 +413,27 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			Ref:      p.ref,
 			Goal:     state,
 		})}
+	case events.EventGoalWaiting:
+		p.clearSkillCandidate()
+		data := eventData[events.GoalWaitingData](event.Data)
+		// Emit-vs-project (spec §7): stage-2 bounded auto-parks set
+		// AnnounceSilently — the emit stays for the audit trail (replay
+		// consumers), but no announcement projects (coalesced into the
+		// stall episode's single notice). systemAnnouncement with empty
+		// text already projects silently (nil), so route silent parks
+		// through the same helper with "" text.
+		if data.AnnounceSilently {
+			return p.systemAnnouncement(appwire.ThreadItemEventKindGoalWaiting, "Goal", "")
+		}
+		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalWaiting, "Goal", goalWaitingText(data))
+	case events.EventGoalWatchdog:
+		p.clearSkillCandidate()
+		data := eventData[events.GoalWatchdogData](event.Data)
+		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalWatchdog, "Goal", goalWatchdogText(data))
+	case events.EventGoalResumed:
+		p.clearSkillCandidate()
+		data := eventData[events.GoalResumedData](event.Data)
+		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalResumed, "Goal", goalResumedText(data))
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		out := p.ensureTurn(event.Timestamp)
@@ -1325,7 +1352,96 @@ func goalState(data *events.GoalStateData) *appwire.GoalState {
 	if data == nil {
 		return nil
 	}
-	return &appwire.GoalState{Objective: data.Objective, Status: data.Status, Iterations: data.Iterations}
+	return &appwire.GoalState{
+		Objective:                data.Objective,
+		Status:                   data.Status,
+		Iterations:               data.Iterations,
+		WaitingOn:                goalWaitStates(data.WaitingOn),
+		NearestDeadlineUnixMilli: data.NearestDeadlineUnixMilli,
+		NearestLabel:             data.NearestLabel,
+		UsedContinuations:        data.UsedContinuations,
+		MaxContinuations:         data.MaxContinuations,
+		Stage:                    data.Stage,
+	}
+}
+
+// goalWaitStates converts the event wait list to the wire wait list,
+// preserving order. Labels + deadlines only — never full predicates.
+func goalWaitStates(in []events.GoalWaitData) []appwire.GoalWaitState {
+	if in == nil {
+		return nil
+	}
+	out := make([]appwire.GoalWaitState, len(in))
+	for i, w := range in {
+		out[i] = appwire.GoalWaitState{WaitID: w.WaitID, Label: w.Label, DeadlineUnixMilli: w.DeadlineUnixMilli}
+	}
+	return out
+}
+
+// goalWaitingText renders the EventGoalWaiting announcement: the park count
+// plus the nearest wait label for the chip aggregation. Empty text (no waits
+// named) projects silently — the announcement carries nothing to say.
+func goalWaitingText(data events.GoalWaitingData) string {
+	if data.Count <= 0 {
+		return ""
+	}
+	if data.NearestLabel == "" {
+		return fmt.Sprintf("Goal waiting on %d", data.Count)
+	}
+	return fmt.Sprintf("Goal waiting on %d · %s", data.Count, data.NearestLabel)
+}
+
+// goalWatchdogText renders the EventGoalWatchdog announcement: the quiet
+// stretch kind plus the nearest wait label when one stands.
+func goalWatchdogText(data events.GoalWatchdogData) string {
+	switch data.Kind {
+	case "park-start":
+		if data.NearestLabel == "" {
+			return "Goal still waiting (quiet)"
+		}
+		return "Goal still waiting on " + data.NearestLabel
+	case "half-deadline":
+		if data.NearestLabel == "" {
+			return "Goal still waiting (halfway to deadline)"
+		}
+		return "Goal still waiting on " + data.NearestLabel + " (halfway to deadline)"
+	case "active-quiet":
+		return "Goal quiet with no recent progress"
+	default:
+		if data.NearestLabel == "" {
+			return "Goal watchdog: " + data.Kind
+		}
+		return "Goal watchdog (" + data.Kind + ") on " + data.NearestLabel
+	}
+}
+
+// goalResumedText renders the EventGoalResumed announcement: the fired
+// wait_ids the combined wake turn drove for.
+func goalResumedText(data events.GoalResumedData) string {
+	if len(data.WaitIDs) == 0 {
+		return "Goal resumed"
+	}
+	return "Goal resumed: " + strings.Join(data.WaitIDs, ", ")
+}
+
+// GoalWaitingChipText aggregates a parked goal for the status chip
+// (spec §6): "waiting on <n> · <nearest label> · <deadline>". The deadline
+// renders as Unix epoch milliseconds — the machine-readable nearest the wire
+// carries; human-relative rendering belongs to the client. A nil or
+// non-waiting goal renders "" (no chip), and a waiting goal with no waits
+// named renders the bare count so the chip never implies more than the
+// waiting_on[] list it summarizes. Single source for the waiting-branch
+// format: cmd/evener-tui hubGoalChipText delegates here (keeping its own
+// nil/non-waiting behavior), so edit this one place, not both.
+func GoalWaitingChipText(goal *appwire.GoalState) string {
+	if goal == nil || goal.Status != "waiting" {
+		return ""
+	}
+	n := len(goal.WaitingOn)
+	if goal.NearestLabel == "" {
+		return fmt.Sprintf("waiting on %d", n)
+	}
+	return fmt.Sprintf("waiting on %d · %s · %d", n, goal.NearestLabel, goal.NearestDeadlineUnixMilli)
 }
 
 func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegateInfo {

@@ -190,6 +190,11 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
 	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
+	completeIfSatisfied  func(time.Time) (goal.Snapshot, string, bool)
+	registerWait         func(goal.WaitKind, time.Time) (goal.Wait, bool)
+	cancelWait           func(string, time.Time) bool
+	registerExpect       func(goal.ExpectRequest, time.Time) (goal.Condition, bool)
+	isChildSession       func() bool
 }
 
 // Store returns the session's goal store, initializing it if needed.
@@ -209,6 +214,95 @@ func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time)
 	snap, _ := store.Snapshot()
 	return snap, true
 }
+
+// CompleteIfSatisfied verifies the goal's registered stop-claim conditions
+// check-on-claim and completes only when every condition is satisfied (spec
+// §6). Through the owning Session when available it runs verify+commit as one
+// ordered unit under goalUpdateMu (see completeGoalIfConditionsSatisfied);
+// direct test constructions fall back to the store-only verify-then-commit
+// they had before. It returns the terminal snapshot, the failing condition
+// desc ("" when satisfied or condition-free), and whether the goal
+// transitioned to complete.
+func (g goalGuard) CompleteIfSatisfied(now time.Time) (goal.Snapshot, string, bool) {
+	if g.completeIfSatisfied != nil {
+		return g.completeIfSatisfied(now)
+	}
+	store := g.Store()
+	full, ok := store.GoalSnapshot()
+	if !ok {
+		return goal.Snapshot{}, "", false
+	}
+	if len(full.Conditions) > 0 {
+		checks := store.EvaluateExpectations(full.Conditions)
+		if _, failing := goal.VerifyConditions(full.Conditions, checks); failing != "" {
+			return goal.Snapshot{}, failing, false
+		}
+	}
+	if !store.SetTerminal(goal.StatusComplete, "", now) {
+		return goal.Snapshot{}, "", false
+	}
+	snap, _ := store.Snapshot()
+	return snap, "", true
+}
+
+// RegisterWait validates and installs one wait lease through the owning
+// Session when available (keeping the mutation and its GOAL_UPDATED event
+// ordered); direct test constructions fall back to the store-only behavior.
+func (g goalGuard) RegisterWait(req goal.WaitKind, now time.Time) (goal.Wait, bool) {
+	if g.registerWait != nil {
+		return g.registerWait(req, now)
+	}
+	return g.Store().RegisterWait(req, now)
+}
+
+// CancelWait removes one live lease by wait_id through the owning Session
+// when available; direct test constructions fall back to the store-only
+// behavior.
+func (g goalGuard) CancelWait(waitID string, now time.Time) bool {
+	if g.cancelWait != nil {
+		return g.cancelWait(waitID, now)
+	}
+	return g.Store().CancelWait(waitID, now)
+}
+
+// RejectReason names the most recent registration rejection, or "" when the
+// last RegisterWait succeeded. The Task-3 tool surface propagates it as the
+// validation error.
+func (g goalGuard) RejectReason() string { return g.Store().LastRejectReason() }
+
+// RegisterExpect validates and installs one stop-claim condition through the
+// owning Session when available; direct test constructions fall back to the
+// store-only behavior.
+func (g goalGuard) RegisterExpect(req goal.ExpectRequest, now time.Time) (goal.Condition, bool) {
+	if g.registerExpect != nil {
+		return g.registerExpect(req, now)
+	}
+	return g.Store().RegisterExpect(req, now)
+}
+
+// Conditions returns the goal's registered stop-claim conditions (empty =
+// the v1 self-declare path). ok is false when no goal is set.
+func (g goalGuard) Conditions() ([]goal.Condition, bool) {
+	full, ok := g.Store().GoalSnapshot()
+	if !ok {
+		return nil, false
+	}
+	return append([]goal.Condition(nil), full.Conditions...), true
+}
+
+// EvaluateExpectations re-evaluates conditions against the live substrate at
+// claim time (spec §6 check-on-claim).
+func (g goalGuard) EvaluateExpectations(conds []goal.Condition) []goal.ConditionCheck {
+	return g.Store().EvaluateExpectations(conds)
+}
+
+// Snapshot returns a value copy of the current goal, or (zero, false) if no
+// goal is set.
+func (g goalGuard) Snapshot() (goal.Snapshot, bool) { return g.Store().Snapshot() }
+
+// IsChildSession reports whether the owning session is a child session (a
+// subagent/delegate). Direct test constructions default to root (false).
+func (g goalGuard) IsChildSession() bool { return g.isChildSession != nil && g.isChildSession() }
 
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
@@ -255,6 +349,11 @@ func newToolDeps(s *Session) *toolDeps {
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
 			setTerminal:          s.setGoalTerminal,
+			completeIfSatisfied:  s.completeGoalIfConditionsSatisfied,
+			registerWait:         s.registerGoalWait,
+			cancelWait:           func(waitID string, _ time.Time) bool { return s.CancelGoalWait(waitID) },
+			registerExpect:       s.registerGoalExpect,
+			isChildSession:       s.isSubagentSession,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,

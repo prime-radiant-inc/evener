@@ -247,10 +247,171 @@ type CumulativeUsage struct {
 	TotalTokens     int64 `json:"total_tokens,omitzero"`
 }
 
+// GoalWaitSnapshot is one persisted wait lease: the full predicate payload
+// (spec section 2 lease fields) so a restored session re-validates the exact
+// predicate it parked on. Wire projection carries labels + deadlines only;
+// this persisted form carries everything.
+type GoalWaitSnapshot struct {
+	WaitID         string    `json:"wait_id"`
+	Kind           string    `json:"kind"`
+	Target         string    `json:"target,omitempty"`
+	TimeoutNanos   int64     `json:"timeout_nanos,omitempty"`
+	Label          string    `json:"label,omitempty"`
+	Matcher        string    `json:"matcher,omitempty"`
+	EventSubtype   string    `json:"event_subtype,omitempty"`
+	Baseline       string    `json:"baseline,omitempty"`
+	AskGeneration  string    `json:"ask_generation,omitempty"`
+	Deadline       time.Time `json:"deadline,omitzero"`
+	RegisteredAt   time.Time `json:"registered_at,omitzero"`
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	FiredEpoch     uint64    `json:"fired_epoch,omitzero"`
+}
+
+// GoalConditionSnapshot is one persisted stop-claim condition (spec §6):
+// the goal_expect (desc, predicate) pair plus its registration attach-scan
+// snapshot. The verifier re-evaluates at claim time.
+type GoalConditionSnapshot struct {
+	Desc          string    `json:"desc"`
+	Kind          string    `json:"kind"`
+	Target        string    `json:"target,omitempty"`
+	TimeoutNanos  int64     `json:"timeout_nanos,omitempty"`
+	Matcher       string    `json:"matcher,omitempty"`
+	EventSubtype  string    `json:"event_subtype,omitempty"`
+	AskGeneration string    `json:"ask_generation,omitempty"`
+	Baseline      string    `json:"baseline,omitempty"`
+	Satisfied     bool      `json:"satisfied,omitempty"`
+	RegisteredAt  time.Time `json:"registered_at,omitzero"`
+}
+
+// GoalPendingWakeSnapshot is one persisted consumed-but-undelivered fire
+// (spec section 1): the claim micro-state (fired_epoch + pendingWake) is
+// written atomically with the snapshot, and a restored non-empty backlog
+// drives its turn kick-immediately (not via timer).
+type GoalPendingWakeSnapshot struct {
+	WaitID     string    `json:"wait_id"`
+	Trigger    string    `json:"trigger,omitempty"`
+	FiredAt    time.Time `json:"fired_at,omitzero"`
+	Superseded bool      `json:"superseded,omitempty"`
+	Kind       string    `json:"kind,omitempty"`
+	Expiry     bool      `json:"expiry,omitempty"`
+}
+
+// LiveWaits returns the live (unfired, FiredEpoch == 0) leases in waits, in
+// order. Claim-consumed leases stay in the persisted slice only as fired
+// records for the pendingWake backlog; they never project to the wire.
+func LiveWaits(waits []GoalWaitSnapshot) []GoalWaitSnapshot {
+	var live []GoalWaitSnapshot
+	for _, w := range waits {
+		if w.FiredEpoch != 0 {
+			continue
+		}
+		live = append(live, w)
+	}
+	return live
+}
+
+// NearestWait resolves the chip summary over live waits (spec §6): earliest
+// deadline wins, ties break on numeric registration order (RegisteredAt,
+// then the numeric wait_N suffix). The old smallest-wait_id string compare
+// misordered wait_10 < wait_2 lexicographically; registration order is what
+// the tie means (the earliest-registered waiter is nearest). Reports false
+// when no live wait stands. Returns by value: the winner is copied out of
+// the filtered live set, so callers can never mutate through it into a
+// temporary.
+func NearestWait(waits []GoalWaitSnapshot) (GoalWaitSnapshot, bool) {
+	live := LiveWaits(waits)
+	var best GoalWaitSnapshot
+	found := false
+	for i := range live {
+		w := live[i]
+		if !found || w.Deadline.Before(best.Deadline) ||
+			(w.Deadline.Equal(best.Deadline) && waitOrderLess(w, best)) {
+			best = w
+			found = true
+		}
+	}
+	return best, found
+}
+
+// waitOrderLess orders two equal-deadline waits by registration order:
+// RegisteredAt first (both set), then the numeric wait_N suffix, then the
+// raw id string for nonconforming ids (the synthetic "deadline" entry and
+// any future scheme). Deterministic on every input: equal on all three
+// compares false both ways, so input order wins (stable scan).
+func waitOrderLess(a, b GoalWaitSnapshot) bool {
+	if !a.RegisteredAt.IsZero() && !b.RegisteredAt.IsZero() && !a.RegisteredAt.Equal(b.RegisteredAt) {
+		return a.RegisteredAt.Before(b.RegisteredAt)
+	}
+	if as, bs := parseWaitSeq(a.WaitID), parseWaitSeq(b.WaitID); as >= 0 && bs >= 0 && as != bs {
+		return as < bs
+	}
+	return a.WaitID < b.WaitID
+}
+
+// parseWaitSeq parses the registry sequence of a "wait_N" id (-1 for
+// nonconforming ids, which fall back to string compare in waitOrderLess).
+// Suffixes too large to represent return -1 as well: the accumulation guards
+// against overflow (n > (maxInt-d)/10 before accumulating) so a huge suffix
+// never wraps to a small sequence that would misorder the tie-break.
+func parseWaitSeq(id string) int {
+	rest, ok := strings.CutPrefix(id, "wait_")
+	if !ok || rest == "" {
+		return -1
+	}
+	n := 0
+	for i := 0; i < len(rest); i++ {
+		if rest[i] < '0' || rest[i] > '9' {
+			return -1
+		}
+		d := int(rest[i] - '0')
+		if n > (int(^uint(0)>>1)-d)/10 {
+			return -1
+		}
+		n = n*10 + d
+	}
+	return n
+}
+
+// GoalBudgetsSnapshot is the persisted spend-budget triple (spec section 5).
+// A nil Budgets on a decoded GoalSnapshot marks a v1 snapshot that predates
+// budgets and selects the section-7 backfill rule (never a silent zero).
+type GoalBudgetsSnapshot struct {
+	MaxContinuations    int       `json:"max_continuations,omitzero"`
+	UsedContinuations   int       `json:"used_continuations,omitzero"`
+	Deadline            time.Time `json:"deadline,omitzero"`
+	ParkedTotalNanos    int64     `json:"parked_total_nanos,omitzero"`
+	MaxParkedTotalNanos int64     `json:"max_parked_total_nanos,omitzero"`
+}
+
+// GoalLedgerEntrySnapshot is one bounded ledger-summary entry (spec section
+// 7): the last max(N,B)=12 entries (~1KB) survive a restart. Slice 1 seeds
+// migration entries only (the Task-6 ledger owns live folding); the shape
+// lands here so the wire format is frozen once.
+type GoalLedgerEntrySnapshot struct {
+	Fingerprint string `json:"fingerprint"`
+	Class       string `json:"class,omitempty"`
+	Hash        string `json:"hash,omitempty"`
+	Digest      string `json:"digest,omitempty"`
+	Advancement bool   `json:"advancement,omitempty"`
+}
+
+// GoalLedgerSummarySnapshot is the persisted ledger window plus the
+// graduation stage (spec section 7: none/nudged/auto-parked — restart after
+// a nudge graduates, never re-nudges) and the repetition count.
+type GoalLedgerSummarySnapshot struct {
+	Entries    []GoalLedgerEntrySnapshot `json:"entries,omitempty"`
+	Repetition int                       `json:"repetition,omitzero"`
+	Tier       int                       `json:"tier,omitzero"`
+	Stage      string                    `json:"stage,omitempty"`
+}
+
 // GoalSnapshot is the wire form of a goal.Goal persisted inside SessionMeta.
 // It captures full fidelity (including madeProgressOnce and timestamps) so a
-// restored session can continue exactly where it left off. The "reported" flag
-// is intentionally omitted — it is runtime-only and always starts false on load.
+// restored session can continue exactly where it left off. The persisted stop
+// (Status terminal + StopReason) doubles as the no-reemit marker: restore
+// suppresses the terminal report for a dormant-blocked goal and drops
+// completes outright — no separate reported flag is persisted (spec section
+// 7).
 type GoalSnapshot struct {
 	Objective        string    `json:"objective"`
 	Status           string    `json:"status"`
@@ -260,6 +421,46 @@ type GoalSnapshot struct {
 	StopReason       string    `json:"stop_reason,omitempty"`
 	CreatedAt        time.Time `json:"created_at,omitzero"`
 	UpdatedAt        time.Time `json:"updated_at,omitzero"`
+	// NextWaitID is the wait-id counter ( PersistedGoal.NextWaitID): the next
+	// registration mints wait_{NextWaitID+1}. Carried so a restore with no
+	// live waits or pendingWake to infer from still mints fresh ids instead
+	// of reusing wait_1. Zero on v1 snapshots (nil Budgets predate the
+	// counter): the restore then seeds from the waits/pending it carries, or
+	// 0 for a wait-free v1 image — the same as a fresh store, acceptable.
+	NextWaitID uint64 `json:"next_wait_id,omitempty"`
+	// Waits carries the live-lease registry with full predicate payloads
+	// (spec section 2 lease fields). Empty on every terminal.
+	Waits []GoalWaitSnapshot `json:"waits,omitempty"`
+	// PendingWake is the persisted consumed-but-undelivered fire backlog,
+	// cleared in the same commit as the wake turn's tail fold — never at
+	// delivery. Non-empty restores as kick-immediately.
+	PendingWake []GoalPendingWakeSnapshot `json:"pending_wake,omitempty"`
+	// Budgets is the spend triple incl. maxParkedTotal (restores never
+	// silently loosen a tightened cap). Nil marks a v1 snapshot for the
+	// section-7 backfill rule.
+	Budgets *GoalBudgetsSnapshot `json:"budgets,omitempty"`
+	// LedgerSummary is the bounded ledger window + graduation stage. The
+	// slice-1 writer seeds migration entries; live folding arrives in
+	// slice 2. Nil/empty means "no ledger state".
+	LedgerSummary *GoalLedgerSummarySnapshot `json:"ledger_summary,omitempty"`
+	// AutoReparks counts consecutive auto-re-parks (spec section 5 bound).
+	AutoReparks int `json:"auto_reparks,omitzero"`
+	// TerminalPending latches a terminal-flagged rule-1 drive (spec section
+	// 1 R7 M-I1): while latched, the next gate enforces bounds before rule 1.
+	TerminalPending bool `json:"terminal_pending,omitempty"`
+	// LossCause persists the rule-5 "waiting lost" cause for the terminal
+	// verdict and pending loss notices (spec section 7).
+	LossCause string `json:"loss_cause,omitempty"`
+	// AdvancementSinceLoss is the persisted advancement flag the rule-5
+	// check-before-reset ordering reads and writes.
+	AdvancementSinceLoss bool `json:"advancement_since_loss,omitempty"`
+	// DeadlineFinalDelivered is the one-shot marker for the deadline-expiry
+	// synthetic wake (spec section 1): set at claim time so rule 3 cannot
+	// loop final turns; reset by resume --extend deadline.
+	DeadlineFinalDelivered bool `json:"deadline_final_delivered,omitempty"`
+	// Conditions carries the registered stop-claim conditions (spec §6).
+	// Empty means the v1 self-declare path.
+	Conditions []GoalConditionSnapshot `json:"conditions,omitempty"`
 }
 
 // SessionDisplayName returns the best available human-readable title for a

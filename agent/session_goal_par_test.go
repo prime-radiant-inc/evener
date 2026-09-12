@@ -38,13 +38,18 @@ func TestGoalGateBlockIsPersisted(t *testing.T) {
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("do the impossible", time.Now())
-	// One progressed turn, then NoProgressLimit no-progress continuations: the last
-	// blocks the goal inside the gate.
-	if _, ok := sess.armGoalContinuation(true, true); !ok {
-		t.Fatal("first progressed continuation should keep the goal active")
-	}
-	for range goal.NoProgressLimit {
+	// Identical non-advancing continuations graduate nudge-then-block inside
+	// the gate (slice-2 ledger bound, K=6 fresh tier: the production digest
+	// never moves in this gate-only test). The block lands after
+	// processOneInput's defer-save, so only the gate's own save persists it.
+	for range goal.RepetitionThresholdFresh - 1 {
 		sess.armGoalContinuation(false, true)
+	}
+	if _, ok := sess.armGoalContinuation(false, true); !ok {
+		t.Fatal("K-th identical turn must nudge, not block")
+	}
+	if _, ok := sess.armGoalContinuation(false, true); ok {
+		t.Fatal("post-nudge identical turn must block inside the gate")
 	}
 
 	meta, err := schema.LoadSessionMeta(stateDir, sess.ID())
@@ -103,9 +108,12 @@ func TestGoalRootShutdownLeavesGoalActive(t *testing.T) {
 	}
 }
 
-// TestGoalRestoreOnlyActive pins /par #2: RestoreSessionFromMeta reloads only an
-// active goal. A complete/blocked goal is dropped — re-restoring it would re-emit
-// its terminal report (the once-gate resets on load) and leave a stale chip.
+// TestGoalRestoreOnlyActive pins /par #2 as updated by the goal-wait redesign
+// (spec §7): RestoreSessionFromMeta reloads active goals, restores blocked
+// goals as dormant-resumable (objective, stopReason, budgets load; no waits,
+// no pendingWake, nothing armed, terminal report suppressed — the persisted
+// stop doubles as the no-reemit marker), and drops complete goals (reloading
+// one would re-emit its terminal report and leave a stale chip).
 func TestGoalRestoreOnlyActive(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
@@ -126,23 +134,47 @@ func TestGoalRestoreOnlyActive(t *testing.T) {
 		}
 	}
 
-	for _, status := range []string{string(goal.StatusComplete), string(goal.StatusBlocked)} {
-		sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(status), t.TempDir())
-		if err != nil {
-			t.Fatalf("RestoreSessionFromMeta(%s): %v", status, err)
-		}
-		if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
-			t.Fatalf("a %s goal must not be restored (/par #2)", status)
-		}
-		sess.Close()
+	// Complete stays dropped: no goal loads, so no terminal report can re-emit.
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(string(goal.StatusComplete)), t.TempDir())
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta(complete): %v", err)
 	}
+	if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
+		t.Fatal("a complete goal must not be restored (/par #2: complete stays dropped)")
+	}
+	sess.Close()
 
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(string(goal.StatusActive)), t.TempDir())
+	// Blocked restores dormant-resumable: the snapshot loads with its stop
+	// reason, but no waits, no backlog, and no re-emitted terminal report.
+	sess, err = RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(string(goal.StatusBlocked)), t.TempDir())
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta(blocked): %v", err)
+	}
+	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok || snap.Status != goal.StatusBlocked || snap.Objective != "finish the migration" {
+		t.Fatalf("a blocked goal must restore dormant-resumable, got %+v ok=%v", snap, ok)
+	}
+	full, ok := sess.getOrCreateGoalStore().GoalSnapshot()
+	if !ok {
+		t.Fatal("dormant-blocked goal must expose its full snapshot")
+	}
+	if len(full.Waits) != 0 || len(full.PendingWake) != 0 {
+		t.Fatalf("dormant-blocked restore must carry no waits and no backlog, got %+v", full)
+	}
+	if _, reported := sess.getOrCreateGoalStore().TakeTerminalReport(); !reported {
+		t.Fatal("dormant-blocked restore must still own its exactly-once terminal report (suppressed at restore, served on demand — the persisted stop is the no-reemit marker)")
+	}
+	if _, reported := sess.getOrCreateGoalStore().TakeTerminalReport(); reported {
+		t.Fatal("terminal report must emit exactly once after a dormant restore")
+	}
+	sess.Close()
+
+	sess, err = RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(string(goal.StatusActive)), t.TempDir())
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta(active): %v", err)
 	}
 	defer sess.Close()
-	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	snap, ok = sess.getOrCreateGoalStore().Snapshot()
 	if !ok || snap.Status != goal.StatusActive || snap.Objective != "finish the migration" {
 		t.Fatalf("active goal must be restored, got %+v ok=%v", snap, ok)
 	}

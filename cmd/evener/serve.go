@@ -79,6 +79,7 @@ type serveServer interface {
 	SetQueueFunc(func(string) error)
 	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
+	SetGoalResumeFunc(func(objective, extendBudget string, extendValue int64) (bool, error))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
 	SetPromoteQueuedAsSteerFunc(func(int, string) error)
@@ -1031,6 +1032,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return false, nil
 		}
 		return getSession().SetGoal(ctx, objective)
+	})
+	srv.SetGoalResumeFunc(func(objective, extendBudget string, extendValue int64) (bool, error) {
+		// Resume path (spec §7): GoalResumeFromWire recovers budgets/ledger
+		// and applies optional replacement objective text ("/goal resume
+		// <text>") atomically — never as the literal "resume", never a
+		// stale old-objective kick first.
+		sess := getSession()
+		return sess.GoalResumeFromWire(objective, extendBudget, extendValue)
 	})
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {

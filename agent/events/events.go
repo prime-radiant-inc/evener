@@ -137,6 +137,20 @@ const (
 	// EventGoalUpdated reports the session's complete structured goal state after
 	// a committed goal mutation. A nil goal in its payload explicitly clears it.
 	EventGoalUpdated EventKind = "GOAL_UPDATED"
+	// EventGoalWaiting reports that the session parked its goal on live waits,
+	// carrying the wait count and nearest label for the chip aggregation
+	// (spec §7). It is the announcement channel for the park.
+	EventGoalWaiting EventKind = "GOAL_WAITING"
+	// EventGoalResumed reports that the wake turn drove for the fired waits
+	// named in its payload (spec §7).
+	EventGoalResumed EventKind = "GOAL_RESUMED"
+	// EventGoalWatchdog is the quiet-goal watchdog announcement channel (spec
+	// §6): parked goals run zero turns, so owner notices ride this event —
+	// never a model turn. Kinds: park-start (threshold-crossing) and
+	// half-deadline (single reminder anchored to the earliest live wait
+	// deadline), plus active-quiet for active-but-quiet goals past the quiet
+	// threshold.
+	EventGoalWatchdog EventKind = "GOAL_WATCHDOG"
 	// EventSandboxEscalationRequested marks a harness-raised, human-gated
 	// sandbox-exemption approval request (M7). It rides the event stream ONLY — it
 	// is never appended to the model's transcript, so the model can neither observe

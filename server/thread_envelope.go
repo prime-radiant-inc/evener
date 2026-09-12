@@ -239,6 +239,13 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// producers that predate the structured update.
 	events.EventGoalContinuation: facetGoal | facetQueue | facetAsk,
 	events.EventGoalEnded:        facetGoal,
+	// GOAL_WAITING/GOAL_RESUMED announce the park/wake transitions but carry
+	// no new structured state beyond what GOAL_UPDATED already published (the
+	// wait list rides the GoalUpdated payload): refresh the checkpoint facet
+	// so a cold read landing between the carrier and the announcement still
+	// converges.
+	events.EventGoalWaiting: facetGoal,
+	events.EventGoalResumed: facetGoal,
 
 	// Sandbox escalations block a tool call awaiting a human.
 	events.EventSandboxEscalationRequested: facetEscalations,
@@ -374,7 +381,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 			next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
 		}
 		if facets&facetGoal != 0 && meta.Goal != nil {
-			next.Goal = &appwire.GoalState{Objective: meta.Goal.Objective, Status: meta.Goal.Status, Iterations: meta.Goal.Iterations}
+			next.Goal = goalStateFromMeta(meta.Goal)
 		}
 	}
 
@@ -455,4 +462,43 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope) {
 		e.Name = next.Name
 		e.Preview = next.Preview
 	}
+}
+
+// goalStateFromMeta converts the persisted goal image into the wire goal
+// state (spec §7): objective, status, iterations, plus the live wait list
+// (labels + deadlines only), nearest summary, and spend progress. Nil-safe:
+// a nil image means no goal set.
+func goalStateFromMeta(g *schema.GoalSnapshot) *appwire.GoalState {
+	if g == nil {
+		return nil
+	}
+	out := &appwire.GoalState{
+		Objective:  g.Objective,
+		Status:     g.Status,
+		Iterations: g.Iterations,
+	}
+	if g.Budgets != nil {
+		out.UsedContinuations = g.Budgets.UsedContinuations
+		out.MaxContinuations = g.Budgets.MaxContinuations
+	} else {
+		out.UsedContinuations = g.Iterations
+	}
+	for _, w := range schema.LiveWaits(g.Waits) {
+		out.WaitingOn = append(out.WaitingOn, appwire.GoalWaitState{
+			WaitID:            w.WaitID,
+			Label:             w.Label,
+			DeadlineUnixMilli: w.Deadline.UnixMilli(),
+		})
+	}
+	// Nearest = earliest deadline, tie → smallest wait_id (spec §6).
+	if nearest, ok := schema.NearestWait(g.Waits); ok {
+		out.NearestDeadlineUnixMilli = nearest.Deadline.UnixMilli()
+		out.NearestLabel = nearest.Label
+	}
+	// Graduation stage (spec §§6-7: "", "nudged", "auto-parked") for the
+	// /goal status line. Empty means no stall trip.
+	if g.LedgerSummary != nil {
+		out.Stage = g.LedgerSummary.Stage
+	}
+	return out
 }

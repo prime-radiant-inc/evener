@@ -377,24 +377,30 @@ type Server struct {
 	queueFunc                       func(string) error
 	queueWithImagesFunc             func(string, []ImageAttachment) error
 	goalFunc                        func(objective string) (bool, error)
-	drainSteerFunc                  func() error
-	drainSteerInputFunc             func(string, []ImageAttachment) error
-	promoteSteerFunc                func(int, string) error
-	cancelQueuedFunc                func(int, string) (string, int, error)
-	compactFunc                     func(context.Context) error
-	clearFunc                       func(context.Context, appwire.ThreadClearParams) error
-	clearJournalPath                string
-	clearRecords                    map[string]threadClearRecord
-	clearJournalErr                 error
-	modelFunc                       func(string) error
-	visionModelFunc                 func(string) error
-	nameFunc                        func(string)
-	reasoningEffortFunc             func(string)
-	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
-	tasksFn                         func() any
-	jobsFn                          func(appwire.JobsListParams) (any, error)
-	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	shutdownFunc                    func()
+	// goalResumeFunc handles goal/set with Resume=true (spec §7): it receives
+	// the resume objective text plus the parsed --extend budget token/value
+	// (plain types — the server package must not import agent internals) and
+	// routes to Session.GoalResume via the daemon wiring. Separate from
+	// goalFunc so a resume never flows through SetGoal's retarget semantics.
+	goalResumeFunc      func(objective, extendBudget string, extendValue int64) (bool, error)
+	drainSteerFunc      func() error
+	drainSteerInputFunc func(string, []ImageAttachment) error
+	promoteSteerFunc    func(int, string) error
+	cancelQueuedFunc    func(int, string) (string, int, error)
+	compactFunc         func(context.Context) error
+	clearFunc           func(context.Context, appwire.ThreadClearParams) error
+	clearJournalPath    string
+	clearRecords        map[string]threadClearRecord
+	clearJournalErr     error
+	modelFunc           func(string) error
+	visionModelFunc     func(string) error
+	nameFunc            func(string)
+	reasoningEffortFunc func(string)
+	listModelsFunc      func(context.Context) ([]appwire.ModelDescriptor, error)
+	tasksFn             func() any
+	jobsFn              func(appwire.JobsListParams) (any, error)
+	jobOutputFn         func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
+	shutdownFunc        func()
 
 	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
 	// projector calls the lookup from inside Project, which RecordAppEvent
@@ -626,6 +632,15 @@ func (s *Server) SetQueueFunc(fn func(string) error) {
 func (s *Server) SetGoalFunc(fn func(objective string) (bool, error)) {
 	s.mu.Lock()
 	s.goalFunc = fn
+	s.mu.Unlock()
+}
+
+// SetGoalResumeFunc sets the function called by the appwire goal/set method
+// when Resume=true (spec §7): a blocked goal's /goal resume routes here
+// (Session.GoalResume), never through SetGoalFunc's retarget semantics.
+func (s *Server) SetGoalResumeFunc(fn func(objective, extendBudget string, extendValue int64) (bool, error)) {
+	s.mu.Lock()
+	s.goalResumeFunc = fn
 	s.mu.Unlock()
 }
 

@@ -1940,6 +1940,14 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
 		}
 	}
+	// Slice-2 §8 forward: a terminal run report wakes until_child waiters. The
+	// parent owns the forward (parent locks never held across the child claim
+	// — forwardChildTerminalToWaits takes each waiter's locks as §3-top
+	// pre-reads). Terminal-only: non-terminal statuses never reach this hook
+	// (classifyRunEnd maps them to running/settling continuation, not here).
+	if owner := a.sess.goalWaitForwardOwner(); owner != nil {
+		owner.forwardChildTerminalToWaits(a.forwardSnapshot())
+	}
 }
 
 func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {

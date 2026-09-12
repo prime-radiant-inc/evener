@@ -994,13 +994,29 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// populated before any turn runs. No kick is wired yet ("loaded but idle"):
 	// the goal resumes on the user's next turn via the normal gate path.
 	//
-	// Only an ACTIVE goal is reloaded. A goal that already finished is dropped:
-	// terminal transitions are now persisted (/par A4), and re-restoring a
-	// complete/blocked goal would re-emit its terminal report on the first gate call
-	// (the once-gate resets on load) and leave a stale terminal status chip (/par #2).
-	if meta.Goal != nil && meta.Goal.Status == string(goal.StatusActive) {
-		g := meta.Goal
-		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
+	// Terminals "complete" are never restored (keeps the re-emit half of
+	// TestGoalRestoreOnlyActive green). Terminals "blocked" restore as
+	// dormant-resumable (spec §7): objective, stopReason, budgets, autoReparks,
+	// stage, deadlineFinalDelivered, ledger window load (no waits, no
+	// pendingWake — waits were cleared and timers disarmed at block); nothing
+	// is armed and the terminal report is suppressed (the persisted stop
+	// doubles as the no-reemit marker — no duplicate EventGoalEnded), the
+	// blocked chip/status projects, and /goal resume + renewal serve from the
+	// restored snapshot unchanged.
+	//
+	// Restored waiting goals re-validate every predicate immediately
+	// (attach-scan at restore); non-empty pendingWake restores as
+	// kick-immediately (not via timer): the restored backlog drives its turn
+	// before any timer arming. Restored active goals stay "loaded but idle".
+	if meta.Goal != nil {
+		switch meta.Goal.Status {
+		case string(goal.StatusComplete):
+			// Never restored.
+		case string(goal.StatusBlocked):
+			s.restoreDormantBlockedGoal(meta.Goal)
+		default:
+			s.getOrCreateGoalStore().RestoreSnapshot(goalRestoreToStore(meta.Goal, s.sclock().Now()))
+		}
 	}
 	s.pinnedNote = meta.PinnedNote
 	// Preserve the persisted launch origin across resume (so a "test"-origin
@@ -1256,6 +1272,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState()
+		// Goal-wait restore tail (spec §7): re-validate every restored
+		// predicate immediately (attach-scan at restore — already-expired
+		// until_time leases claim into pendingWake now, never strand), then
+		// re-arm the single coalesced sclock timer per the §2 four-way min.
+		// A non-empty pendingWake backlog drives kick-immediately through
+		// the normal settle path (settleGoalOnIdle suppresses repeat kicks
+		// for delivered-but-unconsumed backlogs): restore itself kicks
+		// nothing — no kick is wired yet ("loaded but idle") — it only
+		// ensures the backlog is present and the timer armed so the next
+		// turn tail drives the wake.
+		s.restoreGoalAttachScan()
+		s.seedRestoredGoalLatch()
+		s.armGoalWaitTimer()
 		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
 		// re-lock). A clean close unlocked its KEPT lanes; leaving them unlocked
 		// would expose them to another session's P3 residue sweep. This is a
