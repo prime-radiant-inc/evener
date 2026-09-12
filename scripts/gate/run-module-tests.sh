@@ -298,7 +298,7 @@ stop_children() {
 # stalled `go list` was left running with ppid 1, holding the GOCACHE and
 # GOMODCACHE locks that every later run on the host needs.
 stop_recorded_package_list_groups() {
-	local pgid_file recorded members leader_pgid
+	local pgid_file recorded members leader_pgid stop_status
 	[ -n "$logdir" ] || return 0
 	# A record is dropped only once it has been acted on: a file removed before
 	# the probe takes the only name anyone had for a survivor with it, and a
@@ -333,8 +333,19 @@ stop_recorded_package_list_groups() {
 			rm -f "$pgid_file"
 			continue
 		fi
-		stop_package_list_group "$recorded" || :
-		rm -f "$pgid_file"
+		stop_status=0
+		stop_package_list_group "$recorded" || stop_status=$?
+		if [ "$stop_status" -eq 0 ]; then
+			rm -f "$pgid_file"
+			continue
+		fi
+		# The stop could not show the group empty, so the record stays for the
+		# same reason a failed probe keeps it: it is the only name for whatever is
+		# still holding Go's cache locks, and this is the last moment anyone is
+		# looking. Said out loud too, because the retained logs are where the next
+		# person on this host starts.
+		printf 'run-module-tests.sh: process group %s could not be shown to have stopped; it still holds %s. Its record is kept at %s.\n' \
+			"$recorded" "$(package_list_group_survivor_report "$recorded")" "$pgid_file" >&2
 	done
 }
 
