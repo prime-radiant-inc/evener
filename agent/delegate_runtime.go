@@ -2010,16 +2010,34 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 		}
 	}
-	childEnv, ownsFresh, err := s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
-	if err != nil {
-		return nil, false, err
+	// A shared child (no worktree isolation, no per-delegate sandbox) ran on its
+	// parent's own environment object; reconstruct it on that SAME parent object
+	// rather than a fresh clone. Plan 654: "shared consumers of one binding reuse
+	// one environment, not fresh scratch" — a clone would be a second owned
+	// environment carrying the parent's binding, and (for a parked root) would
+	// not be the root's restored worktreeRestoreEnv object.
+	var childEnv execenv.ExecutionEnvironment
+	var ownsFresh bool
+	if shared := s.sharedRestoreEnvironment(descriptor); shared != nil {
+		childEnv = shared
+	} else {
+		childEnv, ownsFresh, err = s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	discardEnv := true
+	// mintedScratch is the failure-path teardown condition, decoupled from
+	// ownsFresh: a fresh environment's scratch is always this restore's to drop,
+	// while a shared one is only dropped when the shared-branch check below
+	// proves the environment held no scratch this restore could have mistaken
+	// for its own mint.
+	mintedScratch := ownsFresh
 	defer func() {
 		// The construction below runs the child's git snapshot, which is what
 		// mints an unsandboxed environment's scratch, so a failure after that
 		// point has one to drop as surely as a sandboxed restore has its owned one.
-		if discardEnv && ownsFresh {
+		if discardEnv && mintedScratch {
 			disposeUnadoptedScratch(childEnv)
 		}
 	}()
@@ -2033,6 +2051,18 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
 		if _, err := s.adoptConsumerScratch(local, descriptor.ChildSessionID); err != nil {
 			return nil, false, fmt.Errorf("restore delegate scratch: %w", err)
+		}
+		// Ownership and failure-path disposal are separate concerns. A shared
+		// child must not own its parent's environment (ownsFresh stays false),
+		// but its construction still mints a scratch on that environment when
+		// none is there — and on base, where the same child got a fresh clone,
+		// that minted scratch was dropped on failure. Drop it here too, but
+		// only when the environment held none once the child's retained binding
+		// was installed: a scratch present before construction — the parent's
+		// own, or the child's adopted retained one — is never this restore's to
+		// dispose.
+		if !ownsFresh && local.SessionScratchDir() == "" {
+			mintedScratch = true
 		}
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
@@ -2141,6 +2171,45 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	return sub, true, nil
+}
+
+// sharedRestoreEnvironment resolves the parent environment a shared child
+// occupied before a restart. A delegate created without worktree isolation and
+// without a per-delegate sandbox runs on its parent's own environment object
+// (prepareSubagentEnvironment returns s.currentEnv() for an empty working-dir
+// override), so its cold restore must hand it that SAME reconstructed object
+// rather than a fresh clone — plan 654's "shared consumers of one binding reuse
+// one environment, not fresh scratch", and the reason a parked root's restored
+// worktreeRestoreEnv can be the child's environment. A clone would be a second
+// owned environment carrying the parent's binding identity and would fail the
+// plan's "same reconstructed E0 object" checkpoint. It returns nil for a
+// non-shared child, or when no held environment matches the committed working
+// directory (the caller then constructs one).
+func (s *Session) sharedRestoreEnvironment(descriptor delegatestore.Descriptor) *execenv.LocalExecutionEnvironment {
+	if descriptor.Isolation != "" || descriptor.Sandbox != nil {
+		return nil
+	}
+	want := filepath.Clean(descriptor.WorkingDir)
+	if want == "" || want == "." {
+		return nil
+	}
+	s.mu.Lock()
+	candidates := make([]*execenv.LocalExecutionEnvironment, 0, 3+len(s.abandonedEnvs))
+	if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		candidates = append(candidates, local)
+	}
+	candidates = append(candidates, s.worktreeRestoreEnv)
+	if local, ok := s.parentSharedEnv.(*execenv.LocalExecutionEnvironment); ok {
+		candidates = append(candidates, local)
+	}
+	candidates = append(candidates, s.abandonedEnvs...)
+	s.mu.Unlock()
+	for _, candidate := range candidates {
+		if candidate != nil && filepath.Clean(candidate.WorkingDirectory()) == want {
+			return candidate
+		}
+	}
+	return nil
 }
 
 func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {

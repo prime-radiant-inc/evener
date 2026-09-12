@@ -1105,3 +1105,541 @@ func TestRetirementForeignSweepPreservesOccupiedLanes(t *testing.T) {
 	restored := f.assertRestored()
 	defer restored.Close()
 }
+
+// --- Task 6 fix round 2: plan 776-778, shared-child scratch bindings across a
+// worktree move, retirement, sweep, cold restore and the root backswap. ---
+
+// sharedChildScratchMintAdapter is a scripted provider that issues exactly one
+// real `shell` tool call on a specific child session's first turn after it is
+// installed, so that child's live environment really mints a fresh allocation
+// through the normal command path. Every other session ends through the real
+// communicate/result path. Routing is by the structural Request.SessionID.
+type sharedChildScratchMintAdapter struct {
+	fakeAdapter
+	childSessionID string
+	mu             sync.Mutex
+	issued         bool
+}
+
+func (a *sharedChildScratchMintAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	if req.SessionID == a.childSessionID {
+		a.mu.Lock()
+		first := !a.issued
+		a.issued = true
+		a.mu.Unlock()
+		if first {
+			raw, err := json.Marshal(map[string]any{"command": "true"})
+			if err != nil {
+				return llm.Response{}, err
+			}
+			return toolCallResponse(llm.ToolCallData{ID: "shared-child-mint", Name: "shell", Arguments: raw}), nil
+		}
+	}
+	response := communicateWithDefaultOutput("shared-child-result")
+	response.Provider, response.Model = a.name, req.Model
+	return response, nil
+}
+
+func sharedChildWriteBytes(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// sharedChildAssertBytes compares the bytes at the original absolute path with
+// the live reference captured before retirement — never a manifest read-back.
+func sharedChildAssertBytes(t *testing.T, path string, want []byte, label string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("%s artifact lost at its original path %q: bytes=%q err=%v", label, path, got, err)
+	}
+}
+
+// retireSharedChildRoot runs the exact real prepare/commit/release sequence for
+// a root and requires the non-terminal release to succeed.
+func retireSharedChildRoot(t *testing.T, root *Session) {
+	t.Helper()
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v %v", state, err)
+	}
+	prepared, err := c.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := c.Commit(claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DrainReaders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.ReleaseForRetirement(context.Background(), prepared); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}
+
+// restoreSharedChildRoot restores a fresh root over the same state dir.
+func restoreSharedChildRoot(t *testing.T, repo *wtRepo, rootID string) *Session {
+	t.Helper()
+	meta, err := schema.LoadSessionMeta(repo.stateDir, rootID)
+	if err != nil {
+		t.Fatalf("load root meta: %v", err)
+	}
+	client := llm.NewClient()
+	client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(repo.mainRoot), meta, RestoreSessionConfig{StateDir: repo.stateDir})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	return restored
+}
+
+// coldSendSharedChild cold-sends real work to the same delegate id through the
+// restored root's real send path, then settles the child turn.
+func coldSendSharedChild(t *testing.T, restored *Session, res delegateResult) {
+	t.Helper()
+	out := (delegateRuntime{owner: restored}).send(context.Background(), res.DelegateID, "read-shared-child-artifacts", 0)
+	if out.result.Err != nil {
+		t.Fatalf("cold send to shared child: %v", out.result.Err)
+	}
+	retirementSettleDelegate(t, restored, delegateResult{DelegateID: res.DelegateID, ChildSessionID: res.ChildSessionID})
+}
+
+func ageSharedChildDir(t *testing.T, dir string) {
+	t.Helper()
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(dir, aged, aged); err != nil {
+		t.Fatalf("age %s: %v", dir, err)
+	}
+}
+
+// sharedChildRealMintOnRestored exercises a real mint on the restored session's
+// own reconstructed environment: it provisions a fresh allocation through the
+// real EnableSandbox path and returns the new allocation's directory. The caller
+// then requires the owner's manifest to durably publish it under the restored
+// environment's binding — behavior, not inference.
+func sharedChildRealMintOnRestored(t *testing.T, env *execenv.LocalExecutionEnvironment) string {
+	t.Helper()
+	before, err := env.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool, len(before))
+	for _, ref := range before {
+		seen[filepath.Clean(ref.Dir)] = true
+	}
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("real mint on the restored environment: %v", err)
+	}
+	after, err := env.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range after {
+		if !seen[filepath.Clean(ref.Dir)] {
+			return ref.Dir
+		}
+	}
+	t.Fatal("the real mint produced no new allocation on the restored environment")
+	return ""
+}
+
+// TestRetirementSharedChildScratchBindingsRestore is plan 776-778's real-fixture
+// proof. A root R and a real shared delegate child C run on one environment E0
+// and scratch A; R moves into a real worktree (constructing E1 and adopting A);
+// real work to C on E0 mints B. Checkpoint 1 retires non-terminally, ages both
+// directories, runs the real startup sweep, restores a fresh root and cold-sends
+// to the same C, requiring two binding identities (E1/A for R, E0/B for C, both
+// owned by R), the same reconstructed E0 object for C as R's worktreeRestoreEnv,
+// and both artifact byte sets at their original absolute paths. Checkpoint 2
+// exercises the real root backswap to E0: E0 keeps B, incoming A stays a pinned
+// reference, and R and C share E0/B again; then it retires, ages, sweeps and
+// restores once more. Sandbox and unsandboxed cases both run.
+func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sandboxed bool
+	}{
+		{name: "unsandboxed"},
+		{name: "sandbox", sandboxed: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			retirementSharedChildScratchBindingsRestore(t, tc.sandboxed)
+		})
+	}
+}
+
+func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
+	offPolicy := &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}
+	repo := newRetirementWorktreeRepo(t)
+	root := repo.s
+	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root has no scratch retention owner")
+	}
+	launch, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("launch env = %T, want a local environment", root.currentEnv())
+	}
+
+	// E0's first allocation A (unsandboxed via a command, or the owned sandbox
+	// scratch the real EnableSandbox provisioning creates).
+	if sandboxed {
+		if err := launch.EnableSandbox(offPolicy); err != nil {
+			t.Fatalf("provision E0's sandbox scratch: %v", err)
+		}
+	} else {
+		if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Fatalf("mint A on E0: %v", err)
+		}
+	}
+	scratchA := launch.SessionScratchDir()
+	if scratchA == "" {
+		t.Fatal("E0 minted no scratch A")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratchA) })
+	kindA := sandbox.ScratchKindUnsandboxed
+	if sandboxed {
+		kindA = sandbox.ScratchKindSandbox
+	}
+	e0Binding, err := launch.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("E0 binding: %v", err)
+	}
+	e0ID := e0Binding.BindingID
+	if e0ID == "" {
+		t.Fatal("E0 has no binding id")
+	}
+
+	// A REAL shared delegate child C, created and settled through the real
+	// create/result path, sharing the root's own E0 object.
+	res := root.createDelegate(context.Background(), delegateArgs{Task: "shared-child-binding"})
+	if res.Err != nil {
+		t.Fatalf("create shared delegate: %v", res.Err)
+	}
+	retirementSettleDelegate(t, root, res)
+	originalChild := root.delegateController.residentDelegateRuntime(res.DelegateID)
+	if originalChild == nil {
+		t.Fatal("shared child runtime is missing")
+	}
+	childEnv, ok := originalChild.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("shared child env = %T, want a local environment", originalChild.env)
+	}
+	if childEnv != launch || originalChild.ownsEnv {
+		t.Fatalf("shared child did not run on the root's E0 object (env=%p E0=%p owns=%v)", childEnv, launch, originalChild.ownsEnv)
+	}
+
+	// Distinct artifact bytes written through R and C into A.
+	rootArtifactA := []byte("shared-child-root-artifact")
+	childArtifactA := []byte("shared-child-child-artifact")
+	sharedChildWriteBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA)
+	sharedChildWriteBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA)
+
+	// Move R into a real worktree through its normal tool path: E1 adopts A.
+	if _, err := repo.create(t, map[string]any{"name": "root-lane"}); err != nil {
+		t.Fatalf("root enter worktree: %v", err)
+	}
+	entered, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || entered == launch {
+		t.Fatalf("enter installed env %p, want a distinct clone beside %p", root.currentEnv(), launch)
+	}
+	e1Binding, err := entered.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("E1 binding: %v", err)
+	}
+	e1ID := e1Binding.BindingID
+	if e1ID == "" || e1ID == e0ID {
+		t.Fatalf("E1 binding = %q, want a distinct id beside E0 %q", e1ID, e0ID)
+	}
+	if got := entered.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchA) {
+		t.Fatalf("E1 scratch = %q, want the adopted A %q", got, scratchA)
+	}
+	if root.worktreeRestoreEnv != launch {
+		t.Fatal("the parked environment is not the shared E0 object")
+	}
+	rCwd := entered.WorkingDirectory()
+	cCwd := launch.WorkingDirectory()
+	if filepath.Clean(rCwd) == filepath.Clean(cCwd) {
+		t.Fatal("R did not move out of E0's working directory")
+	}
+
+	// Real work to C on E0 mints B (the sandbox case first reprovisions E0's own
+	// sandbox scratch through the real EnableSandbox path, then runs C's command).
+	if sandboxed {
+		if err := launch.EnableSandbox(offPolicy); err != nil {
+			t.Fatalf("reprovision E0's sandbox scratch: %v", err)
+		}
+	}
+	root.client.Register(&sharedChildScratchMintAdapter{fakeAdapter: fakeAdapter{name: "openai"}, childSessionID: res.ChildSessionID})
+	out := (delegateRuntime{owner: root}).send(context.Background(), res.DelegateID, "mint-shared-child-scratch", 0)
+	if out.result.Err != nil {
+		t.Fatalf("send real work to the shared child: %v", out.result.Err)
+	}
+	retirementSettleDelegate(t, root, delegateResult{DelegateID: res.DelegateID, ChildSessionID: res.ChildSessionID})
+	scratchB := launch.SessionScratchDir()
+	if scratchB == "" || filepath.Clean(scratchB) == filepath.Clean(scratchA) {
+		t.Fatalf("E0 did not mint a fresh B beside A: B=%q A=%q", scratchB, scratchA)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratchB) })
+	childArtifactB := []byte("shared-child-b-artifact")
+	sharedChildWriteBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB)
+
+	// The live sharing relationships, recorded independently of the manifest:
+	// E1/A for R, E0/B for C, C on the parked E0 object, both bindings owned by R.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Bindings) != 2 {
+		t.Fatalf("bindings = %d, want exactly two distinct owned environments: %+v", len(manifest.Bindings), manifest.Bindings)
+	}
+	aOwner, kindAOwned, ok := scratchBindingOwning(t, manifest, scratchA)
+	if !ok || aOwner.BindingID != e1ID {
+		t.Fatalf("A owner = %+v ok=%v, want the E1 clone %q", aOwner, ok, e1ID)
+	}
+	if kindAOwned != kindA {
+		t.Fatalf("A kind = %q, want %q", kindAOwned, kindA)
+	}
+	bOwner, _, ok := scratchBindingOwning(t, manifest, scratchB)
+	if !ok || bOwner.BindingID != e0ID {
+		t.Fatalf("B owner = %+v ok=%v, want the parked E0 %q", bOwner, ok, e0ID)
+	}
+	if aOwner.BindingID == bOwner.BindingID {
+		t.Fatalf("A and B collapsed onto one binding %q", aOwner.BindingID)
+	}
+	if aOwner.OwnerSessionID != root.id || bOwner.OwnerSessionID != root.id {
+		t.Fatalf("bindings owned by %q and %q, want both owned by R %q", aOwner.OwnerSessionID, bOwner.OwnerSessionID, root.id)
+	}
+	rootConsumer := scratchConsumerFor(t, manifest, root.id)
+	if rootConsumer.CurrentBindingID != e1ID {
+		t.Fatalf("R current binding = %q, want E1 %q", rootConsumer.CurrentBindingID, e1ID)
+	}
+	if rootConsumer.WorktreeRestoreBindingID != e0ID {
+		t.Fatalf("R worktree-restore role = %q, want E0 %q", rootConsumer.WorktreeRestoreBindingID, e0ID)
+	}
+	childConsumer := scratchConsumerFor(t, manifest, res.ChildSessionID)
+	if childConsumer.CurrentBindingID != e0ID {
+		t.Fatalf("C consumer binding = %q, want E0 %q (never R's worktree E1 %q)", childConsumer.CurrentBindingID, e0ID, e1ID)
+	}
+	// The original live reference every later comparison is made against,
+	// recorded directly from the environments and command results above.
+	t.Logf("live reference: A=%q(%s) B=%q e0=%q e1=%q rCwd=%q cCwd=%q R=%q C=%q rootA=%q childA=%q childB=%q",
+		scratchA, kindA, scratchB, e0ID, e1ID, rCwd, cCwd, root.id, res.ChildSessionID, rootArtifactA, childArtifactA, childArtifactB)
+
+	// Checkpoint 1: retire through the real prepare/commit/release, age both
+	// directories, run the real startup sweep, restore a fresh root.
+	retireSharedChildRoot(t, root)
+	ageSharedChildDir(t, scratchA)
+	ageSharedChildDir(t, scratchB)
+	if err := sandbox.SweepCrashedSessionScratch(repo.stateDir); err != nil {
+		t.Fatalf("startup sweep: %v", err)
+	}
+	for _, dir := range []string{scratchA, scratchB} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("the required scratch %s was collected by the sweep: %v", dir, err)
+		}
+	}
+
+	restored := restoreSharedChildRoot(t, repo, root.ID())
+	renv, ok := restored.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("restored root env = %T", restored.currentEnv())
+	}
+	if got := renv.WorkingDirectory(); filepath.Clean(got) != filepath.Clean(rCwd) {
+		t.Fatalf("restored R cwd = %q, want the original %q", got, rCwd)
+	}
+	if got := renv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchA) {
+		t.Fatalf("restored R scratch = %q, want the original A %q", got, scratchA)
+	}
+	restoreEnv := restored.worktreeRestoreEnv
+	if restoreEnv == nil {
+		t.Fatal("restored root has no reconstructed worktreeRestoreEnv (E0)")
+	}
+	if filepath.Clean(restoreEnv.WorkingDirectory()) != filepath.Clean(cCwd) {
+		t.Fatalf("restored worktreeRestoreEnv cwd = %q, want E0's original %q", restoreEnv.WorkingDirectory(), cCwd)
+	}
+
+	// Cold-send to the same C: it must be reconstructed on the SAME E0 object as
+	// R's worktreeRestoreEnv and resolve E0/B.
+	coldSendSharedChild(t, restored, res)
+	rchild := restored.delegateController.residentDelegateRuntime(res.DelegateID)
+	if rchild == nil {
+		t.Fatal("the cold shared child was not restored")
+	}
+	cenv, ok := rchild.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("restored shared child env = %T", rchild.env)
+	}
+	if cenv != restoreEnv {
+		t.Fatalf("restored child env %p is not R's reconstructed E0 object %p", cenv, restoreEnv)
+	}
+	if rchild.ownsEnv {
+		t.Fatal("the restored shared child owns an environment it shared")
+	}
+	if got := cenv.WorkingDirectory(); filepath.Clean(got) != filepath.Clean(cCwd) {
+		t.Fatalf("restored C cwd = %q, want the original %q", got, cCwd)
+	}
+	if got := cenv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchB) {
+		t.Fatalf("restored C scratch = %q, want the original B %q", got, scratchB)
+	}
+	// Both artifact byte sets, compared with the original live reference.
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's")
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's")
+	sharedChildAssertBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB, "C's")
+	// Two binding identities, not two invented owners; no child rebinding to R's
+	// worktree.
+	manifest, err = sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owningA, _, ok := scratchBindingOwning(t, manifest, scratchA)
+	if !ok || owningA.BindingID != e1ID || owningA.OwnerSessionID != root.id {
+		t.Fatalf("restored A owner = %+v ok=%v, want E1 %q owned by R", owningA, ok, e1ID)
+	}
+	owningB, _, ok := scratchBindingOwning(t, manifest, scratchB)
+	if !ok || owningB.BindingID != e0ID || owningB.OwnerSessionID != root.id {
+		t.Fatalf("restored B owner = %+v ok=%v, want E0 %q owned by R", owningB, ok, e0ID)
+	}
+	childConsumer = scratchConsumerFor(t, manifest, res.ChildSessionID)
+	if childConsumer.CurrentBindingID != e0ID {
+		t.Fatalf("restored C consumer binding = %q, want E0 %q (not R's worktree %q)", childConsumer.CurrentBindingID, e0ID, e1ID)
+	}
+	t.Logf("checkpoint 1: R env=%p scratch=%q C env=%p scratch=%q (same reconstructed E0 object: %v)",
+		renv, renv.SessionScratchDir(), cenv, cenv.SessionScratchDir(), cenv == restoreEnv)
+
+	// Checkpoint 2: the real root backswap to E0 while C remains there.
+	if _, ok, err := restored.exitWorktree(); err != nil || !ok {
+		t.Fatalf("real root backswap = ok=%v err=%v, want a backswap", ok, err)
+	}
+	if restored.currentEnv() != restoreEnv {
+		t.Fatal("the backswap did not land the root on E0")
+	}
+	if got := restoreEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchB) {
+		t.Fatalf("E0 scratch after the backswap = %q, want B %q", got, scratchB)
+	}
+	if cenv != restoreEnv {
+		t.Fatal("the shared child left E0 during the backswap")
+	}
+	// A's live lease is released while its immutable pin/reference is retained.
+	aHandle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: scratchA, Kind: kindA})
+	if err != nil {
+		t.Fatalf("A was not retained at its original path after the backswap: %v", err)
+	}
+	if err := aHandle.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's")
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's")
+	sharedChildAssertBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB, "C's")
+	manifest, err = sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if still, _, ok := scratchBindingOwning(t, manifest, scratchA); ok {
+		t.Fatalf("a binding still owns A after the backswap: %+v", still)
+	}
+	owningB, _, ok = scratchBindingOwning(t, manifest, scratchB)
+	if !ok || owningB.BindingID != e0ID || owningB.OwnerSessionID != root.id {
+		t.Fatalf("E0 after the backswap = %+v ok=%v, want E0 %q owned by R keeping B", owningB, ok, e0ID)
+	}
+	rootConsumer = scratchConsumerFor(t, manifest, restored.id)
+	if rootConsumer.CurrentBindingID != e0ID {
+		t.Fatalf("R current binding after the backswap = %q, want E0 %q", rootConsumer.CurrentBindingID, e0ID)
+	}
+	childConsumer = scratchConsumerFor(t, manifest, res.ChildSessionID)
+	if childConsumer.CurrentBindingID != e0ID {
+		t.Fatalf("C consumer binding after the backswap = %q, want E0 %q", childConsumer.CurrentBindingID, e0ID)
+	}
+	// No second environment for the shared borrower, and unchanged root
+	// retention authority.
+	if restored.currentEnv() != rchild.env {
+		t.Fatalf("the shared borrower has a second environment: %p vs %p", restored.currentEnv(), rchild.env)
+	}
+	restoredOwner, ok := restored.scratchRetentionOwner()
+	if !ok || restoredOwner != owner {
+		t.Fatalf("restored root retention authority = %+v ok=%v, want unchanged %+v", restoredOwner, ok, owner)
+	}
+	t.Logf("checkpoint 2 backswap: R env=%p C env=%p shared scratch=%q historical A=%q retained authority=%+v",
+		restored.currentEnv(), rchild.env, restoreEnv.SessionScratchDir(), scratchA, restoredOwner)
+
+	// Retire, age/sweep/restore again: both current consumers must resolve E0/B
+	// and historical A must remain readable at its original absolute path.
+	retireSharedChildRoot(t, restored)
+	ageSharedChildDir(t, scratchB)
+	if err := sandbox.SweepCrashedSessionScratch(repo.stateDir); err != nil {
+		t.Fatalf("second startup sweep: %v", err)
+	}
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's historical")
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's historical")
+	restored2 := restoreSharedChildRoot(t, repo, root.ID())
+	renv2, ok := restored2.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("second restored root env = %T", restored2.currentEnv())
+	}
+	if got := renv2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchB) {
+		t.Fatalf("second restored R scratch = %q, want E0/B %q", got, scratchB)
+	}
+	coldSendSharedChild(t, restored2, res)
+	rchild2 := restored2.delegateController.residentDelegateRuntime(res.DelegateID)
+	if rchild2 == nil {
+		t.Fatal("the second cold shared child was not restored")
+	}
+	cenv2, ok := rchild2.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("second restored shared child env = %T", rchild2.env)
+	}
+	if got := cenv2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchB) {
+		t.Fatalf("second restored C scratch = %q, want E0/B %q", got, scratchB)
+	}
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "root.bin"), rootArtifactA, "R's historical")
+	sharedChildAssertBytes(t, filepath.Join(scratchA, "child.bin"), childArtifactA, "C's historical")
+	sharedChildAssertBytes(t, filepath.Join(scratchB, "child-b.bin"), childArtifactB, "C's")
+	manifest, err = sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootConsumer = scratchConsumerFor(t, manifest, restored2.id)
+	if rootConsumer.CurrentBindingID != e0ID {
+		t.Fatalf("second restored R binding = %q, want E0 %q", rootConsumer.CurrentBindingID, e0ID)
+	}
+	childConsumer = scratchConsumerFor(t, manifest, res.ChildSessionID)
+	if childConsumer.CurrentBindingID != e0ID {
+		t.Fatalf("second restored C binding = %q, want E0 %q", childConsumer.CurrentBindingID, e0ID)
+	}
+	t.Logf("checkpoint 2 restore: R env=%p scratch=%q C env=%p scratch=%q historical A bytes verified at %q",
+		renv2, renv2.SessionScratchDir(), cenv2, cenv2.SessionScratchDir(), scratchA)
+
+	// Exercise a real mint on the restored session's own reconstructed
+	// environment: the fresh allocation must be durably published under the
+	// reconstructed environment's exact binding (behavior, not inference).
+	renv2Binding, err := renv2.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("second restored env binding: %v", err)
+	}
+	mintedDir := sharedChildRealMintOnRestored(t, renv2)
+	t.Cleanup(func() { _ = os.RemoveAll(mintedDir) })
+	if filepath.Clean(mintedDir) == filepath.Clean(scratchB) || filepath.Clean(mintedDir) == filepath.Clean(scratchA) {
+		t.Fatalf("the real mint reused an existing allocation %q", mintedDir)
+	}
+	manifest, err = sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mintedOwner, _, ok := scratchBindingOwning(t, manifest, mintedDir)
+	if !ok || mintedOwner.BindingID != renv2Binding.BindingID || mintedOwner.OwnerSessionID != root.id {
+		t.Fatalf("the real mint on the restored session was not published under the reconstructed binding: owner=%+v ok=%v want %q owned by R", mintedOwner, ok, renv2Binding.BindingID)
+	}
+}
