@@ -96,6 +96,9 @@ func (m ModelPicker) filtered() []ModelPickerItem {
 
 func (m ModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
+		// Every key acts on the row the picker is showing, so a cursor left
+		// over a list a filter shortened is clamped before the key reads it.
+		m.cursor = m.cursorIndex(m.filtered())
 		switch msg.Type {
 		case tea.KeyEscape, tea.KeyCtrlC:
 			m.cancelled = true
@@ -103,7 +106,7 @@ func (m ModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyEnter:
 			filtered := m.filtered()
-			if len(filtered) == 0 || m.cursor >= len(filtered) {
+			if len(filtered) == 0 {
 				return m, nil
 			}
 			item := filtered[m.cursor]
@@ -191,7 +194,7 @@ func (m ModelPicker) itemLines(filtered []ModelPickerItem, i int) []string {
 	cursor := "  "
 	style := tuitheme.MpNormalStyle
 	isActive := modelIDMatchesActive(item.ID, m.active)
-	if i == m.cursor {
+	if i == m.cursorIndex(filtered) {
 		cursor = "> "
 		style = tuitheme.MpCursorStyle
 	} else if isActive {
@@ -233,9 +236,7 @@ func (m ModelPicker) visibleRange(filtered []ModelPickerItem) (int, int) {
 	if len(filtered) == 0 {
 		return 0, 0
 	}
-	// A cursor can outlive the list it indexes (a filter narrowed the list, or
-	// a caller set it directly), so clamp it rather than trust it.
-	cursor := min(max(m.cursor, 0), len(filtered)-1)
+	cursor := m.cursorIndex(filtered)
 	start, end := cursor, cursor+1
 	used := m.renderedLines(filtered, cursor)
 	for {
@@ -279,6 +280,17 @@ func modelIDMatchesActive(id, active string) bool {
 
 // SetTitle overrides the picker's heading.
 func (m *ModelPicker) SetTitle(title string) { m.title = title }
+
+// cursorIndex is the cursor clamped into the filtered list. A cursor can
+// outlive the list it indexes (a filter narrowed the list, or a caller set it
+// directly), and the window, the highlight, and the selection must agree on
+// which row that is.
+func (m ModelPicker) cursorIndex(filtered []ModelPickerItem) int {
+	if len(filtered) == 0 {
+		return 0
+	}
+	return min(max(m.cursor, 0), len(filtered)-1)
+}
 
 // Done reports whether the picker has been dismissed.
 func (m ModelPicker) Done() bool { return m.done }

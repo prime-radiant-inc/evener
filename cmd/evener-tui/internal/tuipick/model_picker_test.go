@@ -320,6 +320,30 @@ func TestModelPicker_StaleCursorStillRendersABoundedWindow(t *testing.T) {
 	}
 }
 
+// The clamped cursor is the row the picker is on: it is highlighted, and Enter
+// selects it. A stale cursor that only the windowing clamped left no
+// highlighted row and made Enter a no-op.
+func TestModelPicker_StaleCursorHighlightsAndSelects(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{ID: fmt.Sprintf("m%d", i), Display: fmt.Sprintf("m%d", i)}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.filter = "m1" // m1 and m10..m19: 11 items for a cursor at 15
+	p.cursor = 15
+
+	lines, _ := windowLines(t, p)
+	if !strings.Contains(strings.Join(lines, "\n"), "> m19") {
+		t.Fatalf("the clamped cursor's row must be highlighted:\n%s", p.renderBody())
+	}
+
+	tm, _ := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	selected := tm.(ModelPicker)
+	if !selected.Done() || selected.Selected() != "m19" {
+		t.Fatalf("Enter must select the highlighted row: done=%v selected=%q", selected.Done(), selected.Selected())
+	}
+}
+
 func TestModelPicker_Navigation(t *testing.T) {
 	items := []ModelPickerItem{
 		{ID: "a", Display: "a"},
