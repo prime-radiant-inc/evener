@@ -244,14 +244,14 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// marker claims, which every reader already drops. The next resume replays
 	// the pre-fold transcript — a compaction lost, not turns.
 	//
-	// The cost, stated plainly: the fold is real in memory and absent from the
-	// anchor on disk, and the deferred effects do not know the difference.
-	// flush still emits EventCompactionTurn for the summary and still runs
-	// handleCompactionTurnEffects — the session namer and the task-list
-	// steering — so a watching client shows a compaction the transcript does
-	// not anchor. The TurnContextCompaction record that DOES land announces a
-	// shrink the transcript did not keep, and a resume reads it back. That is
-	// the price of not rolling back a fold whose work was done.
+	// A withheld marker takes its own post-write effects with it: flush
+	// publishes no EventCompactionTurn for it and runs neither the session
+	// namer nor the task-list steering, because those describe an anchor the
+	// transcript never received. The cost that remains: the fold is real in
+	// memory and absent from the anchor on disk, and the TurnContextCompaction
+	// record that DOES land announces a shrink the transcript did not keep,
+	// which a resume reads back. That is the price of not rolling back a fold
+	// whose work was done.
 	tailComplete := true
 	if commit.writesCompactionMarker() {
 		for _, turn := range rewriteTail {
@@ -601,6 +601,12 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// recorded after the fold). Write errors are carried into flush, where
 	// emitting is safe again.
 	var compactionTurnWriteErrs []error
+	// compactionTurnWithheld marks the markers commitTranscriptsLocked did not
+	// write at all because the replay tail failed. A nil write error would
+	// otherwise read as "written" in flush, which publishes the marker's event
+	// and its post-write effects — a compaction announced with no durable
+	// anchor behind it.
+	var compactionTurnWithheld []bool
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
 	// anchor is false when a replay copy could not be written: the fold's own
@@ -617,11 +623,13 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
+		compactionTurnWithheld = make([]bool, len(pendingCompactionTurns))
 		for i, turn := range pendingCompactionTurns {
 			// Only the anchor is withheld, and the anchor is exactly the
 			// kinds writesCompactionMarker counts — the same predicate, so
 			// the two cannot drift into disagreeing about what a marker is.
 			if !anchor && isSessionNameCompactionTurn(turn) {
+				compactionTurnWithheld[i] = true
 				continue
 			}
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
@@ -672,6 +680,12 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.emit(events.EventContextCompaction, event)
 		}
 		for i, turn := range pendingCompactionTurns {
+			// A marker the transcript never received announces nothing and
+			// triggers nothing: its event, the session namer and the task-list
+			// steering all describe an anchor that is not there.
+			if compactionTurnWithheld[i] {
+				continue
+			}
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
 		}
 		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)

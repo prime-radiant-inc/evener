@@ -2033,22 +2033,51 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 	s.attachTranscript(writer)
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
+	// A withheld anchor must take the fold's post-write effects with it: the
+	// session namer is reached through this seam, so a suppressed marker never
+	// arrives here.
+	var nameMu sync.Mutex
+	var namedTexts []string
+	s.nameSessionFromTextFunc = func(_ context.Context, _, text string) error {
+		nameMu.Lock()
+		namedTexts = append(namedTexts, text)
+		nameMu.Unlock()
+		return nil
+	}
+
 	// The reader is a goroutine; the fold returning orders nothing against it
 	// having consumed the warning. Closing this once it has recorded one is
 	// the completion the assertion awaits.
 	var warnings []string
 	var warningsMu sync.Mutex
+	var compactionTurns []events.CompactionTurnData
 	unanchoredWarned := make(chan struct{})
 	var warnOnce sync.Once
+	// The flush's events are queued on this channel before the sentinel the
+	// test emits after Compact returns, so seeing the sentinel proves every
+	// event the flush published has already been read. That is what makes the
+	// negative assertions below sound rather than merely early.
+	const flushDrained = "fold flush drained"
+	drained := make(chan struct{})
+	var drainOnce sync.Once
 	go func() {
 		for event := range s.Events() {
-			if data, ok := event.Data.(events.WarningData); ok {
+			switch data := event.Data.(type) {
+			case events.WarningData:
+				if data.Message == flushDrained {
+					drainOnce.Do(func() { close(drained) })
+					continue
+				}
 				warningsMu.Lock()
 				warnings = append(warnings, data.Message)
 				warningsMu.Unlock()
 				if strings.Contains(data.Message, "not anchored") {
 					warnOnce.Do(func() { close(unanchoredWarned) })
 				}
+			case events.CompactionTurnData:
+				warningsMu.Lock()
+				compactionTurns = append(compactionTurns, data)
+				warningsMu.Unlock()
 			}
 		}
 	}()
@@ -2119,5 +2148,24 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 	}
 	if !anchored {
 		t.Fatalf("no warning said the fold was left un-anchored on disk: %q", got)
+	}
+
+	s.emit(events.EventWarning, events.WarningData{Message: flushDrained})
+	// TRIPWIRE: the sentinel is behind the flush's own events on one in-process
+	// channel; only a reader that stopped entirely fails to reach it.
+	awaitWithin(t, 10*time.Second, "the fold flush's events reaching the reader", func() {
+		<-drained
+	})
+	warningsMu.Lock()
+	turns := append([]events.CompactionTurnData(nil), compactionTurns...)
+	warningsMu.Unlock()
+	if len(turns) != 0 {
+		t.Fatalf("a fold whose marker was withheld published %d compaction-turn event(s): %#v; a client would show a compaction the transcript does not anchor", len(turns), turns)
+	}
+	nameMu.Lock()
+	named := append([]string(nil), namedTexts...)
+	nameMu.Unlock()
+	if len(named) != 0 {
+		t.Fatalf("a fold whose marker was withheld named the session from %d text(s): %#v; the post-write effects belong to an anchor that was never written", len(named), named)
 	}
 }
