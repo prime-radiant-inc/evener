@@ -1404,3 +1404,95 @@ func TestPrepareSelectedInput_DuplicateNamesInvokeOnce(t *testing.T) {
 		t.Fatalf("request order not preserved: %+v", batch.Items)
 	}
 }
+
+// TestSkillActivation_AdmissionSaveFailureAdmitsNothing forces the metadata
+// save inside admission to fail (the same breakSessionMetaPath injection the
+// compaction save-failure tests use): the batch must admit NOTHING — no live
+// obligation, no live or durable carrier — so a restart can never restore a
+// durable carrier whose obligation was lost in the crash window between the
+// transcript write and the metadata save. After the repair, a retry admits
+// cleanly and the restored session sees the obligation.
+func TestSkillActivation_AdmissionSaveFailureAdmitsNothing(t *testing.T) {
+	root := t.TempDir()
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_admit_save")
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	batch, err := s.prepareSelectedInput(context.Background(), queuedInput{
+		ID:         "q-admit-save",
+		SkillNames: []string{"opaque"},
+	}, "user_selection")
+	if err != nil || batch == nil || len(batch.Items) != 1 {
+		t.Fatalf("prepare: batch=%+v err=%v", batch, err)
+	}
+
+	repair := breakSessionMetaPath(t, s)
+	if err := s.admitSkillActivationBatch(batch); err == nil {
+		t.Fatal("a failed metadata save must not report admission success")
+	}
+	// Nothing half-admits: the obligation rolls back out of memory and no
+	// carrier joined the live history.
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("failed admission left live obligations: %+v", got)
+	}
+	for _, state := range skillTurnStates(s) {
+		if len(state.Outcomes) != 0 || len(state.Obligations) != 0 {
+			t.Fatalf("failed admission recorded skill turn state: %+v", state)
+		}
+	}
+	repair()
+
+	// The next successful save persists the clean (obligation-free) state.
+	if err := s.saveMeta(); err != nil {
+		t.Fatalf("save after repair: %v", err)
+	}
+	restore := func() *Session {
+		t.Helper()
+		meta, err := schema.LoadSessionMeta(stateDir, s.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		restored, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { restored.Close() })
+		return restored
+	}
+
+	// Crash-equivalent restore: the durable state carries neither the
+	// obligation nor the carrier — the window cannot strand one without the
+	// other.
+	restored := restore()
+	if got := lifecycleObligations(restored); len(got) != 0 {
+		t.Fatalf("restore recovered an obligation whose admission failed: %+v", got)
+	}
+	for _, state := range skillTurnStates(restored) {
+		if len(state.Outcomes) != 0 || len(state.Obligations) != 0 {
+			t.Fatalf("restore recovered a carrier whose obligation was lost: %+v", state)
+		}
+	}
+
+	// A retry after the repair admits cleanly, and the restored session sees
+	// the obligation with its carrier.
+	if err := s.admitSkillActivationBatch(batch); err != nil {
+		t.Fatalf("retry after repair: %v", err)
+	}
+	if got := lifecycleObligations(s); len(got) != 1 {
+		t.Fatalf("retry admission obligations = %+v, want exactly one", got)
+	}
+	restored = restore()
+	if got := lifecycleObligations(restored); len(got) != 1 {
+		t.Fatalf("restored obligations = %+v, want exactly one", got)
+	}
+	carrierSeen := false
+	for _, state := range skillTurnStates(restored) {
+		if len(state.Obligations) == 1 {
+			carrierSeen = true
+		}
+	}
+	if !carrierSeen {
+		t.Fatal("restored history lost the admitted carrier turn")
+	}
+}
