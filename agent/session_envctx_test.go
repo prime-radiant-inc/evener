@@ -463,21 +463,27 @@ func TestCompactionResetsEnvironmentContextTracker(t *testing.T) {
 
 // TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact hammers
 // maybeAppendEnvironmentContext (reads envTracker, mutates it via RenderDiff)
-// on one goroutine concurrently with resetEnvContextTrackerAfterCompaction
-// (reassigns envTracker) on another — the exact pair the reviewer flagged:
-// Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
-// own goroutine with no idle gate, racing the turn goroutine's
-// maybeAppendEnvironmentContext. RED under -race before both methods took mu
-// around the tracker touch; GREEN after.
+// on one goroutine concurrently with resetEnvContextTrackerLocked (reassigns
+// envTracker) on another — the exact pair the reviewer flagged: Session.Compact
+// can reach the reset on a caller's own goroutine with no idle gate, racing the
+// turn goroutine's maybeAppendEnvironmentContext. RED under -race before both
+// sides took the locks around the tracker touch; GREEN after.
 //
-// This calls the two methods directly rather than going through
-// ProcessInput/Compact's full machinery: routing through Compact() (which
-// unconditionally writes s.contextMgr.Meta, same as every per-round
-// ManageContext call inside ProcessInput) surfaces a SEPARATE, pre-existing
-// data race on contextMgr.Meta that predates this task and is out of its
-// scope — see task-5-report.md's fix-round addendum. Calling
-// maybeAppendEnvironmentContext/resetEnvContextTrackerAfterCompaction
-// directly isolates exactly the envTracker race under test without also
+// The reset side is driven through the production sequence rather than a
+// helper of its own: attentionMu then mu around resetEnvContextTrackerLocked,
+// then the autosave outside both, which is exactly what handleCompactionTurn's
+// CHECKPOINT/SUMMARY branch (session_namer.go) and publishFoldTransaction's
+// foldCommit.resetEnvContextTrackerLocked do. Calling those two callers
+// outright would drag in a transcript write, the compaction-turn effects and
+// the async namer — unbounded work this race test has no use for.
+//
+// The append side calls maybeAppendEnvironmentContext directly rather than
+// going through ProcessInput/Compact's full machinery: routing through
+// Compact() (which unconditionally writes s.contextMgr.Meta, same as every
+// per-round ManageContext call inside ProcessInput) surfaces a SEPARATE,
+// pre-existing data race on contextMgr.Meta that predates this task and is out
+// of its scope — see task-5-report.md's fix-round addendum. Calling the two
+// sides directly isolates exactly the envTracker race under test without also
 // tripping that unrelated one.
 func TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact(t *testing.T) {
 	if !raceDetectorEnabled {
@@ -506,7 +512,14 @@ func TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact(t *testing.T) {
 	})
 	hammer.Go(func() {
 		for range 5000 {
-			sess.resetEnvContextTrackerAfterCompaction()
+			sess.attentionMu.Lock()
+			sess.mu.Lock()
+			changed := sess.resetEnvContextTrackerLocked()
+			sess.mu.Unlock()
+			sess.attentionMu.Unlock()
+			if changed {
+				sess.maybeAutoSave()
+			}
 		}
 	})
 	hammer.Wait()

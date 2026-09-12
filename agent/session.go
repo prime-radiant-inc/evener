@@ -167,12 +167,18 @@ type Session struct {
 	// reassigned) and only ever read from the turn-processing goroutine, so it
 	// needs no lock. envTracker is NOT single-goroutine-owned: Session.Compact
 	// can run on a caller's own goroutine with no idle gate, and
-	// resetEnvContextTrackerAfterCompaction reassigns the pointer (and
-	// implicitly races the turn goroutine's maybeAppendEnvironmentContext,
-	// which mutates the pointed-to Tracker's internal state via RenderDiff) —
-	// both the read of the pointer and the RenderDiff/reassignment must hold
-	// mu. See maybeAppendEnvironmentContext and
-	// resetEnvContextTrackerAfterCompaction.
+	// resetEnvContextTrackerLocked reassigns the pointer (and implicitly races
+	// the turn goroutine's maybeAppendEnvironmentContext, which mutates the
+	// pointed-to Tracker's internal state via RenderDiff).
+	//
+	// Both sides take attentionMu THEN mu, in that order. mu alone is not
+	// enough: the tracker advance and the transcript entry it describes are one
+	// publication, so a reset that took only mu could replace the tracker
+	// between an append's RenderDiff and the entry that carries its block, and
+	// the next turn would diff against a baseline no transcript records. See
+	// appendEnvironmentContext (which holds the pair across the whole append)
+	// and resetEnvContextTrackerLocked's two callers: publishFoldTransaction
+	// via foldCommit.resetEnvContextTrackerLocked, and handleCompactionTurn.
 	envCollector *envctx.Collector
 	envTracker   *envctx.Tracker
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
@@ -1589,9 +1595,9 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // no envCollector (e.g. a bare struct literal built directly by a test that
 // bypasses NewSession/RestoreSessionFromMetaWithConfig).
 //
-// envTracker is read and mutated (RenderDiff) under mu because
-// Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
-// own goroutine concurrently with this method running on the turn-processing
+// envTracker is read and mutated (RenderDiff) under attentionMu and mu because
+// Session.Compact can run resetEnvContextTrackerLocked on a caller's own
+// goroutine concurrently with this method running on the turn-processing
 // goroutine — see the field's doc comment.
 func (s *Session) maybeAppendEnvironmentContext() error {
 	return s.appendEnvironmentContext(true)
@@ -1769,27 +1775,19 @@ func (s *Session) reconcileEnvironmentEntryAfterFailedWriteLocked(turn schema.Tu
 	return environmentEntryAbsent
 }
 
-// resetEnvContextTrackerAfterCompaction clears the environment-context tracker
-// when a CHECKPOINT/SUMMARY turn replaces history: compaction drops any
-// previously appended ENVIRONMENT turns from the model-visible history (they
-// are model-bound content folded away like any other turn), so the model
-// loses whatever drift was last reported. Rebuilding the tracker at its zero
-// state (HasSent=false) makes the next maybeAppendEnvironmentContext call
-// re-emit a full block rather than staying silent on an environment the model
-// can no longer see anything about.
-func (s *Session) resetEnvContextTrackerAfterCompaction() {
-	s.attentionMu.Lock()
-	s.mu.Lock()
-	changed := s.resetEnvContextTrackerLocked()
-	s.mu.Unlock()
-	s.attentionMu.Unlock()
-	if changed {
-		s.maybeAutoSave()
-	}
-}
-
-// resetEnvContextTrackerLocked requires attentionMu and mu, so a fold and an
-// environment append cannot publish different tracker generations together.
+// resetEnvContextTrackerLocked clears the environment-context tracker when a
+// CHECKPOINT/SUMMARY turn replaces history: compaction drops any previously
+// appended ENVIRONMENT turns from the model-visible history (they are
+// model-bound content folded away like any other turn), so the model loses
+// whatever drift was last reported. Rebuilding the tracker at its zero state
+// (HasSent=false) makes the next maybeAppendEnvironmentContext call re-emit a
+// full block rather than staying silent on an environment the model can no
+// longer see anything about.
+//
+// Requires attentionMu and mu, in that order, so a fold and an environment
+// append cannot publish different tracker generations together. It reports
+// whether it changed anything, so a caller that has released both locks can
+// persist the new state.
 func (s *Session) resetEnvContextTrackerLocked() bool {
 	if s.envTracker == nil {
 		return false
