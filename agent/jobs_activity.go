@@ -715,7 +715,12 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	// collectActivityJobsEpochs and trimActivityTrailingEntry. revision is
 	// the same value just seeded into budget.revision above, embedded the
 	// same way in whatever continuation trimming mints too.
-	return trimActivityTreeToFit(tree, rootID, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision)
+	// startDepth is -len(continuation.Path) (loadActivitySnapshotForParams),
+	// so -startDepth is the number of delegate hops down to the session
+	// resumeIndex was applied to — the position trimming has to add back to
+	// mint in that session's own entry numbering rather than this page's.
+	resume := activityTrimResume{depth: -startDepth, index: resumeIndex}
+	return trimActivityTreeToFit(tree, rootID, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision, resume)
 }
 
 // collectActivityJobsEpochs walks snapshot's Children tree and returns
@@ -1310,11 +1315,37 @@ func activityBranchComplete(branch appwire.JobActivityBranchState) bool {
 	return branch.Error == "" && !branch.Truncated && branch.Continuation == ""
 }
 
+// activityTrimResume is the position the page being trimmed started from:
+// the session depth hops below the tree's own root rendered its entries
+// beginning at its own entry index, because that is the session a
+// continuation's ResumeIndex was applied to (projectActivitySessionAt). A
+// trim there counts within the entries THIS page rendered, so it has to add
+// index back to mint a position in the session's own numbering — without
+// that, a size trim on a resumed page mints a token pointing back into the
+// page it just returned, and the client never advances. The zero value is a
+// page that began at the top of its own root, which is every load that
+// carries no continuation.
+type activityTrimResume struct {
+	depth int
+	index int
+}
+
+// offsetAt reports the entry-index offset to apply to a session reached by
+// path from the tree's root. Only the one session the page resumed applies
+// it: every shallower level is the filtered ancestor chain, and every
+// deeper one rendered from its own top.
+func (r activityTrimResume) offsetAt(path []string) int {
+	if len(path) != r.depth {
+		return 0
+	}
+	return r.index
+}
+
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
-// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs, and
-// revision feed every continuation trimming mints — see
+// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs,
+// revision, and resume feed every continuation trimming mints — see
 // trimActivityTrailingEntry.
-func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) (appwire.JobActivityTree, error) {
+func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) (appwire.JobActivityTree, error) {
 	for {
 		recomputeActivitySession(&tree.Root)
 		raw, err := json.Marshal(tree)
@@ -1324,7 +1355,7 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		if !trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision) {
+		if !trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision, resume) {
 			return tree, nil
 		}
 	}
@@ -1342,19 +1373,20 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 // activityContinuation.Revision), likewise uniform across the tree.
 // Carrying all three lets a resumed continuation's staleness check
 // actually detect a rewrite — or, for a live root, a mutation — that raced
-// this trim.
-func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) bool {
+// this trim. resume locates the page's own starting position so a mint
+// lands in the trimmed session's entry numbering — see activityTrimResume.
+func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) bool {
 	if session == nil || len(session.Entries) == 0 {
 		return false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision) {
+		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision, resume) {
 			return true
 		}
 	}
-	resumeIndex := i
+	resumeIndex := resume.offsetAt(path) + i
 	if i == 0 {
 		// Trimming works from the tail, so an entry at index 0 is the only
 		// one this session's page still holds: it blew the size budget with
@@ -1362,7 +1394,7 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 		// it would render the same page and mint the same token forever.
 		// Advance past it instead, and say which entry the client will never
 		// see.
-		resumeIndex = i + 1
+		resumeIndex++
 		appendActivityBranchError(&session.Branch, activityEntryRef(*entry)+" is too large to render in one response and was skipped")
 	}
 	session.Entries = session.Entries[:i]

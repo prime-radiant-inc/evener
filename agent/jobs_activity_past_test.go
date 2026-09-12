@@ -1117,3 +1117,72 @@ func TestLoadSessionJobActivityTree_SizeTrimAdvancesPastEntryLargerThanAPage(t *
 		t.Fatalf("branch errors %q name no skipped entry, want one naming job_oversized", branchErrors)
 	}
 }
+
+// TestLoadSessionJobActivityTree_SizeTrimResumesAtAbsoluteIndexOnLaterPages
+// pins that a size trim on a RESUMED page mints a position in the session's
+// own entry numbering, not in the numbering of the page it just rendered.
+// A resumed page's entries start at the continuation's ResumeIndex, so a
+// trim that reports the index it trimmed within that page points back into
+// the page it just returned — the client re-requests it, gets the identical
+// page and the identical token, and never reaches the tail. The fixture is
+// sized so a size trim lands on a page that is itself a resume, which a
+// two-page walk never reaches.
+func TestLoadSessionJobActivityTree_SizeTrimResumesAtAbsoluteIndexOnLaterPages(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "absoluteresumeroot"
+	const jobCount = 60
+	description := strings.Repeat("d", 250_000)
+	var events []jobstore.Event
+	for i := range jobCount {
+		ts := time.Unix(int64(100+i), 0).UTC()
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	seen := map[string]int{}
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > jobCount {
+			t.Fatalf("walked %d pages without reaching job_%02d -- resume is not advancing", pages, jobCount-1)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		if earlier, repeat := seen[next]; repeat {
+			t.Fatalf("page %d minted page %d's continuation again (%q) -- a size trim on a resumed page reported its position within that page instead of the session's own entry numbering", pages, earlier, next)
+		}
+		seen[next] = pages
+		continuation = next
+	}
+	if pages < 3 {
+		t.Fatalf("got %d page(s), want at least 3 -- the fixture must be large enough to force a size trim on a resumed page", pages)
+	}
+	if len(delivered) != jobCount {
+		t.Fatalf("delivered %d entries across %d pages, want exactly %d (zero overlap, zero gap): %v", len(delivered), pages, jobCount, delivered)
+	}
+	for i, id := range delivered {
+		want := fmt.Sprintf("job_%02d", i)
+		if id != want {
+			t.Fatalf("delivered[%d] = %q, want %q -- every page must resume where the previous one stopped: %v", i, id, want, delivered)
+		}
+	}
+}

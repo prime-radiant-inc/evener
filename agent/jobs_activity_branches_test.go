@@ -435,7 +435,7 @@ func TestTrimActivityTreeToFit(t *testing.T) {
 			Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})}},
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0)
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 			Entries: entries,
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0)
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,10 +484,10 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 func TestTrimActivityTrailingEntry_EmptyReturnsFalse(t *testing.T) {
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
-	if trimActivityTrailingEntry(session, "root", nil, 0, nil, 0) {
+	if trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}) {
 		t.Error("empty entries should return false")
 	}
-	if trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0) {
+	if trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0, activityTrimResume{}) {
 		t.Error("nil session should return false")
 	}
 }
@@ -506,7 +506,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
 		},
 	}
-	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0) {
+	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}) {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	// The recursive call trims the child's entry and returns true; the
@@ -547,7 +547,7 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 		},
 	}
 	jobsEpochs := map[string]uint64{"root": 7, "child": 42}
-	if !trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17) {
+	if !trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17, activityTrimResume{}) {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	if child.Branch.Continuation == "" {
@@ -617,6 +617,59 @@ func TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation(t *testing.T)
 	}
 	if cont.Revision != 17 {
 		t.Fatalf("Revision = %d, want 17 (the budget's live-clock revision at mint time)", cont.Revision)
+	}
+}
+
+// TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex asserts a trim
+// on the session a page RESUMED mints that session's own entry position,
+// not the position within the entries this page happened to render: the
+// page started at the continuation's ResumeIndex, so a mint that ignores it
+// points back into the page it just returned. The offset belongs to exactly
+// one depth — the resumed session's — so a trim on the root one hop
+// shallower must not take it.
+func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
+	t.Parallel()
+	child := &appwire.JobActivitySession{
+		SessionID: "child",
+		Entries: []appwire.JobActivityEntry{
+			{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})},
+			{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j2"})},
+		},
+	}
+	session := &appwire.JobActivitySession{
+		SessionID: "root",
+		Entries: []appwire.JobActivityEntry{
+			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
+		},
+	}
+	// The page resumed the child, one hop down, at its sixth entry: j1 and
+	// j2 are the child's entries 5 and 6.
+	resume := activityTrimResume{depth: 1, index: 5}
+	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
+		t.Fatal("expected the child's trailing entry to be trimmed")
+	}
+	cont, err := decodeActivityContinuation(child.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode child continuation: %v", err)
+	}
+	if cont.ResumeIndex != 6 {
+		t.Fatalf("child ResumeIndex = %d, want 6 (the child's own entry after j1, not this page's index 1)", cont.ResumeIndex)
+	}
+
+	// Empty the child, then trim the root's own delegate entry: the root is
+	// not the session the page resumed, so its mint carries no offset.
+	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
+		t.Fatal("expected the child's remaining entry to be trimmed")
+	}
+	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
+		t.Fatal("expected the root's delegate entry to be trimmed")
+	}
+	rootCont, err := decodeActivityContinuation(session.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode root continuation: %v", err)
+	}
+	if rootCont.ResumeIndex != 1 {
+		t.Fatalf("root ResumeIndex = %d, want 1 (the root rendered from its own top; the child's resume offset is not its own)", rootCont.ResumeIndex)
 	}
 }
 
