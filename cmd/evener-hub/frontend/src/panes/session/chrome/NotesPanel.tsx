@@ -138,6 +138,11 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   const saving = !!state?.submitted && !state.error;
   const saved = state?.saved ?? false;
   const error = state?.error ?? null;
+  // A double-click on one row's Remove must not fire twice: the first request
+  // succeeds and the second reports the entry as already gone, surfacing a
+  // spurious "Couldn't remove link" toast. Each row's button is disabled for
+  // exactly as long as its own request is pending.
+  const [removingURLs, setRemovingURLs] = useState<ReadonlySet<string>>(() => new Set());
   // Editability here tracks the store's own write gate: rendering controls that
   // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
   const live = canWriteHumanNote(model);
@@ -157,10 +162,18 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
   async function handleRemoveURL(url: SessionURL) {
+    if (removingURLs.has(url.id)) return;
+    setRemovingURLs((prev) => new Set(prev).add(url.id));
     try {
       await threadsStore.getState().removeURL(sessionRef, url.id);
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't remove link", err));
+    } finally {
+      setRemovingURLs((prev) => {
+        const next = new Set(prev);
+        next.delete(url.id);
+        return next;
+      });
     }
   }
 
@@ -244,6 +257,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
                       variant="quiet"
                       size="sm"
                       onClick={() => void handleRemoveURL(url)}
+                      disabled={removingURLs.has(url.id)}
                       aria-label={`Remove ${url.label || url.url}`}
                       data-testid={`shared-notes-url-remove-${url.id}`}
                     >

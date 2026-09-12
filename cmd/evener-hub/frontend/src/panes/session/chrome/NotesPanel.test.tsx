@@ -691,6 +691,45 @@ test("remove dispatches urls/remove", async () => {
   await waitFor(() => expect(called).toMatchObject({ ref: model.ref, id: "u1" }));
 });
 
+test("a second Remove click while the first is in flight is ignored and stays silent", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const firstInFlight = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", (params) => {
+    calls += 1;
+    // The reported defect: the first request succeeds and the second reports the
+    // entry as already gone, which must not reach the user as an error toast.
+    if (calls === 1) return firstInFlight.then(() => ({}));
+    throw new WireError("link not found", -32004, { id: (params as { id: string }).id });
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  void user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  // The double-click's second click lands while the first request is pending.
+  await user.click(button);
+  expect(calls).toBe(1);
+
+  release();
+  await act(async () => {
+    await firstInFlight;
+  });
+  expect(calls).toBe(1);
+  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+});
+
 // --- save coalescing -------------------------------------------------------------
 
 test("reverting to the stored text during an in-flight save still persists the revert", async () => {
