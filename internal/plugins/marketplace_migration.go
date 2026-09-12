@@ -235,13 +235,21 @@ func (m *Manager) recoverMarkedRename() error {
 	if err := m.saveRename(mk, marker.From, marker.To, ref, reg, registryAsFound); err != nil {
 		undoErr := runUndo(undo)
 		if undoErr == nil && !errors.Is(err, errStoreBetweenNames) {
-			// Everything the recovery moved is back and the registry is as it
-			// was found, so the store is at the old name with nothing left to
-			// finish: the marker goes, and the next lock holder migrates the
-			// refused name afresh rather than retrying a destination that may
-			// since have been taken.
-			m.removeRenameMarker()
-			return fail(err)
+			// Dropping the marker is safe only where the store is back at the
+			// old name, and a nil undoErr does not say that here: the marker
+			// exists because an earlier run stopped mid-rename, so the
+			// directories may already sit under the destination, and this
+			// attempt then finds nothing to move and nothing to undo. Whatever
+			// is still under the destination is what the marker is keeping, so
+			// anything there leaves it in place.
+			moved, err := m.dirsUnder(marker.To)
+			if err != nil {
+				return fail(err)
+			}
+			if !moved {
+				m.removeRenameMarker()
+				return fail(err)
+			}
 		}
 		return fail(errors.Join(err, undoErr))
 	}
@@ -813,6 +821,23 @@ func (m *Manager) markerAfterFailedMove(err error) error {
 	}
 	m.removeRenameMarker()
 	return err
+}
+
+// dirsUnder reports whether either directory a name derives is in the store. A
+// recovery asks it of the marker's destination: directories there are what an
+// earlier run already moved, and the marker is the only record left of whose
+// they are.
+func (m *Manager) dirsUnder(name string) (bool, error) {
+	for _, dir := range []string{m.marketplaceDir(name), filepath.Join(m.cacheDir(), name)} {
+		present, err := pathPresent(dir)
+		if err != nil {
+			return false, err
+		}
+		if present {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // pluginCacheMove is one plugin's cache directory moving with the name of an

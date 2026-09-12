@@ -2281,6 +2281,69 @@ func TestMarketplaceNameMigration_ARecoveryThatRollsBackRemovesTheMarker(t *test
 	}
 }
 
+// The other side of the same decision: the marker exists because an earlier run
+// stopped mid-rename, so the directories may already be under the destination.
+// A recovery then finds nothing under the old name, its undo is trivially empty,
+// and dropping the marker would abandon a rename whose directories have really
+// moved — the next run would number the record around an occupied destination
+// and point its installs at a cache nothing created.
+func TestMarketplaceNameMigration_ARecoveryOfAnAlreadyMovedRenameKeepsTheMarker(t *testing.T) {
+	const recorded = "a/b"
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, recorded, "widget")
+	// The earlier run moved both directories before it stopped.
+	if err := os.Rename(m.marketplaceDir(recorded), m.marketplaceDir("a-b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(m.cacheDir(), recorded), filepath.Join(m.cacheDir(), "a-b")); err != nil {
+		t.Fatal(err)
+	}
+	plantRenameMarker(t, m, recorded, "a-b")
+	orig := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = orig })
+	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == marketplacesFileName {
+			return errors.New("boom")
+		}
+		return orig(path, data, perm)
+	}
+
+	if err := m.migrateStore(context.Background()); err == nil {
+		t.Fatal("expected the recovery's marketplaces write to fail")
+	}
+	marketplaceAtomicWriteFile = orig
+	mustExist(t, renameMarkerFile(m))
+
+	// The marker is still the only record that a-b's directories belong to this
+	// marketplace, so the next lock holder finishes the rename.
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore after the kept marker: %v", err)
+	}
+	mustNotExist(t, renameMarkerFile(m))
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk["a-b"]
+	if !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want a-b alone", mk)
+	}
+	if want := m.marketplaceDir("a-b"); ref.InstallLocation != want {
+		t.Fatalf("InstallLocation = %q, want the clone at %q", ref.InstallLocation, want)
+	}
+	mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := installedAt(t, reg, registryKey("widget", "a-b"))
+	if want := m.pluginCacheDir("a-b", "widget", "sha1"); entry.InstallPath != want {
+		t.Fatalf("widget's InstallPath = %q, want %q", entry.InstallPath, want)
+	}
+	mustExist(t, entry.InstallPath)
+}
+
 // A save that fails and cannot put the registry back leaves the old record
 // beside the new keys, which is the store between the two names and exactly
 // what the marker is for: the rollback reached neither state, so the marker
