@@ -1,6 +1,7 @@
 package tuipick
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -204,6 +205,87 @@ func TestModelPicker_WarningRendersUnderRowAndStaysSelectable(t *testing.T) {
 	selected := selectedModel.(ModelPicker)
 	if !selected.Done() || selected.Selected() != "vertex/gemini-3.8-flash" {
 		t.Fatalf("a warned row must stay selectable: done:%v selected:%q", selected.Done(), selected.Selected())
+	}
+}
+
+// windowLines is renderBody's rendered model window: the filter line and its
+// blank separator, then every line up to the optional "N items total" trailer.
+func windowLines(t *testing.T, m ModelPicker) (lines []string, trailer bool) {
+	t.Helper()
+	body := strings.TrimRight(m.renderBody(), "\n")
+	lines = strings.Split(body, "\n")
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "Filter:") || lines[1] != "" {
+		t.Fatalf("unexpected body preamble:\n%s", body)
+	}
+	lines = lines[2:]
+	if n := len(lines); n > 0 && strings.Contains(lines[n-1], "items total") {
+		trailer = true
+		lines = lines[:n-1]
+	}
+	return lines, trailer
+}
+
+// A warned row is taller than a plain one, so the window is budgeted in
+// rendered lines: a list of warned models must not push the rows and the
+// footer past the overlay's intended height.
+func TestModelPicker_WarnedRowsStayWithinTheBodyBudget(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{
+			ID:       fmt.Sprintf("m%d", i),
+			Display:  fmt.Sprintf("m%d", i),
+			Warnings: []string{"regional location cannot serve this model"},
+		}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.cursor = 10
+
+	lines, trailer := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+	if !trailer {
+		t.Fatalf("a windowed list must still say how many items it has:\n%s", p.renderBody())
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "> m10") {
+		t.Fatalf("the cursor's row must stay in the window:\n%s", p.renderBody())
+	}
+}
+
+// Group headers are rendered lines too: the budget counts them, not just rows.
+func TestModelPicker_GroupHeadersCountTowardTheBodyBudget(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{ID: fmt.Sprintf("m%d", i), Display: fmt.Sprintf("m%d", i), Group: fmt.Sprintf("g%d", i)}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.cursor = 10
+
+	lines, _ := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+}
+
+// A cursor can outlive the list it indexes: a filter narrows the list under a
+// cursor that was set while the list was longer. The window clamps it instead
+// of indexing past the end.
+func TestModelPicker_StaleCursorStillRendersABoundedWindow(t *testing.T) {
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{
+			ID:       fmt.Sprintf("m%d", i),
+			Display:  fmt.Sprintf("m%d", i),
+			Warnings: []string{"regional location cannot serve this model"},
+		}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.filter = "m1" // matches m1 and m10..m19: 11 items for a cursor at 15
+	p.cursor = 15
+
+	lines, _ := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
 	}
 }
 

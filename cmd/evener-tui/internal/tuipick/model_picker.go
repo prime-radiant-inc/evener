@@ -156,15 +156,7 @@ func (m ModelPicker) renderBody() string {
 		b.WriteString(tuitheme.MpDimStyle.Render(emptyText))
 		b.WriteString("\n")
 	} else {
-		maxVisible := 15
-		start := 0
-		if len(filtered) > maxVisible {
-			start = max(m.cursor-maxVisible/2, 0)
-			if start+maxVisible > len(filtered) {
-				start = len(filtered) - maxVisible
-			}
-		}
-		end := min(start+maxVisible, len(filtered))
+		start, end := visibleRange(filtered, m.cursor)
 
 		for i := start; i < end; i++ {
 			item := filtered[i]
@@ -202,12 +194,64 @@ func (m ModelPicker) renderBody() string {
 			}
 		}
 
-		if len(filtered) > maxVisible {
+		if start > 0 || end < len(filtered) {
 			b.WriteString(tuitheme.MpDimStyle.Render(fmt.Sprintf("  ... %d items total", len(filtered))))
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
+}
+
+// maxVisibleLines is the picker body's rendered-line budget. Items are not a
+// fixed height — each warning adds a line under its row, and a group's first
+// item adds a header — so the window is measured in rendered lines rather than
+// items; counting items let a few warned rows push the footer off the overlay.
+const maxVisibleLines = 15
+
+// renderedLines is how many body lines filtered[i] occupies: its own row, one
+// line per warning, and one for the group header when it starts a group (the
+// renderer writes a header at the first item and at every group change).
+func renderedLines(filtered []ModelPickerItem, i int) int {
+	n := 1 + len(filtered[i].Warnings)
+	if filtered[i].Group != "" && (i == 0 || filtered[i-1].Group != filtered[i].Group) {
+		n++
+	}
+	return n
+}
+
+// visibleRange is the [start, end) window of filtered items to render: the
+// cursor's item plus the neighbours that fit the budget, taken from both sides
+// so the cursor stays near the middle. An item that alone exceeds the budget
+// still renders, since a row cannot be shown in part.
+func visibleRange(filtered []ModelPickerItem, cursor int) (int, int) {
+	if len(filtered) == 0 {
+		return 0, 0
+	}
+	// A cursor can outlive the list it indexes (a filter narrowed the list, or
+	// a caller set it directly), so clamp it rather than trust it.
+	cursor = min(max(cursor, 0), len(filtered)-1)
+	start, end := cursor, cursor+1
+	used := renderedLines(filtered, cursor)
+	for {
+		grew := false
+		if end < len(filtered) {
+			if n := renderedLines(filtered, end); used+n <= maxVisibleLines {
+				used += n
+				end++
+				grew = true
+			}
+		}
+		if start > 0 {
+			if n := renderedLines(filtered, start-1); used+n <= maxVisibleLines {
+				start--
+				used += n
+				grew = true
+			}
+		}
+		if !grew {
+			return start, end
+		}
+	}
 }
 
 // modelIDMatchesActive reports whether a picker item ID names the same model
