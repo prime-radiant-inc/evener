@@ -28,6 +28,9 @@ type Catalog struct {
 	Diagnostics []Diagnostic
 }
 
+// ResolutionError is the typed unknown-or-ambiguous name failure. Kind is
+// "unknown" or "ambiguous"; Candidates holds the sorted matching canonical
+// names for an ambiguous resolution.
 type ResolutionError struct {
 	Kind       string
 	Name       string
@@ -41,6 +44,7 @@ func (e *ResolutionError) Error() string {
 	return fmt.Sprintf("unknown skill %q", e.Name)
 }
 
+// ResolveExact resolves a canonical catalog name only; it never suffix-matches.
 func (c Catalog) ResolveExact(name string) (Descriptor, error) {
 	if d, ok := c.Entries[name]; ok {
 		return d, nil
@@ -53,7 +57,7 @@ func (c Catalog) ResolveExact(name string) (Descriptor, error) {
 func (c Catalog) ResolveSkillContent(name string) (string, error) {
 	d, err := c.Resolve(name)
 	if err != nil {
-		return "", nil
+		return "", nil //nolint:nilerr // documented seam: unknown or ambiguous names keep the pre-lifecycle empty-body behavior
 	}
 	loaded, _, err := Load(d)
 	if err != nil {
@@ -62,6 +66,9 @@ func (c Catalog) ResolveSkillContent(name string) (string, error) {
 	return loaded.Body, nil
 }
 
+// Resolve returns the exact canonical match first, then a single qualified
+// suffix match; anything else is a typed ResolutionError. A known invalid
+// winner still returns its descriptor so callers can refuse it visibly.
 func (c Catalog) Resolve(name string) (Descriptor, error) {
 	if d, ok := c.Entries[name]; ok {
 		return d, nil
@@ -84,9 +91,14 @@ func (c Catalog) Resolve(name string) (Descriptor, error) {
 	return Descriptor{}, &ResolutionError{Kind: "unknown", Name: name}
 }
 
+// ModelEntries is the model-advertised view: available entries that do not
+// disable model invocation, in canonical order.
 func (c Catalog) ModelEntries() []Descriptor {
 	return c.advertisedEntries(false)
 }
+
+// UserEntries is the user-advertised view: available entries that are user
+// invocable, in canonical order.
 func (c Catalog) UserEntries() []Descriptor {
 	return c.advertisedEntries(true)
 }

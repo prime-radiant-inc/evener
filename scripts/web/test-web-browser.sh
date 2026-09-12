@@ -64,7 +64,7 @@ done
 repo_root="$(cd "$script_dir/../.." && pwd -P)"
 if [ ! -f dist/index.html ]; then
 	printf 'building the production frontend for web-skillguard…\n'
-	if npm run build >"$dir/skillguard-build.log" 2>&1; then
+	if NODE_DISABLE_COMPILE_CACHE=1 npm run build >"$dir/skillguard-build.log" 2>&1; then
 		:
 	else
 		build_status=$?

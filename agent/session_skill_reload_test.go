@@ -175,12 +175,12 @@ func requestInventoryDocument(t *testing.T, req llm.Request) []schema.SkillInven
 				continue
 			}
 			rest := part.Text[i+len(open):]
-			j := strings.Index(rest, closeTag)
-			if j < 0 {
+			payload, _, terminated := strings.Cut(rest, closeTag)
+			if !terminated {
 				t.Fatalf("unterminated skill-inventory document in %.120q", part.Text)
 			}
 			var entries []schema.SkillInventorySummary
-			if err := json.Unmarshal([]byte(rest[:j]), &entries); err != nil {
+			if err := json.Unmarshal([]byte(payload), &entries); err != nil {
 				t.Fatalf("decoding skill-inventory document: %v", err)
 			}
 			return entries

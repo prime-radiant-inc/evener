@@ -338,8 +338,7 @@ func TestSkillActivation_SaveMetaReturnsFilesystemFailure(t *testing.T) {
 	}
 	s.stateDir = blocker
 	err := s.saveMeta()
-	var pathError *os.PathError
-	if !errors.As(err, &pathError) {
+	if _, ok := errors.AsType[*os.PathError](err); !ok {
 		t.Fatalf("save must return real filesystem error: %v", err)
 	}
 	// Avoid a warning from Close retrying the intentional failure fixture.
