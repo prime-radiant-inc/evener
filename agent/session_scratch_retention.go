@@ -22,9 +22,12 @@ func (s *Session) installScratchRetention(env *execenv.LocalExecutionEnvironment
 }
 
 // installScratchRetentionFor registers sessionID's consumer and a binding for
-// env. It reuses an already-installed binding (a shared environment) or an
-// existing binding that already owns one of env's allocations, so a directory
-// never gains a second lease-owning binding. Otherwise it mints a new opaque id.
+// env. An environment that already carries an installed binding keeps it — a
+// shared parent environment's binding is owned by whoever published it and must
+// not be renamed to this consumer or republished under another root. Otherwise
+// env is a distinct constructed environment and gets its own new opaque id
+// (plan 646); identity is never inferred from the owning session's latest
+// environment, so two environments owned by one root stay two bindings.
 func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironment, sessionID string) error {
 	if env == nil {
 		return nil
@@ -49,22 +52,9 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: stored.BindingID}
 		return sandbox.UpsertScratchBinding(owner, stored, consumer)
 	}
-	// No installed binding. A distinct constructed environment gets its own new
-	// opaque binding id (plan 646); only this session's own current environment
-	// reuses its persisted consumer binding id, so a resume keeps its identity.
-	// A directory another binding already owns is demoted to a wrapper borrow by
-	// the manifest writer, not collapsed onto that binding's id.
-	bindingID := ""
-	if s.currentEnv() == env {
-		bindingID, err = s.scratchRetentionBindingID(owner, sessionID)
-		if err != nil {
-			return err
-		}
-	} else {
-		bindingID, err = identifier.NewSessionID()
-		if err != nil {
-			return err
-		}
+	bindingID, err := identifier.NewSessionID()
+	if err != nil {
+		return err
 	}
 	binding := sandbox.ScratchBinding{
 		BindingID:      bindingID,
@@ -94,19 +84,109 @@ func findScratchBinding(manifest sandbox.ScratchManifest, bindingID string) (san
 	return sandbox.ScratchBinding{}, false
 }
 
-// scratchRetentionBindingID returns this session's persisted current binding id,
-// or mints a fresh opaque one on first publication.
-func (s *Session) scratchRetentionBindingID(owner sandbox.ScratchOwner, sessionID string) (string, error) {
-	manifest, err := sandbox.LoadScratchRetention(owner)
+// stageScratchSwapBinding persists the allocation-ownership transition a moving
+// environment swap is about to perform, before AdoptSessionScratch takes the
+// handles (and, when the target already owns a kind, releases the incoming
+// lease). Each distinct owned environment keeps its own opaque binding id: the
+// target takes exactly the owning slots it is about to receive and the source
+// drops exactly those, while the source's id and every other slot (an
+// allocation a shared child minted concurrently) are preserved. A stale
+// revision is rebased onto the fresh manifest and retried, never overwritten.
+func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecutionEnvironment, sessionID string) error {
+	if target == nil || source == nil {
+		return nil
+	}
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		return nil
+	}
+	sourceBinding, err := source.ScratchRetentionBinding()
+	if err != nil || sourceBinding.BindingID == "" {
+		// A source with no durable identity has nothing to hand over.
+		return nil
+	}
+	targetID, err := s.ensureScratchBindingID(target, owner, sessionID)
+	if err != nil {
+		return err
+	}
+	// The kinds the target already owns physically are kept by
+	// AdoptSessionScratch; an incoming allocation of such a kind is retained,
+	// not adopted, so it must not be moved onto the target's binding.
+	targetOwned, err := target.ScratchRetentionBinding()
+	if err != nil {
+		return err
+	}
+	keptKinds := make(map[string]struct{}, len(targetOwned.Slots))
+	for kind, slot := range targetOwned.Slots {
+		if slot.OwnsLease {
+			keptKinds[kind] = struct{}{}
+		}
+	}
+	moved := sourceBinding.Slots
+	consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: targetID}
+	for attempt := 0; attempt < 5; attempt++ {
+		manifest, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			return err
+		}
+		targetRecord, ok := findScratchBinding(manifest, targetID)
+		if !ok {
+			targetRecord = sandbox.ScratchBinding{
+				BindingID:      targetID,
+				OwnerSessionID: sessionID,
+				WorkingDir:     target.WorkingDirectory(),
+			}
+		}
+		if targetRecord.Slots == nil {
+			targetRecord.Slots = map[string]sandbox.ScratchSlot{}
+		}
+		sourceRecord, ok := findScratchBinding(manifest, sourceBinding.BindingID)
+		if !ok {
+			sourceRecord = sourceBinding
+		}
+		if sourceRecord.Slots == nil {
+			sourceRecord.Slots = map[string]sandbox.ScratchSlot{}
+		}
+		for kind, slot := range moved {
+			if current, ok := sourceRecord.Slots[kind]; ok && filepath.Clean(current.Dir) == filepath.Clean(slot.Dir) {
+				delete(sourceRecord.Slots, kind)
+			}
+			if _, kept := keptKinds[kind]; kept {
+				continue
+			}
+			targetRecord.Slots[kind] = sandbox.ScratchSlot{Dir: slot.Dir, OwnsLease: true}
+		}
+		err = sandbox.UpdateScratchBindings(owner, manifest.Revision,
+			[]sandbox.ScratchBinding{targetRecord, sourceRecord},
+			[]sandbox.ScratchConsumerBinding{consumer})
+		if errors.Is(err, sandbox.ErrScratchRetentionStaleRevision) {
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("scratch retention: swap binding for %q stayed stale", targetID)
+}
+
+// ensureScratchBindingID returns env's installed binding id, minting and
+// installing a fresh opaque one for a distinct owned environment that has none.
+// The id lives on the environment, so a backswap onto the same object reuses it.
+func (s *Session) ensureScratchBindingID(env *execenv.LocalExecutionEnvironment, owner sandbox.ScratchOwner, sessionID string) (string, error) {
+	if installed, err := env.ScratchRetentionBinding(); err == nil && installed.BindingID != "" {
+		return installed.BindingID, nil
+	}
+	bindingID, err := identifier.NewSessionID()
 	if err != nil {
 		return "", err
 	}
-	for _, consumer := range manifest.Consumers {
-		if consumer.SessionID == sessionID && consumer.CurrentBindingID != "" {
-			return consumer.CurrentBindingID, nil
-		}
+	binding := sandbox.ScratchBinding{
+		BindingID:      bindingID,
+		OwnerSessionID: sessionID,
+		WorkingDir:     env.WorkingDirectory(),
 	}
-	return identifier.NewSessionID()
+	if err := env.SetScratchRetentionBinding(owner, binding); err != nil {
+		return "", err
+	}
+	return bindingID, nil
 }
 
 // installChildScratchRetention registers a delegate child's own durable binding

@@ -106,6 +106,14 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	defer s.endEnvWork(admission)
 	moved := current != nil && !sameEnvironment(shared, current) && !sameEnvironment(shared, next)
 	if moved {
+		// Persist the allocation-ownership transition BEFORE the handles move.
+		// An occupied target keeps what it already owns and retains the incoming
+		// allocation (AdoptSessionScratch releases that lease), so a source's
+		// owning slot must never be durably dropped before the target's
+		// replacement slot and the consumer's new current binding are committed.
+		if err := s.stageScratchSwapBinding(next, current, s.id); err != nil {
+			return err
+		}
 		next.AdoptSessionScratch(current)
 	}
 	// Step 0b — the context step 1's git runs under. Every command below forks

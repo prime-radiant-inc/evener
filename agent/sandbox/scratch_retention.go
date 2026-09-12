@@ -337,6 +337,20 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 // different binding already owns is demoted to a wrapper borrow. It never
 // replaces a whole stale record.
 func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding) error {
+	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer})
+}
+
+// UpsertScratchBindingOnly publishes one binding record under the manifest lock
+// with the same per-slot rebasing as UpsertScratchBinding, but leaves every
+// consumer record untouched. It is the writer for an environment that minted an
+// allocation without changing any session's current binding: consumer roles are
+// owned by the agent layer, and a shared environment's mint must not re-point
+// its owner's consumer (or erase its recorded roles).
+func UpsertScratchBindingOnly(owner ScratchOwner, binding ScratchBinding) error {
+	return upsertScratchBinding(owner, binding, nil)
+}
+
+func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers []ScratchConsumerBinding) error {
 	if err := owner.validate(); err != nil {
 		return err
 	}
@@ -354,8 +368,8 @@ func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer S
 	}
 	merged := mergeScratchBindingSlots(manifest, binding)
 	mergedBindings := mergeScratchBindings(manifest.Bindings, []ScratchBinding{merged})
-	mergedConsumers := mergeScratchConsumers(manifest.Consumers, []ScratchConsumerBinding{consumer})
-	if err := validateScratchBindingUpdate(manifest, mergedBindings, []ScratchBinding{binding}, []ScratchConsumerBinding{consumer}); err != nil {
+	mergedConsumers := mergeScratchConsumers(manifest.Consumers, consumers)
+	if err := validateScratchBindingUpdate(manifest, mergedBindings, []ScratchBinding{binding}, consumers); err != nil {
 		return err
 	}
 	manifest.Bindings = mergedBindings

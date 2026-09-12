@@ -12,6 +12,291 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// scratchBindingOwning reports the binding that holds the lease-owning slot for
+// dir in the loaded manifest, plus that slot's kind.
+func scratchBindingOwning(t *testing.T, manifest sandbox.ScratchManifest, dir string) (sandbox.ScratchBinding, string, bool) {
+	t.Helper()
+	want := filepath.Clean(dir)
+	for _, binding := range manifest.Bindings {
+		for kind, slot := range binding.Slots {
+			if !slot.OwnsLease {
+				continue
+			}
+			if filepath.Clean(slot.Dir) == want {
+				return binding, kind, true
+			}
+		}
+	}
+	return sandbox.ScratchBinding{}, "", false
+}
+
+func scratchConsumerFor(t *testing.T, manifest sandbox.ScratchManifest, sessionID string) sandbox.ScratchConsumerBinding {
+	t.Helper()
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == sessionID {
+			return consumer
+		}
+	}
+	t.Fatalf("consumer %q missing: %+v", sessionID, manifest.Consumers)
+	return sandbox.ScratchConsumerBinding{}
+}
+
+// TestRetirementRootWorktreeMoveKeepsPerEnvironmentBindings is plan 646/648's
+// binding-identity case on the real swap path: root R mints A on its launch
+// environment E0, enters a real worktree (constructing the clone E1 and adopting
+// A), and a shared child on the parked E0 later mints B. The manifest must hold
+// two distinct bindings, both owned by R: E1 owns A and E0 keeps its own
+// identity and owns B. Collapsing E0 and E1 onto one binding would leave one of
+// the two scratches without an owning slot, so it could not restore (plan 654).
+func TestRetirementRootWorktreeMoveKeepsPerEnvironmentBindings(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	root := r.s
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	launch, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("launch env = %T, want a local environment", root.currentEnv())
+	}
+	// E0's first command mints A and pins it under E0's binding.
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	aDir := launch.SessionScratchDir()
+	if aDir == "" {
+		t.Fatal("launch environment minted no scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(aDir) })
+	launchBinding, err := launch.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("launch retention binding: %v", err)
+	}
+	e0ID := launchBinding.BindingID
+	if e0ID == "" {
+		t.Fatal("launch environment has no binding id")
+	}
+
+	// Real worktree enter: constructs E1 and adopts A off E0.
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entered, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || entered == launch {
+		t.Fatalf("enter installed env %p, want a distinct clone beside %p", root.currentEnv(), launch)
+	}
+	if got := entered.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(aDir) {
+		t.Fatalf("entered environment scratch = %q, want the adopted %q", got, aDir)
+	}
+
+	// A shared child on the parked E0 mints B there.
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("child command on the parked environment: %v", err)
+	}
+	bDir := launch.SessionScratchDir()
+	if bDir == "" || filepath.Clean(bDir) == filepath.Clean(aDir) {
+		t.Fatalf("parked environment scratch after the move = %q, want a fresh one beside %q", bDir, aDir)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(bDir) })
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(manifest.Bindings) != 2 {
+		t.Fatalf("bindings = %d, want two distinct owned environments: %+v", len(manifest.Bindings), manifest.Bindings)
+	}
+	aBinding, _, ok := scratchBindingOwning(t, manifest, aDir)
+	if !ok {
+		t.Fatalf("no binding owns A at %q: %+v", aDir, manifest.Bindings)
+	}
+	bBinding, _, ok := scratchBindingOwning(t, manifest, bDir)
+	if !ok {
+		t.Fatalf("no binding owns B at %q: %+v", bDir, manifest.Bindings)
+	}
+	if aBinding.BindingID == bBinding.BindingID {
+		t.Fatalf("A and B are owned by one collapsed binding %q", aBinding.BindingID)
+	}
+	if aBinding.OwnerSessionID != root.id || bBinding.OwnerSessionID != root.id {
+		t.Fatalf("bindings owned by %q and %q, want both owned by root %q", aBinding.OwnerSessionID, bBinding.OwnerSessionID, root.id)
+	}
+	if bBinding.BindingID != e0ID {
+		t.Fatalf("parked E0 binding = %q, want the id %q it held before the move", bBinding.BindingID, e0ID)
+	}
+	if aBinding.WorkingDir == bBinding.WorkingDir {
+		t.Fatalf("both bindings report working dir %q; the clone kept the parked identity", aBinding.WorkingDir)
+	}
+	consumer := scratchConsumerFor(t, manifest, root.id)
+	if consumer.CurrentBindingID != aBinding.BindingID {
+		t.Fatalf("root current binding = %q, want the A-owning clone %q", consumer.CurrentBindingID, aBinding.BindingID)
+	}
+}
+
+// TestRetirementSharedChildUsesTheSharedEnvironmentsBinding covers plan 646/648's
+// shared-child rule directly: a child spawned on an existing environment object
+// registers under THAT environment's binding id rather than a fabricated
+// child-owned one, and the binding's owner is not renamed to the child.
+func TestRetirementSharedChildUsesTheSharedEnvironmentsBinding(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	shared := execenv.NewLocalExecutionEnvironment(dir)
+	t.Cleanup(func() { shared.RetainSessionScratch() })
+	if err := shared.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{
+		BindingID:      "shared-env",
+		OwnerSessionID: root.id,
+		WorkingDir:     dir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shared.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
+		t.Fatalf("mint shared scratch: %v", err)
+	}
+
+	if err := root.installChildScratchRetention(shared, "child-session"); err != nil {
+		t.Fatalf("install child retention: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := scratchConsumerFor(t, manifest, "child-session")
+	if consumer.CurrentBindingID != "shared-env" {
+		t.Fatalf("child consumer binding = %q, want the shared environment's %q", consumer.CurrentBindingID, "shared-env")
+	}
+	sharedBinding, ok := findScratchBinding(manifest, "shared-env")
+	if !ok {
+		t.Fatalf("shared environment's binding missing: %+v", manifest.Bindings)
+	}
+	if sharedBinding.OwnerSessionID != root.id {
+		t.Fatalf("shared binding owner = %q, want root %q (never renamed to the child)", sharedBinding.OwnerSessionID, root.id)
+	}
+	// No binding was fabricated for the child: every binding belongs to a real
+	// owned environment (here the root's own launch env and the shared one).
+	for _, binding := range manifest.Bindings {
+		if binding.OwnerSessionID == "child-session" {
+			t.Fatalf("child-owned binding was fabricated: %+v", binding)
+		}
+	}
+}
+
+// TestRetirementRootWorktreeExitKeepsParkedIdentityAndMintedSlot covers the
+// backswap direction: R exits the worktree back to the occupied E0. E0 keeps its
+// own binding id and B's owning slot, the incoming A loses only its owning slot
+// (staying a pinned reference, reacquirable at its original path), E1's identity
+// survives for reuse, and R's current binding resolves back to E0. The swap hook
+// runs after AdoptSessionScratch has already released A's lease, so observing the
+// manifest already clear of A's owning slot there proves the transition was
+// persisted before that release, not after.
+func TestRetirementRootWorktreeExitKeepsParkedIdentityAndMintedSlot(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	root := r.s
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	launch, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("launch env = %T, want a local environment", root.currentEnv())
+	}
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	aDir := launch.SessionScratchDir()
+	if aDir == "" {
+		t.Fatal("launch environment minted no scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(aDir) })
+	launchBinding, err := launch.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e0ID := launchBinding.BindingID
+
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entered, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || entered == launch {
+		t.Fatal("enter did not install a distinct clone")
+	}
+	enteredBinding, err := entered.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1ID := enteredBinding.BindingID
+	if e1ID == "" || e1ID == e0ID {
+		t.Fatalf("clone binding = %q, want a distinct id beside %q", e1ID, e0ID)
+	}
+
+	// A shared child on the parked E0 mints B there.
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("child command on the parked environment: %v", err)
+	}
+	bDir := launch.SessionScratchDir()
+	if bDir == "" || filepath.Clean(bDir) == filepath.Clean(aDir) {
+		t.Fatalf("parked environment scratch = %q, want a fresh one beside %q", bDir, aDir)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(bDir) })
+
+	// The hook runs at step 0b: after AdoptSessionScratch moved the handles (and
+	// so after A's lease was released) but before the environment is installed.
+	ownedDuringMove := true
+	root.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		manifest, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Errorf("load manifest during exit: %v", err)
+			return
+		}
+		_, _, ownedDuringMove = scratchBindingOwning(t, manifest, aDir)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if ownedDuringMove {
+		t.Fatal("exit released A's lease before the manifest dropped E1's owning slot")
+	}
+	if got, _ := root.currentEnv().(*execenv.LocalExecutionEnvironment); got != launch {
+		t.Fatalf("after exit the session holds %p, want the parked environment %p", root.currentEnv(), launch)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bBinding, _, ok := scratchBindingOwning(t, manifest, bDir)
+	if !ok || bBinding.BindingID != e0ID {
+		t.Fatalf("E0 binding = %+v ok=%v, want id %q owning B", bBinding, ok, e0ID)
+	}
+	if bBinding.OwnerSessionID != root.id {
+		t.Fatalf("E0 binding owner = %q, want root %q", bBinding.OwnerSessionID, root.id)
+	}
+	if _, _, ok := scratchBindingOwning(t, manifest, aDir); ok {
+		t.Fatalf("a binding still owns the backswapped A: %+v", manifest.Bindings)
+	}
+	if consumer := scratchConsumerFor(t, manifest, root.id); consumer.CurrentBindingID != e0ID {
+		t.Fatalf("root current binding = %q, want E0 %q", consumer.CurrentBindingID, e0ID)
+	}
+	if _, ok := findScratchBinding(manifest, e1ID); !ok {
+		t.Fatalf("E1's binding identity %q did not survive the backswap", e1ID)
+	}
+	// A stays a pinned reference: its lease is free and it reacquires at its
+	// original path.
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: aDir, Kind: sandbox.ScratchKindUnsandboxed})
+	if err != nil {
+		t.Fatalf("A was not retained as a pinned reference: %v", err)
+	}
+	_ = handle.Retain()
+}
+
 // TestRetirementColdDelegateScratchManifest proves the root-owned manifest
 // round-trips through the agent layer: a pinned allocation referenced only by a
 // cold consumer is reacquired by prepareRetainedScratch and adopted by the

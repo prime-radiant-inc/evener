@@ -27,7 +27,10 @@ func (e *LocalExecutionEnvironment) SetScratchRetentionBinding(owner sandbox.Scr
 
 // PinOwnedScratch publishes this environment's installed binding and pins every
 // allocation it currently owns into the owner's manifest, under the live leases
-// it holds. It is idempotent and safe to call after any allocation is minted. A
+// it holds. It is idempotent and safe to call after any allocation is minted. It
+// never writes a consumer record: an environment may serve several consumers
+// (a root and the children sharing its object), and only the agent layer knows
+// which of them owns which binding role, so a mint must not re-point them. A
 // failure is recorded sticky for the preparation readiness check and returned
 // to the caller; it never silently succeeds.
 func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
@@ -69,8 +72,7 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 		}
 		binding.Slots[kind] = sandbox.ScratchSlot{Dir: handle.Dir, OwnsLease: true}
 	}
-	consumer := sandbox.ScratchConsumerBinding{SessionID: binding.OwnerSessionID, CurrentBindingID: binding.BindingID}
-	if err := sandbox.UpsertScratchBinding(owner, binding, consumer); err != nil {
+	if err := sandbox.UpsertScratchBindingOnly(owner, binding); err != nil {
 		e.recordRetentionPinError(err)
 		return err
 	}
