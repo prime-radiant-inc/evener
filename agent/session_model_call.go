@@ -328,7 +328,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	inFlightFrom = s.turnHistoryBaseline
 	s.mu.Unlock()
 
-	// Reuse historyTurns from context management — no redundant copy.
+	// historyTurns already holds this round's refreshed copy, re-snapshotted
+	// above under s.mu; replayScope and the request expand that copy directly
+	// rather than taking another one. Do not drop the copy above as redundant
+	// work — it is what keeps the boundary paired with the history this round
+	// actually expands (see the G4 note there).
 	scope := replayScope{
 		Instance:       profile.ID(),
 		Model:          profile.Model(),
