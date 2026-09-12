@@ -92,6 +92,7 @@ async function boundary() {
 				shutdown: false,
 				changeModel: false,
 				changeVisionModel: false,
+				sharedNotes: false,
 				queue: false,
 				goal: false,
 				rename: false,

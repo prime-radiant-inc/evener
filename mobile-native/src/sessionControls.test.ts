@@ -48,6 +48,7 @@ async function boundary(actions: {
 				shutdown: true,
 				changeModel: true,
 				changeVisionModel: actions.vision !== undefined,
+				sharedNotes: false,
 				queue: false,
 				goal: false,
 				rename: true,
