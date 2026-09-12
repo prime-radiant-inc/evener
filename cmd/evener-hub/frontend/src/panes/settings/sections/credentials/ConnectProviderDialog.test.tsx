@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render as renderComponent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -183,6 +183,10 @@ function guidedRepair() {
     return status;
   });
   fake.on("evener/auth/test", () => ({ provider: "openai", status: "success", message: "" }));
+  fake.on("evener/instance/edit", (params) => {
+    if (params.newName) row = { ...row, name: params.newName };
+    return listing();
+  });
   const connected = vi.fn();
   const close = vi.fn();
   const view = renderComponent(<ConnectProviderDialog onClose={close} onConnected={connected} />);
@@ -293,6 +297,36 @@ test("a refresh superseded by the credential notification's own refetch is not r
   });
   expect(screen.queryByText(/Access could not be refreshed/)).toBeNull();
   expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+});
+
+test("a rename in full provider settings follows the guided flow back to the renamed instance", async () => {
+  const h = guidedRepair();
+  // Environment-derived instances are not renameable, so make this one authored.
+  h.change({ implicit: false });
+  await h.select();
+  await h.leave();
+  await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
+
+  // Rename the very instance the guided flow is configuring, from the
+  // section's own sheet.
+  await h.user.click(await screen.findByRole("button", { name: /openai/ }));
+  const sheet = await screen.findByRole("dialog", { name: "openai" });
+  await h.user.type(within(sheet).getByLabelText("Name"), "-renamed");
+  const save = within(sheet).getByRole("button", { name: "Save" }) as HTMLButtonElement;
+  await waitFor(() => expect(save.disabled).toBe(false));
+  await h.user.click(save);
+  await screen.findByRole("dialog", { name: "openai-renamed" });
+
+  await h.user.click(screen.getByRole("button", { name: "Back to connection choices" }));
+  // The retained draft must survive the rename, and the guided flow must act on
+  // the instance's new name rather than dead-ending on the old one.
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
+  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").at(-1)?.params).toEqual({
+    provider: "openai-renamed",
+    value: "excursion-draft",
+  });
 });
 
 test("repair excursion cancels a pending guided OAuth start without opening a hidden flow", async () => {

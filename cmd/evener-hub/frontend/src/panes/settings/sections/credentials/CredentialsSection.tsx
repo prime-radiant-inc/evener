@@ -92,9 +92,14 @@ export interface CredentialsSectionProps {
   // Settings pane renders the section without it so its header action opens the
   // guided flow, which is the reachable path to the full editor from there.
   fullEditor?: boolean;
+  /** Reports a successful rename from this section's own instance sheet, so a
+   * caller that holds a name for the same instance - the guided connection kept
+   * mounted behind the full settings view - can follow it instead of searching
+   * for the old one. */
+  onInstanceRenamed?: (from: string, to: string) => void;
 }
 
-export function CredentialsSection({ fullEditor = false }: CredentialsSectionProps) {
+export function CredentialsSection({ fullEditor = false, onInstanceRenamed }: CredentialsSectionProps) {
   const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
   const [connecting, setConnecting] = useState(false);
   // The connector is a dynamic-only import (see connectDialogChunk.ts): loading
@@ -309,7 +314,11 @@ export function CredentialsSection({ fullEditor = false }: CredentialsSectionPro
         onSetApiKey={() => openEditorFromSheet((name) => setOpenEditor({ kind: "apiKey", name }))}
         onSetCredentialJson={() => openEditorFromSheet((name) => setOpenEditor({ kind: "credentialJson", name }))}
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
-        onRenamed={setSelectedInstance}
+        onRenamed={(next) => {
+          const previous = selectedInstance;
+          setSelectedInstance(next);
+          if (previous !== null && previous !== next) onInstanceRenamed?.(previous, next);
+        }}
         onClear={() => {
           if (selectedInstance !== null) setPendingConfirm({ kind: "clear", name: selectedInstance });
         }}

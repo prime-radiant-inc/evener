@@ -44,15 +44,27 @@ export interface ConnectProviderDialogProps {
 
 export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
   const [view, setView] = useState<"connect" | "manage" | "settings">("connect");
+  // A rename in the full settings view must reach the guided owner, which stays
+  // mounted behind that view holding the instance name and its retained draft.
+  const [renamed, setRenamed] = useState<{ from: string; to: string } | null>(null);
   return (
     <>
-      <ProviderConnection {...props} visible={view === "connect"} onManage={() => setView("manage")} />
+      <ProviderConnection
+        {...props}
+        visible={view === "connect"}
+        onManage={() => setView("manage")}
+        renamedInstance={renamed}
+      />
       {view === "settings" && (
         <Dialog open onClose={props.onClose} title="Full provider settings">
           <Button variant="quiet" onClick={() => setView("connect")}>
             Back to connection choices
           </Button>
-          <CredentialsSection sectionId="credentials" fullEditor />
+          <CredentialsSection
+            sectionId="credentials"
+            fullEditor
+            onInstanceRenamed={(from, to) => setRenamed({ from, to })}
+          />
         </Dialog>
       )}
       {view === "manage" && (

@@ -16,6 +16,10 @@ export interface ProviderConnectionProps {
   onClose(): void;
   onConnected(name?: string): void;
   onManage(): void;
+  /** A rename performed in the full settings view, which the guided owner stays
+   * mounted behind: the selected connection adopts the new instance name (and
+   * re-baselines to it) so its retained draft can continue. */
+  renamedInstance?: { from: string; to: string } | null;
 }
 
 // Presentation only. Authentication capabilities always come from the catalogue.
@@ -151,6 +155,7 @@ function SelectedConnection({
   onConnected,
   onManage,
   onChange,
+  renamedInstance,
 }: ProviderConnectionProps & { provider: ProviderDescriptor; onChange(): void }) {
   const store = useCredentialsStore();
   const connection = useConnectionStore((state) => state.state);
@@ -169,6 +174,16 @@ function SelectedConnection({
       current.providerId === resolvedProviderId ? current : { providerId: resolvedProviderId, value: "" },
     );
   }, [resolvedProviderId]);
+  // The full settings view can rename this very instance while this owner stays
+  // mounted behind it. Adopting the new name keeps findSetup/reloadCreated/repair
+  // pointed at the live row; re-baselining is required with it, because the
+  // destination key includes the name and a stale baseline would demand a review
+  // for a change that is only the rename.
+  useEffect(() => {
+    if (!renamedInstance || renamedInstance.from !== name) return;
+    setName(renamedInstance.to);
+    setBaseline(findSetup(renamedInstance.to));
+  }, [renamedInstance, name]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
   const [saved, setSaved] = useState(false);
