@@ -1,8 +1,14 @@
 import { act, renderHook } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
-import { usePluginPreview } from "./usePluginPreview";
+import {
+  PLUGIN_PREVIEW_DEBOUNCE_MS,
+  type PluginPreviewLoadState,
+  type UsePluginPreviewArgs,
+  usePluginPreview,
+} from "./usePluginPreview";
 
 const RESPONSE: PluginPreviewResponse = { plugins: [] };
 
@@ -14,6 +20,151 @@ describe("usePluginPreview", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
+
+  // Observe committed consumer effects, not just renderHook's final result:
+  // a passive reset can otherwise hide the first render's stale authority.
+  for (const previousStatus of ["ready", "error"] as const) {
+    test.each(["cwd", "overrides", "revision", "retry", "client", "disabled"] as const)(
+      `revokes ${previousStatus} authority on the first consumer render after %s changes`,
+      async (change) => {
+        vi.useFakeTimers();
+        const client = new FakeClient();
+        client.on("evener/plugin/preview", () => {
+          if (previousStatus === "error") throw new Error("old request failed");
+          return RESPONSE;
+        });
+        const initialProps: UsePluginPreviewArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
+        const observed: PluginPreviewLoadState[] = [];
+        const { result, rerender } = renderHook(
+          (args: UsePluginPreviewArgs) => {
+            const preview = usePluginPreview(args);
+            useLayoutEffect(() => {
+              observed.push(preview.state);
+            });
+            return preview;
+          },
+          { initialProps },
+        );
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PLUGIN_PREVIEW_DEBOUNCE_MS);
+        });
+        expect(result.current.state.status).toBe(previousStatus);
+        observed.length = 0;
+
+        if (change === "retry") act(() => result.current.retry());
+        else {
+          rerender({
+            ...initialProps,
+            ...(change === "cwd" ? { cwd: "/b" } : {}),
+            ...(change === "overrides" ? { launchOverrides: { enabledPlugins: ["b"] } } : {}),
+            ...(change === "revision" ? { pluginRevision: 1 } : {}),
+            ...(change === "client" ? { client: new FakeClient() } : {}),
+            ...(change === "disabled" ? { enabled: false } : {}),
+          });
+        }
+
+        const cached = previousStatus === "ready" && ["overrides", "revision", "retry"].includes(change);
+        expect(observed.length).toBeGreaterThan(0);
+        for (const state of observed) {
+          expect(state).toEqual(cached ? { status: "loading", response: RESPONSE } : { status: "loading" });
+        }
+      },
+    );
+  }
+
+  for (const outcome of ["success", "error"] as const) {
+    test.each(["cwd", "overrides", "revision", "retry", "client", "disabled", "cwd round trip", "reenabled"] as const)(
+      `ignores late ${outcome} after %s changes`,
+      async (change) => {
+        vi.useFakeTimers();
+        let resolveOld: ((response: PluginPreviewResponse) => void) | undefined;
+        let rejectOld: ((error: Error) => void) | undefined;
+        const pending = new Promise<PluginPreviewResponse>((resolve, reject) => {
+          resolveOld = resolve;
+          rejectOld = reject;
+        });
+        const client = new FakeClient();
+        client.on("evener/plugin/preview", () => pending);
+        const initialProps: UsePluginPreviewArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
+        const { result, rerender } = renderHook((args: UsePluginPreviewArgs) => usePluginPreview(args), {
+          initialProps,
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PLUGIN_PREVIEW_DEBOUNCE_MS);
+        });
+        expect(client.calls).toHaveLength(1);
+
+        client.on("evener/plugin/preview", () => RESPONSE);
+        const replacement = new FakeClient();
+        replacement.on("evener/plugin/preview", () => RESPONSE);
+        if (change === "retry") act(() => result.current.retry());
+        else if (change === "cwd round trip" || change === "reenabled") {
+          rerender({ ...initialProps, ...(change === "reenabled" ? { enabled: false } : { cwd: "/b" }) });
+          rerender(initialProps);
+        } else {
+          rerender({
+            ...initialProps,
+            ...(change === "cwd" ? { cwd: "/b" } : {}),
+            ...(change === "overrides" ? { launchOverrides: { enabledPlugins: ["b"] } } : {}),
+            ...(change === "revision" ? { pluginRevision: 1 } : {}),
+            ...(change === "client" ? { client: replacement } : {}),
+            ...(change === "disabled" ? { enabled: false } : {}),
+          });
+        }
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PLUGIN_PREVIEW_DEBOUNCE_MS);
+        });
+        const expected = change === "disabled" ? { status: "loading" } : { status: "ready", response: RESPONSE };
+        expect(result.current.state).toEqual(expected);
+
+        await act(async () => {
+          if (!resolveOld || !rejectOld) throw new Error("old preview promise was not initialized");
+          if (outcome === "success") resolveOld({ plugins: [], selectionErrors: [{ name: "old", reason: "gone" }] });
+          else rejectOld(new Error("old request failed"));
+        });
+        expect(result.current.state).toEqual(expected);
+      },
+    );
+  }
+
+  test.each(["retry", "overrides", "revision", "client"] as const)(
+    "retains cached error details only for the same logical request after %s changes",
+    async (change) => {
+      vi.useFakeTimers();
+      const client = new FakeClient();
+      client.on("evener/plugin/preview", () => RESPONSE);
+      const initialProps: UsePluginPreviewArgs = { client, cwd: "/a", launchOverrides: {}, pluginRevision: 0 };
+      const { result, rerender } = renderHook((args: UsePluginPreviewArgs) => usePluginPreview(args), { initialProps });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PLUGIN_PREVIEW_DEBOUNCE_MS);
+      });
+      expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
+      const fail = () => {
+        throw new Error("refresh failed");
+      };
+      client.on("evener/plugin/preview", fail);
+      const replacement = new FakeClient();
+      replacement.on("evener/plugin/preview", fail);
+
+      if (change === "retry") act(() => result.current.retry());
+      else {
+        rerender({
+          ...initialProps,
+          ...(change === "overrides" ? { launchOverrides: { enabledPlugins: ["b"] } } : {}),
+          ...(change === "revision" ? { pluginRevision: 1 } : {}),
+          ...(change === "client" ? { client: replacement } : {}),
+        });
+      }
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PLUGIN_PREVIEW_DEBOUNCE_MS);
+      });
+      expect(result.current.state).toEqual({
+        status: "error",
+        message: "refresh failed",
+        ...(change === "retry" ? { response: RESPONSE } : {}),
+      });
+    },
+  );
 
   test("loads one preview after the declared debounce and includes explicit selection", async () => {
     vi.useFakeTimers();

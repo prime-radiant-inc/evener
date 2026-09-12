@@ -40,7 +40,7 @@ func TestVisionPromptContractIsUnconditional(t *testing.T) {
 	}
 	var suffix string
 	for _, intent := range intents {
-		if got := sess.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("image"), ImageIntent: intent}); got != "vision" {
+		if got := sess.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("image"), ImagePrompt: intent}); got != "vision" {
 			t.Fatalf("vision response = %q", got)
 		}
 		requests := adapter.Requests()

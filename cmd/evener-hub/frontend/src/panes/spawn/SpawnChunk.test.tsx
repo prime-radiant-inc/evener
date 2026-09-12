@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Component, type ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -13,6 +13,7 @@ import { resetConnectDialogChunkForTests } from "../settings/sections/credential
 import * as connectDialogChunk from "./connectDialogChunk";
 import { resetConnectDialogLoaderForTests } from "./connectDialogChunk";
 import Spawn from "./Spawn";
+import { resetSpawnDraftsForTests } from "./spawnDrafts";
 
 // The connect-provider dialog chunk is a separate network request from
 // index.html, so a hub restarting mid-load, a slow link, or a deploy that
@@ -91,12 +92,13 @@ function missingCredentialsClient(): FakeClient {
   return fake;
 }
 
-function renderSpawn(client: FakeClient) {
+function renderSpawn(client: FakeClient, options: RenderOptions) {
   return render(
     <ClientProvider client={client}>
       <Spawn params={{}} paneId="spawn-1" focused={true} />
       <Toast />
     </ClientProvider>,
+    options,
   );
 }
 
@@ -104,30 +106,23 @@ async function openConnectDialog(user: ReturnType<typeof userEvent.setup>): Prom
   await user.click(await screen.findByRole("button", { name: "Connect provider" }));
 }
 
-// Suppress console.error noise from React's error-boundary logging during
-// tests that deliberately trigger chunk-load failures. The errors are
-// expected; the boundary catches them. Matched on React's own stable
-// componentDidCatch format string plus its fixed boundary-recovery
-// sentence, rather than blanket-silenced, so any *other* console.error a
-// regression here might produce still reaches real console.error and
-// stays visible in test output (DockRegion.test.tsx's own recipe).
-const REACT_ERROR_BOUNDARY_FORMAT = "%o\n\n%s\n\n%s\n";
-const REACT_ERROR_BOUNDARY_PREFACE = "The above error occurred in one of your React components.";
 const realConsoleError = console.error.bind(console);
-let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+// Capture only this render's injected failure; every test also asserts the
+// complete callback count and error identity, including repeated retries.
+function captureExpectedError(expectedError: Error) {
+  return vi.fn<NonNullable<RenderOptions["onCaughtError"]>>((error, info) => {
+    if (error !== expectedError) realConsoleError(error, info);
+  });
+}
 
 beforeAll(() => {
   globalThis.localStorage = new MemoryStorage() as unknown as Storage;
 });
 
 beforeEach(() => {
-  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    if (args[0] === REACT_ERROR_BOUNDARY_FORMAT && args[2] === REACT_ERROR_BOUNDARY_PREFACE) {
-      return;
-    }
-    realConsoleError(...args);
-  });
   localStorage.clear();
+  resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
   loadConnectDialog.mockReset();
   loadConnectDialog.mockImplementation(realLoadConnectDialog);
@@ -139,7 +134,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  consoleErrorSpy.mockRestore();
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
@@ -155,27 +149,33 @@ afterEach(() => {
 });
 
 test("a rejected dialog chunk shows the failure message with a Retry", async () => {
-  vi.mocked(loadConnectDialog).mockRejectedValue(new Error(CHUNK_ERROR));
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
-  renderSpawn(client);
+  renderSpawn(client, { onCaughtError });
 
   await openConnectDialog(user);
 
   expect(await screen.findByText("Couldn't load the connect dialog")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
 });
 
 test("Retry fetches the chunk again and mounts the dialog on the second attempt", async () => {
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
   vi.mocked(loadConnectDialog)
-    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
+    .mockRejectedValueOnce(chunkError)
     .mockResolvedValueOnce({ ConnectProviderDialog: StubConnectDialog } as never);
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
-  renderSpawn(client);
+  renderSpawn(client, { onCaughtError });
 
   await openConnectDialog(user);
   await screen.findByText("Couldn't load the connect dialog");
@@ -188,16 +188,20 @@ test("Retry fetches the chunk again and mounts the dialog on the second attempt"
   expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
 });
 
 test("a retry that fails again offers a page reload instead of stranding the provider flow", async () => {
-  vi.mocked(loadConnectDialog).mockRejectedValue(new Error(CHUNK_ERROR));
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
   const reload = vi.fn();
   vi.stubGlobal("location", { ...window.location, reload });
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
-  renderSpawn(client);
+  renderSpawn(client, { onCaughtError });
 
   await openConnectDialog(user);
   await screen.findByText("Couldn't load the connect dialog");
@@ -211,6 +215,9 @@ test("a retry that fails again offers a page reload instead of stranding the pro
 
   expect(reload).toHaveBeenCalledTimes(1);
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
+  expect(onCaughtError).toHaveBeenCalledTimes(2);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
+  expect(onCaughtError.mock.calls[1]?.[0]).toBe(chunkError);
 });
 
 test("an ordinary retry failure does not prescribe a page reload", async () => {
@@ -219,7 +226,9 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   // failure: the dialog boundary declines it, so it lands on the next
   // boundary above - never the dialog failure state, and so never the
   // Retry/Reload pair that could misreport it as a stale deploy.
-  vi.mocked(loadConnectDialog).mockRejectedValue(new Error("ConnectProviderDialog chunk request failed with 500"));
+  const chunkError = new Error("ConnectProviderDialog chunk request failed with 500");
+  const onCaughtError = captureExpectedError(chunkError);
+  vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
   const user = userEvent.setup();
@@ -230,6 +239,7 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
       </DialogTestOuterBoundary>
       <Toast />
     </ClientProvider>,
+    { onCaughtError },
   );
 
   await openConnectDialog(user);
@@ -239,6 +249,9 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   ).toBeTruthy();
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
+  expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(DialogTestOuterBoundary);
 });
 
 // A logic bug thrown by the RESOLVED dialog's own render is not a chunk-load
@@ -256,8 +269,16 @@ class DialogTestOuterBoundary extends Component<{ children: ReactNode }, { failu
 }
 
 test("a logic bug in the resolved dialog keeps unwinding past the dialog boundary", async () => {
+  const renderError = new Error("ConnectProviderDialog render logic bug");
+  const caughtErrors: unknown[] = [];
+  const onCaughtError = vi.fn<NonNullable<RenderOptions["onCaughtError"]>>((error, info) => {
+    caughtErrors.push(error);
+    if (error !== renderError || !(info.errorBoundary instanceof DialogTestOuterBoundary)) {
+      realConsoleError(error, info);
+    }
+  });
   function BuggyDialog() {
-    throw new Error("ConnectProviderDialog render logic bug");
+    throw renderError;
   }
   vi.mocked(loadConnectDialog).mockResolvedValue({ ConnectProviderDialog: BuggyDialog } as never);
   const user = userEvent.setup();
@@ -270,10 +291,15 @@ test("a logic bug in the resolved dialog keeps unwinding past the dialog boundar
       </DialogTestOuterBoundary>
       <Toast />
     </ClientProvider>,
+    { onCaughtError },
   );
 
   await openConnectDialog(user);
 
   expect(await screen.findByText("outer boundary caught: ConnectProviderDialog render logic bug")).toBeTruthy();
+  expect(caughtErrors).toEqual([renderError]);
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+  expect(onCaughtError).toHaveBeenCalledTimes(1);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(renderError);
+  expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(DialogTestOuterBoundary);
 });

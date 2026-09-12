@@ -26,6 +26,7 @@
 
 .sectionTitle {
   margin: 0;
+  font-family: var(--font-prose);
   font-size: var(--font-size-pane-title);
   line-height: var(--line-height-title);
 }
@@ -75,15 +76,36 @@
   font-size: var(--font-size-body);
 }
 
+.sizeProse {
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
+}
+
+.sans {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  overflow-wrap: anywhere;
+}
+
 .sizePaneTitle {
+  font-family: var(--font-prose);
   font-size: var(--font-size-pane-title);
 }
 
 .sizePageTitle {
+  font-family: var(--font-prose);
   font-size: var(--font-size-page-title);
 }
 
 .sizeDisplay {
+  font-family: var(--font-prose);
   font-size: var(--font-size-display);
   letter-spacing: var(--tracking-display);
 }
@@ -193,7 +215,8 @@
 .prose {
   margin: 0;
   color: var(--ink-hi);
-  font-size: var(--font-size-body);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
   line-height: var(--line-height-body);
 }
 
@@ -203,4 +226,21 @@
 
 .measureWide {
   max-width: 64rem;
+}
+
+@media (max-width: 899px) {
+  .page {
+    padding: var(--space-4);
+  }
+
+  .rampRow,
+  .leadingRow,
+  .rhythmRow {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .rowLabel {
+    width: 100%;
+  }
 }

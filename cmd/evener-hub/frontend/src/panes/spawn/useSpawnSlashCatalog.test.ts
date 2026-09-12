@@ -1,8 +1,13 @@
 import { act, renderHook } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { SpawnSlashCatalogResponse } from "../../protocol/types.gen";
-import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
+import {
+  type SpawnSlashCatalogLoadState,
+  type UseSpawnSlashCatalogArgs,
+  useSpawnSlashCatalog,
+} from "./useSpawnSlashCatalog";
 
 const RESPONSE: SpawnSlashCatalogResponse = { commands: [], skills: [] };
 
@@ -246,6 +251,66 @@ describe("useSpawnSlashCatalog", () => {
     expect(result.current.state).toEqual({ status: "ready", response: { commands: [], skills: [] } });
   });
 
+  // Observe committed consumer effects, not just renderHook's final result:
+  // a passive reset can otherwise hide the first render's stale authority.
+  // SpawnForm stays mounted across draft switches, so the previous draft's
+  // ready catalog must never be exposed during that first render (the same
+  // defect class usePluginPreview's render-time guard fixed).
+  test.each(["cwd", "overrides", "disabled"] as const)(
+    "revokes ready authority on the first consumer render after %s changes",
+    async (change) => {
+      vi.useFakeTimers();
+      const client = new FakeClient();
+      const responseA: SpawnSlashCatalogResponse = {
+        commands: [{ name: "stale-a", source: "test" }],
+        skills: [],
+      };
+      client.on("evener/spawn/slashCatalog", () => responseA);
+      const initialProps: UseSpawnSlashCatalogArgs = {
+        client,
+        cwd: "/a",
+        harness: "evener",
+        launchOverrides: {},
+        pluginRevision: 0,
+      };
+      const observed: SpawnSlashCatalogLoadState[] = [];
+      const { result, rerender } = renderHook(
+        (args: UseSpawnSlashCatalogArgs) => {
+          const catalog = useSpawnSlashCatalog(args);
+          useLayoutEffect(() => {
+            observed.push(catalog.state);
+          });
+          return catalog;
+        },
+        { initialProps },
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+        await flush();
+      });
+      expect(result.current.state).toEqual({ status: "ready", response: responseA });
+      observed.length = 0;
+
+      rerender({
+        ...initialProps,
+        ...(change === "cwd" ? { cwd: "/b" } : {}),
+        ...(change === "overrides" ? { launchOverrides: { enabledPlugins: ["b"] } } : {}),
+        ...(change === "disabled" ? { enabled: false } : {}),
+      });
+
+      const expected: SpawnSlashCatalogLoadState =
+        change === "cwd"
+          ? { status: "loading" }
+          : change === "overrides"
+            ? { status: "loading", response: responseA }
+            : { status: "ready", response: { commands: [], skills: [] } };
+      expect(observed.length).toBeGreaterThan(0);
+      for (const state of observed) {
+        expect(state).toEqual(expected);
+      }
+    },
+  );
+
   test("omits empty harness and launchOverrides but always sends cwd", async () => {
     vi.useFakeTimers();
     const client = new FakeClient();
@@ -303,4 +368,34 @@ test("drops a late response from a replaced client", async () => {
     await flush();
   });
   expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
+});
+
+// RoboRev PR1131 finding 7: the cached-reuse guard checked only cwd, not client
+// identity (usePluginPreview requires both). After a reconnect swaps the client
+// object, the hook exposes the previous client's catalog as the loading state's
+// response instead of loading clean for the new client.
+test("does not reuse the previous client's catalog as the loading response after a client swap", async () => {
+  vi.useFakeTimers();
+  const clientA = new FakeClient();
+  const clientB = new FakeClient();
+  const responseA: SpawnSlashCatalogResponse = {
+    commands: [{ name: "stale-client-a", source: "test" }],
+    skills: [],
+  };
+  clientA.on("evener/spawn/slashCatalog", () => responseA);
+  clientB.on("evener/spawn/slashCatalog", () => new Promise<SpawnSlashCatalogResponse>(() => {}));
+  const { result, rerender } = renderHook(
+    ({ client }: { client: FakeClient }) =>
+      useSpawnSlashCatalog({ client, cwd: "/repo", harness: "evener", launchOverrides: {}, pluginRevision: 0 }),
+    { initialProps: { client: clientA } },
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(250);
+    await flush();
+  });
+  expect(result.current.state).toEqual({ status: "ready", response: responseA });
+
+  rerender({ client: clientB });
+  // B's own request is still in flight: A's catalog has no authority to stand in.
+  expect(result.current.state).toEqual({ status: "loading" });
 });

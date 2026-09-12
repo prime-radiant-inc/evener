@@ -182,10 +182,11 @@ test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
 // that streamingtext.module.css exposes the identical hook with the
 // identical fallback, so the live and settled paths can never disagree.
 
-test("takes its font-size from --prose-font-size, defaulting to --font-size-body", () => {
+// Approved editorial-instrument spec (2026-09-09) introduces the shared reading step.
+test("takes its font-size from --prose-font-size, defaulting to --font-size-prose", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toContain("font-size: var(--prose-font-size, var(--font-size-body))");
+  expect(css).toContain("font-size: var(--prose-font-size, var(--font-size-prose))");
 });
 
 test("inline code is a quiet underline, not a filled chip: no background, no radius, sized relative to the surrounding prose", () => {
@@ -349,16 +350,16 @@ test("live matches settled on a long CRLF source across tail-growth rerenders (w
 
 // The table chrome lives in the stylesheet, not on a class the component
 // writes, so - like the ink/font-size assertions above - this reads the
-// stylesheet's own source. Guards the table styling contract: a header band
-// on --surface-inset, --edge hairlines, and the legacy align attribute
+// stylesheet's own source. Approved editorial-instrument spec (2026-09-09):
+// transparent headers, --edge hairlines, and the legacy align attribute
 // honored via attribute selectors (so GFM column alignment works without
 // allowing the style attribute through DOMPurify).
-test("the stylesheet styles GFM tables: header band, edge borders, align selectors", () => {
+test("the stylesheet styles GFM tables: flat headers, edge borders, align selectors", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css).toContain(".root :where(table)");
   expect(css).toContain("border-collapse: collapse");
-  expect(css).toMatch(/thead th[^{]*\{[^}]*--surface-inset/);
+  expect(css).toMatch(/thead th[^{]*\{[^}]*background: transparent/);
   expect(css).toMatch(/--edge/);
   expect(css).toContain('th[align="center"]');
   expect(css).toContain('td[align="right"]');
