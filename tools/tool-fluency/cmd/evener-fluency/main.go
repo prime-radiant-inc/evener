@@ -530,11 +530,11 @@ func isTestCommand(argsJSON string) bool {
 		// so a value with spaces consumes its quotes instead of breaking the
 		// line at the first space inside them.
 		for {
-			if loc := leadingEnvAssignment.FindStringIndex(segment); loc != nil && loc[0] == 0 {
-				segment = strings.TrimSpace(segment[loc[1]:])
-				continue
+			loc := leadingEnvAssignment.FindStringIndex(segment)
+			if len(loc) != 2 || loc[0] != 0 {
+				break
 			}
-			break
+			segment = strings.TrimSpace(segment[loc[1]:])
 		}
 		if segment == "go test" || strings.HasPrefix(segment, "go test ") {
 			return true
