@@ -324,7 +324,7 @@ package_list_path() {
 	esac
 }
 package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
-# Where the attempt records its own process group, between setpgrp and exec.
+# Where the attempt records its own process group, before it splits into it.
 # That group is the one thing the runner's signal cleanup cannot otherwise
 # reach: the attempt is deliberately in a group of its own, so a signal aimed at
 # the runner's group never touches it, and once the wave subshell holding it
@@ -493,18 +493,22 @@ run_bounded_package_list() {
 		# active_pids, and stop_children and cleanup signal and wait on exactly
 		# those — all of it shaped by whether monitor mode is on. Nothing here is
 		# worth making the rest of the script run under different job semantics.
-		# The attempt records its own group, between setpgrp and exec, because a
-		# parent that records it afterwards has a window in which the group exists
-		# and nothing names it: a signal arriving there kills the wave subshell
-		# before it writes the file, and the cleanup then has nothing to stop. A
-		# pgid file that cannot be written fails the attempt in its stderr log
-		# rather than leaving an untracked group running.
+		# The attempt records its own group, and does it before the group exists:
+		# the number is the child's pid either way, and the two orderings differ in
+		# what a signal arriving mid-spawn leaves behind. Recording first, a signal
+		# before setpgrp still reaches the child through the runner's own group,
+		# and after setpgrp the record is already there for the cleanup to stop —
+		# no instant exists in which a split-off group is unrecorded. The record is
+		# renamed into place so a reader sees the whole pid or no file at all; a
+		# marker that cannot be written fails the attempt in its stderr log rather
+		# than leaving an untracked group running.
 		perl -e '
-			setpgrp(0, 0);
 			my $pgid_path = shift @ARGV;
-			open my $fh, ">", $pgid_path or die "pgid file $pgid_path: $!\n";
+			open my $fh, ">", "$pgid_path.tmp" or die "pgid file $pgid_path: $!\n";
 			print $fh $$ or die "pgid file $pgid_path: $!\n";
 			close $fh or die "pgid file $pgid_path: $!\n";
+			rename "$pgid_path.tmp", $pgid_path or die "pgid file $pgid_path: $!\n";
+			setpgrp(0, 0);
 			exec @ARGV or die "exec: $!\n";
 		' -- "$(package_list_pgid_path "$module")" go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
