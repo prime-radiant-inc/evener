@@ -126,7 +126,11 @@ func RenderCount(r CountResult) string {
 
 // ToolCallSummary is one tool call in a turn.
 type ToolCallSummary struct {
-	Name       string `json:"name"`
+	Name string `json:"name"`
+	// Arguments is the full raw JSON arguments object, untruncated. It is
+	// the machine-readable form callers needing exact argument values must
+	// use; ArgPreview remains the human-facing bounded rendering.
+	Arguments  string `json:"arguments,omitempty"`
 	ArgPreview string `json:"arg_preview,omitempty"`
 	Intent     string `json:"intent,omitempty"`    // the model's stated reason for this call, if any
 	IsResult   bool   `json:"is_result,omitempty"` // the session's effective result tool
@@ -226,9 +230,11 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int
 			if part.ToolCall == nil {
 				continue
 			}
+			arguments := strings.TrimSpace(string(part.ToolCall.Arguments))
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
-				ArgPreview: truncate(strings.TrimSpace(string(part.ToolCall.Arguments)), argPreviewMax),
+				Arguments:  arguments,
+				ArgPreview: truncate(arguments, argPreviewMax),
 				Intent:     toolIntentFromArguments(part.ToolCall.Arguments),
 				IsResult:   part.ToolCall.Name == resultTool,
 			})
