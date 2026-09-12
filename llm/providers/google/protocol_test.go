@@ -86,6 +86,45 @@ func TestProtocolBuildBody(t *testing.T) {
 	}
 }
 
+// An MCP server's tool schema arrives as JSON Schema, and its document
+// metadata ($schema, $id, $comment) has no field in Gemini's restricted
+// Schema proto: Vertex rejects the whole request with "Unknown name
+// \"$schema\"". The sanitizer must drop those keys at every level while
+// keeping the validation keywords.
+func TestProtocolBuildBody_DropsGeminiSchemaMetaKeys(t *testing.T) {
+	req := protoReq("")
+	req.Tools = []llm.ToolDefinition{{
+		Name: "use_browser",
+		Parameters: map[string]any{
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"$id":     "https://example.test/use_browser.json",
+			"type":    "object",
+			"properties": map[string]any{
+				"action": map[string]any{
+					"$comment": "the action to run",
+					"type":     "string",
+				},
+			},
+			"required": []any{"action"},
+		},
+	}}
+
+	tools := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any)
+	params := tools[0]["functionDeclarations"].([]map[string]any)[0]["parameters"].(map[string]any)
+	for _, key := range []string{"$schema", "$id"} {
+		if _, ok := params[key]; ok {
+			t.Fatalf("Gemini parameters must not carry %q: %#v", key, params)
+		}
+	}
+	action := params["properties"].(map[string]any)["action"].(map[string]any)
+	if _, ok := action["$comment"]; ok {
+		t.Fatalf("nested $comment must be dropped: %#v", action)
+	}
+	if action["type"] != "string" || params["required"] == nil {
+		t.Fatalf("validation keywords must survive sanitizing: %#v", params)
+	}
+}
+
 func TestProtocolBuildBody_NullableSchemasOnGeminiWire(t *testing.T) {
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{

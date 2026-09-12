@@ -148,14 +148,30 @@ func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
 	return out
 }
 
+// geminiSchemaMetaKeys are JSON Schema's document-metadata keywords (draft-07
+// and 2020-12). They carry no validation semantics, but Gemini's Schema proto
+// has no field for them and rejects the request ("Unknown name \"$schema\"").
+// MCP servers emit them: a tool schema generated from a Zod shape starts with
+// $schema, so a single MCP tool otherwise fails every Gemini request.
+var geminiSchemaMetaKeys = map[string]bool{
+	"$schema":        true,
+	"$id":            true,
+	"$comment":       true,
+	"$anchor":        true,
+	"$dynamicAnchor": true,
+	"$vocabulary":    true,
+}
+
 func sanitizeGeminiSchema(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
-			// The Gemini Schema proto does not accept JSON Schema's additionalProperties field.
-			// Omitting it preserves compatibility while keeping the rest of the schema useful.
-			if k == "additionalProperties" {
+			// The Gemini Schema proto accepts neither JSON Schema's
+			// additionalProperties field nor its $ document metadata.
+			// Omitting them preserves compatibility while keeping the rest
+			// of the schema useful.
+			if k == "additionalProperties" || geminiSchemaMetaKeys[k] {
 				continue
 			}
 			if k == "type" {
