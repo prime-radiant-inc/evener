@@ -1611,7 +1611,14 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	tracker := s.envTracker
-	if tracker == nil {
+	// Shutdown has claimed the session: its terminal boundary is published
+	// under this same door, so an append that gets here is one whose entry and
+	// event would land behind SESSION_END -- context for a session that is
+	// over, in a transcript whose writer is about to close. Refuse silently,
+	// like the two early returns beside this one: the caller is a turn the
+	// close is already ending, and failing it would only make a dying turn
+	// unwind state the close is about to discard.
+	if tracker == nil || s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		return nil

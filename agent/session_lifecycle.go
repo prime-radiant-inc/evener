@@ -561,6 +561,18 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		}
 
 		// 5-6. Emit SESSION_END with final state.
+		//
+		// Under the transcript door, because the terminal boundary has to be
+		// ordered against the one other publication that takes it: an
+		// environment append holds attentionMu across its entry and the event
+		// announcing it, so taking it here waits for an append already in
+		// flight and shuts out any that starts later (it re-reads `closing`,
+		// set in step 1, under this same lock). Without that an ENVIRONMENT
+		// event can reach a live reader behind the SESSION_END that says the
+		// session is over. The send is bounded by the shared close budget, the
+		// same bound the emit below already relies on, and the door is released
+		// before closeAttachedTranscript takes it again.
+		s.attentionMu.Lock()
 		if emitEnd {
 			// A live authoritative bridge gets the terminal boundary with the
 			// same lossless backpressure as every other event. A wedged bridge
@@ -577,6 +589,7 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 				s.jobManager.onSessionEvent(ev)
 			}
 		}
+		s.attentionMu.Unlock()
 
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()

@@ -1323,3 +1323,62 @@ func TestPoisonedWriterRefusesToPublishAFold(t *testing.T) {
 		}
 	}
 }
+
+// TestClosingSessionRefusesEnvironmentPublication: shutdown claims the session
+// before it publishes the terminal boundary, and an environment append landing
+// in that window would put a live EventEnvironment and a durable environment
+// entry behind SESSION_END -- context for a session that is over, in a
+// transcript whose writer is about to close. The append has to observe the
+// shutdown state, and it has to observe it under the same lock that orders the
+// publication: attentionMu is the transcript door the environment event is
+// already published under for exactly that ordering reason.
+//
+// The observation point is Close's own dispose/sweep seam, which runs with
+// `closing` already set and SESSION_END still ahead of it, and with no session
+// lock held -- so the append runs there the way a racing turn's would, without
+// a second goroutine or a sleep to make the interleaving happen.
+func TestClosingSessionRefusesEnvironmentPublication(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	var appendErr error
+	var appended bool
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.closeAfterDisposeSweepJoin = func() {
+			appended = true
+			appendErr = sess.maybeAppendEnvironmentContext()
+		}
+	})
+	collected, eventsMu, done := collectEvents(sess)
+
+	sess.Close()
+	<-done
+
+	if !appended {
+		t.Fatal("the close seam never ran; this test is not in the state it means to be")
+	}
+	if appendErr != nil {
+		t.Fatalf("environment append during shutdown = %v, want a silent no-op", appendErr)
+	}
+	if got := countEnvironmentTurns(sess); got != 0 {
+		t.Fatalf("model history environment turns after the shutdown append = %d, want none: the session is closed and nothing will read them", got)
+	}
+	if got := durableEnvironmentTurnIDs(t, sess); len(got) != 0 {
+		t.Fatalf("durable environment entries written during shutdown = %v, want none behind the terminal boundary", got)
+	}
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	end := -1
+	for i, event := range *collected {
+		switch event.Kind {
+		case events.EventSessionEnd:
+			end = i
+		case events.EventEnvironment:
+			if end >= 0 {
+				t.Fatalf("EventEnvironment published at index %d, after the SESSION_END at %d", i, end)
+			}
+			t.Fatalf("EventEnvironment published at index %d by a session already shutting down", i)
+		}
+	}
+	if end < 0 {
+		t.Fatal("no SESSION_END was published; this test is not in the state it means to be")
+	}
+}
