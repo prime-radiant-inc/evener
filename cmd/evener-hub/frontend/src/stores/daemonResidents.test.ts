@@ -229,6 +229,7 @@ describe("forceStop", () => {
     fake.on("evener/thread/forceStop", (params) => {
       expect(params.ref).toBe(IDENTITY_A.ref);
       expect(params.expectedDaemon).toEqual(IDENTITY_A);
+      return {};
     });
     // follow-up refresh
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
@@ -246,6 +247,7 @@ describe("forceStop", () => {
     let capturedPending: Set<string> | null = null;
     fake.on("evener/thread/forceStop", () => {
       capturedPending = new Set(daemonResidentsStore.getState().pending);
+      return {};
     });
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
 

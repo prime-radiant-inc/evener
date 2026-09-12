@@ -249,7 +249,7 @@ describe("force-stop dialog", () => {
         },
       ],
     }));
-    fake.on("evener/thread/forceStop", () => undefined);
+    fake.on("evener/thread/forceStop", () => ({}));
     const user = userEvent.setup();
     render(<HubResidents />);
 
@@ -301,7 +301,7 @@ describe("force-stop dialog", () => {
         },
       ],
     }));
-    fake.on("evener/thread/forceStop", () => undefined);
+    fake.on("evener/thread/forceStop", () => ({}));
     const user = userEvent.setup();
     render(<HubResidents />);
 
@@ -436,8 +436,8 @@ test("unknown timeout (lifecycle null) renders differently from disabled zero (t
   const unknownCells = within(unknownRow).getAllByRole("cell");
   const disabledCells = within(disabledRow).getAllByRole("cell");
   // Column 3 (0-indexed) = Effective timeout
-  expect(unknownCells[3].textContent).toBe("unknown");
-  expect(disabledCells[3].textContent).toBe("disabled");
+  expect(unknownCells[3]!.textContent).toBe("unknown");
+  expect(disabledCells[3]!.textContent).toBe("disabled");
 });
 
 test("both the Hub default timeout and the row's effective timeout are displayed", async () => {
