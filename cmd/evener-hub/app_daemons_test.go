@@ -401,11 +401,22 @@ func TestDaemonResidentInventoryRows(t *testing.T) {
 	}
 
 	// Deterministic sort by ref, start, PID, generation.
-	// Independent oracle: parses StartedAt as time.Time rather than comparing
-	// the rendered RFC3339Nano string, so it detects when the implementation
-	// sorts by string instead of by time. Ref, PID, and Generation use the
-	// same comparison as the implementation because those keys are fixed-width
-	// or integer-valued and carry no variable-width hazard (see report).
+	// The index assertion above (firstIdx < secondIdx) is the load-bearing
+	// detection for the start-time ordering: it is comparator-free and fires
+	// first in the RED run. chronologicalOrder below is a secondary
+	// consistency check over the whole slice; in the RED run it is never
+	// reached because the index assertion fails first.
+	// chronologicalOrder is independent of the implementation because it
+	// parses StartedAt as time.Time (RFC3339Nano trims trailing zeros, making
+	// lexicographic comparison non-chronological) rather than using
+	// strings.Compare. Ref, PID, and Generation use the same comparison as
+	// the implementation: those keys are fixed-width or integer-valued and
+	// carry no variable-width hazard.
+	// No time-vs-PID precedence fixture is present: the only same-ref group
+	// (overlapFirst/overlapSecond) differs in both time and PID, so no row
+	// ordering that differs only on the PID key is exercised. A fixture that
+	// could not fail on any permutation the sort produces would prove nothing,
+	// so none was added.
 	chronologicalOrder := func(a, b appwire.DaemonResident) int {
 		if c := strings.Compare(a.Identity.Ref, b.Identity.Ref); c != 0 {
 			return c
