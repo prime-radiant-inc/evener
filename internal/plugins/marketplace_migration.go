@@ -237,7 +237,7 @@ func (m *Manager) recoverMarkedRename() error {
 	}
 	var undo []func() error
 	if itsOwn {
-		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, reg); err != nil {
+		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, reg, mk); err != nil {
 			return fail(err)
 		}
 		if ref.Source.Kind != SourceDirectory {
@@ -268,8 +268,8 @@ func (m *Manager) recoverMarkedRename() error {
 			ref.InstallLocation = ""
 		}
 		if owner == "" {
-			reg = rekeyRegistry(reg, marker.From, marker.To, "", "")
-		} else if reg, undo, err = m.movePluginCachesToNewName(reg, marker.From, marker.To); err != nil {
+			reg = rekeyRegistry(reg, mk, marker.From, marker.To, "", "")
+		} else if reg, undo, err = m.movePluginCachesToNewName(reg, marker.From, marker.To, mk); err != nil {
 			return fail(err)
 		}
 	}
@@ -885,7 +885,7 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, reg Registry, name, recorde
 		return registryAsFound, err
 	}
 	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), recorded)
-	reg = rekeyRegistry(reg, name, recorded, oldCache, newCache)
+	reg = rekeyRegistry(reg, mk, name, recorded, oldCache, newCache)
 	// Where both records hold the same plugin, the entry already keyed under
 	// the recorded name stays: the cache moved under that name, so that entry
 	// is the one naming an install path that is there.
@@ -941,7 +941,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, reg Registry, name, ne
 	}
 	var undo []func() error
 	if itsOwn {
-		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg); err != nil {
+		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, mk); err != nil {
 			return registryAsFound, m.markerAfterFailedMove(err)
 		}
 	} else {
@@ -954,8 +954,8 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, reg Registry, name, ne
 			ref.InstallLocation = ""
 		}
 		if owner == "" {
-			reg = rekeyRegistry(reg, name, newName, "", "")
-		} else if reg, undo, err = m.movePluginCachesToNewName(reg, name, newName); err != nil {
+			reg = rekeyRegistry(reg, mk, name, newName, "", "")
+		} else if reg, undo, err = m.movePluginCachesToNewName(reg, name, newName, mk); err != nil {
 			return registryAsFound, m.markerAfterFailedMove(err)
 		}
 	}
@@ -1029,10 +1029,10 @@ type pluginCacheMove struct{ plugin, from, to string }
 // made that rename and stopped before the registry write — so each move is
 // presence-checked and the path rewritten either way, as a rename with no
 // cache to move still records the new name.
-func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string) (Registry, []func() error, error) {
+func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string, mk Marketplaces) (Registry, []func() error, error) {
 	moves := m.pluginCacheMoves(reg, name, newName)
 	if len(moves) == 0 {
-		return rekeyRegistry(reg, name, newName, "", ""), nil, nil
+		return rekeyRegistry(reg, mk, name, newName, "", ""), nil, nil
 	}
 	var undo []func() error
 	fail := func(err error) (Registry, []func() error, error) {
@@ -1077,7 +1077,7 @@ func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string) 
 		}
 		undo = append(undo, func() error { return restoreRename("plugin cache", move.to, move.from) })
 	}
-	reg = rekeyRegistry(reg, name, newName, "", "")
+	reg = rekeyRegistry(reg, mk, name, newName, "", "")
 	for _, move := range moves {
 		entries := reg.Plugins[registryKey(move.plugin, newName)]
 		for i, entry := range entries {

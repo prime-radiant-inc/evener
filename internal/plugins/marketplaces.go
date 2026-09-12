@@ -398,7 +398,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	registryAsFound := reg
 	if renaming {
 		target = newName
-		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg)
+		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, mk)
 		if err != nil {
 			return fail(err)
 		}
@@ -480,7 +480,7 @@ func runUndo(undo []func() error) error {
 // On success it returns the ref and registry as they are to be recorded, and
 // the steps that put the directories back should a later step fail; a failure
 // puts back what it had moved itself and reports what it could not.
-func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg Registry) (MarketplaceRef, Registry, []func() error, error) {
+func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg Registry, mk Marketplaces) (MarketplaceRef, Registry, []func() error, error) {
 	var undo []func() error
 	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
 		if undoErr := runUndo(undo); undoErr != nil {
@@ -526,7 +526,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 		}
 		undo = append(undo, func() error { return restoreRename("plugin cache", newCache, oldCache) })
 	}
-	return ref, rekeyRegistry(reg, name, newName, oldCache, newCache), undo, nil
+	return ref, rekeyRegistry(reg, mk, name, newName, oldCache, newCache), undo, nil
 }
 
 // errStoreBetweenNames marks the one rename failure that leaves the store
@@ -626,21 +626,43 @@ func (m *Manager) refuseLeftoversUnder(newName string, reg Registry) error {
 // this runs, by refuseLeftoversUnder. Should one reach here anyway, the copy
 // pass runs first and the moved entries overwrite it, dropping the orphan
 // rather than letting map order decide whether a ghost replaces a live install.
-func rekeyRegistry(reg Registry, oldName, newName, oldCache, newCache string) Registry {
-	// The exact "@<oldName>" suffix identifies this marketplace's entries: a
-	// plugin's own '@' sits before it, so wid@get@acme is wid@get in acme.
-	suffix := "@" + oldName
+// rekeyRegistry moves every <plugin>@oldName entry to <plugin>@newName, where
+// oldName is the longest recorded name the key ends in. An
+// install path under oldCache follows the cache directory to newCache; with
+// no oldCache, no cache directory moved and every path stays. Entries for
+// other marketplaces, and paths outside the cache, are untouched. A
+// <plugin>@newName key taken by an orphan — RemoveMarketplace drops a
+// marketplace's registration but not its registry entries — is refused before
+// this runs, by refuseLeftoversUnder. Should one reach here anyway, the copy
+// pass runs first and the moved entries overwrite it, dropping the orphan
+// rather than letting map order decide whether a ghost replaces a live install.
+func rekeyRegistry(reg Registry, mk Marketplaces, oldName, newName, oldCache, newCache string) Registry {
+	// The marketplace a key belongs to is the longest recorded name it ends in
+	// as "@<name>". A plugin's own '@' sits before that one, so wid@get@acme is
+	// wid@get in acme — but a key can end in more than one recorded name at
+	// once: "<plugin>@x@y@z" ends in "@y@z" and in "@z". The longest wins, so
+	// migrating "z" leaves a marketplace recorded as "x@y@z" its keys, which
+	// migrating it later would otherwise no longer find.
+	owner := func(key string) (string, bool) {
+		best := ""
+		for name := range mk {
+			if strings.HasSuffix(key, "@"+name) && len(name) > len(best) {
+				best = name
+			}
+		}
+		return best, best != ""
+	}
 	out := Registry{Version: reg.Version, Plugins: make(map[string][]InstallEntry, len(reg.Plugins))}
 	for key, entries := range reg.Plugins {
-		if !strings.HasSuffix(key, suffix) {
+		if name, ok := owner(key); !ok || name != oldName {
 			out.Plugins[key] = entries
 		}
 	}
 	for key, entries := range reg.Plugins {
-		plugin, ok := strings.CutSuffix(key, suffix)
-		if !ok {
+		if name, ok := owner(key); !ok || name != oldName {
 			continue
 		}
+		plugin := strings.TrimSuffix(key, "@"+oldName)
 		moved := make([]InstallEntry, 0, len(entries))
 		for _, e := range entries {
 			if oldCache != "" {

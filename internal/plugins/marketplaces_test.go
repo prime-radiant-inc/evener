@@ -1619,7 +1619,7 @@ func TestRekeyRegistry(t *testing.T) {
 		// key is already taken and the live install has to win it.
 		registryKey("widget", "beta"): {{InstallPath: filepath.Join(newCache, "widget", "ghost")}},
 	}}
-	got := rekeyRegistry(reg, "acme", "beta", oldCache, newCache)
+	got := rekeyRegistry(reg, Marketplaces{"acme": {}, "beta": {}, "zeta": {}}, "acme", "beta", oldCache, newCache)
 	for _, plugin := range []string{"widget", "wid@get", "elsewhere"} {
 		if _, still := got.Plugins[registryKey(plugin, "acme")]; still {
 			t.Fatalf("old key %s survived", registryKey(plugin, "acme"))
@@ -1642,8 +1642,36 @@ func TestRekeyRegistry(t *testing.T) {
 	}
 
 	// With no cache directory moved, the keys move and every path stays.
-	unmoved := rekeyRegistry(reg, "acme", "beta", "", "")
+	unmoved := rekeyRegistry(reg, Marketplaces{"acme": {}, "beta": {}, "zeta": {}}, "acme", "beta", "", "")
 	if p := unmoved.Plugins[registryKey("widget", "beta")][0].InstallPath; p != filepath.Join(oldCache, "widget", "abc") {
 		t.Fatalf("InstallPath = %q, want it left under the cache directory that did not move", p)
+	}
+}
+
+// A key can end in more than one recorded name, and the longest is the
+// marketplace it belongs to: migrating the shorter name has to leave the longer
+// one's entries alone, or the longer marketplace's own migration later finds no
+// keys matching it and its installs are silently reassigned.
+func TestRekeyRegistry_ALongerRecordedNameKeepsItsKeys(t *testing.T) {
+	mk := Marketplaces{"z": {}, "y@z": {}, "x@y@z": {}}
+	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		registryKey("plug", "z"):     {{InstallPath: "cache/z/plug/abc"}},
+		registryKey("plug", "y@z"):   {{InstallPath: "cache/y@z/plug/abc"}},
+		registryKey("wid@x", "y@z"):  {{InstallPath: "cache/y@z/wid@x/abc"}},
+		registryKey("plug", "x@y@z"): {{InstallPath: "cache/x@y@z/plug/abc"}},
+	}}
+
+	got := rekeyRegistry(reg, mk, "z", "z-moved", "", "")
+	for _, kept := range []string{
+		registryKey("plug", "y@z"),
+		registryKey("wid@x", "y@z"),
+		registryKey("plug", "x@y@z"),
+	} {
+		if _, still := got.Plugins[kept]; !still {
+			t.Fatalf("%s was taken by the migration of the shorter name; keys = %v", kept, got.Plugins)
+		}
+	}
+	if _, moved := got.Plugins[registryKey("plug", "z-moved")]; !moved {
+		t.Fatalf("keys = %v, want the shorter name's own key moved", got.Plugins)
 	}
 }
