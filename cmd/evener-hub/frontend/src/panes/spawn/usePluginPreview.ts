@@ -24,34 +24,43 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
 } {
   const { client, cwd, launchOverrides, pluginRevision, enabled = true } = args;
   const [retryRevision, setRetryRevision] = useState(0);
-  const [state, setState] = useState<PluginPreviewLoadState>({ status: "loading" });
-  const latestKey = useRef("");
-  const lastResponse = useRef<{ cwd: string; logicalKey: string; response: PluginPreviewResponse } | null>(null);
+  const [result, setResult] = useState<{
+    client: AppwireClientLike;
+    requestKey: string;
+    state: PluginPreviewLoadState;
+  } | null>(null);
+  const lastResponse = useRef<{
+    client: AppwireClientLike;
+    cwd: string;
+    logicalKey: string;
+    response: PluginPreviewResponse;
+  } | null>(null);
   const launchOverridesRef = useRef(launchOverrides);
   launchOverridesRef.current = launchOverrides;
   const serializedOverrides = JSON.stringify(launchOverrides);
+  const logicalKey = `${cwd}\u0000${serializedOverrides}\u0000${pluginRevision}`;
+  const requestKey = `${logicalKey}\u0000${retryRevision}`;
 
   const retry = useCallback(() => setRetryRevision((revision) => revision + 1), []);
 
   useEffect(() => {
     if (!enabled) {
-      latestKey.current = "";
       lastResponse.current = null;
-      setState({ status: "loading" });
+      setResult(null);
       return undefined;
     }
 
-    const baseKey = `${cwd}\u0000${serializedOverrides}`;
-    const logicalKey = `${baseKey}\u0000${pluginRevision}`;
-    const requestKey = `${logicalKey}\u0000${retryRevision}`;
-    latestKey.current = requestKey;
+    let active = true;
+    const setState = (state: PluginPreviewLoadState) => setResult({ client, requestKey, state });
     // Keep the previous response mounted while a same-cwd refresh (a selection
     // toggle, a revision bump, a retry) is in flight, so the panel doesn't
-    // collapse to an empty loading state and back. A cwd change drops it: the
-    // stale list belongs to another directory.
+    // collapse to an empty loading state and back. Another client or cwd has
+    // no authority to reuse the stale list.
     const cached = lastResponse.current;
     setState(
-      cached !== null && cached.cwd === cwd ? { status: "loading", response: cached.response } : { status: "loading" },
+      cached?.client === client && cached.cwd === cwd
+        ? { status: "loading", response: cached.response }
+        : { status: "loading" },
     );
 
     const timer = setTimeout(() => {
@@ -59,15 +68,15 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
       const params = Object.keys(currentOverrides).length > 0 ? { cwd, launchOverrides: currentOverrides } : { cwd };
       void client.request("evener/plugin/preview", params).then(
         (response) => {
-          if (latestKey.current === requestKey) {
-            lastResponse.current = { cwd, logicalKey, response };
+          if (active) {
+            lastResponse.current = { client, cwd, logicalKey, response };
             setState({ status: "ready", response });
           }
         },
         (error) => {
-          if (latestKey.current !== requestKey) return;
+          if (!active) return;
           const cached = lastResponse.current;
-          const response = cached?.logicalKey === logicalKey ? cached.response : undefined;
+          const response = cached?.client === client && cached.logicalKey === logicalKey ? cached.response : undefined;
           setState(
             response
               ? { status: "error", message: errorText(error), response }
@@ -77,8 +86,21 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
       );
     }, PLUGIN_PREVIEW_DEBOUNCE_MS);
 
-    return () => clearTimeout(timer);
-  }, [client, cwd, enabled, pluginRevision, retryRevision, serializedOverrides]);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [client, cwd, enabled, logicalKey, requestKey]);
 
+  // Effects reset state after consumers have already rendered. Never expose
+  // another request's ready/error state during that first render: Spawn may
+  // otherwise reconcile the new draft against the previous project's preview.
+  const cached = lastResponse.current;
+  const state: PluginPreviewLoadState =
+    enabled && result?.client === client && result.requestKey === requestKey
+      ? result.state
+      : enabled && cached?.client === client && cached.cwd === cwd
+        ? { status: "loading", response: cached.response }
+        : { status: "loading" };
   return { state, retry };
 }

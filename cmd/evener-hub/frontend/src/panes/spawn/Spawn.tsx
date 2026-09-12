@@ -15,14 +15,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { useStore } from "zustand";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type {
-  HarnessDescriptor,
-  LaunchConfigLayer,
-  LaunchOption,
-  ModelListResponse,
-  PluginSelectionError,
-} from "../../protocol/types.gen";
+import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import { slashCommandInvocation } from "../../shell/palette/catalogCommands";
 import { splitModelId } from "../../shell/palette/commands";
@@ -91,11 +86,12 @@ import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
-  resolveInitialDefaults,
+  modelValidityAgainstList,
   saveDefaults,
   setGlobalLastWorkingDir,
   sweepStaleModels,
 } from "./spawnDefaults";
+import { applySpawnURL, type SpawnDraft, selectSpawnDirectory, spawnDraftsStore, useDraftField } from "./spawnDrafts";
 import {
   PRE_SESSION_BUILTIN_IDS,
   resolveSpawnEffortItems,
@@ -104,7 +100,6 @@ import {
   spawnBuiltinCommands,
 } from "./spawnSlashMenu";
 import { startThread } from "./startThread";
-import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
 import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
@@ -315,7 +310,33 @@ const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: 
   return <Loader label="Starting" startedAt={startedAt} now={now} />;
 });
 
-export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
+export default function Spawn({ focused }: PaneProps<SpawnPaneParams>) {
+  const draft = useStore(spawnDraftsStore, (state) => state.current);
+  const prefillRevision = useStore(spawnDraftsStore, (state) => state.prefillRevision);
+  const [onNewRoute, setOnNewRoute] = useState(() => window.location.pathname === "/new");
+  useLayoutEffect(() => {
+    applySpawnURL();
+    function onPopState(): void {
+      setOnNewRoute(window.location.pathname === "/new");
+      if (window.location.pathname === "/new") applySpawnURL(true);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  return draft ? <SpawnForm draft={draft} prefillRevision={prefillRevision} focused={focused && onNewRoute} /> : null;
+}
+
+// Keep the singleton's controls mounted while changing their backing draft.
+// Store-bound setters and image continuations retain their originating scope.
+function SpawnForm({
+  draft,
+  prefillRevision,
+  focused,
+}: {
+  draft: SpawnDraft;
+  prefillRevision: number;
+  focused: boolean;
+}) {
   const client = useClient();
   const toasts = useToasts();
   const providerSetup = useProviderSetup();
@@ -344,36 +365,56 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setProviderDialog(() => nextDialog);
   }, []);
 
-  const [prompt, setPrompt] = useState("");
-  const [harness, setHarness] = useState("");
-  const [model, setModel] = useState(""); // qualified "provider/model", or "" for the harness default
-  const [reasoningEffort, setReasoningEffort] = useState("");
-  const [cwd, setCwd] = useState("");
+  const [prompt, setPrompt] = useDraftField(draft, "prompt");
+  const [harness, setHarness] = useDraftField(draft, "harness");
+  const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
+  const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
+  const cwd = draft.cwd;
+  const setCwd = selectSpawnDirectory;
   const [directoryOpen, setDirectoryOpen] = useState(false);
-  const [branch, setBranch] = useState(""); // display-only (floor §1.7)
-  const [accessMode, setAccessMode] = useState("");
+  // Scoped by cwd so a draft switch can never show the previous project's
+  // branch while the new HEAD request is in flight - or indefinitely after it
+  // fails (resolveHeadBranch fails soft to "").
+  const [branchHead, setBranchHead] = useState<{ cwd: string; head: string } | null>(null);
+  const branch = branchHead !== null && branchHead.cwd === cwd ? branchHead.head : ""; // display-only (floor §1.7)
+  const [accessMode, setAccessMode] = useDraftField(draft, "accessMode");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
-  const [advancedOverrides, setAdvancedOverrides] = useState<LaunchConfigLayer>({});
-  const [pluginSelection, setPluginSelection] = useState<PluginSelectionState>({ mode: "default" });
-  const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
+  const [advancedOverrides, setAdvancedOverrides] = useDraftField(draft, "advancedOverrides");
+  const [advancedValues, setAdvancedValues] = useDraftField(draft, "advancedValues");
+  const [advancedErrors, setAdvancedErrors] = useDraftField(draft, "advancedErrors");
+  const readAdvancedValues = useCallback(() => draft.fields.getState().advancedValues, [draft]);
+  const [pluginSelection, setPluginSelection] = useDraftField(draft, "pluginSelection");
+  const [knownSelectionIssues, setKnownSelectionIssues] = useDraftField(draft, "knownSelectionIssues");
   const pluginSelectionRef = useRef(pluginSelection);
   pluginSelectionRef.current = pluginSelection;
-  const [staleNotice, setStaleNotice] = useState<string | null>(null);
-  const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [staleNotice, setStaleNotice] = useDraftField(draft, "staleModelNotice");
+  const [globalModelRequest, setGlobalModelRequest] = useState<{
+    active: boolean;
+    promise: Promise<ModelListResponse>;
+  } | null>(null);
+  const [createDialogPath, setCreateDialogPath] = useDraftField(draft, "createDialogPath");
+  const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
   // caller owns the clock. busyStartedAt is stamped once, at the submit that
   // flips busy true; StartingLoader below owns the 1s tick and mounts only
   // while busy, so no interval runs with nothing on screen reading it.
-  const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
+  const [busyStartedAt, setBusyStartedAt] = useDraftField(draft, "busyStartedAt");
+  // Own the effective layer by draft so neither its gate nor inherited labels
+  // can describe the previous project while the current resolve is pending.
+  const [defaultPreview, setDefaultPreview] = useState<{ draft: SpawnDraft; effective: LaunchConfigLayer } | null>(
+    null,
+  );
+  // Every unset launch-config control names its entry in this effective layer:
+  // "high (default)", "On (default)", etc. Unknown defaults remain plain.
+  const resolvedDefaults = defaultPreview?.draft === draft ? defaultPreview.effective : null;
   // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
   // unconfirmable state never blocks Start (same fail-open shape as
   // preflightDir).
-  const [noDefaultModel, setNoDefaultModel] = useState(false);
+  const noDefaultModel = resolvedDefaults !== null && (resolvedDefaults.model ?? "").trim() === "";
   // The launchable-model catalog, loaded at pane level so the Effort select can
   // read the selected model's own reasoningEffortLevels without waiting for a
   // picker to open. null = not loaded or the load failed - the select stays on
@@ -396,13 +437,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   } | null>(null);
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
-  const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
-  // The whole effective layer of the same launch/resolve (null until it
-  // lands, or after it fails): every launch-config control whose unset state
-  // reads "(default)" prepends its entry here - "high (default)",
-  // "On (default)", "anthropic/claude-sonnet-4 (default)" - so the word
-  // "(default)" never stands in for an answer the hub actually knows.
-  const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | null>(null);
+  const resolvedDefaultModel = (resolvedDefaults?.model ?? "").trim();
   const pluginRevision = useExtensionsStore((state) => state.pluginRevision);
   const pluginSelectionSupported = harnessSupportsPluginSelection(harness, harnesses);
   const combinedOverrides = pluginSelectionSupported
@@ -420,8 +455,21 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // changes (new match, or the query narrowed/widened) rather than
   // persisted across it - an index into a list that just changed shape is
   // not a meaningful position to keep.
-  const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
+  const [slashToken, setSlashToken] = useState<SlashToken | null>(() => parseSlashToken(prompt, prompt.length));
   const [slashHighlighted, setSlashHighlighted] = useState(0);
+  // URL writes bypass the keystroke path, including a prefill for the current
+  // project. A restored draft should offer the same completion as typed text.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
+  useEffect(() => {
+    const text = draft.fields.getState().prompt;
+    setSlashToken(parseSlashToken(text, text.length));
+    cursorRef.current = null;
+  }, [draft, prefillRevision]);
+  // Completion can clear this draft through an older, unmounted form. Retire
+  // the token from the current prompt, not from that form's stale continuation.
+  useEffect(() => {
+    if (prompt === "") setSlashToken(null);
+  }, [prompt]);
   // The backend already resolved the selection for this cwd plus overrides
   // (evener/spawn/slashCatalog), so no plugin filtering applies here the
   // way Composer's visibleCatalogCommands filters its global catalog by
@@ -504,6 +552,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // React controlled-input rationale). textRef mirrors `prompt` synchronously
   // so a late decode-failure callback never reverts newer typing.
   const textRef = useRef(prompt);
+  textRef.current = prompt;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
@@ -516,18 +565,65 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // `busy` state stays: it still drives the disabled attribute/"Starting…"
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
-  const busyRef = useRef(false);
+  const busyRef = draft.busyRef;
   // Mirrors `model` for the default-provider-credential effect below: that
   // effect must read whether Model is CURRENTLY untouched without itself
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
-  const initialModelRef = useRef("");
   const modelRef = useRef(model);
   modelRef.current = model;
 
+  function isCurrentDraft(): boolean {
+    return spawnDraftsStore.getState().current?.fields === draft.fields;
+  }
+
+  // A launch may finish its draft after departure, but it cannot take back the
+  // screen. Observe transitions, not just the final URL/current draft: a picker
+  // need not change the URL, and A -> B -> A must not revive A's old authority.
+  const viewOwnership = useRef({});
+  useLayoutEffect(() => {
+    const revoke = () => {
+      viewOwnership.current = {};
+    };
+    const unsubscribe = spawnDraftsStore.subscribe((state, previous) => {
+      if (state.current?.fields !== previous.current?.fields) revoke();
+    });
+    // The user's most recent navigation wins: ANY real URL change - even a
+    // query-only one that keeps the same /new pathname and draft - retires a
+    // pending launch's claim to the screen. A popstate carrying no URL
+    // change (a redundant dispatch) does not revoke, and the launch's own
+    // programmatic navigate() is safe: ownsLaunchView() runs before it.
+    let lastURL = window.location.href;
+    const onNavigation = () => {
+      if (window.location.href === lastURL) return;
+      lastURL = window.location.href;
+      revoke();
+    };
+    window.addEventListener("popstate", onNavigation);
+    return () => {
+      revoke();
+      unsubscribe();
+      window.removeEventListener("popstate", onNavigation);
+    };
+  }, []);
+  // Focus can change without routing (for example, a contextual dock pane).
+  // Cleanup also permanently retires a launch when this form is unmounted.
+  useLayoutEffect(() => {
+    if (!focused) viewOwnership.current = {};
+    return () => {
+      viewOwnership.current = {};
+    };
+  }, [focused]);
+
+  function captureLaunchView(): () => boolean {
+    const owner = viewOwnership.current;
+    const active = focused && isCurrentDraft() && window.location.pathname === "/new";
+    return () => active && viewOwnership.current === owner && isCurrentDraft() && window.location.pathname === "/new";
+  }
+
   function updatePrompt(next: string): void {
-    textRef.current = next;
+    if (isCurrentDraft()) textRef.current = next;
     setPrompt(next);
   }
 
@@ -540,15 +636,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   const textEditor: TextEditor = {
     read: () => ({
-      text: textRef.current,
-      cursor: cursorRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
+      text: draft.fields.getState().prompt,
+      cursor: isCurrentDraft()
+        ? (cursorRef.current ?? textareaRef.current?.selectionStart ?? draft.fields.getState().prompt.length)
+        : draft.fields.getState().prompt.length,
     }),
     write: (next, cursor) => {
       updatePrompt(next);
-      cursorRef.current = cursor;
+      if (isCurrentDraft()) cursorRef.current = cursor;
     },
   };
-  const attachments = useAttachments(textEditor);
+  const attachments = useAttachments(textEditor, draft.attachments);
 
   // commitSlashCompletion is Tab/plain-Enter's (handlePromptKeyDown below)
   // and a mouse click's (SlashCompletionMenu's own onSelect) shared "the
@@ -580,12 +678,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
-  // so the scoped cache below is keyed on two signals of it: this generation,
+  // so the scoped cache and global cleanup use two signals of it: this generation,
   // which evener/auth/updated advances the moment it arrives, and the
   // instance list's identity, which follows the credentials store's debounced
   // refetch and also covers an instance being added, edited or removed. On
-  // either, the loader identities change, and the catalog effect and the
-  // pickers reload (the mount-only stale-model sweep does not re-run).
+  // either, the loader identities change, the catalog effect and pickers reload,
+  // and global cleanup retires its old authority before requesting a new catalog.
   const [credentialsGeneration, setCredentialsGeneration] = useState(0);
   useEffect(
     () =>
@@ -685,9 +783,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     const nextSelection = reconcilePluginSelection(pluginSelectionRef.current, state.response);
     setPluginSelection(nextSelection);
     setKnownSelectionIssues(pluginSelectionIssues(nextSelection, state.response));
-    // A selection change clears the cached issues until its new preview settles.
-    // Re-running this effect for that selection change would restore old issues.
-  }, [pluginPreview.state, pluginSelectionSupported]);
+    // Selection edits retain issues only for still-selected names. Only a ready
+    // preview can reconcile those issues; a failed refresh cannot forgive them.
+  }, [pluginPreview.state, pluginSelectionSupported, setPluginSelection, setKnownSelectionIssues]);
 
   // A refresh triggered by a selection toggle keeps the previous response on
   // the loading state (see usePluginPreview), so the disclosure and its list
@@ -701,26 +799,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const pluginSelectionBlocked =
     explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
-  // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
-  // (harnesses, advanced schema).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initialization; the closures it calls are stable for the first paint
+  // Draft defaults and URL prefill are owned above the form's lifetime.
+  // Mount only the asynchronous catalogs and focus the current prompt.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only catalog loading
   useEffect(() => {
-    const urlPrefill = readUrlPrefill(window.location.search);
-    const defaults = resolveInitialDefaults({ serverPrefillDir: urlPrefill.dir });
-    if (urlPrefill.prompt) {
-      updatePrompt(urlPrefill.prompt);
-      // Programmatic writes bypass the keystroke path's token recompute, so
-      // parse here with the caret at end-of-text (where focus lands below):
-      // a prefilled "/..." token opens its menu immediately instead of
-      // waiting for the next keystroke.
-      setSlashToken(parseSlashToken(urlPrefill.prompt, urlPrefill.prompt.length));
-    }
-    if (defaults.harness) setHarness(defaults.harness);
-    initialModelRef.current = defaults.model ?? "";
-    if (defaults.model) setModel(defaults.model);
-    if (defaults.workingDir) setCwd(defaults.workingDir);
-    if (defaults.accessMode) setAccessMode(defaults.accessMode);
-    if (defaults.reasoningEffort) setReasoningEffort(defaults.reasoningEffort);
     // Writing the prompt is what starting an agent IS, so the caret starts
     // there rather than on whichever field happens to be first in the DOM.
     textareaRef.current?.focus();
@@ -743,54 +825,50 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     };
   }, []);
 
-  // Sweep persisted defaults using the current provider configuration. A
-  // credential refresh cancels older catalogs before they can discard a model.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sweep on provider changes, not on each working-directory keystroke; the request captures the current scope
+  // Persisted defaults span every project, so only an explicitly global Evener
+  // catalog has authority to sweep them. Picker catalogs may belong to another
+  // harness or directory. Refresh/unmount retires the request for all consumers.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: auth generation and provider instances trigger a fresh global catalog
   useEffect(() => {
-    let active = true;
-    const initialModel = initialModelRef.current;
-    loadModelList().then(
+    const request = {
+      active: true,
+      promise: client.request("model/list", { harness: "evener" }),
+    };
+    setGlobalModelRequest(request);
+    request.promise.then(
       (r) => {
-        if (!active) return;
-        const { discarded } = sweepStaleModels(r.data);
-        if (initialModel && modelRef.current === initialModel && discarded.includes(initialModel)) {
-          setModel("");
-          setStaleNotice(initialModel);
-        }
+        // model/list can serialize an empty Go slice as `data: null`
+        // (appwire.ModelListResponse.Data carries no omitempty). Normalize here
+        // so the sweep never iterates a non-iterable and skips its work.
+        if (request.active) sweepStaleModels(r.data ?? []);
       },
       () => {},
     );
     return () => {
-      active = false;
+      request.active = false;
     };
-  }, [client, providerSetup.instances]);
+  }, [client, providerSetup.instances, credentialsGeneration]);
 
-  // kata 11ee: the spawn pane is a dockview singleton (index.tsx) - a second
-  // /new?dir=/?prompt= navigation while this pane is already open refocuses
-  // this SAME mounted instance instead of remounting it, so the mount-only
-  // effect above (deps []) never reruns and the new prefill is silently
-  // dropped. A popstate listener re-applies whatever of readUrlPrefill IS
-  // present on every subsequent in-app navigation - routing.ts's navigate()
-  // dispatches popstate on every push, the same signal AppShell's own
-  // routing glue and settings/sections/project.tsx's useQueryCwd both key
-  // off - without touching the sticky-defaults layering above, which is
-  // mount-only initialization, not a navigation param. A URL with neither
-  // param present (e.g. an unrelated navigation elsewhere and back) yields
-  // no entries from readUrlPrefill and so leaves both fields untouched,
-  // matching that function's own "absent param -> no entry" contract.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: install once - setCwd is a stable setter and updatePrompt closes only over the stable textRef, so the mount-time closure stays correct for every later popstate
+  // Validate each entered draft independently of storage: an earlier sweep may
+  // already have deleted its saved model while the live draft still retains it.
+  // Navigation does not cancel origin-owned validation; provider refresh does.
   useEffect(() => {
-    function onPopState(): void {
-      const urlPrefill = readUrlPrefill(window.location.search);
-      if (urlPrefill.dir) setCwd(urlPrefill.dir);
-      if (urlPrefill.prompt) {
-        updatePrompt(urlPrefill.prompt);
-        setSlashToken(parseSlashToken(urlPrefill.prompt, urlPrefill.prompt.length));
-      }
-    }
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+    if (!globalModelRequest || !usesEvenerModels) return;
+    const initial = draft.fields.getState();
+    if (!initial.model) return;
+    globalModelRequest.promise.then(
+      (r) => {
+        const current = draft.fields.getState();
+        if (!globalModelRequest.active || current.model !== initial.model || current.harness !== initial.harness)
+          return;
+        const verdict = modelValidityAgainstList(initial.model, r.data ?? []);
+        if (verdict === "stale" || verdict === "malformed") {
+          draft.fields.setState({ model: "", staleModelNotice: initial.model });
+        }
+      },
+      () => {},
+    );
+  }, [draft, globalModelRequest, usesEvenerModels]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the
@@ -852,7 +930,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (cwd.trim() === "") return undefined;
     let active = true;
     resolveHeadBranch(client, cwd).then((head) => {
-      if (active) setBranch(head);
+      if (active) setBranchHead({ cwd, head });
     });
     return () => {
       active = false;
@@ -894,9 +972,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // this effect doesn't itself re-run on every model change.
   useEffect(() => {
     if (cwd.trim() === "") {
-      setNoDefaultModel(false);
-      setResolvedDefaultModel("");
-      setResolvedDefaults(null);
+      setDefaultPreview(null);
       return undefined;
     }
     let active = true;
@@ -904,10 +980,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
         ([result, models]) => {
           if (!active) return;
-          setResolvedDefaults(result.effective);
+          setDefaultPreview({ draft, effective: result.effective });
           const defaultModel = (result.effective.model ?? "").trim();
-          setNoDefaultModel(defaultModel === "");
-          setResolvedDefaultModel(defaultModel);
           if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
           const slash = defaultModel.indexOf("/");
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
@@ -919,9 +993,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         },
         () => {
           if (active) {
-            setNoDefaultModel(false);
-            setResolvedDefaultModel("");
-            setResolvedDefaults(null);
+            setDefaultPreview(null);
           }
         },
       );
@@ -930,7 +1002,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, advancedOverrides, resolveConfig, loadModels]);
+  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's
@@ -984,11 +1056,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // a guess, and clobbering a sticky default on a guess would lose the user's
   // setting (the daemon clamps a level the model doesn't accept).
   useEffect(() => {
-    if (knownEffortLevels === null) return;
+    if (knownEffortLevels === null || scopedModelCatalog === null) return;
     if (reasoningEffort !== "" && reasoningEffort !== "none" && !knownEffortLevels.includes(reasoningEffort)) {
       setReasoningEffort("");
     }
-  }, [knownEffortLevels, reasoningEffort]);
+  }, [knownEffortLevels, reasoningEffort, setReasoningEffort, scopedModelCatalog]);
 
   function handlePluginSelectionChange(next: PluginSelectionState): void {
     setKnownSelectionIssues((issues) => {
@@ -1127,7 +1199,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         })()
       : null;
 
-  async function doSpawn(): Promise<void> {
+  async function doSpawn(submittedPromptRevision: number, ownsLaunchView: () => boolean): Promise<void> {
     if (pluginSelectionBlocked) {
       busyRef.current = false;
       setBusy(false);
@@ -1304,14 +1376,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
-    updatePrompt("");
+    if (draft.fields.getState().promptRevision === submittedPromptRevision) {
+      updatePrompt("");
+    }
     attachments.clearSubmitted(submittedMarkers);
-    handlePluginSelectionChange({ mode: "default" });
-    // The menu is token-driven, not text-driven: clearing the prompt does not
-    // recompute the token, so without this the stale menu stays open over the
-    // empty prompt on the still-mounted pane (and Enter would commit the
-    // stale completion into the next session's first line).
-    setSlashToken(null);
+    if (draft.fields.getState().pluginSelection === pluginSelection) {
+      handlePluginSelectionChange({ mode: "default" });
+    }
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
@@ -1320,7 +1391,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setBusy(false);
     setBusyStartedAt(null);
     const url = paneToURL("session", { ref });
-    if (url) navigate(url);
+    if (url && ownsLaunchView()) navigate(url);
   }
 
   async function handleSpawn(): Promise<void> {
@@ -1344,6 +1415,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     busyRef.current = true;
     setBusy(true);
     setBusyStartedAt(Date.now());
+    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const ownsLaunchView = captureLaunchView();
     try {
       const outcome = await preflightDir(client, cwd);
       if (outcome.kind === "abort") {
@@ -1360,7 +1433,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         setBusyStartedAt(null);
         return;
       }
-      await doSpawn();
+      await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -1383,9 +1456,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     busyRef.current = true;
     setBusy(true);
     setBusyStartedAt(Date.now());
+    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const ownsLaunchView = captureLaunchView();
     try {
       await createDir(client, path);
-      await doSpawn();
+      await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -1775,6 +1850,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           createDirectory={createDirectory}
           options={schemaOptions}
           onOverridesChange={setAdvancedOverrides}
+          values={advancedValues}
+          onValuesChange={setAdvancedValues}
+          errors={advancedErrors}
+          onErrorsChange={setAdvancedErrors}
+          readValues={readAdvancedValues}
+          draftId={draft}
           validatePath={validatePath}
           resolveConfig={resolveConfig}
           loadCatalog={loadCatalog}
@@ -1801,7 +1882,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       </div>
 
       <ConfirmDialog
-        open={createDialogPath !== null}
+        open={focused && createDialogPath !== null}
         title="Create directory?"
         confirmLabel="Create & start"
         destructive={false}
