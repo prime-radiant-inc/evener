@@ -177,7 +177,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     try {
       return await client.request("evener/auth/apiKey/set", { provider, value });
     } catch (err) {
-      clearLocalAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
     }
   },
@@ -188,7 +188,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     try {
       return await client.request("evener/auth/credentialJson/set", { provider, value });
     } catch (err) {
-      clearLocalAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
     }
   },
@@ -199,7 +199,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     try {
       return await client.request("evener/auth/apiKey/clear", { provider });
     } catch (err) {
-      clearLocalAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
     }
   },
@@ -210,7 +210,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     try {
       return await client.request("evener/auth/logout", { provider });
     } catch (err) {
-      clearLocalAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
     }
   },
@@ -226,7 +226,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     try {
       return await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
     } catch (err) {
-      clearLocalAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
     }
   },
@@ -244,10 +244,10 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
       // Only an authorized poll broadcasts evener/auth/updated; a routine
       // pending/expired tick must not keep the marker armed, or a poll loop
       // would silence unrelated same-provider changes tick after tick.
-      if (resp.state !== "authorized") clearLocalAuthMutation(provider);
+      if (resp.state !== "authorized") endUnconfirmedAuthMutation(provider);
       return resp;
     } catch (err) {
-      clearLocalAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
     }
   },
@@ -319,6 +319,17 @@ function noteLocalAuthMutation(provider: string): void {
 
 function clearLocalAuthMutation(provider: string): void {
   localAuthMutations.delete(provider);
+}
+
+// Ends a local auth mutation whose outcome proves it will NOT broadcast
+// (a failed RPC, or a device poll that returned pending/expired rather than
+// authorized). If the marker was consumed mid-flight, a same-provider
+// notification was suppressed on the assumption it was this mutation's echo -
+// an assumption this outcome just disproved - so the swallowed change gets a
+// makeup refetch instead of going stale until the next unrelated fetch.
+function endUnconfirmedAuthMutation(provider: string): void {
+  if (!localAuthMutations.has(provider)) scheduleRefetch();
+  clearLocalAuthMutation(provider);
 }
 
 // True exactly when this notification is this client's own echo of a

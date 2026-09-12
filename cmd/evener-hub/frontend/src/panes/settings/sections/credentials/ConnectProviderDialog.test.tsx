@@ -385,6 +385,80 @@ test("removing the instance in full provider settings clears the guided draft a 
   expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
 });
 
+test("a rename reported while no guided owner is mounted cannot re-point a fresh selection", async () => {
+  const h = guidedRepair();
+  h.change({ implicit: false });
+  await h.select();
+  // Leave the guided owner entirely: back at the picker, nothing is mounted.
+  await h.user.click(screen.getByRole("button", { name: "Change provider" }));
+  expect(screen.getByRole("dialog", { name: "Connect a provider" })).toBeTruthy();
+
+  // Reach the full settings view from the picker and rename the instance
+  // there - with NO guided owner mounted to receive the report.
+  await h.user.click(screen.getByText("Already configured access on this host?"));
+  await h.user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
+  await h.user.click(await screen.findByRole("button", { name: /openai/ }));
+  const sheet = await screen.findByRole("dialog", { name: "openai" });
+  await h.user.type(within(sheet).getByLabelText("Name"), "-renamed");
+  const save = within(sheet).getByRole("button", { name: "Save" }) as HTMLButtonElement;
+  await waitFor(() => expect(save.disabled).toBe(false));
+  await h.user.click(save);
+  await screen.findByRole("dialog", { name: "openai-renamed" });
+
+  // The renamed-away name comes back as a fresh implicit row, so a NEW
+  // selection mounts with the same initial name the stale report mentions.
+  // The listing stays live (instances track the harness row; the implicit
+  // row adopts the saved credential state) so either outcome completes a
+  // real save/check and the assertion isolates WHICH instance got the key.
+  let savedImplicit = false;
+  h.fake.on("evener/auth/apiKey/set", () => {
+    h.change({ activeSource: "store", hasStoredFile: true });
+    savedImplicit = true;
+    return h.status;
+  });
+  h.fake.on("evener/instance/list", () => {
+    const base = h.listing();
+    return {
+      instances: base.instances,
+      availableProviders: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          protocol: "openai-chat",
+          auth: "bearer",
+          implicit: true,
+          authModes: ["apiKey"],
+          setup: instance({
+            name: "openai",
+            providerId: "openai",
+            baseUrl: "https://original.example/v1",
+            authModes: ["apiKey"],
+            ...(savedImplicit ? { activeSource: "store", hasStoredFile: true } : {}),
+          }),
+        },
+        ...base.availableProviders.slice(1),
+      ],
+    };
+  });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  await h.user.click(screen.getByRole("button", { name: "Back to connection choices" }));
+  // A fresh selection of the same provider is a new editing session: it must
+  // target the openai row as listed, not be silently re-pointed at the
+  // instance that was renamed away while nothing was mounted.
+  await h.user.click(screen.getByRole("button", { name: "OpenAI" }));
+  await h.user.type(screen.getByLabelText("API key"), "fresh-selection-key");
+  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").at(-1)?.params).toEqual({
+    provider: "openai",
+    value: "fresh-selection-key",
+  });
+});
+
 test("repair excursion cancels a pending guided OAuth start without opening a hidden flow", async () => {
   const h = guidedRepair();
   h.change({ authModes: ["apiKey", "oauth"] });

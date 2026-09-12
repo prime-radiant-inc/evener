@@ -12,7 +12,7 @@ import { activeSourceLabel, safeCredentialTestResult } from "./credentialLabels"
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
-import { ProviderConnection } from "./ProviderConnection";
+import { type InstanceReports, ProviderConnection } from "./ProviderConnection";
 
 const CLASS = {
   body: requireClass(styles.body, "ConnectProviderDialog.module.css", "body"),
@@ -44,20 +44,17 @@ export interface ConnectProviderDialogProps {
 
 export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
   const [view, setView] = useState<"connect" | "manage" | "settings">("connect");
-  // A rename in the full settings view must reach the guided owner, which stays
-  // mounted behind that view holding the instance name and its retained draft.
-  const [renamed, setRenamed] = useState<{ from: string; to: string } | null>(null);
-  // So must a removal: the owner's retained draft belongs to the removed
-  // entity and must not survive to a later same-name recreation.
-  const [removed, setRemoved] = useState<string | null>(null);
+  // Instance-identity reports (rename/removal) made in the full settings view
+  // flow through the connection's own mailbox, which scopes them to the guided
+  // owner mounted when they arrive; this dialog only forwards them.
+  const reportsRef = useRef<InstanceReports | null>(null);
   return (
     <>
       <ProviderConnection
         {...props}
         visible={view === "connect"}
         onManage={() => setView("manage")}
-        renamedInstance={renamed}
-        removedInstance={removed}
+        reportsRef={reportsRef}
       />
       {view === "settings" && (
         <Dialog open onClose={props.onClose} title="Full provider settings">
@@ -67,8 +64,8 @@ export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
           <CredentialsSection
             sectionId="credentials"
             fullEditor
-            onInstanceRenamed={(from, to) => setRenamed({ from, to })}
-            onInstanceRemoved={(name) => setRemoved(name)}
+            onInstanceRenamed={(from, to) => reportsRef.current?.renamed(from, to)}
+            onInstanceRemoved={(name) => reportsRef.current?.removed(name)}
           />
         </Dialog>
       )}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
@@ -11,20 +11,27 @@ import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
 import { useEditorLifetime } from "./useEditorLifetime";
 
+/** Instance-identity reports a hosting dialog forwards from a sibling
+ * full-settings view into the connection's mailbox (see reportsRef). */
+export interface InstanceReports {
+  renamed(from: string, to: string): void;
+  removed(name: string): void;
+}
+
 export interface ProviderConnectionProps {
   visible?: boolean;
   onClose(): void;
   onConnected(name?: string): void;
   onManage(): void;
-  /** A rename performed in the full settings view, which the guided owner stays
-   * mounted behind: the selected connection adopts the new instance name (and
-   * re-baselines to it) so its retained draft can continue. */
-  renamedInstance?: { from: string; to: string } | null;
-  /** A removal performed in the full settings view, which the guided owner
-   * stays mounted behind: the selected connection drops its retained editing
-   * state, because a later same-name instance is a new entity, not the one the
-   * draft was typed against. */
-  removedInstance?: string | null;
+  /** The hosting dialog fills this ref with this component's report receivers
+   * for instance-identity changes made in a sibling full-settings view.
+   * Reports live here, next to the selection they address: the guided owner
+   * mounted when a report arrives applies it (its effects run even while it
+   * stays hidden behind the settings view) and consumes it, and any pending
+   * report is dropped when the selection changes, because its addressee is
+   * gone - a later same-name owner is a different editing session and must
+   * not inherit it. */
+  reportsRef?: RefObject<InstanceReports | null>;
 }
 
 // Presentation only. Authentication capabilities always come from the catalogue.
@@ -82,6 +89,38 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
 export function ProviderConnection(props: ProviderConnectionProps) {
   const store = useCredentialsStore();
   const [selected, setSelected] = useState<ProviderDescriptor | null>(null);
+  // Instance-identity reports (rename/removal from the sibling full-settings
+  // view) are scoped to the guided owner mounted when they arrive: that owner
+  // applies and consumes them immediately (its effects run even while it stays
+  // hidden behind the settings view). A report pending against no matching
+  // owner is dropped at the next selection change - its addressee is gone, and
+  // a later same-name owner is a different editing session that must not be
+  // silently re-pointed or re-cleared by it.
+  const [renamed, setRenamed] = useState<{ from: string; to: string } | null>(null);
+  const [removed, setRemoved] = useState<{ name: string } | null>(null);
+  const consumeRenamed = useCallback(() => setRenamed(null), []);
+  const consumeRemoved = useCallback(() => setRemoved(null), []);
+  const selectProvider = useCallback((row: ProviderDescriptor) => {
+    setRenamed(null);
+    setRemoved(null);
+    setSelected(row);
+  }, []);
+  const clearSelection = useCallback(() => {
+    setRenamed(null);
+    setRemoved(null);
+    setSelected(null);
+  }, []);
+  const reportsRef = props.reportsRef;
+  useEffect(() => {
+    if (!reportsRef) return;
+    reportsRef.current = {
+      renamed: (from, to) => setRenamed({ from, to }),
+      removed: (name) => setRemoved({ name }),
+    };
+    return () => {
+      reportsRef.current = null;
+    };
+  }, [reportsRef]);
   const [all, setAll] = useState(false);
   const [search, setSearch] = useState("");
   const errorRef = useRef<HTMLDivElement>(null);
@@ -90,7 +129,18 @@ export function ProviderConnection(props: ProviderConnectionProps) {
     if (props.visible !== false && store.error) errorRef.current?.focus();
   }, [store.error, props.visible]);
   if (selected)
-    return <SelectedConnection key={selected.id} provider={selected} {...props} onChange={() => setSelected(null)} />;
+    return (
+      <SelectedConnection
+        key={selected.id}
+        provider={selected}
+        {...props}
+        onChange={clearSelection}
+        renamedInstance={renamed}
+        removedInstance={removed}
+        onRenamedConsumed={consumeRenamed}
+        onRemovedConsumed={consumeRemoved}
+      />
+    );
   if (props.visible === false) return null;
   return (
     <Dialog open onClose={props.onClose} title="Connect a provider">
@@ -132,7 +182,7 @@ export function ProviderConnection(props: ProviderConnectionProps) {
                 key={row.id}
                 variant="secondary"
                 disabled={store.loading || !!store.error}
-                onClick={() => setSelected(row)}
+                onClick={() => selectProvider(row)}
               >
                 {HELP[row.id]?.label || row.name || row.id}
               </Button>
@@ -162,7 +212,18 @@ function SelectedConnection({
   onChange,
   renamedInstance,
   removedInstance,
-}: ProviderConnectionProps & { provider: ProviderDescriptor; onChange(): void }) {
+  onRenamedConsumed,
+  onRemovedConsumed,
+}: ProviderConnectionProps & {
+  provider: ProviderDescriptor;
+  onChange(): void;
+  /** The connection's mailbox for instance-identity reports, delivered only
+   * to the owner mounted when the report arrived (see ProviderConnection). */
+  renamedInstance: { from: string; to: string } | null;
+  removedInstance: { name: string } | null;
+  onRenamedConsumed(): void;
+  onRemovedConsumed(): void;
+}) {
   const store = useCredentialsStore();
   const connection = useConnectionStore((state) => state.state);
   const [name, setName] = useState(provider.setup?.name ?? provider.id);
@@ -184,12 +245,14 @@ function SelectedConnection({
   // mounted behind it. Adopting the new name keeps findSetup/reloadCreated/repair
   // pointed at the live row; re-baselining is required with it, because the
   // destination key includes the name and a stale baseline would demand a review
-  // for a change that is only the rename.
+  // for a change that is only the rename. Applied reports are consumed so they
+  // can never be delivered twice.
   useEffect(() => {
     if (!renamedInstance || renamedInstance.from !== name) return;
     setName(renamedInstance.to);
     setBaseline(findSetup(renamedInstance.to));
-  }, [renamedInstance, name]);
+    onRenamedConsumed();
+  }, [renamedInstance, name, onRenamedConsumed]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -275,7 +338,7 @@ function SelectedConnection({
   // is already cancelled by the subscription above, which sees the listing
   // change; this owns the idle-with-draft case that nothing else observes.)
   useEffect(() => {
-    if (!removedInstance || removedInstance !== name) return;
+    if (!removedInstance || removedInstance.name !== name) return;
     operation.current += 1;
     setDraft({ providerId: provider.id, value: "" });
     setSaved(false);
@@ -288,7 +351,8 @@ function SelectedConnection({
     setError("");
     setPhase("idle");
     setBaseline(findSetup(name));
-  }, [removedInstance, name, provider.id, setPhase]);
+    onRemovedConsumed();
+  }, [removedInstance, name, provider.id, setPhase, onRemovedConsumed]);
   useEffect(() => {
     if (visible && error) errorRef.current?.focus();
   }, [error, visible]);

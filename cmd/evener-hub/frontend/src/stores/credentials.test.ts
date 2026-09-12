@@ -668,6 +668,56 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("a notification swallowed during a pending poll is made up when the poll is not authorized", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    let resolvePoll: (value: { provider: string; state: string }) => void = () => {};
+    const pollAnswer = new Promise<{ provider: string; state: string }>((resolve) => {
+      resolvePoll = resolve;
+    });
+    fake.on("evener/auth/device/poll", () => pollAnswer);
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    const pending = credentialsStore.getState().devicePoll("work", "flow");
+    // Another client's same-provider change lands while the poll is in flight.
+    // The correlation swallows it on the assumption it is this poll's echo.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).not.toHaveBeenCalled();
+    resolvePoll({ provider: "work", state: "pending" });
+    await pending;
+    // A pending result proves no echo of ours is coming, so the swallowed
+    // notification was someone else's change: make it up with a refetch.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a notification swallowed during a failing save is made up when the save fails", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    let rejectSave: (reason: Error) => void = () => {};
+    const saveAnswer = new Promise<never>((_resolve, reject) => {
+      rejectSave = reject;
+    });
+    fake.on("evener/auth/apiKey/set", () => saveAnswer);
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    const pending = credentialsStore.getState().setApiKey("work", "draft");
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).not.toHaveBeenCalled();
+    rejectSave(new Error("hub refused the key"));
+    await expect(pending).rejects.toThrow("hub refused the key");
+    // The failure proves no echo of ours is coming: make up the swallowed
+    // notification with a refetch.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
   test("a background refetch race with no client connected is swallowed, not an unhandled rejection", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
