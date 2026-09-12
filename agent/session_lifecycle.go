@@ -1122,7 +1122,19 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					// a turn/promoteQueuedAsSteer landing there commits against the
 					// wrong entry (kata 9f5x).
 					if cfg, drainable := interruptDrainConfig(processCtx, err); drainable {
-						if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
+						// The pop below is the same durable claim the
+						// completed-turn drain refuses before taking: the
+						// message it takes runs on the next iteration, past the
+						// gate at the top of this loop, which refuses it --
+						// leaving the message in no transcript, no queue and no
+						// session. Left queued, it is waiting when the restart
+						// recovers the writer. The refusal joins this turn's
+						// error because this branch returns it: without that the
+						// caller hears only the interrupt and nothing says the
+						// transcript is what stopped the drain.
+						if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
+							err = errors.Join(err, refusal)
+						} else if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = withQueuedClientMutation(cfg.nextTurnContext(), queued)

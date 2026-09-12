@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -1179,5 +1180,66 @@ func TestPoisonedWriterStandsDownOnParkedSteering(t *testing.T) {
 	}
 	if !sess.clientMutations.steeringHeld() {
 		t.Fatal("the stand-down released the Stop's hold on the steering rail")
+	}
+}
+
+// interruptDrainTurnContext returns the context a turn runs under when the host
+// has wired the interrupt drain (cmd/evener serve's shape), together with the
+// cancel that interrupts that turn while the root stays live -- the state in
+// which interruptDrainConfig agrees the interrupted turn may take the queue
+// head.
+func interruptDrainTurnContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	root, cancelRoot := context.WithCancel(context.Background())
+	t.Cleanup(cancelRoot)
+	turnCtx, cancelTurn := context.WithCancel(root)
+	t.Cleanup(cancelTurn)
+	var nextCtx func(context.Context) (context.Context, context.CancelFunc)
+	nextCtx = func(parent context.Context) (context.Context, context.CancelFunc) {
+		next, cancel := context.WithCancel(parent)
+		t.Cleanup(cancel)
+		return WithQueuedInputDrainOnInterruptHandler(next, root, nextCtx), cancel
+	}
+	return WithQueuedInputDrainOnInterruptHandler(turnCtx, root, nextCtx), cancelTurn
+}
+
+// TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued: the interrupt
+// recovery is the drain loop's other claim site. A turn whose own record
+// poisoned the writer and that then ends by interrupt hands the queue head to
+// the next iteration, which the gate at the top of the loop refuses -- so the
+// message is in no transcript, no queue and no session, recoverable only by
+// restarting. The claim has to be refused ahead of the pop, the same way the
+// completed-turn drain below it refuses.
+func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
+	var requests atomic.Int32
+	steps := countingFinalResponses(&requests, 3)
+	sess := newTestSessionForEnvctx(t, withSteps(steps...))
+	sendOneUserInput(t, sess, "first")
+
+	turnCtx, interrupt := interruptDrainTurnContext(t)
+	fs := attachEnvironmentFailureFS(t, sess)
+	// The buffered user-input record poisons the writer before the model is
+	// asked, and the interrupt then ends the turn with the bare cancellation
+	// the drain keys on.
+	armEnvironmentPartialWrite(fs)
+	steps[1] = func(llm.Request) llm.Response {
+		requests.Add(1)
+		interrupt()
+		return finalResponse("ok")
+	}
+	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: "queued-behind-an-interrupt",
+		Input:            []appwire.InputItem{{Type: "text", Text: "waits for the restart"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drainPendingEvents(sess)
+
+	_, err := sess.ProcessInput(turnCtx, "poisons mid-turn", nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("interrupted turn behind the poisoning = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("durable queue depth after the refusal = %d, want the message still waiting", got)
 	}
 }
