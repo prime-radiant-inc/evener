@@ -1030,7 +1030,7 @@ type pluginCacheMove struct{ plugin, from, to string }
 // presence-checked and the path rewritten either way, as a rename with no
 // cache to move still records the new name.
 func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string, mk Marketplaces) (Registry, []func() error, error) {
-	moves := m.pluginCacheMoves(reg, name, newName)
+	moves := m.pluginCacheMoves(reg, name, newName, mk)
 	if len(moves) == 0 {
 		return rekeyRegistry(reg, mk, name, newName, "", ""), nil, nil
 	}
@@ -1101,15 +1101,17 @@ func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string, 
 // plugin both records name. Moving it would leave the owner's entry pointing
 // where the files no longer are, and it already sits at the depth Gc reads, so
 // it stays and this entry's key goes on naming it there.
-func (m *Manager) pluginCacheMoves(reg Registry, name, newName string) []pluginCacheMove {
+func (m *Manager) pluginCacheMoves(reg Registry, name, newName string, mk Marketplaces) []pluginCacheMove {
 	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)
-	suffix := "@" + name
 	var moves []pluginCacheMove
 	for key, entries := range reg.Plugins {
-		plugin, ok := strings.CutSuffix(key, suffix)
-		if !ok {
+		// The same ownership rule rekeyRegistry uses: a key belongs to the
+		// longest recorded name it ends in. Selecting by the exact suffix would
+		// move a cache a longer name's key names without moving that key.
+		if owner, ok := registryKeyOwner(key, mk); !ok || owner != name {
 			continue
 		}
+		plugin := strings.TrimSuffix(key, "@"+name)
 		from := filepath.Join(oldCache, plugin)
 		if !installedUnder(from, entries) || anotherKeyInstallsUnder(reg, key, from) {
 			continue

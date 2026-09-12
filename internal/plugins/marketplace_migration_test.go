@@ -3690,3 +3690,70 @@ func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheM
 		}
 	}
 }
+
+// The empty name is a recorded name a key ends in: "widget@" is widget in the
+// marketplace called "". It is refused like any other and migrates, and its keys
+// have to move with it, or the plugin is left under a name no operation asks
+// for and cannot be installed, upgraded or removed.
+func TestMarketplaceNameMigration_AnEmptyNameMovesItsKeys(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.saveMarketplaces(Marketplaces{"": {
+		Source:      Source{Kind: SourceURL, URL: "https://example.invalid/x.git"},
+		LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveRegistry(Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		registryKey("widget", ""): {{
+			InstallPath: filepath.Join("cache", "widget", "abc"),
+			Version:     "1.0.0", Enabled: true,
+			Source: Source{Kind: SourceGitHub, Repo: "o/widget"},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["marketplace"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want marketplace alone", mk)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Plugins[registryKey("widget", "marketplace")]; !ok {
+		t.Fatalf("registry keys = %v, want widget under the name its marketplace migrated to", reg.Plugins)
+	}
+}
+
+// pluginCacheMoves picks the keys it moves with the same ownership rule rekeying
+// uses: a key belongs to the longest recorded name it ends in, so a shorter
+// name's rename must not move a cache that a longer name's key names.
+func TestPluginCacheMoves_LeavesACacheKeyALongerNameOwns(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	install := filepath.Join(m.cacheDir(), "z", "plug@y", "sha1")
+	if err := os.MkdirAll(install, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mk := Marketplaces{"z": {}, "y@z": {}}
+	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		"plug@y@z": {{InstallPath: install}},
+	}}
+
+	if moves := m.pluginCacheMoves(reg, "z", "z-moved", mk); len(moves) != 0 {
+		t.Fatalf("moves = %+v, want none: the key belongs to y@z, not z", moves)
+	}
+}

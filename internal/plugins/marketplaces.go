@@ -617,15 +617,25 @@ func (m *Manager) refuseLeftoversUnder(newName string, reg Registry) error {
 	return nil
 }
 
-// rekeyRegistry moves every <plugin>@oldName entry to <plugin>@newName. An
-// install path under oldCache follows the cache directory to newCache; with
-// no oldCache, no cache directory moved and every path stays. Entries for
-// other marketplaces, and paths outside the cache, are untouched. A
-// <plugin>@newName key taken by an orphan — RemoveMarketplace drops a
-// marketplace's registration but not its registry entries — is refused before
-// this runs, by refuseLeftoversUnder. Should one reach here anyway, the copy
-// pass runs first and the moved entries overwrite it, dropping the orphan
-// rather than letting map order decide whether a ghost replaces a live install.
+// registryKeyOwner names the marketplace a registry key belongs to: the longest
+// recorded name the key ends in as "@<name>". A plugin's own '@' sits before
+// that one, so wid@get@acme is wid@get in acme — but a key can end in more than
+// one recorded name at once: "<plugin>@x@y@z" ends in "@y@z" and in "@z". The
+// longest wins, so migrating "z" leaves a marketplace recorded as "x@y@z" its
+// keys, which migrating it later would otherwise no longer find. Whether a name
+// matched is answered apart from the name itself, because the empty name is a
+// recorded name a key ends in: "widget@" is widget in the marketplace called
+// "".
+func registryKeyOwner(key string, mk Marketplaces) (string, bool) {
+	best, found := "", false
+	for name := range mk {
+		if strings.HasSuffix(key, "@"+name) && (!found || len(name) > len(best)) {
+			best, found = name, true
+		}
+	}
+	return best, found
+}
+
 // rekeyRegistry moves every <plugin>@oldName entry to <plugin>@newName, where
 // oldName is the longest recorded name the key ends in. An
 // install path under oldCache follows the cache directory to newCache; with
@@ -637,29 +647,14 @@ func (m *Manager) refuseLeftoversUnder(newName string, reg Registry) error {
 // pass runs first and the moved entries overwrite it, dropping the orphan
 // rather than letting map order decide whether a ghost replaces a live install.
 func rekeyRegistry(reg Registry, mk Marketplaces, oldName, newName, oldCache, newCache string) Registry {
-	// The marketplace a key belongs to is the longest recorded name it ends in
-	// as "@<name>". A plugin's own '@' sits before that one, so wid@get@acme is
-	// wid@get in acme — but a key can end in more than one recorded name at
-	// once: "<plugin>@x@y@z" ends in "@y@z" and in "@z". The longest wins, so
-	// migrating "z" leaves a marketplace recorded as "x@y@z" its keys, which
-	// migrating it later would otherwise no longer find.
-	owner := func(key string) (string, bool) {
-		best := ""
-		for name := range mk {
-			if strings.HasSuffix(key, "@"+name) && len(name) > len(best) {
-				best = name
-			}
-		}
-		return best, best != ""
-	}
 	out := Registry{Version: reg.Version, Plugins: make(map[string][]InstallEntry, len(reg.Plugins))}
 	for key, entries := range reg.Plugins {
-		if name, ok := owner(key); !ok || name != oldName {
+		if name, ok := registryKeyOwner(key, mk); !ok || name != oldName {
 			out.Plugins[key] = entries
 		}
 	}
 	for key, entries := range reg.Plugins {
-		if name, ok := owner(key); !ok || name != oldName {
+		if name, ok := registryKeyOwner(key, mk); !ok || name != oldName {
 			continue
 		}
 		plugin := strings.TrimSuffix(key, "@"+oldName)
@@ -690,11 +685,15 @@ func rekeyRegistry(reg Registry, mk Marketplaces, oldName, newName, oldCache, ne
 // not what it once pointed at.
 func pathPresent(path string) (bool, error) {
 	if _, err := marketplaceStat(path); err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
+		// A path the filesystem refuses for its length holds nothing: it will
+		// not even look at it. Counting it as absent is what lets the migration
+		// rename a legacy name whose derived path is too long to ask about,
+		// rather than failing every lock-taking operation on it.
+		if !errors.Is(err, fs.ErrNotExist) && !isNameTooLong(err) {
 			return false, fmt.Errorf("checking %s: %w", path, err)
 		}
 		if _, err := marketplaceLstat(path); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+			if errors.Is(err, fs.ErrNotExist) || isNameTooLong(err) {
 				return false, nil
 			}
 			return false, fmt.Errorf("checking %s: %w", path, err)
