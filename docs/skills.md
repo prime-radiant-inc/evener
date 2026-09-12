@@ -17,14 +17,20 @@ A markdown template that can run shell commands is code. Evener's rule:
   commands directory) never execute shell and never read files at expansion
   time. Anything in a repo you merely cloned is inert text.
 
-This mirrors codex's posture: in codex, skills and custom prompts are always
-inert, and skill bodies reach the model only through the model's own
-permission-checked tool calls. Claude Code instead allows `!`cmd``
+This mirrors codex's posture of inert skill text. In codex, a skill body is
+never executable template code: an explicitly mentioned or selected skill is
+resolved and injected by the runtime itself as a separate user-role fragment
+carrying the complete file text, while model-selected loading is a separate
+path through the model's own file reads. Claude Code instead allows `!`cmd``
 execution in skills and commands, but gates project-sourced content behind a
 workspace trust dialog and offers a `disableSkillShellExecution` kill
 switch. Evener keeps Claude Code-compatible execution for explicitly installed
-plugins, and adopts the codex posture for everything it discovers on its
-own.
+plugins, and adopts the codex posture of inert discovered text for everything
+it discovers on its own. (An earlier version of this paragraph claimed codex
+bodies reach the model only through the model's own permission-checked tool
+calls; the pinned Codex sources in the [skills implementation
+study](research/2026-09-10-skills-implementation-study.md) corrected that
+claim, and the correction is recorded here.)
 
 | Source | Discovered from | `$ARGUMENTS` | `!`cmd`` | `@file` |
 |---|---|---|---|---|
@@ -173,6 +179,41 @@ Obligations persist across transport retries and restart, and restored
 sessions reconcile receipts so a retained complete body is proven, not
 redelivered or double-reported. A failed reinvocation never erases an earlier
 successful record.
+
+### Explicit selection versus typed inline mentions
+
+Guaranteed inline invocation comes from explicit selection. A typed inline
+`/name` mention in the middle of prose is preserved as ordinary text: the
+catalog prompt asks the model to recognize whitespace-bounded canonical slash
+tokens and call `use_skill` before acting — while ignoring quotations, fenced
+code, paths, URLs, and negations — but that interpretation is model behavior,
+not an enforced parser. When an invocation must be deterministic, select the
+skill explicitly instead. A leading `/name` expands in the runtime before the
+model turn, and a canonical skill selection (the AppWire skill item, or a
+composer chip) is prepared and admitted by the runtime at the input's actual
+consumption — independent of where the prose mentions anything. The original
+request is always preserved verbatim alongside the delivered body, so a
+selection never rewrites what you typed.
+
+Every route a skill can take, and what each one means:
+
+| Route | Trigger | Deterministic? | Records user authorization? | Result |
+|---|---|---|---|---|
+| `user_slash` | Leading `/name args` typed input | yes — runtime expansion | yes | tracked ordinary activation |
+| `user_selection` | Canonical skill item selected on the input | yes — runtime preparation at consumption | yes | tracked ordinary activation |
+| `model_tool` | Model calls `use_skill` | no — model choice under current controls | no; a same-source continuation reuses the prior record's answer | tracked ordinary activation |
+| `compaction_reload` | Reload selection honored at the next dispatch after compaction | yes, once the selection is recorded | no; reuses the prior same-source answer | restores the recorded activation's body |
+| `role_preload` | Delegate role declaration | yes — loaded before the delegate starts | no — frozen provenance | permanent-prompt / frozen-delegate lifetime |
+
+The model-interpreted inline path is the one part of this surface that
+depends on how a real model reads your text. The skills-lifecycle live
+evaluation (run 2026-09-12) measured it against a real model — operative
+requests, quotations, fenced code, paths/URLs, negations, multiple selections,
+and near-miss names — and its per-case record lives in the [evaluation
+evidence](research/2026-09-11-skills-lifecycle-evidence.md). The [skills
+implementation study](research/2026-09-10-skills-implementation-study.md)
+records how Evener's invocation surface compares with Pi, OpenCode, Codex,
+and Claude Code.
 
 ### Canonical skill input on AppWire
 

@@ -408,3 +408,24 @@ local fact check corrected the draft's compaction-strategy scope before delivery
 Final citation validation passed for 19 local links and 25 pinned upstream source
 files, including their cited line ranges. Both upstream research passes reviewed
 the integrated comparison and reported no factual corrections.
+
+## Delivery addendum (2026-09-12)
+
+This study's findings are historical and unchanged. The skills-lifecycle work
+that followed them has since been delivered:
+
+- The documentation claim E9 flagged — that Codex skill bodies reach the model
+  only through model-initiated tool calls — is corrected in
+  [../skills.md](../skills.md), per the pinned Codex sources above.
+- The delivered contract (shared loading, explicit selection versus typed
+  inline mentions, original-request preservation, atomic failure/retry, the
+  invocation matrix, same-source authorization, generic reads, frozen role
+  preloads, future-only old sessions, source-change notices, complete-body
+  budgets, the compaction selection protocol, restart/publication rules,
+  diagnostics, and precedence and trust) is documented in
+  [../skills.md](../skills.md).
+- The live model evaluation this study called for in "Verification to require
+  before changing behavior" — operative requests, quoted examples, fenced
+  code, paths/URLs, negations, multiple skills, near-miss names, plus
+  structured selection and compaction reload cases — ran on 2026-09-12; its
+  complete per-case record is [2026-09-11-skills-lifecycle-evidence.md](2026-09-11-skills-lifecycle-evidence.md).
