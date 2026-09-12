@@ -187,8 +187,8 @@ func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) 
 	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": "us-central1", "GOOGLE_VERTEX_PROJECT": "p"}
 
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
-	var cfgErr *llm.ConfigurationError
-	if !errors.As(err, &cfgErr) || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
+	cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
+	if !ok || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
 		t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
 	}
 }
@@ -204,8 +204,7 @@ func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing
 	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": "global", "GOOGLE_VERTEX_PROJECT": "p"}
 
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
-	var cfgErr *llm.ConfigurationError
-	if errors.As(err, &cfgErr) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		t.Fatalf("a global-endpoint 404 must not claim a regional remedy: %v", err)
 	}
 	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
