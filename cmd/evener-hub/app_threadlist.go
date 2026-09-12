@@ -103,6 +103,7 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 			if err != nil {
 				return appwire.ThreadListResponse{}, err
 			}
+			thread = applyHubForkCapability(cfg, thread)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
