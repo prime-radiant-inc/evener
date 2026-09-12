@@ -155,7 +155,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
             {(entry.broken || !entry.enabled || entry.autoUpgrade) && (
               <div className={CLASS.chipRow}>
                 {entry.broken && <Chip tone="danger">broken</Chip>}
-                {!entry.enabled && <Chip tone="neutral">disabled</Chip>}
+                {!entry.enabled && <Chip tone="neutral">off by default</Chip>}
                 {entry.autoUpgrade && <Chip tone="neutral">auto-upgrade</Chip>}
               </div>
             )}
@@ -181,7 +181,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
                 checked={entry.enabled}
                 onChange={() => void handleToggleEnable(entry.enabled)}
                 disabled={toggleBusy}
-                label="Enabled"
+                label="Enabled by default"
               />
               <Switch
                 checked={entry.autoUpgrade}
