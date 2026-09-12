@@ -19,7 +19,7 @@
 
 .errorBanner {
   font-size: var(--font-size-ui);
-  color: var(--attention-ink);
+  color: var(--ink-mid);
   margin: 0;
 }
 
@@ -59,7 +59,7 @@
 
 .blockers {
   font-size: var(--font-size-ui);
-  color: var(--attention-ink);
+  color: var(--ink-mid);
   margin-top: var(--space-1);
 }
 
