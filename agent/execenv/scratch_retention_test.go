@@ -3,6 +3,7 @@ package execenv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
@@ -165,6 +166,18 @@ func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 	if _, err := sandbox.OpenRetainedSessionScratch(owner, refB); err == nil {
 		t.Fatal("B's lease was released before its committed mapping")
 	}
+	// The lease is an *os.File inside the lease object, and *os.File's
+	// finalizer closes the fd — releasing the flock — the moment its holder
+	// becomes unreachable. Pin the holders past the contention assertions
+	// above: otherwise aggressive GC can legitimately release the leases
+	// between the committed UpdateScratchBindings and the
+	// OpenRetainedSessionScratch calls, making this test nondeterministic
+	// without any product change. KeepAlive is liveness only; the assertions
+	// still require both opens to fail.
+	runtime.KeepAlive(a)
+	runtime.KeepAlive(b)
+	runtime.KeepAlive(e0)
+	runtime.KeepAlive(e1)
 }
 
 func manifestBinding(t *testing.T, owner sandbox.ScratchOwner, bindingID string) sandbox.ScratchBinding {
