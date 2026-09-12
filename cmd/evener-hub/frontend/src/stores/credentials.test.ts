@@ -609,6 +609,54 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("a foreign change coalesced into this client's own refresh window keeps the refresh foreign", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch(); // initial load; also wires notification handling
+    const before = credentialsStore.getState().selfRefresh;
+
+    // A foreign change opens the debounce window first, and this client's own
+    // mutation lands inside it. The single coalesced refresh carried a foreign
+    // change, so it must not be marked as the store's own: the flow's
+    // invalidation guard has to keep seeing it as foreign, or a genuine
+    // foreign change would be silently suppressed.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "anthropic", activeSource: "store" } });
+    await credentialsStore.getState().setApiKey("work", "draft");
+    const marks: number[] = [];
+    const unsubscribe = credentialsStore.subscribe((current) => marks.push(current.selfRefresh));
+    await vi.advanceTimersByTimeAsync(250);
+    unsubscribe();
+
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    expect(marks.every((mark) => mark === before)).toBe(true);
+  });
+
+  test("a refresh serving only this client's own mutation still carries the self mark", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const before = credentialsStore.getState().selfRefresh;
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+  });
+
   test("another client's auth change still refetches after a local mutation", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);

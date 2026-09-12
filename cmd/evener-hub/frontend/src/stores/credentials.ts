@@ -398,16 +398,27 @@ function consumeOwnAuthEcho(provider: string | undefined): boolean {
 let wiredClient: AppwireClientLike | null = null;
 let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
+// Schedule provenance for the coalesced refresh. The debounce collapses every
+// request in its window into one read, so provenance cannot be
+// last-writer-wins: a request that came from a foreign change must survive a
+// later self request (and vice versa), or a genuine foreign change would be
+// silently presented as the store's own refresh and never invalidate the
+// guided flow. `undefined` means no request is pending.
+let pendingRefetchSelf: boolean | undefined;
 
 function scheduleRefetch(self = false): void {
+  pendingRefetchSelf = pendingRefetchSelf === undefined ? self : pendingRefetchSelf && self;
   clearTimeout(refetchTimer);
   refetchTimer = setTimeout(() => {
+    const selfRequest = pendingRefetchSelf ?? false;
+    pendingRefetchSelf = undefined;
+    refetchTimer = undefined;
     // fetch()'s own requireClient() throws outside its try/catch, by design
     // (see this file's own top comment) - a real rejection here would be an
     // unobserved background call with nothing awaiting it, so a rare
     // disconnect-during-the-debounce-window race must be swallowed here
     // rather than surfacing as an unhandled rejection.
-    readListing(self).catch(() => {});
+    readListing(selfRequest).catch(() => {});
   }, REFETCH_DEBOUNCE_MS);
 }
 
@@ -438,6 +449,7 @@ connectionStore.subscribe((state, previous) => {
     credentialsStore.setState({ loading: false });
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
+    pendingRefetchSelf = undefined;
     // A marker belongs to the connection its mutation was issued on: the echo
     // cannot arrive on a different one, so a marker left over from a replaced
     // or reconnected client is pure suppression risk for whatever
@@ -475,5 +487,6 @@ export function resetCredentialsStoreForTests(): void {
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
+  pendingRefetchSelf = undefined;
   credentialsStore.setState({ ...emptyListState(), loading: false, error: null, selfRefresh: 0 });
 }
