@@ -550,6 +550,10 @@ run_bounded_package_list() {
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					printf 'run-module-tests.sh: attempt %s is not its own process group (pgid %s, pid %s), so it cannot be stopped as one. Not retrying.\n' \
 						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" >&2
+					# The record goes with the attempt. This pid's group is not
+					# itself, so the signal cleanup could never aim at it anyway,
+					# and a file left behind only buys a probe that must refuse.
+					rm -f "$(package_list_pgid_path "$module")"
 					return 1
 				fi
 				stop_status=0
@@ -569,6 +573,11 @@ run_bounded_package_list() {
 						printf 'run-module-tests.sh: attempt %s would not stop: process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and not waiting on it.\n' \
 							"$attempt" "$list_pid" "${survivors:-<none at the final probe>}" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
 					fi
+					# The record goes too. This group has already had SIGTERM and
+					# SIGKILL with a full grace each and the diagnostic above names
+					# what survived; the EXIT cleanup can only repeat that, and the
+					# cost this script documents does not include a second pass.
+					rm -f "$(package_list_pgid_path "$module")"
 					return 1
 				fi
 				# The group has no live member, so the leader is a zombie or
