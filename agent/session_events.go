@@ -348,9 +348,23 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	// carries that rule.
 	//
 	// SessionStart hooks run inside initSessionState, before the transcript
-	// writer exists (kata d4es). recordTurn holds the turn until it does; no
-	// buffering is needed here.
-	s.recordTurn(turn, turn)
+	// writer exists (kata d4es). The write path holds the turn until it does;
+	// no buffering is needed here.
+	//
+	// A FAILED write announces nothing, and leaves nothing in the model
+	// history either: the live event is the only copy a watching client gets,
+	// so a completion published on a write that failed is one a reload cannot
+	// reproduce. appendTurnAfterTranscriptWrite is the shape the environment
+	// append already uses for that — the entry first, the history append only
+	// if it landed.
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return
+	}
 	s.emit(events.EventHookEnd, data)
 }
 

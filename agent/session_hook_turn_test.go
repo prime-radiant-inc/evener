@@ -472,3 +472,51 @@ func TestHookEndWritesTheEntryBeforeAnnouncingIt(t *testing.T) {
 		t.Fatalf("events on the channel after the release = %d, want the announced hook end", got)
 	}
 }
+
+// Writing before announcing is only half the rule: a write that FAILS must
+// announce nothing at all. The live event is the only copy a watching client
+// gets, so a hook completion published on a failed write is one a reload
+// cannot reproduce — and a live history entry for it is the same divergence
+// inside the session's own model history.
+func TestHookEndAnnouncesNothingWhenTheTranscriptWriteFails(t *testing.T) {
+	t.Parallel()
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/hook-write-failure.jsonl", transcript.Header{SessionID: "hook-write-failure"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	s := &Session{
+		id:              "hook-write-failure",
+		transcript:      writer,
+		transcriptReady: true,
+		events:          make(chan events.SessionEvent, 8),
+	}
+	fs.fail = true
+
+	s.emitHookCompleted(events.HookEndData{Event: "PreCompact", HookType: "command", PluginName: "hook-turn-plugin"})
+
+	close(s.events)
+	var ends int
+	var warnings int
+	for event := range s.events {
+		switch event.Kind {
+		case events.EventHookEnd:
+			ends++
+		case events.EventWarning:
+			warnings++
+		}
+	}
+	if ends != 0 {
+		t.Fatalf("HOOK_END events after a failed transcript write = %d, want 0: a hook completion announced live but absent from the transcript disappears on reload", ends)
+	}
+	if warnings != 1 {
+		t.Fatalf("warnings after a failed transcript write = %d, want the write failure reported exactly once", warnings)
+	}
+	if got := len(s.history); got != 0 {
+		t.Fatalf("live history turns after a failed transcript write = %d, want 0: a turn that is not durable must not stay in the model history either", got)
+	}
+	if got := len(s.persistedAppendLog); got != 0 {
+		t.Fatalf("persisted append log entries after a failed transcript write = %d, want 0; a fold would re-append a turn the transcript never held", got)
+	}
+}
