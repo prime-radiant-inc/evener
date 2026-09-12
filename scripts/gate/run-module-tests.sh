@@ -247,6 +247,35 @@ stop_children() {
 		done
 	fi
 	active_pids=()
+	stop_recorded_package_list_groups
+}
+
+# stop_recorded_package_list_groups — stop any package-list attempt that was
+# still running when the runner was told to die.
+#
+# The walk above cannot reach one. An attempt runs in a process group of its
+# own, so a signal sent to the runner's group never reaches it; and when that
+# signal kills the wave subshell holding it, the attempt is reparented to init
+# and stops being a descendant of anything in active_pids. Measured before this
+# existed: after `kill -TERM -- -<runner pgid>` the runner exited and the
+# stalled `go list` was left running with ppid 1, holding the GOCACHE and
+# GOMODCACHE locks that every later run on the host needs.
+stop_recorded_package_list_groups() {
+	local pgid_file recorded actual
+	[ -n "$logdir" ] || return 0
+	for pgid_file in "$logdir"/*.pgid; do
+		[ -e "$pgid_file" ] || continue
+		recorded="$(cat "$pgid_file" 2>/dev/null)"
+		rm -f "$pgid_file"
+		[ -n "$recorded" ] || continue
+		# Only signal a group the attempt still owns. A recorded pid whose
+		# group is not itself has either already gone or is a number the
+		# kernel has since handed to someone else, and -PID would then name
+		# a group this runner has no business signalling.
+		actual="$(ps -o pgid= -p "$recorded" 2>/dev/null | tr -d '[:space:]')"
+		[ "$actual" = "$recorded" ] || continue
+		stop_package_list_group "$recorded" || :
+	done
 }
 
 cleanup() {
@@ -295,6 +324,13 @@ package_list_path() {
 	esac
 }
 package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
+# Where a module records the process group of the attempt it has running right
+# now. That group is the one thing the runner's signal cleanup cannot otherwise
+# reach: the attempt is deliberately in a group of its own, so a signal aimed at
+# the runner's group never touches it, and once the wave subshell holding it
+# dies the attempt is reparented to init and stops being anyone's descendant.
+# The file exists for exactly as long as the attempt does.
+package_list_pgid_path() { printf '%s.pgid' "$(package_list_path "$1")"; }
 
 # package_list_timeout_diagnostic LOG ATTEMPTS_MADE MODULE — the failure report.
 # ATTEMPTS_MADE is spelled out because the run can stop short of the budget: an
@@ -450,6 +486,7 @@ run_bounded_package_list() {
 		perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' \
 			-- go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
+		printf '%s' "$list_pid" >"$(package_list_pgid_path "$module")"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
@@ -517,6 +554,7 @@ run_bounded_package_list() {
 				# produced would turn a slow-but-working host into a failure.
 				# bash keeps a reaped job's status, so this answers even when
 				# the race above already removed the process.
+				rm -f "$(package_list_pgid_path "$module")"
 				if wait "$list_pid"; then
 					if ! mv "$attempt_list" "$package_list"; then
 						printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2
@@ -543,6 +581,7 @@ run_bounded_package_list() {
 		# The status has to be read inside the else branch: after the `if`
 		# compound closes, $? is the `if`'s own status, which is 0 when an
 		# else-less condition fails.
+		rm -f "$(package_list_pgid_path "$module")"
 		if wait "$list_pid"; then
 			if ! mv "$attempt_list" "$package_list"; then
 				printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2
