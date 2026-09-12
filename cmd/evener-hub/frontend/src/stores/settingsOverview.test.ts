@@ -21,6 +21,7 @@ const SAMPLE_RESPONSE: SettingsOverviewResponse = {
     version: "1.2.3",
     listenAddr: "127.0.0.1:9180",
     runDir: "/tmp/run",
+    daemonIdleTimeoutMillis: 3600000,
   },
   storage: { stateDir: "/home/user/.evener" },
   agents: [{ name: "default" }],

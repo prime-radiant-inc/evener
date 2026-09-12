@@ -81,6 +81,13 @@ type Resolved struct {
 	Provenance  map[string]LayerName
 	Repo        *RepoStatus
 	Diagnostics []Diagnostic
+	// DaemonIdleTimeout is a runtime-only launch parameter (the Hub's
+	// configured idle-retirement deadline), not a config layer: it is never
+	// read from or written to launch.toml. The Hub assigns it after layer
+	// resolution on both spawn and resume, and ToArgs renders it
+	// unconditionally so the child always sees an explicit value — a zero
+	// here means "automatic retirement disabled", never "flag absent".
+	DaemonIdleTimeout time.Duration
 }
 
 // TrustState describes the in-repo .evener/launch.toml trust outcome.

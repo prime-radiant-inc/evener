@@ -1585,6 +1585,7 @@ export interface SettingsHubOverview {
   spawnTimeout?: string;
   bearerTokenAge?: string;
   pastIndex?: SettingsPastIndexOverview;
+  daemonIdleTimeoutMillis: number;
 }
 
 export interface SettingsMCPOverview {

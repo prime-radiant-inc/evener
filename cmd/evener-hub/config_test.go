@@ -1,11 +1,15 @@
 package hub
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
 
 func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
@@ -305,5 +309,170 @@ func TestDefaultPastIndexDBPath_RespectsHome(t *testing.T) {
 	want := "/tmp/fakehome/.local/state/evener/index.db"
 	if got != want {
 		t.Fatalf("DefaultPastIndexDBPath: got %q, want %q", got, want)
+	}
+}
+
+// TestDaemonIdleConfigOmittedAndZero pins the tri-state at the heart of the
+// one-hour Hub default: an omitted key inherits the DefaultConfig value of
+// one hour, while an explicit "0s" is a legitimate operator choice (automatic
+// retirement disabled) and must NOT be floored back to the default by
+// applyConfigDefaults. Unlike plugin_auto_upgrade_interval, zero here is not
+// a panic risk — it is the documented kill switch.
+func TestDaemonIdleConfigOmittedAndZero(t *testing.T) {
+	t.Run("omitted inherits the one-hour default", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg, err := LoadConfig(filepath.Join(dir, "nope.toml"))
+		if err != nil {
+			t.Fatalf("LoadConfig missing: %v", err)
+		}
+		if cfg.DaemonIdleTimeout != time.Hour {
+			t.Errorf("DaemonIdleTimeout omitted: got %v, want 1h", cfg.DaemonIdleTimeout)
+		}
+	})
+	t.Run("file without the key inherits the one-hour default", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "hub.toml")
+		if err := os.WriteFile(path, []byte(`addr = "127.0.0.1:9999"`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.DaemonIdleTimeout != time.Hour {
+			t.Errorf("DaemonIdleTimeout unset in file: got %v, want 1h", cfg.DaemonIdleTimeout)
+		}
+	})
+	t.Run("explicit zero disables automatic retirement", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "hub.toml")
+		if err := os.WriteFile(path, []byte(`daemon_idle_timeout = "0s"`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.DaemonIdleTimeout != 0 {
+			t.Errorf("DaemonIdleTimeout explicit zero: got %v, want 0 (disabled)", cfg.DaemonIdleTimeout)
+		}
+	})
+	t.Run("explicit value is honored", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "hub.toml")
+		if err := os.WriteFile(path, []byte(`daemon_idle_timeout = "5m"`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.DaemonIdleTimeout != 5*time.Minute {
+			t.Errorf("DaemonIdleTimeout: got %v, want 5m", cfg.DaemonIdleTimeout)
+		}
+	})
+}
+
+// TestDaemonIdleConfigRejectsNegative covers the value the controller
+// constructor (agent.NewRetirementController) would refuse at launch: a
+// negative duration must fail config load with a named error rather than
+// crashing every spawned daemon at startup.
+func TestDaemonIdleConfigRejectsNegative(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(`daemon_idle_timeout = "-5m"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig accepted a negative daemon_idle_timeout")
+	}
+}
+
+// TestDaemonIdleConfigRejectsMalformed covers a duration string
+// time.ParseDuration cannot read; the TOML decode itself must surface it.
+func TestDaemonIdleConfigRejectsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(`daemon_idle_timeout = "soon"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig accepted a malformed daemon_idle_timeout")
+	}
+}
+
+// TestHubSpawnResumePassDaemonIdleTimeout proves the Hub's configured value
+// actually reaches the daemon's argv on BOTH launch paths — the historical
+// reconstruction resume performs must not silently drop it. The fake evener
+// records its serve argv; both Spawn and Resume must carry the same
+// --daemon-idle-timeout pair rendered from the Hub config.
+func TestHubSpawnResumePassDaemonIdleTimeout(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	argsOut := filepath.Join(dir, "serve-args.txt")
+	t.Setenv("SERVE_ARGS_OUT", argsOut)
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v5"}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  printf '%s\n' "$@" >> "$SERVE_ARGS_OUT"
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 2 * time.Second
+	cfg.DaemonIdleTimeout = 7 * time.Minute
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+
+	if _, err := spawner.Spawn(context.Background(), hubcore.SpawnRequest{
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/test"}},
+		WorkingDir: dir,
+		Provider:   "ollama",
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if _, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/test"}},
+		WorkingDir: dir,
+		Provider:   "ollama",
+	}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	data, err := os.ReadFile(argsOut)
+	if err != nil {
+		t.Fatalf("read serve args: %v", err)
+	}
+	// The fake records one arg per line; each "serve" line starts a launch.
+	var launches [][]string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "serve" {
+			launches = append(launches, nil)
+			continue
+		}
+		if len(launches) == 0 {
+			t.Fatalf("serve args captured before any serve invocation: %q", data)
+		}
+		launches[len(launches)-1] = append(launches[len(launches)-1], line)
+	}
+	if len(launches) != 2 {
+		t.Fatalf("serve argv captured %d times, want 2 (spawn + resume): %q", len(launches), data)
+	}
+	for i, args := range launches {
+		if got := argValue(args, "--daemon-idle-timeout"); got != (7 * time.Minute).String() {
+			t.Errorf("launch %d --daemon-idle-timeout = %q, want %q (argv %v)", i, got, (7 * time.Minute).String(), args)
+		}
 	}
 }

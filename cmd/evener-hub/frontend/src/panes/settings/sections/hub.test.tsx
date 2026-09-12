@@ -18,6 +18,7 @@ const SAMPLE_RESPONSE: SettingsOverviewResponse = {
     listenAddr: "127.0.0.1:9180",
     runDir: "/tmp/evener-run",
     spawnTimeout: "30s",
+    daemonIdleTimeoutMillis: 3600000,
   },
 };
 

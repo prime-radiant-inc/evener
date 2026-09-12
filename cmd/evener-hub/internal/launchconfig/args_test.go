@@ -65,6 +65,7 @@ func checkToArgs_AllFields(t *testing.T) {
 		"--model-fallback", "openai/gpt-5.4",
 		"--model-fallback", "anthropic/claude-haiku-4-5",
 		"--mcp", "github:gh-mcp --token-from-env GITHUB_TOKEN",
+		"--daemon-idle-timeout", "0s",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ToArgs =\n%s\nwant\n%s", strings.Join(got, " "), strings.Join(want, " "))
@@ -87,22 +88,24 @@ func checkToArgs_InlinePromptTextDoesNotEmitArgv(t *testing.T) {
 
 func checkToArgs_SkipsUnset(t *testing.T) {
 	got := ToArgs(Resolved{Effective: Layer{Model: "openai/gpt-5"}})
-	want := []string{"--model", "openai/gpt-5"}
+	want := []string{"--model", "openai/gpt-5", "--daemon-idle-timeout", "0s"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ToArgs = %v, want %v", got, want)
 	}
 }
 
 func TestToArgsEnabledPluginsPresence(t *testing.T) {
-	if got := ToArgs(Resolved{Effective: Layer{}}); len(got) != 0 {
-		t.Fatalf("unset args = %v, want none", got)
+	// --daemon-idle-timeout is the one unconditional pair (zero renders "0s"
+	// explicitly); everything else is still omitted when unset.
+	if got := ToArgs(Resolved{Effective: Layer{}}); !reflect.DeepEqual(got, []string{"--daemon-idle-timeout", "0s"}) {
+		t.Fatalf("unset args = %v, want only the unconditional daemon-idle-timeout pair", got)
 	}
 	empty := []string{}
-	if got := ToArgs(Resolved{Effective: Layer{EnabledPlugins: &empty}}); !reflect.DeepEqual(got, []string{"--enabled-plugins="}) {
+	if got := ToArgs(Resolved{Effective: Layer{EnabledPlugins: &empty}}); !reflect.DeepEqual(got, []string{"--enabled-plugins=", "--daemon-idle-timeout", "0s"}) {
 		t.Fatalf("empty args = %v", got)
 	}
 	names := []string{"alpha", "beta"}
-	if got := ToArgs(Resolved{Effective: Layer{EnabledPlugins: &names}}); !reflect.DeepEqual(got, []string{"--enabled-plugins=alpha,beta"}) {
+	if got := ToArgs(Resolved{Effective: Layer{EnabledPlugins: &names}}); !reflect.DeepEqual(got, []string{"--enabled-plugins=alpha,beta", "--daemon-idle-timeout", "0s"}) {
 		t.Fatalf("named args = %v", got)
 	}
 }
@@ -118,16 +121,16 @@ func checkToArgs_Sandbox(t *testing.T) {
 		layer Layer
 		want  []string
 	}{
-		{"unset", Layer{}, nil},
-		{"restricted", Layer{Sandbox: "restricted"}, []string{"--sandbox", "restricted"}},
-		{"explicit off", Layer{Sandbox: "off"}, []string{"--sandbox", "off"}},
+		{"unset", Layer{}, []string{"--daemon-idle-timeout", "0s"}},
+		{"restricted", Layer{Sandbox: "restricted"}, []string{"--sandbox", "restricted", "--daemon-idle-timeout", "0s"}},
+		{"explicit off", Layer{Sandbox: "off"}, []string{"--sandbox", "off", "--daemon-idle-timeout", "0s"}},
 		// sandbox_net without a non-off mode is suppressed: evener ignores the flag
 		// without a sandbox, so passing it alone would be a silent no-op.
-		{"net on, no mode", Layer{SandboxNet: new(true)}, nil},
-		{"net off, no mode", Layer{SandboxNet: new(false)}, nil},
-		{"net with off mode", Layer{Sandbox: "off", SandboxNet: new(false)}, []string{"--sandbox", "off"}},
-		{"mode and net", Layer{Sandbox: "workspace-write", SandboxNet: new(false)}, []string{"--sandbox", "workspace-write", "--sandbox-net", "off"}},
-		{"restricted and net on", Layer{Sandbox: "restricted", SandboxNet: new(true)}, []string{"--sandbox", "restricted", "--sandbox-net", "on"}},
+		{"net on, no mode", Layer{SandboxNet: new(true)}, []string{"--daemon-idle-timeout", "0s"}},
+		{"net off, no mode", Layer{SandboxNet: new(false)}, []string{"--daemon-idle-timeout", "0s"}},
+		{"net with off mode", Layer{Sandbox: "off", SandboxNet: new(false)}, []string{"--sandbox", "off", "--daemon-idle-timeout", "0s"}},
+		{"mode and net", Layer{Sandbox: "workspace-write", SandboxNet: new(false)}, []string{"--sandbox", "workspace-write", "--sandbox-net", "off", "--daemon-idle-timeout", "0s"}},
+		{"restricted and net on", Layer{Sandbox: "restricted", SandboxNet: new(true)}, []string{"--sandbox", "restricted", "--sandbox-net", "on", "--daemon-idle-timeout", "0s"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

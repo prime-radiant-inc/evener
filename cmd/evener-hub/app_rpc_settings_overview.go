@@ -56,6 +56,9 @@ func settingsHubOverview(cfg hubcore.WebConfig) *appwire.SettingsHubOverview {
 		SpawnTimeout:   settingsSpawnTimeoutDisplay,
 		BearerTokenAge: bearerTokenAge,
 		PastIndex:      pastIndex,
+		// Milliseconds, zero included: "disabled" and "not yet reported" must
+		// never decode as the same value.
+		DaemonIdleTimeoutMillis: cfg.DaemonIdleTimeout.Milliseconds(),
 	}
 }
 

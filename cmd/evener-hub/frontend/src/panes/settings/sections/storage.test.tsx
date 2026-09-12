@@ -22,7 +22,7 @@ afterEach(cleanup);
 test("renders State dir (from storage, not hub), Run dir (from hub), and the static hub.toml row", async () => {
   const fake = connectFakeClient();
   const response: SettingsOverviewResponse = {
-    hub: { runDir: "/tmp/evener-run" },
+    hub: { runDir: "/tmp/evener-run", daemonIdleTimeoutMillis: 3600000 },
     storage: { stateDir: "/home/user/.evener" },
   };
   fake.on("evener/settings/overview", () => response);
@@ -61,7 +61,10 @@ test("omits the Past index row entirely when pastIndex is absent (no configured 
 test("renders the Past index row with its size and a pluralized live session count when present", async () => {
   const fake = connectFakeClient();
   const response: SettingsOverviewResponse = {
-    hub: { pastIndex: { path: "~/.evener/past.db", size: "48 MB", perPage: 20, count: 3 } },
+    hub: {
+      pastIndex: { path: "~/.evener/past.db", size: "48 MB", perPage: 20, count: 3 },
+      daemonIdleTimeoutMillis: 3600000,
+    },
     storage: { stateDir: "/home/user/.evener" },
   };
   fake.on("evener/settings/overview", () => response);
@@ -76,7 +79,10 @@ test("renders the Past index row with its size and a pluralized live session cou
 test("pluralizes 'session' (not 'sessions') when the count is exactly 1", async () => {
   const fake = connectFakeClient();
   const response: SettingsOverviewResponse = {
-    hub: { pastIndex: { path: "~/.evener/past.db", perPage: 20, count: 1 } },
+    hub: {
+      pastIndex: { path: "~/.evener/past.db", perPage: 20, count: 1 },
+      daemonIdleTimeoutMillis: 3600000,
+    },
     storage: {},
   };
   fake.on("evener/settings/overview", () => response);

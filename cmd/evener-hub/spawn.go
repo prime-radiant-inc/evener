@@ -156,6 +156,11 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	// The idle-retirement deadline is a runtime launch parameter owned by the
+	// Hub's config, assigned AFTER layer resolution/materialization on both
+	// launch paths (resume's resolved is a historical reconstruction — the
+	// timeout must reflect the Hub's CURRENT config, not the past launch's).
+	req.Resolved.DaemonIdleTimeout = h.Cfg.DaemonIdleTimeout
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
@@ -201,6 +206,11 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	// The idle-retirement deadline is a runtime launch parameter owned by the
+	// Hub's config, assigned AFTER layer resolution/materialization on both
+	// launch paths (resume's resolved is a historical reconstruction — the
+	// timeout must reflect the Hub's CURRENT config, not the past launch's).
+	req.Resolved.DaemonIdleTimeout = h.Cfg.DaemonIdleTimeout
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize

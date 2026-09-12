@@ -45,6 +45,12 @@ import (
 // deliberately does not do.
 const shutdownDrainWaitBudget = 30 * time.Second
 
+// retirementReaderDrainBudget bounds how long a committed retirement waits
+// for in-flight readers to leave before release proceeds without them. A
+// drain that runs out never reopens admission and never forces a kill: the
+// process stays retiring.
+const retirementReaderDrainBudget = 30 * time.Second
+
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
@@ -89,6 +95,7 @@ type serveServer interface {
 	SetClearFunc(func(context.Context, appwire.ThreadClearParams) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
+	SetDaemonLifecycle(func() appwire.DaemonLifecycle, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error))
 	SetProcessing(bool)
 	SetProcessingTurn(string)
 	SetState(string)
@@ -170,6 +177,16 @@ type serveDeps struct {
 	// runServeWithDeps, and the nil they leave here is what keeps a test run
 	// off the developer's own scratch bases.
 	reclaimScratch func(workingDir string)
+	// retirementClock is the retirement controller's sole source of time.
+	// Nil means agent.RealRetirementClock(); tests inject a fake to drive the
+	// idle deadline deterministically.
+	retirementClock agent.RetirementClock
+	// retirementObserve reports the retirement pipeline's observable beats —
+	// root_published, claim_consumed, prepared, committed, released — with
+	// the root session id each beat belongs to. Nil in production; invoked
+	// outside every lock. It exists so a test can sequence virtual-time
+	// advances against the pipeline and hold a claim open at a gate.
+	retirementObserve func(event, rootID string)
 }
 
 type serveCallbackObserver struct {
@@ -322,6 +339,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	providerIdleTimeout := fs.String("provider-idle-timeout", "", "Provider response-byte idle duration (default: 10m; no total request limit)")
+	daemonIdleTimeout := fs.Duration("daemon-idle-timeout", 0, "retire this daemon after continuous proven inactivity (default: 0 = automatic retirement disabled; the Hub passes its configured value)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
 	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
 	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
@@ -337,6 +355,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *daemonIdleTimeout < 0 {
+		return fmt.Errorf("--daemon-idle-timeout must not be negative (got %v)", *daemonIdleTimeout)
 	}
 	pluginManager := plugins.NewManager(*pluginRoot)
 	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
@@ -670,6 +691,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// hold that reads the session to close, which is what makes the pass and the
 	// swap one decision instead of two racing ones.
 	var liveSessionClosed bool
+	// exitPolicy records who owns the process exit: "" while undecided,
+	// "shutdown" once closeLiveSession claims it, "retirement" once a
+	// retirement consumer reserves it. First writer wins; the loser joins the
+	// winner's exit instead of making a second closing pass.
+	var exitPolicy string
 	getSession := func() *agent.Session {
 		currentMu.RLock()
 		defer currentMu.RUnlock()
@@ -689,7 +715,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		currentMu.Lock()
 		liveSessionClosed = true
 		live := currentSess
+		owned := false
+		if exitPolicy == "" {
+			exitPolicy = "shutdown"
+			owned = true
+		}
 		currentMu.Unlock()
+		if !owned {
+			// Retirement's consumer reserved the exit and already released
+			// the root; this pass is the ctx.Done() tail of that same exit
+			// and must not close the released session a second time.
+			return
+		}
 		live.Close()
 	}
 	// shutdownClosedTheLiveSession reports whether that pass has already run.
@@ -702,6 +739,112 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		defer currentMu.RUnlock()
 		return liveSessionClosed
 	}
+
+	// The retirement controller owns the daemon's idle deadline. Exactly one
+	// consumer drives a claim to process exit; the timer (controller Run) is
+	// the only automatic claimant, and evener/daemon/retire is the manual one.
+	retireClock := deps.retirementClock
+	if retireClock == nil {
+		retireClock = agent.RealRetirementClock()
+	}
+	retirement, err := agent.NewRetirementController(*daemonIdleTimeout, retireClock)
+	if err != nil {
+		sess.Close()
+		listener.Close() //nolint:errcheck // returning the construction failure; the close error is not actionable
+		return fmt.Errorf("retirement controller: %w", err)
+	}
+	retirementObserve := func(event, rootID string) {
+		if deps.retirementObserve != nil {
+			deps.retirementObserve(event, rootID)
+		}
+	}
+	if err := retirement.AttachRoot(sess); err != nil {
+		sess.Close()
+		listener.Close() //nolint:errcheck // as above
+		return fmt.Errorf("retirement root: %w", err)
+	}
+	retirementObserve("root_published", sess.ID())
+	// reserveRetirementExit hands the process exit to the retirement consumer
+	// exactly once: it refuses when shutdown already owns the exit, when the
+	// shutdown pass already ran, or when the published root moved under the
+	// claim (a thread/clear replacement is not the prepared tree).
+	reserveRetirementExit := func(root *agent.Session) bool {
+		currentMu.Lock()
+		defer currentMu.Unlock()
+		if exitPolicy != "" || liveSessionClosed || currentSess != root {
+			return false
+		}
+		exitPolicy = "retirement"
+		return true
+	}
+	// consumeRetirementClaim is the single pipeline both triggers share. Any
+	// failure before Commit aborts the claim and leaves the daemon resident;
+	// a failure after Commit keeps the process retiring — admission is closed
+	// and never reopens, so lingering beats forcing a kill.
+	consumeRetirementClaim := func(ctx context.Context, claim *agent.RetirementClaim) error {
+		root := getSession()
+		retirementObserve("claim_consumed", root.ID())
+		if !rendezvous.StrongOwnershipAvailable() {
+			_ = retirement.Abort(claim, "prepare_failed")
+			return errors.New("retirement requires strong rendezvous ownership, unavailable on this platform")
+		}
+		prepared, err := retirement.Prepare(ctx, claim)
+		if err != nil {
+			_ = retirement.Abort(claim, "prepare_failed")
+			return fmt.Errorf("retirement preparation: %w", err)
+		}
+		retirementObserve("prepared", root.ID())
+		if !reserveRetirementExit(root) {
+			_ = retirement.Abort(claim, "prepare_failed")
+			return errors.New("retirement exit is no longer owned by the prepared root")
+		}
+		if err := retirement.Commit(claim); err != nil {
+			return fmt.Errorf("retirement commit: %w", err)
+		}
+		retirementObserve("committed", root.ID())
+		drainCtx, drainCancel := context.WithTimeout(ctx, retirementReaderDrainBudget)
+		drainErr := retirement.DrainReaders(drainCtx)
+		drainCancel()
+		if drainErr != nil {
+			serveLogf(os.Stderr, root.ID(), "retirement reader drain failed: %v", drainErr)
+			return fmt.Errorf("retirement reader drain: %w", drainErr)
+		}
+		if err := agent.ReleaseForRetirement(ctx, prepared); err != nil {
+			serveLogf(os.Stderr, root.ID(), "retirement release failed: %v", err)
+			return fmt.Errorf("retirement release: %w", err)
+		}
+		retirementObserve("released", root.ID())
+		cancel()
+		return nil
+	}
+	// requestRetirement serves evener/daemon/retire. Exact-ownership
+	// revalidation runs BEFORE the admission fence is touched: a caller
+	// holding a stale generation (same PID, drifted identity) gets a conflict
+	// and no claim is consumed.
+	requestRetirement := func(ctx context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+		entry, ok := rvRegistration.Entry()
+		if !ok {
+			return appwire.DaemonRetireResponse{}, appwire.Unavailable("daemon rendezvous not registered")
+		}
+		if params.Identity.Generation == "" || params.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
+			return appwire.DaemonRetireResponse{}, appwire.Conflict("daemon identity does not match current ownership")
+		}
+		claim, snap, err := retirement.TryClaim(true)
+		if err != nil {
+			return appwire.DaemonRetireResponse{}, err
+		}
+		if claim == nil {
+			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
+		}
+		if err := consumeRetirementClaim(ctx, claim); err != nil {
+			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, err
+		}
+		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
+	}
+	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
+		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
+	}, requestRetirement)
+	go func() { _ = retirement.Run(ctx, consumeRetirementClaim) }()
 
 	// The observer runs ON the bridge goroutine, which is the daemon's
 	// authoritative consumer, so it must never block: see verboseEventTee.
@@ -1030,6 +1173,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetClearFunc(func(ctx context.Context, _ appwire.ThreadClearParams) error {
 		oldSess := getSession()
+		// The admission lease runs from BEFORE any durable construction to
+		// after the new root is published and the old one settled: retirement
+		// can neither claim the tree being replaced nor start its interval
+		// against the half-built replacement. Rejection here means the daemon
+		// is already preparing/retiring and the clear must not begin.
+		releaseAdmission, err := retirement.BeginMutation(oldSess.ID(), "admission")
+		if err != nil {
+			return err
+		}
+		defer releaseAdmission()
 		currentMu.RLock()
 		oldEnv := currentEnv
 		currentMu.RUnlock()
@@ -1085,6 +1238,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// and the turn snapshot. The stable workspace ref remains subscribed while
 		// a resync tells every client to hydrate the new instance.
 		srv.ReplaceAppIdentity(prepared, func() { setSession(newSess, clearEnv) })
+		// Re-root the retirement controller at the replacement. The lease held
+		// since the top of this func keeps the controller resident, so this
+		// cannot fail; the idle interval restarts against the new root.
+		_ = retirement.AttachRoot(newSess)
+		retirementObserve("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.
 		// Re-seed from the replacement session here rather than inside the
 		// commit: sampling every facet reads jobs.jsonl and the task store, and

@@ -51,6 +51,12 @@ type Config struct {
 	// PluginAutoUpgradeInterval is how often the daemon refreshes marketplaces
 	// and re-checks autoUpgrade-enabled plugins, plus once on hub start.
 	PluginAutoUpgradeInterval time.Duration `toml:"plugin_auto_upgrade_interval"`
+	// DaemonIdleTimeout is how long a spawned daemon may sit continuously
+	// idle before it retires itself. One hour by default; an explicit "0s"
+	// disables automatic retirement and is NOT floored back to the default —
+	// unlike the auto-upgrade interval, zero here is the documented kill
+	// switch, not a panic risk. Negative values are rejected at load.
+	DaemonIdleTimeout time.Duration `toml:"daemon_idle_timeout"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -66,6 +72,7 @@ func DefaultConfig() Config {
 		PastResultsPerPage:        50,
 		PluginAutoUpgrade:         true,
 		PluginAutoUpgradeInterval: 12 * time.Hour,
+		DaemonIdleTimeout:         time.Hour,
 	}
 }
 
@@ -123,6 +130,9 @@ func LoadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("parse config: %w", decodeErr)
 	}
 	applyConfigDefaults(&cfg)
+	if cfg.DaemonIdleTimeout < 0 {
+		return cfg, fmt.Errorf("daemon_idle_timeout must not be negative (got %v)", cfg.DaemonIdleTimeout)
+	}
 	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
 		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)
 	}

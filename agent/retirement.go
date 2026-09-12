@@ -331,3 +331,85 @@ func (c *RetirementController) Abort(claim *RetirementClaim, failure string) err
 	c.Changed()
 	return nil
 }
+
+// RealRetirementClock returns the production wall clock for daemon callers
+// (cmd/evener serve) that cannot import the agent-internal clock package.
+func RealRetirementClock() RetirementClock { return clock.Real() }
+
+// Run drives the daemon-owned idle timer until ctx is done. It is the only
+// automatic source of retirement claims: every other caller passes manual=true
+// to TryClaim. The timer exists only while the process is fully settled —
+// root attached, phase resident, no admitted work — and every tick re-proves
+// eligibility through TryClaim rather than trusting that the tick is fresh,
+// so a tick already in flight when a lease disarms its timer retires nothing.
+//
+// Eligibility never accrues across blocked time: evaluate clears
+// eligibleSince whenever the process is unsettled, so the interval that
+// ultimately fires started at the most recent settled instant. A preparation
+// failure is survivable — the consumer aborts the claim, evaluate observes
+// the settled process again and arms a fresh full interval, and Run lives on.
+// Run returns nil when ctx is done; consumer errors are the consumer's
+// responsibility (it owns Abort/Commit), not the loop's.
+func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error) error {
+	var timer RetirementTimer
+	disarm := func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+	arm := func(d time.Duration) {
+		if d < 0 {
+			d = 0
+		}
+		if timer == nil {
+			timer = c.clock.NewTimer(d)
+		} else {
+			timer.Reset(d)
+		}
+	}
+	evaluate := func() {
+		// The injected clock is a callback boundary; never call it under mu.
+		now := c.clock.Now()
+		c.mu.Lock()
+		settled := c.root != nil && c.phase == "resident" && len(c.active) == 0
+		if !settled {
+			c.eligibleSince = time.Time{}
+			c.mu.Unlock()
+			disarm()
+			return
+		}
+		if c.eligibleSince.IsZero() {
+			c.eligibleSince = now
+		}
+		if c.timeout == 0 {
+			// Automatic retirement disabled: eligibility still tracked for
+			// diagnostics, but no expiry timer exists.
+			c.mu.Unlock()
+			disarm()
+			return
+		}
+		remaining := c.eligibleSince.Add(c.timeout).Sub(now)
+		c.mu.Unlock()
+		arm(remaining)
+	}
+	defer disarm()
+	evaluate()
+	for {
+		var tick <-chan time.Time
+		if timer != nil {
+			tick = timer.C()
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-c.changed:
+			evaluate()
+		case <-tick:
+			claim, _, err := c.TryClaim(false)
+			if err == nil && claim != nil {
+				_ = retire(ctx, claim)
+			}
+			evaluate()
+		}
+	}
+}

@@ -115,6 +115,12 @@ func ToArgs(r Resolved) []string {
 		}
 		add("--mcp", spec)
 	}
+	// Unconditional, and always last: the retirement deadline is a runtime
+	// launch parameter the child must see explicitly. Zero renders "0s"
+	// (disabled), so an absent Hub assignment can never look like "use the
+	// child's own default" — the standalone serve default and the Hub's
+	// one-hour default are different values for the same flag.
+	add("--daemon-idle-timeout", r.DaemonIdleTimeout.String())
 	return out
 }
 
