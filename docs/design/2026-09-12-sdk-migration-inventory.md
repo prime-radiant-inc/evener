@@ -12,22 +12,33 @@ boundary, not yet a replacement for every web state store". This document is
 the map of what is actually there.
 
 Method: every classification below came from reading the module and its
-importers, not from its name. Line counts are non-test lines at the stated
+importers, not from its name. **Verification rule, re-applied at `f2599d1ed`
+(origin/main) after the first phase-B PR stopped on a row that did not hold:**
+a row is DUPLICATED only if a grep names the exact symbol and `file:line` on
+*both* sides and the two take the same inputs, use the same vocabulary, and
+apply the same fallback. A pair that merely occupies the same conceptual slot —
+"both compute usage", "both fold runs" — is two different rules, and is recorded
+as PLATFORM-ONLY or single-consumer PACKAGE CANDIDATE instead. A row is
+PACKAGE CANDIDATE (2 consumers) only if `git grep "frontend/src/<module>\""
+origin/main -- mobile-native` returns at least one hit; all 33 such rows were
+re-checked this way and all 33 hold. Line counts are non-test lines at the stated
 commit. Where I am unsure I say so in the row.
 
 ## 0. What the package actually is today
 
 Five facts that change the shape of the whole migration.
 
-1. **The shipped package is six files, not sixteen.**
+1. **The shipped package was six files, not sixteen** — until A1.
    `protocol/tsconfig.build.json:13` lists
    `files: ["index.ts", "client.ts", "errors.ts", "transport.ts", "types.gen.ts", "askAnswers.ts"]`.
    The other ten runtime modules in that directory (`model.ts`, `reducer.ts`,
    `activityData.ts`, `activityList.ts`, `activityMerge.ts`, `jobOutput.ts`,
    `docContent.ts`, `sendQueueAvailability.ts`, `sessionErrors.ts`,
-   `stableDelegate.ts` — 3,502 lines, per §5's own table) are compiled by the
-   apps' own build, never
-   packed, never qualified.
+   `stableDelegate.ts` — 3,502 lines, per §5's own table) were compiled by the
+   apps' own build, never packed, never qualified. **A1 (#1184) closed this,
+   merged to main as `f2599d1ed`:** the build `files` list now carries all
+   sixteen, `docContent.ts` included, with only `readDocFile` held off
+   `index.ts` until C24. §5's "In tarball?" column reflects the post-A1 state.
 2. **`index.ts` carries nine export statements and eleven runtime exports**
    (`protocol/index.ts:1-9`): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
    `ConnectionClosedError`, `RequestTimeoutError`, `WireError`,
@@ -141,11 +152,11 @@ migration has to place.
 | `transcriptDisplay/renderContext.tsx` (246) | React context for the projector | none | none | PLATFORM-ONLY | React |
 | `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1445) | Chord grammar, default table, override delta application, semantic validation | none | native imports `defaults`, `display`, `registry`, `validation` (1 site each) | PACKAGE CANDIDATE (2 consumers) | `registry.ts:6` imports `zustand/vanilla` and `chord.ts:12` imports `tinykeys` — a zero-dependency package cannot take them as-is; `registry.ts` is also a module-level singleton needing an instance factory |
 | `keybindings/dispatcher.ts` (197) | Keydown routing through tinykeys | none | native has its own | PLATFORM-ONLY | DOM events |
-| `panes/session/chrome/taskData.ts` (102) | Narrows `TaskListResponse.data` (typed `unknown`) to `TaskRow[]` | none | `mobile/src/services/activity.ts` `TaskGroup`/`deriveOpenTaskCount` (different source: `TaskAggregate` on the Thread) | DUPLICATED | same user-facing counts from two wire sources; unify on one |
+| `panes/session/chrome/taskData.ts` (102) | Narrows `TaskListResponse.data` (typed `unknown`) to `TaskRow[]` | none | native imports this file (2 sites). Not a twin of `services/activity.ts:409` `projectTasks`, which emits three *counts* off `TaskAggregate` with `active` pinned to literal `0`, against this module's parsed row list | PACKAGE CANDIDATE (2 consumers) | a relocation, not a dedup — the two task rules answer different questions and both are load-bearing |
 | `panes/session/chrome/taskGroups.ts` (24) | Status partition for the tasks panel | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/chrome/taskTime.ts` (28) | Task recency/completion formatting | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/chrome/activityRows.ts` (208) | `ActivityTree` → flat display rows | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
-| `panes/session/chrome/{activityFormat,statusFormat,detailsAccounting}.ts` (243) | Activity/status labels; token and cost accounting | none | `mobile/src/services/activity.ts` `UsageSummary`/`projectUsage` | DUPLICATED | pick one accounting implementation |
+| `panes/session/chrome/{activityFormat,statusFormat,detailsAccounting}.ts` (243) | Activity/status labels; token and cost accounting | none | **none.** `detailsAccounting.ts:69-89` `sessionTokens` takes a `ThreadModel` and returns `{inputTokens, outputTokens, scope} \| null`, *deriving* a session figure by summing loaded turns when no cumulative exists — pinned by `detailsAccounting.test.ts:26-29,41-44`. `services/activity.ts:437-451` `projectUsage` takes raw `Thread["evener"]` and copies ten optional fields with no arithmetic. Native does not merely lack the derivation, it **forbids** it: `state/activity.ts:23-27,337-344` returns `"rehydrate"` on `turn/completed` rather than fold per-turn usage into the aggregate. `projectUsage`'s real analog is `protocol/reducer.ts:797-805`, already in the package | PACKAGE CANDIDATE | single consumer, and the reducer analog makes this a D-phase reducer question, not a B-phase dedup — see decision 4 in the plan |
 | `panes/session/composer/slashCompletion.ts` (334) | Inline `/`-completion parser | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | imports `slashCommandInvocation` from `shell/palette/catalogCommands.ts:13`; that helper must cross the boundary first or with it |
 | `panes/session/composer/submitRouting.ts` (50) | send/queue/steer/drain routing decision | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `protocol/sendQueueAvailability` (also unpacked) |
 | `panes/session/composer/attachments/limits.ts` (29) | 8 files / 8 MiB attachment caps | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
@@ -154,17 +165,17 @@ migration has to place.
 | `panes/session/composer/askDock/reconcileBatches.ts` (76) | Stateful in-flight ask-batch reconciliation | none | native imports this file (2 sites) via `questionBatches.ts` (63) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/composer/askDock/askDockStore.ts` (440) | Per-ref answering dock bookkeeping | none | `mobile-native/src/questionBatches.ts` + approval screens | DUPLICATED | subscribes to `threadsStore` at module load |
 | `panes/session/composer/queue/pendingTurnsStore.ts` (474) | Optimistic pending turns across outbox + model | none | `mobile/src/state/conversation.ts` queue half | DUPLICATED | imports `react`'s `act` at module scope (line 1) — that has to go before it can move |
-| `panes/session/composer/queue/pendingReconcile.ts` (137) | Reconciling optimistic turns against `ThreadModel` | none | `mobile/src/conversation/project.ts` `projectQueue` (line 759) | DUPLICATED | pure; unify with `projectQueue` |
+| `panes/session/composer/queue/pendingReconcile.ts` (137) | Reconciling optimistic turns against `ThreadModel` | none | **none** — `:111` `reconcilePendingEntries` matches outbox records against a `ThreadModel` and emits `PendingTurnEntry[]` across four states (`submitting`/`blockedUnknown`/`accepted`/`claimed`); `project.ts:759` `projectQueue` is a field copy of `Thread["evener"]["queue"]` into `MobileQueue` — no optimistic records, no states, no reconciliation | PACKAGE CANDIDATE | single consumer; the native queue state that would be its twin lives in `state/conversation.ts` and is D25's problem |
 | `panes/session/composer/draft.ts` (76) | Per-ref sticky composer drafts | none | `mobile-native/src/{nativeDrafts,draftRepository}.ts` (318) | PLATFORM-ONLY | localStorage vs expo-sqlite; the *rule* is one line |
 | `panes/session/composer/recovery/recoveryDraft.ts` (76) | Failed-mutation record → restorable composer draft | none | unsure — native recovery path not verified | PACKAGE CANDIDATE | depends on `useAttachments`' `PendingAttachment` type |
 | `panes/session/transcript/toolRenderers.ts:189` `toolCallFailed` (6) | A third settled-item failure predicate, registry-driven | none | the shared `protocol/itemFailure.ts` introduced by PR #1189 | DUPLICATED | does not trim `error`, does not treat `interrupted` as failure, ignores `exitCode`, and adds a per-tool `descriptor.failed` hook the other two have no equivalent for. Filed as issue #1190; 43 files reach the renderer registry |
-| `panes/session/transcript/{toolRuns,toolSupersession,turnFailure}.ts` (247) | Tool-run folding, supersession, turn-failure classification | none | `mobile/src/conversation/project.ts` `clusterActivities` (line 528) | DUPLICATED | pure on both sides |
-| `panes/session/transcript/messages/{format,systemGrouping,turnMeta}.ts` (212) | Message formatting, system-notice grouping, turn metadata | none | native imports `format` (1 site); `systemGrouping` ≈ `project.ts` `systemFamily` | DUPLICATED | pure |
+| `panes/session/transcript/{toolRuns,toolSupersession,turnFailure}.ts` (247) | Tool-run folding, supersession, turn-failure classification | none | **none** — `toolRuns.ts:56` `foldToolRuns` folds settled, error-free `commandExecution` entries at `MIN_RUN = 3` (`:43`) over `ProjectedEntry[]`, through the renderer registry's `descriptorFor`; `project.ts:528` `clusterActivities` folds *consecutive same-family* activity items at run length ≥ 2 over `PreActivity[]` | PACKAGE CANDIDATE | single consumer; different input unit, threshold and output shape |
+| `panes/session/transcript/messages/{format,systemGrouping,turnMeta}.ts` (212) | Message formatting, system-notice run grouping, turn metadata | none | `format.ts` is imported by native (1 site). `systemGrouping.ts` is **not** `project.ts:67` `systemFamily`'s twin: it groups runs of consecutive system messages at `MIN_GROUP_SIZE = 3` (`:23,54,79`), while `systemFamily` classifies one `eventKind` into a `NoticeFamily`. `systemFamily`'s real web counterpart is the `eventKind` set matching inside `transcriptDisplay/projector.ts:112-130`, which D24 adopts wholesale | PACKAGE CANDIDATE | `format.ts` relocates with C26-class work; `systemGrouping.ts` and `turnMeta.ts` are single-consumer and stay |
 | `panes/session/askShared.ts` (151) + `panes/session/transcript/tools/helpers.ts` (138) | `ask_user` question parsing; tool-argument JSON helpers | none | `mobile/src/conversation/model.ts` `MobileAskQuestion`/`MobileAskOption` | DUPLICATED | `helpers.ts` is pure; `askShared.ts` reads `ItemModel`/`ThreadModel`. Reached transitively by `deriveAskQuestions.ts`, so C11 carries them |
 | `panes/session/transcript/tools/subagentModuleStore.ts` (138) | Per-delegate presentation state | none | `mobile-native/src/delegateDetails.ts` (116) | DUPLICATED | uses `protocol/stableDelegate.ts` (unpacked) |
 | `panes/session/transcript/useTranscript.ts` (66) | Selector + older-turn paging over `threadsStore` | none | `mobile/src/state/conversation.ts` `loadOlder` | DUPLICATED | React hook; the paging rule underneath is shared |
-| `panes/session/transcript/flow/seenWatermark.ts` (34) | Reader position watermark | none | `mobile-native/src/activityRetention.ts` (17)? unsure | PACKAGE CANDIDATE | pure |
-| `panes/session/liveness.ts` (64), `threadTitle.ts` (23) | Liveness line and title derivation | none | `mobile/src/conversation/project.ts` | DUPLICATED | pure |
+| `panes/session/transcript/flow/seenWatermark.ts` (34) | Reader position watermark | none | **none** — the earlier "unsure" is resolved: `activityRetention.ts` `retainedActivityTree` keeps an `ActivityTree` across a ref/threadId change, an unrelated rule | PLATFORM-ONLY | `:19,27` read and write `localStorage` |
+| `panes/session/liveness.ts` (64), `threadTitle.ts` (23) | Liveness line and title derivation | none | **none** — `project.ts:715` passes `thread.status.type` straight through (pinned by `project.test.ts:1483,1493`), and `roster.ts:48-53` `classifyAttention` is a different rule with a different vocabulary (`needsYou`/`running`/`recent`) | PLATFORM-ONLY | `liveness.ts` exports React hooks and `threadTitle.ts:21-23` reads the web navigation zustand singleton. Both stay |
 | `shell/rail/sessionState.ts` (41) | Humanized wire state for a session row | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
 | `shell/rail/railNodes.ts` (775), `railController.ts` (69) | Rail tree construction and expansion | none | `mobile-native/src/navigationTree.ts` | DUPLICATED | reads navigation selectors |
 | `shell/palette/catalogCommands.ts` (37) | `/plugin:name` qualification rule | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
@@ -186,7 +197,7 @@ migration has to place.
 | `auth.ts` (56) | Browser auth token handling for the socket URL | none | `mobile-native` uses expo-secure-store | PLATFORM-ONLY | — |
 | `panes/doc/{docFile,openDoc}.ts` (60) | Doc pane file loading | none (uses `protocol/docContent.ts`) | none | PACKAGE CANDIDATE | `docContent.ts` is browser-shaped in three ways, not one: `docFileRawURL:58` and `docImageURL:97` build **same-origin-relative** `/doc/file?...` and `/doc/image?...` paths (no origin at all, so a native app cannot use them), and `readDocFile:74` calls **global `fetch`** with `credentials: "same-origin"` to carry the hub auth cookie. A device has no cookie jar and no same origin; all three need injection |
 
-## 4. `mobile/src` (9 modules, 7,615 lines)
+## 4. `mobile/src` (9 modules, 7,615 lines; 10 rows — one covers a native-internal duplicate pair)
 
 The checkpoint doc (`docs/design/mobile/2026-09-09-iphone-main-checkpoint.md:7`)
 names eight runtime modules; the ninth below is dead.
@@ -196,6 +207,7 @@ names eight runtime modules; the ninth below is dead.
 | `state/conversation.ts` (3369) | The active session's projection, draft, cursor, mutation lifecycle, generation fencing | `evener/{goal/updated,task/updated,thread/name/changed,thread/resync}`, `evener/sandbox/escalation/{requested,resolved}` | `stores/threads.ts` (2997) + `protocol/reducer.ts` (1630) | DUPLICATED | this is the big one: two independent notification appliers over the same wire |
 | `state/activity.ts` (495) | `ActivityView` + identity/generation fencing, relocation→rehydrate rules | (validates notification payloads) | `stores/activityPanel.ts` (371) + `activitySummary.ts` (327) | DUPLICATED | the rehydrate discipline here is stricter than the web's; keep it |
 | `services/conversation.ts` (1263) | Typed capability-gated RPC layer over `AppwireClient`; open epochs | `evener/thread/name/set` plus generated `MethodName`s | the client-facing half of `stores/threads.ts` | DUPLICATED | closest thing to "the shared service layer" that exists; a good base |
+| `conversation/project.ts:774-787` and `services/activity.ts:437-451` (two `projectUsage`) | The same ten-field copy off `Thread["evener"]`, written twice inside the native tree | none | each other; `protocol/reducer.ts:797-805` does the same copy with `?? 0`/`?? null` where these pass `undefined` through | DUPLICATED | native-internal, no boundary to cross — the smallest real duplication in this document |
 | `services/activity.ts` (481) | Thread diagnostics/tasks/jobs/usage → `ActivityView`; redaction allowlist | none (pure over `Thread`) | `protocol/activityData.ts` (702) + `panes/session/chrome/taskData.ts` | DUPLICATED | different source (embedded `Thread.evener` vs `evener/jobs/list` tree) for overlapping output |
 | `services/roster.ts` (114) | `thread/list` → `RosterEntry[]` with attention classification | `thread/list` | none — the web reaches the same UX through `evener/navigation/read` | PACKAGE CANDIDATE | pure projection; note the two surfaces answer the same question differently |
 | `services/newSession.ts` (105) | New-session parameter assembly | none | `panes/spawn/startThread.ts` | PACKAGE CANDIDATE | pure |
@@ -203,7 +215,8 @@ names eight runtime modules; the ninth below is dead.
 | `conversation/project.ts` (787) | `Thread` → `MobileConversation`: classification, clustering, approvals, queue | none | `protocol/reducer.ts` hydrate + `transcriptDisplay/projector.ts` | DUPLICATED | the web splits this into two layers (transport model, then display projection); native does it in one |
 | `dev/conversationFixtures.ts` (774) | Geometry-test fixtures | none | — | dead code | imports `../services/nativeProfiles` and `../state/connection`, **neither of which exists**; no importer, so `tsc --project mobile-native/tsconfig.check.json` never reaches it (that tsconfig has no `include`, so `mobile/src` enters only through the import graph). Delete or restore in its own PR. |
 
-## 5. The `protocol/` directory itself (16 modules, 8,032 lines)
+## 5. The `protocol/` directory itself (16 top-level modules, 7,233 lines;
+`testing/` adds 799, for the 8,032 the directory holds in all)
 
 | Module (lines) | In tarball? | Consumers | Class |
 | --- | --- | --- | --- |
@@ -213,17 +226,17 @@ names eight runtime modules; the ninth below is dead.
 | `transport.ts` (20) | yes | web (3), native (5) | SHARED ALREADY |
 | `types.gen.ts` (2505) | yes | web (229), native (78) | SHARED ALREADY |
 | `askAnswers.ts` (100) | yes | web (3), native (2) | SHARED ALREADY |
-| `model.ts` (369) | **no** | web (129), native 0 | PACKAGE CANDIDATE |
-| `reducer.ts` (1630) | **no** | web (11), native 0 | PACKAGE CANDIDATE |
-| `activityData.ts` (702) | **no** | web (15), native (6) | PACKAGE CANDIDATE (2 consumers) |
-| `activityList.ts` (188) | **no** | web 0, native (3) | PACKAGE CANDIDATE — the only protocol module the web does not use |
-| `activityMerge.ts` (278) | **no** | web (2), native 0 | PACKAGE CANDIDATE |
-| `sendQueueAvailability.ts` (147) | **no** | web (2), native via `submitRouting` | PACKAGE CANDIDATE (2 consumers) |
-| `sessionErrors.ts` (42) | **no** | web (2), native (2) | PACKAGE CANDIDATE (2 consumers) |
-| `stableDelegate.ts` (12) | **no** | web (3), native (1) | PACKAGE CANDIDATE (2 consumers) |
-| `jobOutput.ts` (35) | **no** | web (2), native (1) | PACKAGE CANDIDATE (2 consumers) |
+| `model.ts` (369) | yes, since #1184 | web (129), native 0 | PACKAGE CANDIDATE |
+| `reducer.ts` (1630) | yes, since #1184 | web (11), native 0 | PACKAGE CANDIDATE |
+| `activityData.ts` (702) | yes, since #1184 | web (15), native (6) | PACKAGE CANDIDATE (2 consumers) |
+| `activityList.ts` (188) | yes, since #1184 | web 0, native (3) | PACKAGE CANDIDATE — the only protocol module the web does not use |
+| `activityMerge.ts` (278) | yes, since #1184 | web (2), native 0 | PACKAGE CANDIDATE |
+| `sendQueueAvailability.ts` (147) | yes, since #1184 | web (2), native via `submitRouting` | PACKAGE CANDIDATE (2 consumers) |
+| `sessionErrors.ts` (42) | yes, since #1184 | web (2), native (2) | PACKAGE CANDIDATE (2 consumers) |
+| `stableDelegate.ts` (12) | yes, since #1184 | web (3), native (1) | PACKAGE CANDIDATE (2 consumers) |
+| `jobOutput.ts` (35) | yes, since #1184 | web (2), native (1) | PACKAGE CANDIDATE (2 consumers) |
 | `docContent.ts` (99) | **yes, since #1184** | web (5), native 0 | PACKAGE CANDIDATE — the module ships and `docFileRawURL`/`docImageURL`/`DOC_FILE_MAX_BYTES`/`DocFileError` are exported and qualified, but `readDocFile` is deliberately kept off `index.ts` until C24 gives it a base-URL and fetch port |
-| `testing/` (6 files) | **no** | 136 web files import `testing/fakeClient`; 25 name `AppwireClientLike` | PACKAGE CANDIDATE — the type must leave `testing/` |
+| `testing/` (6 files, 799 lines) | **no**, deliberately | 136 web files import `testing/fakeClient`; 25 name `AppwireClientLike` | PACKAGE CANDIDATE — the type must leave `testing/` |
 
 ## 6. The package boundary
 
@@ -307,11 +320,11 @@ later PR a place to land. Both are now written: see "Since this was written".
 | Class | Rows |
 | --- | --- |
 | SHARED ALREADY | 6 |
-| DUPLICATED | 38 |
-| PACKAGE CANDIDATE | 51 (of which 33 already have two consumers via deep relative import) |
-| PLATFORM-ONLY | 11 |
+| DUPLICATED | 33 |
+| PACKAGE CANDIDATE | 55 (of which 34 already have two consumers via deep relative import) |
+| PLATFORM-ONLY | 13 |
 | dead code | 1 |
-| **Total rows** | **107** |
+| **Total rows** | **108** |
 
 Rows cover 32 web `stores/` modules, 49 rows for web modules outside `stores/`
 (several rows group a directory), 9 `mobile/src` modules, and 17 rows for
