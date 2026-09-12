@@ -41,9 +41,14 @@ const (
 	registryFileName     = "installed_plugins.json"
 	marketplacesFileName = "known_marketplaces.json"
 	renameMarkerFileName = "marketplace-rename.json"
-	bundledDirName       = "bundled"
-	cacheDirName         = "cache"
-	marketplacesDirName  = "marketplaces"
+	// migrationRecordFileName holds the renames the migration has made and the
+	// alias families they belong to. Unlike the marker beside one rename it
+	// outlives the run: a marketplace's other names can still be recorded in a
+	// later one.
+	migrationRecordFileName = "marketplace-migration.json"
+	bundledDirName          = "bundled"
+	cacheDirName            = "cache"
+	marketplacesDirName     = "marketplaces"
 )
 
 // storePath derives a path inside the store, refusing a root that resolves

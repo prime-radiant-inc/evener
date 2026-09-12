@@ -2141,6 +2141,187 @@ func TestMarketplaceNameMigration_ADerivedNameTheFilesystemCannotHoldFallsBack(t
 	}
 }
 
+// Three names can derive the one directory pair while naming two sources. Each
+// source's aliases belong to its own record: the pair alone is not the family,
+// or the second source's rename overwrites the first family's entry and a later
+// true alias of the first is split into a third record.
+func TestMarketplaceNameMigration_TwoSourcesDerivingOnePairKeepTheirOwnAliases(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	dirX := makeDirectoryMarketplace(t, "acme", "widget")
+	dirY := makeDirectoryMarketplace(t, "acme", "gadget")
+	srcX := Source{Kind: SourceDirectory, Path: dirX}
+	srcY := Source{Kind: SourceDirectory, Path: dirY}
+	planted := time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC)
+	// Three refused names deriving the one directory pair, naming two sources:
+	// x, then y, then x again.
+	if err := m.saveMarketplaces(Marketplaces{
+		"a/./b": {Source: srcX, InstallLocation: dirX, LastUpdated: planted},
+		"a//b":  {Source: srcY, InstallLocation: dirY, LastUpdated: planted},
+		"a/b":   {Source: srcX, InstallLocation: dirX, LastUpdated: planted},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveRegistry(Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		registryKey("widget", "a/./b"): {{
+			InstallPath: filepath.Join(dirX, "plugins", "widget"), Version: "1.0.0", Enabled: true,
+			Source: Source{Kind: SourceGitHub, Repo: "o/widget"},
+		}},
+		registryKey("gadget", "a//b"): {{
+			InstallPath: filepath.Join(dirY, "plugins", "gadget"), Version: "1.0.0", Enabled: true,
+			Source: Source{Kind: SourceGitHub, Repo: "o/gadget"},
+		}},
+		registryKey("sprocket", "a/b"): {{
+			InstallPath: filepath.Join(dirX, "plugins", "sprocket"), Version: "1.0.0", Enabled: true,
+			Source: Source{Kind: SourceGitHub, Repo: "o/sprocket"},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := map[string]string{}
+	for name, ref := range mk {
+		if _, dup := held[ref.Source.Path]; dup {
+			t.Fatalf("marketplaces = %v, want one record per source", mk)
+		}
+		held[ref.Source.Path] = name
+	}
+	if len(mk) != 2 || held[dirX] == "" || held[dirY] == "" {
+		t.Fatalf("marketplaces = %v, want one record per source", mk)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, plugin := range []string{"widget", "sprocket"} {
+		if _, ok := reg.Plugins[registryKey(plugin, held[dirX])]; !ok {
+			t.Fatalf("registry keys = %v, want %s under %q, its own source's record", reg.Plugins, plugin, held[dirX])
+		}
+	}
+	if _, ok := reg.Plugins[registryKey("gadget", held[dirY])]; !ok {
+		t.Fatalf("registry keys = %v, want gadget under %q", reg.Plugins, held[dirY])
+	}
+}
+
+// A marketplace's aliases can be spread across runs: "a/./b" migrates in one,
+// and "a/b" — deriving the same directories, which the first run already took
+// with the rename — is only recorded later. The run that migrated the first has
+// to leave something naming the family, or the second aliases the existing
+// record and takes a numbered name whose installs point at a cache nobody made.
+func TestMarketplaceNameMigration_AnAliasRecordedInALaterRunMergesIntoTheMigratedRecord(t *testing.T) {
+	root := t.TempDir()
+	first := NewManager(root)
+	first.Stderr = io.Discard
+	plantLegacyMarketplace(t, first, "a/./b", "widget")
+	if err := first.migrateStore(context.Background()); err != nil {
+		t.Fatalf("first migrateStore: %v", err)
+	}
+	mk, err := first.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["a-b"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want a-b alone", mk)
+	}
+
+	second := NewManager(root)
+	second.Stderr = io.Discard
+	mk, err = second.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk["a/b"] = MarketplaceRef{
+		Source:          mk["a-b"].Source,
+		InstallLocation: second.marketplaceDir("a/b"),
+		LastUpdated:     time.Date(2031, 4, 2, 0, 0, 0, 0, time.UTC),
+	}
+	if err := second.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	// A plugin only the second name records, whose cache stood inside the
+	// directory the first run moved.
+	writePlugin(t, second.pluginCacheDir("a-b", "gadget", "sha1"), "gadget", nil)
+	reg, err := second.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins[registryKey("gadget", "a/b")] = []InstallEntry{{
+		InstallPath: second.pluginCacheDir("a/b", "gadget", "sha1"),
+		Version:     "1.0.0",
+		Enabled:     true,
+		Source:      Source{Kind: SourceGitHub, Repo: "o/gadget"},
+	}}
+	if err := second.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := second.migrateStore(context.Background()); err != nil {
+		t.Fatalf("second migrateStore: %v", err)
+	}
+	mk, err = second.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["a-b"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want a-b alone: a later alias has to merge, not take a numbered name", mk)
+	}
+	reg, err = second.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, entries := range reg.Plugins {
+		for _, entry := range entries {
+			if _, err := os.Stat(entry.InstallPath); err != nil {
+				t.Fatalf("%s points at %s, which does not exist: %v", key, entry.InstallPath, err)
+			}
+		}
+	}
+}
+
+// A name goes before another wherever a directory of its own sits inside one of
+// that other's. Both directories the store derives are asked, because either can
+// nest alone: a symlink under the cache nests a cache inside another's while the
+// clones stay siblings, and the outer cache's move would carry the inner one's
+// files away just as the clone's would.
+func TestMarketplaceNameMigration_OrdersByACacheNestedThroughASymlink(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Two names whose clones are siblings while the second reaches its cache
+	// through a symlink into the first's.
+	for _, name := range []string{"a@b", "c@d"} {
+		if err := os.MkdirAll(m.marketplaceDir(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inner := filepath.Join(m.cacheDir(), "a@b", "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inner, filepath.Join(m.cacheDir(), "c@d")); err != nil {
+		t.Fatal(err)
+	}
+
+	order, err := m.migrationOrder([]string{"a@b", "c@d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0] != "c@d" {
+		t.Fatalf("order = %v, want the marketplace whose cache sits inside the other's to go first", order)
+	}
+}
+
 // The numbered replacement a taken name appends has to fit as well: a derived
 // base can be legal on its own and still overflow once "-2" is added, and the
 // probe for that candidate fails the whole migration.
@@ -2458,7 +2639,9 @@ func TestMarketplaceNameMigration_KeepsANeverFetchedDuplicatesRecord(t *testing.
 // directories of its own to move included: it still records itself in two
 // files, a run can stop between them, and only a marker tells the next one
 // that the keys already under the new name are this rename's rather than a
-// removed marketplace's residue.
+// removed marketplace's residue. The run's record of the alias families it has
+// migrated is written before the marker, so a process that stops mid-rename
+// still leaves the family for the next run.
 func TestMarketplaceNameMigration_MarksTheRenameThatMovesNothing(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -2480,7 +2663,7 @@ func TestMarketplaceNameMigration_MarksTheRenameThatMovesNothing(t *testing.T) {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	marketplaceAtomicWriteFile, installSaveRegistry = origWrite, origSave
-	want := strings.Join([]string{renameMarkerFileName, registryFileName, marketplacesFileName}, " ")
+	want := strings.Join([]string{migrationRecordFileName, renameMarkerFileName, registryFileName, marketplacesFileName}, " ")
 	if got := strings.Join(written, " "); got != want {
 		t.Fatalf("store writes = %q, want %q", got, want)
 	}

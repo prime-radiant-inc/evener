@@ -96,16 +96,45 @@ func (m *Manager) migrateMarketplaceNames() error {
 	if err != nil {
 		return err
 	}
-	// The name each rename of this run recorded, against the two directories
-	// the refused name derived (marketplaceDirs), which are the directories an
-	// alias of that name derives too. A merge records none.
-	recordedThisRun := map[marketplaceDirs]string{}
+	// The name each rename of this run recorded, against the alias family it
+	// belongs to: the two directories the refused name derived and the source
+	// its record names. A merge records none.
+	recordedThisRun := map[recordedAlias]string{}
+	// The families earlier runs recorded, so an alias still waiting for the
+	// marketplace they migrated knows which record its directories became. An
+	// entry whose destination the store no longer records names nothing left to
+	// merge into, so loading drops it.
+	rec, err := m.loadMigrationRecord()
+	if err != nil {
+		return err
+	}
+	before := len(rec.Renames)
+	kept := make([]recordedRename, 0, before)
+	for _, r := range rec.Renames {
+		if _, recorded := mk[r.To]; !recorded {
+			continue
+		}
+		dirs, err := m.marketplaceDirsKey(r.From)
+		if err != nil {
+			return fmt.Errorf("reading the families an earlier migration recorded: %w", err)
+		}
+		recordedThisRun[recordedAlias{dirs: dirs, src: r.Source}] = r.To
+		kept = append(kept, r)
+	}
+	rec.Renames = kept
+	if len(kept) != before {
+		if err := m.saveMigrationRecord(rec); err != nil {
+			return err
+		}
+	}
 	for _, name := range names {
+		ref := mk[name]
 		dirs, err := m.marketplaceDirsKey(name)
 		if err != nil {
 			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
-		alias, err := m.migratedUnderAnAlias(dirs, mk[name], mk, reg, recordedThisRun)
+		key := recordedAlias{dirs: dirs, src: ref.Source}
+		alias, err := m.migratedUnderAnAlias(dirs, ref, mk, reg, recordedThisRun)
 		if err != nil {
 			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
@@ -113,7 +142,7 @@ func (m *Manager) migrateMarketplaceNames() error {
 			// The record it merges into is where that rename put the
 			// marketplace, which is the derived base only when the base was
 			// free: the clone and the cache both names derive moved with it.
-			into := recordedThisRun[dirs]
+			into := recordedThisRun[key]
 			if reg, err = m.mergeIntoMigrated(mk, reg, name, into); err != nil {
 				return fmt.Errorf("merging marketplace %q, recorded under a name the store no longer accepts, into %q: %w", name, into, err)
 			}
@@ -124,10 +153,17 @@ func (m *Manager) migrateMarketplaceNames() error {
 		if err != nil {
 			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
+		// Written down before the rename, so a process that stops here still
+		// leaves the family for the next run the way the marker leaves it the
+		// rename itself.
+		rec.Renames = append(rec.Renames, recordedRename{From: name, To: newName, Source: ref.Source})
+		if err := m.saveMigrationRecord(rec); err != nil {
+			return fmt.Errorf("recording the migration of marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
+		}
 		if reg, err = m.migrateMarketplaceName(mk, reg, name, newName); err != nil {
 			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts, to %q: %w", name, newName, err)
 		}
-		recordedThisRun[dirs] = newName
+		recordedThisRun[key] = newName
 		_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was recorded under a name the store no longer accepts; renamed it to %q\n", name, newName)
 	}
 	return nil
@@ -398,6 +434,81 @@ func (m *Manager) markerLeftForRecovery(what string) error {
 	return fmt.Errorf("%s still records the %s, which the next store operation finishes", path, what)
 }
 
+// migrationRecord is the store's record of the renames the migration has made,
+// each against the alias family it belongs to. The marker beside one rename
+// lives only as long as that rename; this outlives the run, because a
+// marketplace's other names can still be recorded in a later one — "a/./b"
+// migrated now leaves "a/b" deriving the same directories with nothing to move,
+// and only this says which existing marketplace those directories became.
+type migrationRecord struct {
+	Renames []recordedRename `json:"renames"`
+}
+
+// recordedRename is one rename the migration made: the name it moved from, the
+// name it took, and the source the moved record names, which is what keeps one
+// marketplace's aliases apart from another's when both derive the one pair.
+type recordedRename struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Source Source `json:"source"`
+}
+
+// loadMigrationRecord reads the record the store holds, or the empty one where
+// there is none. A record that cannot be parsed fails the migration like the
+// store files it sits beside: it names families whose aliases would otherwise
+// be migrated a second time.
+func (m *Manager) loadMigrationRecord() (migrationRecord, error) {
+	path, err := m.storePath(migrationRecordFileName)
+	if err != nil {
+		return migrationRecord{}, err
+	}
+	data, err := marketplaceReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return migrationRecord{}, nil
+		}
+		return migrationRecord{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	var rec migrationRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return migrationRecord{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return rec, nil
+}
+
+// saveMigrationRecord writes the record with the atomic write the store files
+// get, and removes the file where the record names no family at all.
+func (m *Manager) saveMigrationRecord(rec migrationRecord) error {
+	if len(rec.Renames) == 0 {
+		m.removeMigrationRecord()
+		return nil
+	}
+	path, err := m.storePath(migrationRecordFileName)
+	if err != nil {
+		return err
+	}
+	body, err := marketplaceMarshalIndent(rec, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling %s: %w", migrationRecordFileName, err)
+	}
+	return marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644)
+}
+
+// removeMigrationRecord drops the record once it names no family the store can
+// still hold. Like removeRenameMarker this reports rather than returns: every
+// entry it drops names a destination the store no longer records, so a file left
+// behind cannot fail an operation that would otherwise have worked.
+func (m *Manager) removeMigrationRecord() {
+	path, err := m.storePath(migrationRecordFileName)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: could not remove the plugin store's %s: %v\n", migrationRecordFileName, err)
+		return
+	}
+	if err := marketplaceRemoveAll(path); err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: could not remove %s, which names no migration left to finish: %v\n", path, err)
+	}
+}
+
 // refusedMarketplaceNames is every recorded name validNameComponent refuses,
 // longest first and otherwise sorted. It is the seed order the migration
 // sorts (migrationOrder): a name has to migrate before another only where one
@@ -459,16 +570,34 @@ func (m *Manager) migrationOrder(names []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	cache, err := resolveForContainment(m.cacheDir())
+	if err != nil {
+		return nil, err
+	}
 	clone := make(map[string]string, len(names))
+	cached := make(map[string]string, len(names))
 	for _, name := range names {
 		_, derived, err := namedDir(m.marketplacesDir(), name)
 		if err != nil {
 			return nil, err
 		}
 		clone[name] = derived
+		_, derivedCache, err := namedDir(m.cacheDir(), name)
+		if err != nil {
+			return nil, err
+		}
+		cached[name] = derivedCache
 	}
+	// A name goes before another where either directory of its own sits inside
+	// one of that other's. Both are asked because either can nest alone: a
+	// symlink under one of the store's directories nests a cache inside
+	// another's while the clones are siblings, and the outer cache's move would
+	// carry the inner one's files away just as the clone's would.
 	nestedIn := func(a, b string) bool {
-		return dirInStore(marketplaces, clone[a]) && clone[a] != clone[b] && pathWithinDir(clone[b], clone[a])
+		if dirInStore(marketplaces, clone[a]) && clone[a] != clone[b] && pathWithinDir(clone[b], clone[a]) {
+			return true
+		}
+		return dirInStore(cache, cached[a]) && cached[a] != cached[b] && pathWithinDir(cached[b], cached[a])
 	}
 	goesBefore := func(a, b string) bool {
 		return nestedIn(a, b) || (strings.HasSuffix(a, "@"+b) && !nestedIn(b, a))
@@ -610,6 +739,18 @@ type marketplaceDirs struct {
 	clone, cache string
 }
 
+// recordedAlias is the key one marketplace's alias family is looked up and
+// recorded under: the two directories a refused name derives and the source its
+// record names. The directories alone are not enough. A record naming a
+// different source takes a numbered name for the same pair without ending
+// either source's aliases, so the pair's entry would be overwritten, and a later
+// true alias would look up the stranger, fail the source test, and split into a
+// third record instead of merging.
+type recordedAlias struct {
+	dirs marketplaceDirs
+	src  Source
+}
+
 // marketplaceDirsKey is the pair a recorded name derives, resolved the way the
 // ownership checks resolve it (namedDir): two refused names can reach the one
 // clone and the one cache through a symlink inside the store, and they derive
@@ -664,8 +805,8 @@ func (m *Manager) marketplaceDirsKey(name string) (marketplaceDirs, error) {
 // directory to have lost, so nothing of it was ever moved and it is nobody's
 // second record: what it has of its own is a source, which a merge would drop
 // and a numbered name keeps.
-func (m *Manager) migratedUnderAnAlias(dirs marketplaceDirs, ref MarketplaceRef, mk Marketplaces, reg Registry, recordedThisRun map[marketplaceDirs]string) (bool, error) {
-	into, madeHere := recordedThisRun[dirs]
+func (m *Manager) migratedUnderAnAlias(dirs marketplaceDirs, ref MarketplaceRef, mk Marketplaces, reg Registry, recordedThisRun map[recordedAlias]string) (bool, error) {
+	into, madeHere := recordedThisRun[recordedAlias{dirs: dirs, src: ref.Source}]
 	if !madeHere {
 		return false, nil
 	}
