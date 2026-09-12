@@ -53,6 +53,39 @@ func TestPastThreadReadProjectsPersistedAgentNotesAndURLs(t *testing.T) {
 	}
 }
 
+// TestPastThreadForListToleratesCorruptMutationJournal guards the roster path:
+// pastEntryThreadForList runs once per past entry and every sibling per-entry
+// read in it degrades instead of aborting, but the canonical human-note read
+// used to hard-fail on any error. One session with an undecodable
+// mutations/<id>.json must therefore read as "no canonical note" (and keep its
+// other metadata) rather than failing the entire session list.
+func TestPastThreadForListToleratesCorruptMutationJournal(t *testing.T) {
+	cfg, sessionID, stateDir := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	entry.Meta.AgentNote = "agent hello"
+	journal := filepath.Join(stateDir, "mutations", sessionID+".json")
+	if err := os.MkdirAll(filepath.Dir(journal), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte("{ this is not a decodable snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, err := pastEntryThreadForList(context.Background(), cfg, entry)
+	if err != nil {
+		t.Fatalf("pastEntryThreadForList with a corrupt journal: %v", err)
+	}
+	if thread.Evener.HumanNote != "" {
+		t.Fatalf("corrupt journal invented human note %q", thread.Evener.HumanNote)
+	}
+	if thread.Evener.AgentNote != "agent hello" {
+		t.Fatalf("entry metadata dropped: agent note = %q", thread.Evener.AgentNote)
+	}
+}
+
 func TestPastThreadReadNotesAbsentWhenUnset(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
 	entry, ok := cfg.Past.Find(sessionID)

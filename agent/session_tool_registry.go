@@ -219,67 +219,21 @@ func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time)
 // mutex. Every method forwards to an existing *Session method, preserving all
 // locking; notesGuard adds no behavior of its own.
 type notesGuard struct {
-	setAgentNote func(note string) (string, bool)
-	// setAgentNoteSerialized stores the agent note and captures the notes
-	// snapshot serialized with the mutation (notesUpdateMu + mu). It exists
-	// for direct (non-tool) callers; the tools serialize further — through
-	// persistence and emission — via mutateAgentNote below.
-	setAgentNoteSerialized func(note string) (stored string, changed bool, human, agent string)
 	// mutateAgentNote stores the agent note, persists it, and emits the
 	// resulting snapshot as one serialized unit under notesUpdateMu.
 	mutateAgentNote func(note string) (stored string, changed bool, human, agent string, err error)
-	addURL          func(rawURL, label string) (schema.SessionURL, error)
-	// addURLSerialized appends the URL entry and captures the resulting
-	// list serialized with the mutation. It exists for direct (non-tool)
-	// callers; the tools serialize further via mutateAddURL below.
-	addURLSerialized func(rawURL, label string) (entry schema.SessionURL, urls []schema.SessionURL, err error)
 	// mutateAddURL appends the URL entry, persists it, and emits the
 	// resulting list as one serialized unit under notesUpdateMu.
 	mutateAddURL func(rawURL, label string) (entry schema.SessionURL, urls []schema.SessionURL, err error)
-	removeURL    func(id string) bool
-	// removeURLSerialized deletes the entry and captures the resulting
-	// list serialized with the mutation. It exists for direct (non-tool)
-	// callers; the tools serialize further via mutateRemoveURL below.
-	removeURLSerialized func(id string) (bool, []schema.SessionURL)
 	// mutateRemoveURL deletes the entry, persists the removal, and emits the
 	// resulting list as one serialized unit under notesUpdateMu.
 	mutateRemoveURL func(id string) (removed bool, urls []schema.SessionURL, err error)
-	// snapshot reads the human and agent notes under s.mu.
-	snapshot func() (human, agent string)
-	// snapshotURLs reads a copy of the session URL list under s.mu.
-	snapshotURLs func() []schema.SessionURL
 	// snapshotAll reads human note, agent note, and URL list under s.mu.
 	snapshotAll func() (human, agent string, urls []schema.SessionURL)
-	// save persists session meta (maybeAutoSave), a no-op without a state dir.
-	save func()
 	// saveMeta persists session meta, reporting the write outcome so tool
 	// handlers refuse success for a write that never landed.
 	saveMeta func() error
 }
-
-// MutateAgentNote stores the agent note, persists it, and emits the
-// resulting snapshot as one serialized unit.
-func (g notesGuard) MutateAgentNote(note string) (string, bool, string, string, error) {
-	return g.mutateAgentNote(note)
-}
-
-// MutateAddURL appends the URL entry, persists it, and emits the resulting
-// list as one serialized unit.
-func (g notesGuard) MutateAddURL(rawURL, label string) (schema.SessionURL, []schema.SessionURL, error) {
-	return g.mutateAddURL(rawURL, label)
-}
-
-// MutateRemoveURL deletes the entry, persists the removal, and emits the
-// resulting list as one serialized unit.
-func (g notesGuard) MutateRemoveURL(id string) (bool, []schema.SessionURL, error) {
-	return g.mutateRemoveURL(id)
-}
-
-// Snapshot reads the human and agent notes.
-func (g notesGuard) Snapshot() (human, agent string) { return g.snapshot() }
-
-// SnapshotURLs reads a copy of the session URL list.
-func (g notesGuard) SnapshotURLs() []schema.SessionURL { return g.snapshotURLs() }
 
 // SnapshotAll reads human note, agent note, and URL list together.
 func (g notesGuard) SnapshotAll() (human, agent string, urls []schema.SessionURL) {
@@ -333,20 +287,11 @@ func newToolDeps(s *Session) *toolDeps {
 			setTerminal:          s.setGoalTerminal,
 		},
 		notesGuard: notesGuard{
-			setAgentNote:           s.setAgentNote,
-			setAgentNoteSerialized: s.setAgentNoteSerialized,
-			mutateAgentNote:        s.mutateAgentNoteSerialized,
-			addURL:                 s.addSessionURL,
-			addURLSerialized:       s.addSessionURLSerialized,
-			mutateAddURL:           s.mutateSessionURLAddSerialized,
-			removeURL:              s.removeSessionURL,
-			removeURLSerialized:    s.removeSessionURLSerialized,
-			mutateRemoveURL:        s.mutateSessionURLRemoveSerialized,
-			snapshot:               s.notesSnapshot,
-			snapshotURLs:           s.snapshotSessionURLs,
-			snapshotAll:            s.notesSnapshotAll,
-			save:                   s.maybeAutoSave,
-			saveMeta:               s.persistNotesMeta,
+			mutateAgentNote: s.mutateAgentNoteSerialized,
+			mutateAddURL:    s.mutateSessionURLAddSerialized,
+			mutateRemoveURL: s.mutateSessionURLRemoveSerialized,
+			snapshotAll:     s.notesSnapshotAll,
+			saveMeta:        s.persistNotesMeta,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,

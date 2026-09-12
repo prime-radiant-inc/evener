@@ -447,11 +447,16 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	if err := ctx.Err(); err != nil {
 		return appwire.Thread{}, err
 	}
-	note, _, err := agent.ReadCanonicalHumanNote(entry.StateDir, entry.Meta.ID)
-	if err != nil {
-		return appwire.Thread{}, err
+	// A single unreadable or undecodable mutations journal must not fail the
+	// whole roster. Every sibling per-entry read in this function degrades
+	// instead (pastEntryCost returns nil, ownership errors are swallowed,
+	// mergePastMetadataForList tolerates non-ctx errors), so a corrupt journal
+	// reads as "no canonical note" here too.
+	if note, _, err := agent.ReadCanonicalHumanNote(entry.StateDir, entry.Meta.ID); err == nil {
+		entry.Meta.HumanNote = note
+	} else {
+		entry.Meta.HumanNote = ""
 	}
-	entry.Meta.HumanNote = note
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID

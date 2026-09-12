@@ -316,6 +316,100 @@ test("dirty blur sends nothing at 9999ms and one raw note at 10000ms", async () 
   expect(seen[0]).toMatchObject({ ref: model.ref, note: "draft sentinel" });
 });
 
+test("a pending blur save is flushed when the page goes away", async () => {
+  const indexedDB = new IDBFactory();
+  vi.stubGlobal("indexedDB", indexedDB);
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = connectFakeClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const seen: unknown[] = [];
+  let submittedResolve!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    submittedResolve = resolve;
+  });
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    submittedResolve();
+    return noteResponse(params);
+  });
+  openPanel(model);
+  await user.type(editor(), "draft sentinel");
+  await user.tab(); // schedules the delayed blur save
+  expect(seen).toHaveLength(0);
+
+  // The page goes away inside the debounce window: the pending save is
+  // flushed, not dropped the way a bare timer clear would drop it. The one
+  // fake-timer tick yields so the flushed save's real IndexedDB dispatch can
+  // run; far below the 10s debounce, whatever lands came from the flush.
+  await act(async () => {
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.advanceTimersByTimeAsync(1);
+    await submitted;
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({ ref: model.ref, note: "draft sentinel" });
+});
+
+test("a flushed blur save does not resubmit when its original deadline passes", async () => {
+  const indexedDB = new IDBFactory();
+  vi.stubGlobal("indexedDB", indexedDB);
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = connectFakeClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const setHumanNote = vi.spyOn(threadsStore.getState(), "setHumanNote");
+  const seen: unknown[] = [];
+  let submittedResolve!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    submittedResolve = resolve;
+  });
+  // Hold the first write's acknowledgement open: the teardown flush submits the
+  // note, but the draft stays dirty and `submitting` while the whole debounce
+  // window elapses. That is the surviving-pagehide (bfcache) window in which the
+  // original 10s deadline must not submit the same note a second time.
+  let releaseAck!: () => void;
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    submittedResolve();
+    return new Promise<ReturnType<typeof noteResponse>>((resolve) => {
+      releaseAck = () => resolve(noteResponse(params));
+    });
+  });
+  openPanel(model);
+  await user.type(editor(), "draft sentinel");
+  await user.tab(); // schedules the delayed blur save
+  await act(async () => {
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.advanceTimersByTimeAsync(1);
+    await submitted;
+  });
+  expect(seen).toHaveLength(1);
+
+  // The page stayed alive past the original deadline while the acknowledgement
+  // was still outstanding.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(seen).toHaveLength(1);
+
+  // Releasing the acknowledgement must not release a second, queued copy of the
+  // same note: one edit is one write, however the teardown interleaves.
+  await act(async () => {
+    releaseAck();
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(seen).toHaveLength(1);
+  expect(setHumanNote).toHaveBeenCalledTimes(1);
+  setHumanNote.mockRestore();
+});
+
 // --- rule 1: capability unset hides the panel body entirely -------------------
 
 test("notes panel body renders nothing when capability unset", () => {

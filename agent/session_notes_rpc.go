@@ -106,12 +106,6 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 	return response, nil
 }
 
-// notesSnapshotPair re-reads the snapshot for a return tuple.
-func (s *Session) notesSnapshotPair(stored string, changed bool) (string, bool, string, string, error) {
-	human, agentNote := s.notesSnapshot()
-	return stored, changed, human, agentNote, nil
-}
-
 // persistNotesMeta persists the notes store, propagating a failure so the
 // caller refuses to journal success for a write that never landed. A
 // test-injected fault surfaces as the mutation error.
@@ -246,20 +240,6 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 }
 
-// removeSessionURLSerialized deletes the entry with id and captures the
-// resulting list. It exists for the agent-tool surface, whose persistence
-// runs in the tool handler: the update lock is held across the mutation AND
-// the snapshot capture, so concurrent URL mutations snapshot in store
-// order. The daemon RPC path above serializes further — through persistence
-// and emission — and does not use this helper.
-func (s *Session) removeSessionURLSerialized(id string) (bool, []schema.SessionURL) {
-	s.notesUpdateMu.Lock()
-	defer s.notesUpdateMu.Unlock()
-	removed := s.removeSessionURL(id)
-	urls := s.snapshotSessionURLsLocked()
-	return removed, urls
-}
-
 // snapshotSessionURLsLocked reads a copy of the session URL list. Callers
 // hold notesUpdateMu; the list itself is read under s.mu.
 func (s *Session) snapshotSessionURLsLocked() []schema.SessionURL {
@@ -274,18 +254,6 @@ func (s *Session) restoreSessionURLsLocked(urls []schema.SessionURL) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionURLs = append([]schema.SessionURL(nil), urls...)
-}
-
-// setAgentNoteSerialized stores the agent note and captures the notes
-// snapshot. It exists for direct (non-tool) callers; the agent tool below
-// serializes further — through persistence and emission — via
-// mutateAgentNoteSerialized.
-func (s *Session) setAgentNoteSerialized(note string) (stored string, changed bool, human, agent string) {
-	s.notesUpdateMu.Lock()
-	defer s.notesUpdateMu.Unlock()
-	stored, changed = s.setAgentNote(note)
-	human, agent = s.notesSnapshot()
-	return stored, changed, human, agent
 }
 
 // mutateAgentNoteSerialized stores the agent note, persists it, and emits
@@ -308,26 +276,12 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 	}
 	s.metaSaveMu.Unlock()
 	if !changed {
-		return s.notesSnapshotPair(stored, false)
+		human, agentNote := s.notesSnapshot()
+		return stored, false, human, agentNote, nil
 	}
 	human, agent = s.notesSnapshot()
 	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agent))
 	return stored, true, human, agent, nil
-}
-
-// addSessionURLSerialized appends the URL entry and captures the resulting
-// list. It exists for direct (non-tool) callers; the agent tool below
-// serializes further — through persistence and emission — via
-// mutateSessionURLAddSerialized.
-func (s *Session) addSessionURLSerialized(rawURL, label string) (schema.SessionURL, []schema.SessionURL, error) {
-	s.notesUpdateMu.Lock()
-	defer s.notesUpdateMu.Unlock()
-	entry, err := s.addSessionURL(rawURL, label)
-	if err != nil {
-		return schema.SessionURL{}, nil, err
-	}
-	urls := s.snapshotSessionURLsLocked()
-	return entry, urls, nil
 }
 
 // mutateSessionURLAddSerialized appends the URL entry, persists it, and emits
@@ -430,12 +384,6 @@ func (s *Session) notesSnapshot() (human, agentNote string) {
 	return human, agentNote
 }
 
-// snapshotSessionURLs reads a copy of the session URL list under s.mu.
-func (s *Session) snapshotSessionURLs() []schema.SessionURL {
-	_, _, urls := s.notesSnapshotAll()
-	return urls
-}
-
 // notesContextBlock renders the current notes plus URL list for agent context
 // injection: beside the goal continuation-prompt rendering at turn start and
 // on resume, refreshed from note events before the next round. Empty state
@@ -443,11 +391,8 @@ func (s *Session) snapshotSessionURLs() []schema.SessionURL {
 // session whose store was NEVER non-empty this process renders nothing, so a
 // fresh session's context is byte-identical to today.
 func (s *Session) notesContextBlock() string {
-	human, agentNote, urls := s.notesSnapshotAll()
+	human, agentNote, urls, everProjected := s.notesProjectionSnapshot()
 	if human == "" && agentNote == "" && len(urls) == 0 {
-		s.mu.Lock()
-		everProjected := s.notesEverProjected
-		s.mu.Unlock()
 		if !everProjected {
 			return ""
 		}
@@ -496,8 +441,19 @@ func formatNotesLinkLine(u schema.SessionURL) string {
 
 // notesSnapshotAll reads human note, agent note, and URL list together.
 func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.SessionURL) {
+	human, agent, urls, _ = s.notesProjectionSnapshot()
+	return human, agent, urls
+}
+
+// notesProjectionSnapshot reads human note, agent note, URL list, and the
+// ever-projected flag together. The flag is decided under the same s.mu section
+// as the three fields it qualifies, so notesContextBlock's emptiness check and
+// cleared-marker decision observe one consistent state; only notesUpdateMu
+// prevents the notes store itself from changing between reads.
+func (s *Session) notesProjectionSnapshot() (human, agent string, urls []schema.SessionURL, everProjected bool) {
 	s.mu.Lock()
-	human, agent, urls = "", s.agentNote, append([]schema.SessionURL(nil), s.sessionURLs...)
+	agent, everProjected = s.agentNote, s.notesEverProjected
+	urls = append([]schema.SessionURL(nil), s.sessionURLs...)
 	s.mu.Unlock()
 	if s.clientMutations != nil {
 		s.clientMutations.stateMu.RLock()
@@ -506,7 +462,7 @@ func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.Session
 		}
 		s.clientMutations.stateMu.RUnlock()
 	}
-	return human, agent, urls
+	return human, agent, urls, everProjected
 }
 
 // maybeAppendNotesContext records a NOTES_CONTEXT turn carrying the current

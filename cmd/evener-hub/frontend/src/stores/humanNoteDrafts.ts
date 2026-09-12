@@ -14,6 +14,9 @@ export interface HumanNoteDraft {
   submitted?: { generation: number; id: string; text: string; state: "submitting" | "blockedUnknown" | "rejected" };
   timer?: ReturnType<typeof setTimeout>;
   release?: () => void;
+  // flush runs the pending delayed save immediately; teardown uses it so a
+  // page that goes away inside the debounce window is not silently dropped.
+  flush?: () => void;
   focusOwners: ReadonlySet<symbol>;
 }
 
@@ -78,7 +81,7 @@ function cancel(ref: string): void {
   const draft = get(ref);
   if (draft?.timer === undefined) return;
   clearTimeout(draft.timer);
-  put(ref, { ...draft, timer: undefined, release: undefined });
+  put(ref, { ...draft, timer: undefined, release: undefined, flush: undefined });
   draft.release?.();
 }
 export function syncHumanNote(ref: string, note: string): void {
@@ -121,10 +124,17 @@ export function blurHumanNote(ref: string, owner: symbol): void {
     (error: unknown) => ({ error }),
   );
   const release = () => state.releaseThread(ref);
-  const timer = setTimeout(async () => {
+  // The debounce coalesces one typing session's blurs into a single write; it
+  // must never mean "no write at all", so the same save is reachable from
+  // teardown (flushPendingHumanNoteSaves).
+  const save = async () => {
     const current = get(ref);
     if (!current) return;
-    put(ref, { ...current, timer: undefined, release: undefined });
+    // Whoever reaches the save first retires the debounce timer: a teardown
+    // flush must not leave the live handle to fire again inside the window and
+    // enqueue the same note a second time.
+    if (current.timer !== undefined) clearTimeout(current.timer);
+    put(ref, { ...current, timer: undefined, release: undefined, flush: undefined });
     try {
       const failure = await retained;
       if (failure) throw failure.error;
@@ -155,8 +165,29 @@ export function blurHumanNote(ref: string, owner: symbol): void {
     } finally {
       release();
     }
-  }, 10_000);
-  put(ref, { ...draft, timer, release });
+  };
+  const timer = setTimeout(() => void save(), 10_000);
+  installTeardownFlush();
+  put(ref, { ...draft, timer, release, flush: save });
+}
+
+let teardownFlushInstalled = false;
+
+// A pending blur save must be FLUSHED, not dropped — the same rule DockHost
+// documents for its layout debounce. Closing or reloading the page inside the
+// 10s window would otherwise discard the user's last edit. pagehide is the
+// reliable signal (it also fires for bfcache navigations); beforeunload is
+// ignored by many browsers and adds nothing here. The save itself is async, so
+// a real teardown makes it best-effort: what must not be dropped is the
+// durable enqueue it starts.
+function installTeardownFlush(): void {
+  if (teardownFlushInstalled || typeof window === "undefined") return;
+  teardownFlushInstalled = true;
+  window.addEventListener("pagehide", flushPendingHumanNoteSaves);
+}
+
+function flushPendingHumanNoteSaves(): void {
+  for (const draft of drafts.getState().records.values()) draft.flush?.();
 }
 export function acknowledgeHumanNote(record: MutationRecord, note: string): void {
   const draft = get(record.targetRef);
