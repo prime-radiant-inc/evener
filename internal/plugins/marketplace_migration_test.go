@@ -2042,8 +2042,54 @@ func TestMarketplaceNameMigration_AFailedCacheMoveThatRollsBackRemovesTheMarker(
 	mustNotExist(t, renameMarkerFile(m))
 	mustExist(t, filepath.Join(m.marketplaceDir("a/b"), ".claude-plugin", "marketplace.json"))
 	mustNotExist(t, m.marketplaceDir("a-b"))
-	mustExist(t, filepath.Join(m.cacheDir(), "a/b", "widget", "sha1"))
+	mustExist(t, m.pluginCacheDir("a/b", "widget", "sha1"))
 	mustNotExist(t, filepath.Join(m.cacheDir(), "a-b"))
+}
+
+// Two refused names can reach the one clone and the one cache through a
+// symlink inside the store. They are one marketplace, so the second record
+// has to merge into the first rename's record rather than migrate on its own:
+// its directories are already gone with the first, and re-keying it to a cache
+// path nobody created leaves its installs pointing at nothing.
+func TestMarketplaceNameMigration_AliasesThroughASymlinkAreOneMarketplace(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/b", "widget")
+	if err := os.Symlink(m.marketplaceDir("a"), m.marketplaceDir("alias")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(m.cacheDir(), "a"), filepath.Join(m.cacheDir(), "alias")); err != nil {
+		t.Fatal(err)
+	}
+	plantLegacyMarketplace(t, m, "alias/b", "gadget")
+	plantOneSource(t, m, "a/b", "alias/b")
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want the one the alias merged into", mk)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Plugins) == 0 {
+		t.Fatal("registry has no plugin entries")
+	}
+	// Every recorded install has to be somewhere: a re-key onto a cache
+	// directory nobody created is a broken install.
+	for key, entries := range reg.Plugins {
+		for _, entry := range entries {
+			if _, err := os.Stat(entry.InstallPath); err != nil {
+				t.Fatalf("%s points at %s, which does not exist: %v", key, entry.InstallPath, err)
+			}
+		}
+	}
 }
 
 // The marker's other half: a move that fails and cannot put back what it moved
@@ -2073,6 +2119,46 @@ func TestMarketplaceNameMigration_AnIncompleteMoveRollbackKeepsTheMarker(t *test
 	mustExist(t, renameMarkerFile(m))
 	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
 		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	}
+}
+
+// A recovery that cannot finish the rename but puts everything back — the
+// registry restored, the directories undone — leaves the store at the old
+// name, so the marker goes and the refused name migrates afresh on the next
+// lock. A marker left here makes every later lock holder retry the same
+// destination, and refuse the whole store once that destination is taken.
+func TestMarketplaceNameMigration_ARecoveryThatRollsBackRemovesTheMarker(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/b", "widget")
+	plantRenameMarker(t, m, "a/b", "a-b")
+	orig := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = orig })
+	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == marketplacesFileName {
+			return errors.New("boom")
+		}
+		return orig(path, data, perm)
+	}
+
+	if err := m.migrateStore(context.Background()); err == nil {
+		t.Fatal("expected the recovery's marketplaces write to fail")
+	}
+	marketplaceAtomicWriteFile = orig
+	mustNotExist(t, renameMarkerFile(m))
+
+	// The store is at the old name and the marker is gone, so the next lock
+	// holder migrates it afresh instead of retrying a dead destination.
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore after the rolled-back recovery: %v", err)
+	}
+	mustNotExist(t, renameMarkerFile(m))
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["a-b"]; !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want a-b alone", mk)
 	}
 }
 

@@ -101,7 +101,10 @@ func (m *Manager) migrateMarketplaceNames() error {
 	// alias of that name derives too. A merge records none.
 	recordedThisRun := map[marketplaceDirs]string{}
 	for _, name := range names {
-		dirs := m.marketplaceDirsKey(name)
+		dirs, err := m.marketplaceDirsKey(name)
+		if err != nil {
+			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
+		}
 		alias, err := m.migratedUnderAnAlias(dirs, mk[name], mk, reg, recordedThisRun)
 		if err != nil {
 			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
@@ -230,7 +233,17 @@ func (m *Manager) recoverMarkedRename() error {
 		}
 	}
 	if err := m.saveRename(mk, marker.From, marker.To, ref, reg, registryAsFound); err != nil {
-		return fail(errors.Join(err, runUndo(undo)))
+		undoErr := runUndo(undo)
+		if undoErr == nil && !errors.Is(err, errStoreBetweenNames) {
+			// Everything the recovery moved is back and the registry is as it
+			// was found, so the store is at the old name with nothing left to
+			// finish: the marker goes, and the next lock holder migrates the
+			// refused name afresh rather than retrying a destination that may
+			// since have been taken.
+			m.removeRenameMarker()
+			return fail(err)
+		}
+		return fail(errors.Join(err, undoErr))
 	}
 	m.removeRenameMarker()
 	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was being renamed to %q when an earlier run stopped; finished the rename\n", marker.From, marker.To)
@@ -528,9 +541,22 @@ type marketplaceDirs struct {
 	clone, cache string
 }
 
-// marketplaceDirsKey is the pair a recorded name derives.
-func (m *Manager) marketplaceDirsKey(name string) marketplaceDirs {
-	return marketplaceDirs{clone: m.marketplaceDir(name), cache: filepath.Join(m.cacheDir(), name)}
+// marketplaceDirsKey is the pair a recorded name derives, resolved the way the
+// ownership checks resolve it (namedDir): two refused names can reach the one
+// clone and the one cache through a symlink inside the store, and they derive
+// the same physical directories, so the alias map has to see them as one
+// marketplace even though their lexical paths differ. Resolving both is what
+// makes "link/x" and "real/x" one record, which is what the alias check is for.
+func (m *Manager) marketplaceDirsKey(name string) (marketplaceDirs, error) {
+	_, clone, err := namedDir(m.marketplacesDir(), name)
+	if err != nil {
+		return marketplaceDirs{}, err
+	}
+	_, cache, err := namedDir(m.cacheDir(), name)
+	if err != nil {
+		return marketplaceDirs{}, err
+	}
+	return marketplaceDirs{clone: clone, cache: cache}, nil
 }
 
 // migratedUnderAnAlias reports whether the marketplace the entry deriving dirs
