@@ -45,6 +45,35 @@ describe("catalog snapshot merging", () => {
     expect(mergeCatalogEntry(existing, richer).warnings).toEqual(richer.warnings);
   });
 
+  test("a later response without warnings clears the ones an earlier scope had", () => {
+    const warn =
+      'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash';
+    const warned = { provider: "vertex", model: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash", warnings: [warn] };
+    // The same model resolved under a global location: the registry has nothing
+    // to warn about, so the descriptor carries no warnings at all.
+    const quiet = { provider: "vertex", model: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" };
+
+    expect(mergeCatalogEntry(warned, quiet)).toEqual(quiet);
+  });
+
+  test("a merged snapshot warns about the models and recent rows alike", () => {
+    const warn =
+      'regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash';
+    const entry = (warnings?: string[]) => ({
+      provider: "vertex",
+      model: "gemini-3.8-flash",
+      displayName: "Gemini 3.8 Flash",
+      warnings,
+    });
+    const merged = mergeCatalogSnapshot(
+      { models: [entry([warn])], recent: [entry([warn])] },
+      { models: [entry()], recent: [entry()] },
+    );
+
+    expect(merged.models[0]?.warnings).toBeUndefined();
+    expect(merged.recent[0]?.warnings).toBeUndefined();
+  });
+
   test("does not merge entries with different providers or models", () => {
     const existing = {
       provider: "openai",
