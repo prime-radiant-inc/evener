@@ -22,14 +22,14 @@
 // value (a discriminated union), so opening a second editor always replaces
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { friendlyErrorMessage } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
+import { Button, ConfirmDialog, Dialog, EmptyState, Loader, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
-import { ConnectProviderDialog } from "./ConnectProviderDialog";
+import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
 import { groupByProvider, safeCredentialTestResult } from "./credentialLabels";
 import { InstanceRow } from "./InstanceRow";
@@ -97,6 +97,18 @@ export interface CredentialsSectionProps {
 export function CredentialsSection({ fullEditor = false }: CredentialsSectionProps) {
   const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
   const [connecting, setConnecting] = useState(false);
+  // The connector is a dynamic-only import (see connectDialogChunk.ts): loading
+  // it through the shared hook keeps ConnectProviderDialog out of this module's
+  // static graph, which is what keeps it in its own chunk and its failure
+  // handling detectable. A static import here closed the cycle
+  // CredentialsSection -> ConnectProviderDialog -> CredentialsSection, which
+  // collapsed the two into one chunk (roborev round 5).
+  const {
+    Dialog: ConnectProviderDialog,
+    version: connectDialogVersion,
+    retry: retryConnectDialog,
+    reloadAvailable: connectDialogReloadAvailable,
+  } = useConnectProviderDialogChunk();
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
@@ -242,7 +254,22 @@ export function CredentialsSection({ fullEditor = false }: CredentialsSectionPro
       </div>
 
       {connecting && (
-        <ConnectProviderDialog onClose={() => setConnecting(false)} onConnected={() => setConnecting(false)} />
+        <ConnectProviderDialogBoundary
+          key={connectDialogVersion}
+          onRetry={retryConnectDialog}
+          reloadAvailable={connectDialogReloadAvailable}
+          onClose={() => setConnecting(false)}
+        >
+          <Suspense
+            fallback={
+              <Dialog open onClose={() => setConnecting(false)} title="Connect provider">
+                <Loader label="Loading…" />
+              </Dialog>
+            }
+          >
+            <ConnectProviderDialog onClose={() => setConnecting(false)} onConnected={() => setConnecting(false)} />
+          </Suspense>
+        </ConnectProviderDialogBoundary>
       )}
       <Diagnostics diagnostics={diagnostics} />
 

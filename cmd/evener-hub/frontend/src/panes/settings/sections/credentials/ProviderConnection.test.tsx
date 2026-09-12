@@ -606,8 +606,12 @@ test("a superseding pending refresh cannot authorize a check from discarded meta
     await newerFetch;
   });
   client.on("evener/instance/list", () => savedList("anthropic", { baseUrl: "https://different.example" }));
-  await user.click(screen.getByRole("button", { name: "Retry check" }));
+  // The superseded refresh asks again instead of reporting "could not be
+  // refreshed", and what it lands on is this fresh, changed listing - so the
+  // flow goes straight to review. The property this test exists for is
+  // unchanged: nothing contacts the provider off the discarded metadata.
   expect(await screen.findByRole("button", { name: "Use reviewed access and check" })).toBeTruthy();
+  expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
 });
 test("reconnect restores initial loading and invalidates late check callbacks", async () => {
   const initial = deferred<InstanceListResponse>();

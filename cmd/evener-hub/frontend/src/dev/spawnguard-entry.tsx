@@ -14,6 +14,7 @@ import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { PathField, Toast } from "../widgets";
 import { isElementVisible } from "./guardVisibility";
+import { storageHasSecret } from "./storageHasSecret";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -711,7 +712,7 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
     failures.push("explicit Start lost model or working directory");
   if (fake.calls.some((call) => call.method === "evener/instance/setDefault"))
     failures.push("onboarding wrote default");
-  if (JSON.stringify(localStorage).includes("fixture-not-a-real-key"))
+  if (storageHasSecret(localStorage, "fixture-not-a-real-key"))
     failures.push("credential persisted in browser storage");
   return failures;
 }

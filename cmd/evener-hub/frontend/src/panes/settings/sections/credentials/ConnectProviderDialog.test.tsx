@@ -261,6 +261,40 @@ test.each(["save", "refresh", "check", "result"])(
   },
 );
 
+test("a refresh superseded by the credential notification's own refetch is not reported as a failure", async () => {
+  const h = guidedRepair();
+  await h.select();
+  const first = deferred<InstanceListResponse>();
+  const second = deferred<InstanceListResponse>();
+  let listingCalls = 0;
+  h.fake.on("evener/instance/list", () => {
+    listingCalls += 1;
+    if (listingCalls === 1) return first.promise;
+    if (listingCalls === 2) return second.promise;
+    return h.listing();
+  });
+
+  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
+  // The credential save makes the hub emit evener/auth/updated, and the store's
+  // own debounced refetch starts while this refresh's listing is still in
+  // flight - superseding it.
+  act(() => {
+    h.fake.emitNotification({ method: "evener/auth/updated", params: {} });
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  expect(listingCalls).toBe(2);
+
+  // The dropped response then lands: the store applies nothing, so without a
+  // second ask the connector would blame the save for the coalescing race.
+  await act(async () => {
+    first.resolve(h.listing());
+  });
+  expect(screen.queryByText(/Access could not be refreshed/)).toBeNull();
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+});
+
 test("repair excursion cancels a pending guided OAuth start without opening a hidden flow", async () => {
   const h = guidedRepair();
   h.change({ authModes: ["apiKey", "oauth"] });

@@ -301,16 +301,24 @@ function SelectedConnection({
   async function refreshAndCheck(token: number, expectedSource?: string) {
     setPhase("refreshing");
     const previous = credentialsStore.getState();
+    // The listing this refresh waits for can be superseded by the debounced
+    // refetch evener/auth/updated schedules (250ms after the save), and the
+    // store drops a superseded response without applying it. One more ask
+    // tells "the listing really did not move" apart from "my response lost the
+    // race", so a coalesced refresh is not reported as a failure.
+    const listingUnchanged = () => {
+      const state = credentialsStore.getState();
+      return state.instances === previous.instances || state.availableProviders === previous.availableProviders;
+    };
     await previous.fetch();
     if (!current(token)) return;
+    if (listingUnchanged()) {
+      await credentialsStore.getState().fetch();
+      if (!current(token)) return;
+    }
     const fresh = credentialsStore.getState();
     const target = findSetup(name);
-    if (
-      fresh.loading ||
-      fresh.error ||
-      fresh.instances === previous.instances ||
-      fresh.availableProviders === previous.availableProviders
-    ) {
+    if (fresh.loading || fresh.error || listingUnchanged()) {
       setPhase("idle");
       setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
       return;
