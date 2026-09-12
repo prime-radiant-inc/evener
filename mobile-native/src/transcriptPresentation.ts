@@ -120,6 +120,11 @@ function activityMode(
 	return null;
 }
 
+// Without transcript preferences nothing is hidden or summarised: every
+// activity shows in full until the hub's config arrives, or forever on a hub
+// that does not support it.
+const FULL_PRESENTATION: ActivityPresentation = { mode: "full" };
+
 function memberItem(
 	member: ActivityMember,
 ): Extract<MobileTimelineItem, { kind: "activity" }> {
@@ -178,16 +183,8 @@ export function projectNativeTranscript(
 	config: TranscriptDisplayConfigV1 | null | undefined,
 ): NativeTranscriptPresentation {
 	const source = conversation?.items ?? [];
-	if (!config) {
-		const activityPresentation = new Map<string, ActivityPresentation>();
-		const items = source.flatMap((item) =>
-			item.kind === "activity" && item.members?.length
-				? item.members.map(memberItem)
-				: [item],
-		);
-		for (const item of items)
-			if (item.kind === "activity")
-				activityPresentation.set(item.id, { mode: "full" });
+	const { items, activityPresentation } = projectTimeline(source, config);
+	if (!config)
 		return {
 			items,
 			activityPresentation,
@@ -195,8 +192,30 @@ export function projectNativeTranscript(
 			usage: null,
 			showDuration: true,
 		};
-	}
+	return {
+		items,
+		activityPresentation,
+		expandByDefault: (config.content.kind === "preset"
+			? presetContent(config.content.level)
+			: config.content
+		).expandByDefault,
+		usage: usageFor(conversation?.usage ?? null, config),
+		showDuration: config.advanced.roundTimings,
+	};
+}
 
+// The one place that decides where a row sits relative to its attachments:
+// every activity is followed by the attachments that name it as their source,
+// and the trailing rows those came from are dropped. Both the configured path
+// and the no-config fallback emit through this, so the two cannot disagree
+// about adjacency; without a config every activity is simply shown in full.
+function projectTimeline(
+	source: MobileTimelineItem[],
+	config: TranscriptDisplayConfigV1 | null | undefined,
+): {
+	items: MobileTimelineItem[];
+	activityPresentation: Map<string, ActivityPresentation>;
+} {
 	const activityPresentation = new Map<string, ActivityPresentation>();
 	const membersByKey = new Set<string>();
 	for (const item of source)
@@ -220,7 +239,9 @@ export function projectNativeTranscript(
 		if (item.kind === "activity" && item.members?.length) {
 			for (const member of item.members) {
 				const projected = memberItem(member);
-				const presentation = activityMode(projected, config);
+				const presentation = config
+					? activityMode(projected, config)
+					: FULL_PRESENTATION;
 				if (presentation) {
 					activityPresentation.set(projected.id, presentation);
 					projectedItems.push(projected);
@@ -231,12 +252,18 @@ export function projectNativeTranscript(
 				);
 			}
 		} else if (item.kind === "activity") {
-			const presentation = activityMode(item, config);
+			const presentation = config
+				? activityMode(item, config)
+				: FULL_PRESENTATION;
 			if (presentation) {
 				activityPresentation.set(item.id, presentation);
 				projectedItems.push(item);
 			}
-		} else if (item.kind === "notice" && !eventVisible(item, config)) {
+		} else if (
+			item.kind === "notice" &&
+			config &&
+			!eventVisible(item, config)
+		) {
 		} else if (
 			item.kind === "attachments" &&
 			item.sourceTranscriptKey &&
@@ -246,14 +273,5 @@ export function projectNativeTranscript(
 			projectedItems.push(item);
 		}
 	}
-	return {
-		items: projectedItems,
-		activityPresentation,
-		expandByDefault: (config.content.kind === "preset"
-			? presetContent(config.content.level)
-			: config.content
-		).expandByDefault,
-		usage: usageFor(conversation?.usage ?? null, config),
-		showDuration: config.advanced.roundTimings,
-	};
+	return { items: projectedItems, activityPresentation };
 }

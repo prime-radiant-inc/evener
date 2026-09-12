@@ -517,3 +517,39 @@ it("keeps an authoritative write_file description ahead of derived details", () 
 		"Save the fixture",
 	);
 });
+
+it.each([null, undefined])(
+	"keeps each clustered member's attachment beside it when preferences are %s",
+	(config) => {
+		const items: MobileTimelineItem[] = [
+			{
+				kind: "activity",
+				id: "cluster",
+				label: "shell",
+				family: "tool",
+				state: "completed",
+				detail: {},
+				members: [member("a", "first", 0), member("b", "second", 1)],
+			},
+			{
+				kind: "attachments",
+				id: "a:attachments",
+				sourceTranscriptKey: "key-a",
+				items: [{ id: "image-a", src: "data:image/png;base64,a" }],
+			},
+			{
+				kind: "attachments",
+				id: "b:attachments",
+				sourceTranscriptKey: "key-b",
+				items: [{ id: "image-b", src: "data:image/png;base64,b" }],
+			},
+		];
+		const result = projectNativeTranscript(conversation(items), config);
+		expect(result.items).toEqual([
+			{ kind: "activity", ...member("a", "first", 0) },
+			items[1],
+			{ kind: "activity", ...member("b", "second", 1) },
+			items[2],
+		]);
+	},
+);
