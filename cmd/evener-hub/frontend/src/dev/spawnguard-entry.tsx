@@ -97,6 +97,14 @@ rootEl.style.height = "100%";
 if (new URLSearchParams(window.location.search).has("onboarding")) {
   localStorage.clear();
   const url = new URL(window.location.href);
+  // The onboarding arrival is a /new?dir=... deep link - the same entry the
+  // real SPA's spawn route receives. spawnDrafts.ts gates ?dir=/?prompt=
+  // prefill on the /new pathname, so presenting the harness page there (via
+  // replaceState, which rewrites the URL without reloading the page) is what
+  // makes the seed reach the pane through the product's own route contract.
+  // Without a directory the draft stays unscoped, preflight offers to
+  // "create" the empty path, and Start never reaches thread/start.
+  url.pathname = "/new";
   url.searchParams.set("dir", directoryRoot);
   window.history.replaceState(null, "", url);
   let saved = false;
