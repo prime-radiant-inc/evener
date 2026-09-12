@@ -107,12 +107,17 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 		body["metadata"] = req.Metadata
 	}
 	reasoningOff := caps.Reasoning != nil && !*caps.Reasoning
-	if reasoning := reasoningObject(req, caps); reasoning != nil {
+	reasoning := reasoningObject(req, caps)
+	if reasoning != nil {
 		body["reasoning"] = reasoning
-		// The include rides an {effort: none} object too. It is inert when the
-		// model honors the off, and it is the only thing that keeps replay
-		// working on a gateway that reasons anyway — which is not knowable in
-		// advance, so we send it rather than guess, as tool_choice does.
+	}
+	// The include rides an {effort: none} object too. It is inert when the
+	// model honors the off, and it is the only thing that keeps replay
+	// working on a gateway that reasons anyway — which is not knowable in
+	// advance, so we send it rather than guess, as tool_choice does. It also
+	// rides a request whose effort the ladder cannot vouch for: no level is
+	// sent, but the model still reasons, so replay must keep working.
+	if reasoning != nil || reasoningRequested(req, caps) {
 		body["include"] = appendUnique(slices.Clone(req.Include), encryptedReasoning)
 	} else if len(req.Include) > 0 {
 		body["include"] = slices.Clone(req.Include)
@@ -181,13 +186,28 @@ func reasoningObject(req llm.Request, caps registry.Caps) map[string]any {
 	if summary == "none" {
 		summary = ""
 	}
-	if summary != "" && (len(out) > 0 || registry.BoolValue(caps.ThinkingAlwaysOn)) {
+	if summary != "" && (len(out) > 0 || registry.BoolValue(caps.ThinkingAlwaysOn) || reasoningRequested(req, caps)) {
 		out["summary"] = summary
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// reasoningRequested reports whether the request asks the model to reason,
+// even when the row's ladder cannot vouch for the requested level. An
+// uncatalogued gateway row still reasons; keeping this true lets the
+// encrypted-reasoning include and a configured summary survive without
+// sending an effort name the row cannot accept.
+func reasoningRequested(req llm.Request, caps registry.Caps) bool {
+	if caps.Reasoning != nil && !*caps.Reasoning {
+		return false
+	}
+	if req.ReasoningEffort == nil || *req.ReasoningEffort == "none" {
+		return false
+	}
+	return caps.EffortCapable()
 }
 
 func appendUnique(values []string, value string) []string {
