@@ -218,6 +218,28 @@ func TestProtocolRegionalNonGlobalOnly404StaysProviderError(t *testing.T) {
 	}
 }
 
+// The remedy is Vertex's: a transport whose host was not derived from a
+// Vertex location (no vertex-location host rule) is not talking to a Vertex
+// regional endpoint, whatever variables its URL templates read, so its 404
+// must not be rewritten into a Vertex location configuration error.
+func TestProtocolNonVertexTransport404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := protoLive(srv)
+	res.WireID = "gemini-3.8-flash"
+	// A custom gateway transport that happens to read GOOGLE_VERTEX_LOCATION
+	// into its path: no vertex-location host rule.
+	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": "us-central1", "GOOGLE_VERTEX_PROJECT": "p"}
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a transport without the vertex-location host rule must not get the Vertex remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
+}
+
 // The same 404 against the global endpoint already names the endpoint that
 // serves the model, so it stays the provider's own error.
 func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing.T) {

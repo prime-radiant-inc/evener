@@ -161,12 +161,49 @@ func TestModelPicker_DisabledItemRendersReasonAndCannotSelect(t *testing.T) {
 	if mp.done || mp.selected != "" {
 		t.Fatalf("disabled row should keep picker open without selection: done=%v selected=%q", mp.done, mp.selected)
 	}
-
 	tm, _ = mp.Update(tea.KeyMsg{Type: tea.KeyDown})
 	tm, _ = tm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mp = tm.(ModelPicker)
 	if !mp.done || mp.selected != "ollama/llama3" {
 		t.Fatalf("enabled row selection done=%v selected=%q, want ollama/llama3", mp.done, mp.selected)
+	}
+}
+
+// A registry warning (e.g. a global-only model under a regional Vertex
+// location) renders as a dim note under the row while the row stays
+// selectable: it is information, not a disabled or removed option.
+func TestModelPicker_WarningRendersUnderRowAndStaysSelectable(t *testing.T) {
+	const note = `regional location cannot serve this model`
+	items := []ModelPickerItem{
+		{ID: "vertex/gemini-3.8-flash", Display: "gemini-3.8-flash", Warnings: []string{note}},
+	}
+	p := NewModelPicker(items, "", 80)
+
+	plain := ansiPattern.ReplaceAllString(p.View(), "")
+	lines := strings.Split(plain, "\n")
+	var row, warningLine string
+	for _, line := range lines {
+		if strings.Contains(line, "gemini-3.8-flash") {
+			row = line
+		}
+		if strings.Contains(line, note) {
+			warningLine = line
+		}
+	}
+	if row == "" {
+		t.Fatal("no row for the model in view")
+	}
+	if strings.Contains(row, note) {
+		t.Fatalf("the warning must render on its own line, not on the row: %q", row)
+	}
+	if warningLine == "" {
+		t.Fatalf("picker did not render the warning as its own line:\n%s", plain)
+	}
+
+	selectedModel, _ := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	selected := selectedModel.(ModelPicker)
+	if !selected.Done() || selected.Selected() != "vertex/gemini-3.8-flash" {
+		t.Fatalf("a warned row must stay selectable: done:%v selected:%q", selected.Done(), selected.Selected())
 	}
 }
 

@@ -58,6 +58,13 @@ func reclassifyGemini(res registry.Resolved) func(status int, body []byte, err e
 // project simply lacks access to a model that is valid there, and rewriting
 // that as an endpoint change would hide the real failure.
 func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []byte) (string, bool) {
+	// Only a transport whose host the vertex-location rule derived from the
+	// location reaches a Vertex regional endpoint; a custom transport that
+	// merely reads GOOGLE_VERTEX_LOCATION into its URL is talking to
+	// something else, and rewriting its 404 would misattribute the failure.
+	if res.Transport.HostRule != registry.HostRuleVertexLocation {
+		return "", false
+	}
 	if status != http.StatusNotFound || !strings.Contains(string(body), "Publisher model") {
 		return "", false
 	}

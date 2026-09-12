@@ -21,6 +21,11 @@ type ModelPickerItem struct {
 	// Meta is a compact trailing tail (context window, price, capability
 	// flags) appended dim after the row. "" renders nothing extra.
 	Meta string
+	// Warnings are the registry's resolved-row notes (e.g. a global-only
+	// model under a regional Vertex location). Each renders as its own dim
+	// line under the row; the row stays selectable, matching the web and
+	// mobile pickers. Empty renders nothing extra.
+	Warnings []string
 }
 
 // ModelPicker is an inline Bubble Tea model for selecting from a filtered list.
@@ -191,6 +196,10 @@ func (m ModelPicker) renderBody() string {
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
+			for _, warning := range item.Warnings {
+				b.WriteString("    " + tuitheme.MpDimStyle.Render("⚠ "+warning))
+				b.WriteString("\n")
+			}
 		}
 
 		if len(filtered) > maxVisible {
