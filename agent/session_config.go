@@ -34,8 +34,11 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	// LifetimeContext owns this session tree when supplied by a one-shot run.
-	// Nil preserves daemon/background ownership and is not persisted.
+	// LifetimeContext owns this session tree: `evener run` supplies its run
+	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
+	// context, so cancelling either ends the tree's own context immediately
+	// rather than when Close finally runs. Nil is the library/test shape --
+	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
 
@@ -121,6 +124,13 @@ type SessionConfig struct {
 	// NoProjectPrompts suppresses loading .evener/prompts/ from the project directory.
 	// Useful for A/B testing to match Docker container behavior (no project prompts).
 	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
+
+	// AgentsDocPath is the personal AGENTS.md loaded ahead of the project's own
+	// instruction docs. Empty resolves <userdirs.DefaultConfigRoot()>/AGENTS.md
+	// from the process environment; a hub passes its own concrete path so
+	// Settings and the sessions it spawns agree on the file even when a launch
+	// overrides XDG_CONFIG_HOME.
+	AgentsDocPath string `json:"agents_doc_path,omitempty"`
 
 	// NonInteractive indicates no human is available for questions or confirmation.
 	// The task prompt is the complete specification; the agent must make all decisions
@@ -752,6 +762,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SystemPromptFile:            c.SystemPromptFile,
 		SystemPromptAppend:          c.SystemPromptAppend,
 		NoProjectPrompts:            c.NoProjectPrompts,
+		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
 		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
@@ -794,6 +805,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		SystemPromptFile:            s.SystemPromptFile,
 		SystemPromptAppend:          s.SystemPromptAppend,
 		NoProjectPrompts:            s.NoProjectPrompts,
+		AgentsDocPath:               s.AgentsDocPath,
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,
 		ContextStrategy:             s.ContextStrategy,

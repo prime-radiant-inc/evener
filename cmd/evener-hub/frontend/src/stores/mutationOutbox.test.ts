@@ -87,6 +87,7 @@ describe("MutationOutboxIndexedDB", () => {
       attachments: [],
       optimisticDisplay: { text: "survive reload" },
       state: "submitting",
+      attempted: false,
     });
   });
 
@@ -735,7 +736,10 @@ describe("MutationOutbox discovery", () => {
     });
     await survivingTab.start();
     await survivingTab.connectionReady();
-    expect(discoveries).toEqual([]);
+    expect(discoveries).toEqual([
+      { targets: [], reason: "startup" },
+      { targets: [], reason: "ready" },
+    ]);
 
     await new MutationOutboxIndexedDB({
       indexedDB,
@@ -745,7 +749,11 @@ describe("MutationOutbox discovery", () => {
     intervals[0]?.();
     await survivingTab.stop();
 
-    expect(discoveries).toEqual([{ targets: [TARGET], reason: "interval" }]);
+    expect(discoveries).toEqual([
+      { targets: [], reason: "startup" },
+      { targets: [], reason: "ready" },
+      { targets: [TARGET], reason: "interval" },
+    ]);
     expect(await storage.listOutbox(TARGET)).toHaveLength(1);
   });
 

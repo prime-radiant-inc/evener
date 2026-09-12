@@ -2,7 +2,7 @@
 // SettingsNav's link list/grouping, the pane's own title() (paneRegistry),
 // and (via DEFAULT_SECTION_ID) what a bare /settings resolves to. Verified
 // against the original settings inventory after Codex launch controls were
-// removed, plus keybindings, about, and mobile. The original
+// removed, plus keybindings, about, mobile, and agents-md. The original
 // legacy-parity sections are 5 ungrouped top links (General/Theme/
 // Transcript display/Display/Notifications) plus 3 labeled clusters ("Agents &
 // models"/"Extensions"/"Daemon"), in this fixed order. The per-project
@@ -43,6 +43,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // --- Agents & models -----------------------------------------------
   { id: "credentials", label: "Providers & credentials", cluster: "agents-models" },
   { id: "agents", label: "Agents", cluster: "agents-models" },
+  { id: "agents-md", label: "AGENTS.md", cluster: "agents-models" },
   { id: "launch-evener", label: "Evener launch", cluster: "agents-models" },
   { id: "inrepo", label: "In-repo config", cluster: "agents-models" },
   // --- Extensions ------------------------------------------------------

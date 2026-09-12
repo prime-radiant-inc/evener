@@ -38,6 +38,7 @@ import {
   resetPendingTurnsStoreForTests,
 } from "./queue/pendingTurnsStore";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
+import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -142,7 +143,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "evener",
-    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref, mutationStateAuthoritative: true, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -843,7 +844,9 @@ test("a quote-insert request for a DIFFERENT ref never reaches this composer", a
   act(() => {
     requestQuoteInsert("ref_other", "> quoted line\n\n");
   });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
   expect(textarea().value).toBe("");
 });
 
@@ -911,7 +914,9 @@ test("a composer-focus request for a DIFFERENT ref never focuses this composer",
   act(() => {
     requestComposerFocus("ref_other");
   });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
   expect(document.activeElement).not.toBe(textarea());
 });
 
@@ -1230,7 +1235,8 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
   // @ts-expect-error this test exercises the explicit unavailable-storage boundary
   globalThis.indexedDB = undefined;
   const user = userEvent.setup();
-  const fake = await mountComposer("ref_a");
+  const fake = await act(async () => mountComposer("ref_a"));
+  await flushPendingTurnsProjectionForTests();
 
   await user.type(textarea(), "hello");
   await user.click(submitButton());
@@ -2055,8 +2061,10 @@ test("editing a rejected queue row merges it through the normal Composer", async
   const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
   await user.type(textarea(), "current work");
-  await seedRejectedRecovery(storage, "ref_a", "rejected draft");
-  await refreshPendingTurnsProjection("ref_a");
+  await act(async () => {
+    await seedRejectedRecovery(storage, "ref_a", "rejected draft");
+    await refreshPendingTurnsProjection("ref_a");
+  });
 
   const row = screen.getByText("rejected draft").closest("li");
   if (!row) throw new Error("missing rejected queue row");
@@ -2079,6 +2087,7 @@ test("sending recovered text uses current Composer routing and consumes the reco
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       activeTurnId: "turn-current",
+      mutationStateAuthoritative: true,
       queue: { revision: 4 },
     },
   });
@@ -2311,7 +2320,11 @@ test("draining an active recovery consumes its owner before the next submission"
       queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
     },
   });
-  fake.on("turn/drainAsSteer", () => new Promise<never>(() => undefined));
+  const dispatched = deferred<void>();
+  fake.on("turn/drainAsSteer", () => {
+    dispatched.resolve();
+    return new Promise<never>(() => undefined);
+  });
   await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("retry me");
   const transact = IDBDatabase.prototype.transaction;
@@ -2326,13 +2339,18 @@ test("draining an active recovery consumes its owner before the next submission"
     return transaction;
   });
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
-    await committed.promise;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+      await committed.promise;
+    });
     // Recovery ownership must be consumed by the same durable write, before
     // the mounted composer's success callback can clear or autosave its draft.
     expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
   } finally {
-    await act(async () => hold?.release());
+    await act(async () => {
+      hold?.release();
+      await dispatched.promise;
+    });
     await flushPendingTurnsProjectionForTests();
   }
   expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
@@ -2431,17 +2449,46 @@ test("a busy session renders both steer and stop, enabled", async () => {
 });
 
 test("a busy session on a harness that can't interrupt renders steer but not stop", async () => {
-  await mountComposer("ref_a", {
-    status: { type: "active" },
-    evener: {
-      ref: "ref_a",
-      capabilities: { ...FULL_CAPABILITIES, interrupt: false },
-      queue: { revision: 0 },
-      activeTurnId: "turn_1",
-    },
-  });
-  expect(steerButton()).toBeTruthy();
-  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  resetStoplessComposerSightingsForTests();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await mountComposer("ref_a", {
+      status: { type: "active" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...FULL_CAPABILITIES, interrupt: false },
+        queue: { revision: 0 },
+        activeTurnId: "turn_1",
+      },
+    });
+    expect(steerButton()).toBeTruthy();
+    expect(screen.queryByTestId("composer-stop")).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls).toStrictEqual([
+      [
+        "[evener 5gdv] composer is showing a working session with no Stop. Please attach this to kata 5gdv:",
+        {
+          ref: "ref_a",
+          status: "active",
+          activeTurnId: "turn_1",
+          capabilities: { ...FULL_CAPABILITIES, interrupt: false },
+          capabilitySource: "read",
+          showSteer: true,
+          ended: false,
+        },
+      ],
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        ref: "ref_a",
+        status: "active",
+        capabilities: expect.objectContaining({ interrupt: false, steer: true }),
+      }),
+    );
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 test("a busy session on a harness that can't steer renders stop but not steer", async () => {
@@ -2635,7 +2682,7 @@ function pastePngInto(el: HTMLElement, name = "shot.png"): void {
   Object.defineProperty(event, "clipboardData", {
     value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
   });
-  el.dispatchEvent(event);
+  fireEvent(el, event);
 }
 
 function installCanvasStubs(): void {
@@ -2814,8 +2861,10 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
       return transaction;
     });
     try {
-      fireEvent.click(submitButton());
-      await committed;
+      await act(async () => {
+        fireEvent.click(submitButton());
+        await committed;
+      });
       if (edit === "replace attachment") {
         fireEvent.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
         fireEvent.click(screen.getByRole("button", { name: "Replace draft" }));

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -229,24 +229,33 @@ test("keeps transcript/history and projection announcements without standalone D
   );
 
   expect(await screen.findByText("read me")).toBeTruthy();
-  expect(screen.getByTestId("load-older-row").textContent).not.toBe("");
+  // Idle paging is silent now (no "Older turns" banner); the row and its
+  // automatic-fetch sentinel are what must remain reachable.
+  expect(screen.getByTestId("load-older-row")).toBeTruthy();
+  expect(screen.getByTestId("load-older-sentinel")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
-  transcriptDisplayStore.setState({ viewport: "desktop" });
-  transcriptDisplayStore
-    .getState()
-    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }));
+  await act(async () => {
+    transcriptDisplayStore.setState({ viewport: "desktop" });
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }));
+  });
   await waitFor(() =>
     expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Activity"),
   );
   const status = screen.getByTestId("transcript-view-announcement");
-  transcriptDisplayStore
-    .getState()
-    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true }));
+  await act(async () => {
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true }));
+  });
   await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
-  transcriptDisplayStore
-    .getState()
-    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { tokenCounts: true }));
+  await act(async () => {
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { tokenCounts: true }));
+  });
   await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
   expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
 });

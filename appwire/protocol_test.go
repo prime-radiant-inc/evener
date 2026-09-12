@@ -278,6 +278,44 @@ func TestKeybindingsCatalog(t *testing.T) {
 	}
 }
 
+func TestAgentsDocCatalog(t *testing.T) {
+	methods := map[string]MethodSpec{}
+	for _, method := range Methods {
+		methods[method.Name] = method
+	}
+	for _, name := range []string{
+		MethodEvenerSettingsAgentsDocGet,
+		MethodEvenerSettingsAgentsDocSet,
+	} {
+		method, ok := methods[name]
+		if !ok {
+			t.Fatalf("method catalog missing %s", name)
+		}
+		if method.Scope != ScopeHub {
+			t.Errorf("method %s scope = %q, want %q", name, method.Scope, ScopeHub)
+		}
+		if reflect.TypeOf(method.Result) != reflect.TypeFor[AgentsDocResponse]() {
+			t.Errorf("method %s result type = %T, want %T", name, method.Result, AgentsDocResponse{})
+		}
+	}
+	if reflect.TypeOf(methods[MethodEvenerSettingsAgentsDocSet].Params) != reflect.TypeFor[AgentsDocSetParams]() {
+		t.Errorf("set params type = %T, want %T", methods[MethodEvenerSettingsAgentsDocSet].Params, AgentsDocSetParams{})
+	}
+	var changed *NotificationSpec
+	for i := range Notifications {
+		if Notifications[i].Name == NotifyEvenerSettingsAgentsDocChanged {
+			changed = &Notifications[i]
+			break
+		}
+	}
+	if changed == nil {
+		t.Fatalf("notification catalog missing %s", NotifyEvenerSettingsAgentsDocChanged)
+	}
+	if reflect.TypeOf(changed.Payload) != reflect.TypeFor[AgentsDocResponse]() {
+		t.Fatalf("changed payload type = %T, want %T", changed.Payload, AgentsDocResponse{})
+	}
+}
+
 func TestFeatureSetKeybindingsJSONField(t *testing.T) {
 	encoded, err := json.Marshal(FeatureSet{})
 	if err != nil {
@@ -455,6 +493,7 @@ func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 		NotifyEvenerNavigationInvalidated:            true,
 		NotifyEvenerSettingsTranscriptDisplayChanged: true,
 		NotifyEvenerSettingsKeybindingsChanged:       true,
+		NotifyEvenerSettingsAgentsDocChanged:         true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {
@@ -571,4 +610,23 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMarketplaceEditCatalog(t *testing.T) {
+	for _, method := range Methods {
+		if method.Name != MethodEvenerMarketplaceEdit {
+			continue
+		}
+		if method.Scope != ScopeHub {
+			t.Errorf("scope = %q, want %q", method.Scope, ScopeHub)
+		}
+		if reflect.TypeOf(method.Params) != reflect.TypeFor[MarketplaceEditParams]() {
+			t.Errorf("params type = %T", method.Params)
+		}
+		if reflect.TypeOf(method.Result) != reflect.TypeFor[MarketplaceListResponse]() {
+			t.Errorf("result type = %T", method.Result)
+		}
+		return
+	}
+	t.Fatalf("method catalog missing %s", MethodEvenerMarketplaceEdit)
 }

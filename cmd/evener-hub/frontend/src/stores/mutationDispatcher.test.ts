@@ -352,13 +352,9 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
   });
 
-  // The daemon's own contract for a blocked-unknown outcome is "retry must
-  // remain blocked until persistence recovers" (NormalizeClientMutationError).
-  // The authoritative thread read is how recovery is proven: an id absent from
-  // every authoritative set (pending, queue, transcript items) was never
-  // journaled, so re-dispatching it is safe — the daemon's journal replays a
-  // receipt if a race ever makes it a duplicate. Without this restore, a
-  // blocked head parks the whole FIFO forever, across reloads (kata gwea).
+  // Live reconciliation reopens unresolved records without changing their
+  // payloads. The daemon's durable journal and original instance fence own
+  // replay safety; omission from the snapshot does not prove non-delivery.
   test("restoreProvenAbsent returns a blocked head to submitting and the next dispatch drains it", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "restore-absent", ["mutation-a", "mutation-b"]);
@@ -529,4 +525,83 @@ describe("MutationDispatcher", () => {
 
     expect(await outbox.getOutbox(record.clientMutationId)).toBeUndefined();
   });
+});
+
+test("attempt evidence is visible to another tab before transport and survives an unknown outcome", async () => {
+  const indexedDB = new IDBFactory();
+  const writer = storage(indexedDB, "attempt-evidence", ["attempted", "unsent"]);
+  const inspector = new MutationOutboxIndexedDB({ indexedDB, databaseName: "attempt-evidence" });
+  const record = await writer.enqueueIntent(queueIntent());
+  const fake = new FakeClient("ready");
+  fake.on("turn/queue", async () => {
+    expect((await inspector.getOutbox(record.clientMutationId))?.attempted).toBe(true);
+    throw new Error("reply lost");
+  });
+  const dispatcher = new MutationDispatcher(writer, { getClient: () => fake });
+  await dispatcher.dispatchTargets([record.targetRef]);
+  writer.close();
+  const fresh = await inspector.enqueueIntent(queueIntent());
+  await inspector.markUnknown(record.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+  await inspector.markUnknown(fresh.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+  expect((await inspector.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+  expect((await inspector.getOutbox(fresh.clientMutationId))?.state).toBe("submitting");
+  inspector.close();
+});
+
+test("failed attempt commit prevents transport", async () => {
+  const store = new MutationOutboxIndexedDB({
+    indexedDB: new IDBFactory(),
+    databaseName: "attempt-commit-failure",
+    beforeCommit: (operation) => {
+      if (operation === "markAttempted") throw new Error("attempt commit failed");
+    },
+  });
+  const record = await store.enqueueIntent(queueIntent());
+  const fake = new FakeClient("ready");
+  const dispatcher = new MutationDispatcher(store, { getClient: () => fake });
+  await expect(dispatcher.dispatchTargets([record.targetRef])).rejects.toThrow("attempt commit failed");
+  expect(fake.calls).toHaveLength(0);
+  expect((await store.getOutbox(record.clientMutationId))?.attempted).toBe(false);
+  store.close();
+});
+
+test("a client replacement during attempt commit retains evidence and recovers the same mutation", async () => {
+  const indexedDB = new IDBFactory();
+  const retired = new FakeClient("ready");
+  const replacement = new FakeClient("ready");
+  let current = retired;
+  const writer = new MutationOutboxIndexedDB({
+    indexedDB,
+    databaseName: "rewire-attempt-evidence",
+    createMutationId: () => "mutation-a",
+    beforeCommit: (operation) => {
+      if (operation === "markAttempted") current = replacement;
+    },
+  });
+  const inspector = new MutationOutboxIndexedDB({ indexedDB, databaseName: "rewire-attempt-evidence" });
+  const record = await writer.enqueueIntent(queueIntent());
+  const dispatcher = new MutationDispatcher(writer, { getClient: () => current });
+
+  await dispatcher.dispatchTargets([record.targetRef]);
+
+  expect(retired.calls).toHaveLength(0);
+  expect(replacement.calls).toHaveLength(0);
+  expect(await inspector.getOutbox(record.clientMutationId)).toMatchObject({
+    attempted: true,
+    payload: record.payload,
+  });
+  // A saved read cannot distinguish this interrupted attempt from delivery
+  // by another tab, so it retains the shared write-ahead evidence.
+  await inspector.markUnknown(record.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+  await dispatcher.dispatchTargets([record.targetRef]);
+  expect(replacement.calls).toHaveLength(0);
+
+  replacement.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "replayed") }));
+  await dispatcher.restoreProvenAbsent(record.targetRef, new Set());
+  await dispatcher.dispatchTargets([record.targetRef]);
+
+  expect(replacement.calls).toEqual([{ method: "turn/queue", params: record.payload }]);
+  expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
+  inspector.close();
+  writer.close();
 });

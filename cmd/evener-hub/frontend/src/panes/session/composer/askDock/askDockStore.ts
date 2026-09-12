@@ -17,10 +17,10 @@
 // recovery surfaces own later network outcomes.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { type AskResolution, composeAskAnswers } from "../../../../protocol/askAnswers";
 import { sessionActionError } from "../../../../protocol/errors";
 import type { ThreadModel } from "../../../../protocol/model";
 import { threadsStore } from "../../../../stores/threads";
-import { type AskResolution, composeAskAnswers } from "./askCompose";
 import { liveAskQuestions } from "./deriveAskQuestions";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
 
@@ -118,7 +118,7 @@ function mintBatchId(): string {
 
 // answerFor reads a key's current answer state with the same "missing
 // means untouched" default sendBatch's own composition needs (an
-// unresolved question composes as an explicit skip - askCompose.ts).
+// unresolved question composes as an explicit skip - protocol/askAnswers.ts).
 function answerFor(refState: AskDockRefState, key: string): AskAnswerState {
   return refState.answers[key] ?? { resolution: null, note: "" };
 }
@@ -419,6 +419,16 @@ export function useAskDockStore<T>(selector?: (state: AskDockState) => T): T | A
   // `selector = identity` JS default param, so both arms run identically).
   // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(askDockStore, selector) : useStore(askDockStore);
+}
+
+// useAskDockPending is the seam a composer-surface owner (Composer.tsx,
+// Session.tsx) reads to decide whether to hide/inert the plain composer for
+// `ref`. Defined here, next to the store it selects from, so the predicate
+// exists exactly once: askDockPending.ts (the composer's lean chunk seam)
+// and askDock/index.ts both re-export it rather than each carrying their
+// own verbatim copy.
+export function useAskDockPending(ref: string): boolean {
+  return useAskDockStore((s) => (s.byRef.get(ref)?.batches.length ?? 0) > 0);
 }
 
 // resetAskDockStoreForTests resets this module's singleton state between

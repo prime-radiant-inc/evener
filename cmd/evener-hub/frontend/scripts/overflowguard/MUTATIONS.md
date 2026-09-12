@@ -67,6 +67,33 @@ incidentally during the core-scan mutation above
 real DOM it can see failing. Left as a follow-up if Jesse wants a dedicated
 mutation for the dock-split threshold itself.
 
+## Top-level intent group column (`verifyIntentColumn()` /
+`inspectIntentColumn()`, the `?intenttail=1` fixture)
+
+Asserts the reload-shaped regression: a settled transcript whose final turn
+ENDS in intent-bearing tool calls projects that trailing run as its own
+virtual-list row (TranscriptBody's `transcriptRowsForProjection`), rendered
+outside TurnBlock's `.turn` column. The horizontal-overflow scan cannot see
+the misalignment (nothing escapes a scroller), so this compares the
+top-level `details[data-testid="intent-group"]`'s box against a
+`[data-testid="turn-block"]` box directly at 1024px under the chat preset.
+
+**Mutation performed:** removed `max-width: var(--session-measure)` and
+`margin-inline: auto` from `.intentGroup` in
+`panes/session/session.module.css` (i.e. the pre-fix state — this guard was
+written red-first against exactly that CSS).
+
+**Result before restore:** FAIL -
+`intent group column ... FAIL - {"groupFound":true,"groupLeft":25,"groupRight":999,"turnLeft":160,"turnRight":864}`
+(the group spanned the full 974px pane content box; the turn column held its
+704px measure at 160-864). Every other assertion group stayed PASS, so the
+fixture mode disturbs nothing else.
+
+**Result after restore:** PASS -
+`intent group column ... PASS - top-level intent group shares the turn content column`.
+
+**Verified:** 2026-09-08. **Expect:** fail.
+
 ## Footer visibility predicate (`isElementVisible` in `src/dev/guardVisibility.ts`) — kata bsq9
 
 `footer.effortVisible` / `contextVisible` / `queueVisible` all rest on one

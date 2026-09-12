@@ -10,7 +10,13 @@
 // commandCatalog.ts), the same catalog the modal command palette reads.
 
 import type { CommandDescriptor, EvenerSkillInfo } from "../../../protocol/types.gen";
-import { type ScopedCommand, slashCommandInvocation } from "../../../shell/palette/commands";
+import { slashCommandInvocation } from "../../../shell/palette/catalogCommands";
+
+type ScopedCommand = {
+  id: string;
+  hint: string;
+  unavailableReason?: string;
+};
 
 export interface SlashToken {
   // Index of the "/" itself, and the caret position the match was computed

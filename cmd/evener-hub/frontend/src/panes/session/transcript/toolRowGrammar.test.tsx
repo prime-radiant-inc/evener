@@ -1136,12 +1136,12 @@ test("clicking the linkified URL does not toggle the sibling disclosure trigger"
   expect(onToggle).toHaveBeenCalledTimes(1);
 });
 
-// #93: an expanded row whose descriptor hides the summary while open (shell's
-// summaryHiddenWhenExpanded) and carries no intent either renders NOTHING but
-// the aria-hidden chevron inside the disclosure trigger - the disclosure has
-// no accessible name at all. The fix must not resurrect the hidden summary text
-// (that suppression is deliberate, ToolCallItem.tsx:259); it needs a stable
-// label of its own.
+// #93: an expanded row that renders no summary (a delegate row - ToolCallItem
+// hands delegates an empty summary - or any summary-less row) and carries no
+// intent either renders NOTHING but the aria-hidden chevron inside the
+// disclosure trigger - the disclosure has no accessible name at all. The fix
+// must not resurrect the hidden summary text (that suppression is
+// deliberate); it needs a stable label of its own.
 test("an expanded summary-less, intent-less row's disclosure trigger still has a nonempty accessible name", () => {
   render(<ToolRow summary="" failed={false} expandable expanded onToggle={() => {}} />);
   const trigger = screen.getByTestId("tool-row-trigger");
@@ -1399,31 +1399,6 @@ test("two-level: clicking the body chevron calls onToggle, not onToggleSummary",
   expect(onToggleSummary).not.toHaveBeenCalled();
 });
 
-test("two-level: summaryHidden hides the summary line while expanded, body chevron moves to intent line", () => {
-  render(
-    <ToolRow
-      summary="npm test -- src/foo"
-      intent="Running the foo tests"
-      failed={false}
-      expandable
-      expanded
-      onToggle={() => {}}
-      summaryOpen
-      onToggleSummary={() => {}}
-      summaryHidden
-    />,
-  );
-  // summaryVisible = summaryOpen && !summaryHidden = false, so the summary
-  // line is gone and the intent button reports not-expanded.
-  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");
-  const row = screen.getByTestId("tool-row");
-  expect(row.getAttribute("data-intent-trailing")).toBe("true");
-  // The body chevron still renders on the intent line, expanded.
-  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
-  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
-});
-
 test("two-level: the intent button controls the summary region via aria-controls", () => {
   render(
     <ToolRow
@@ -1598,7 +1573,7 @@ test("two-level: the summary div gets id={summaryRegionId} when rendered", () =>
   expect(summaryLine?.getAttribute("id")).toBe(summaryRegionId);
 });
 
-test("two-level: when summaryHidden the intent button drops aria-controls (no region to point at)", () => {
+test("two-level: when the summary line is collapsed the intent button drops aria-controls (no region to point at)", () => {
   render(
     <ToolRow
       summary="npm test -- src/foo"
@@ -1607,13 +1582,12 @@ test("two-level: when summaryHidden the intent button drops aria-controls (no re
       expandable
       expanded
       onToggle={() => {}}
-      summaryOpen
+      summaryOpen={false}
       onToggleSummary={() => {}}
-      summaryHidden
     />,
   );
   const trigger = screen.getByTestId("tool-row-trigger");
-  // summaryVisible is false, so no summary region exists to control.
+  // The summary line is not rendered, so no summary region exists to control.
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
   expect(trigger.getAttribute("aria-controls")).toBeFalsy();
 });
@@ -1631,9 +1605,9 @@ test("two-level: the body chevron's chevron span rotates with expanded state", (
       onToggleSummary={() => {}}
     />,
   );
-  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
-  const chevron = bodyTrigger.querySelector("[data-open]");
-  expect(chevron?.getAttribute("data-open")).toBe("false");
+  // The chevron rides inline in the summary, not inside the overlay button.
+  const chevron = screen.getByTestId("tool-row-body-chevron");
+  expect(chevron.getAttribute("data-open")).toBe("false");
   rerender(
     <ToolRow
       summary="npm test -- src/foo"
@@ -1646,9 +1620,48 @@ test("two-level: the body chevron's chevron span rotates with expanded state", (
       onToggleSummary={() => {}}
     />,
   );
-  const bodyTriggerOpen = screen.getByTestId("tool-row-body-trigger");
-  const chevronOpen = bodyTriggerOpen.querySelector("[data-open]");
-  expect(chevronOpen?.getAttribute("data-open")).toBe("true");
+  const chevronOpen = screen.getByTestId("tool-row-body-chevron");
+  expect(chevronOpen.getAttribute("data-open")).toBe("true");
+});
+
+test("two-level: the body chevron rides inline at the end of the summary text, not in the overlay button", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  // The chevron span is a child of the summary (inline at the end of the
+  // text)...
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.contains(screen.getByTestId("tool-row-body-chevron"))).toBe(true);
+  // ...and the overlay button is empty - it carries the click target only.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.querySelector("[data-open]")).toBeNull();
+});
+
+test("two-level: a summary-less line keeps the body chevron inside the button", () => {
+  render(
+    <ToolRow
+      summary=""
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.querySelector("[data-open]")?.getAttribute("data-open")).toBe("false");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
 // --- the intent-trailing control and the clamp's clip ------------------------

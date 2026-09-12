@@ -125,6 +125,10 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.endWebSocket()
 
+	parent := r.Context()
+	if s.cfg.ConnectionAdmissionContext != nil {
+		parent = s.cfg.ConnectionAdmissionContext(parent)
+	}
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -142,7 +146,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	if s.wrapWebSocketTransport != nil {
 		transport = s.wrapWebSocketTransport(transport)
 	}
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(parent)
 	conn := s.NewConnection(connectionID)
 	conn.setCancel(cancel)
 	s.registerConnection(conn)
@@ -161,7 +165,10 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	var transportLoops sync.WaitGroup
 	transportLoops.Go(func() {
 		defer cancel()
-		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout)
+		// The loop returning means nothing further will be written, so any
+		// callback still waiting on its response runs now.
+		defer conn.runPendingAfterWrite()
+		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout, conn.responseWritten)
 	})
 	go conn.runWorker(ctx)
 
@@ -244,10 +251,12 @@ func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel 
 }
 
 func runWebSocketSendLoop(ctx context.Context, transport webSocketSender, send <-chan appwire.Message) {
-	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout)
+	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout, nil)
 }
 
-func runWebSocketSendLoopWithTimeout(ctx context.Context, transport webSocketSender, send <-chan appwire.Message, writeTimeout time.Duration) {
+// sent, when non-nil, is called with each message the transport accepted, so
+// a handler can act only once its response has actually gone out.
+func runWebSocketSendLoopWithTimeout(ctx context.Context, transport webSocketSender, send <-chan appwire.Message, writeTimeout time.Duration, sent func(appwire.Message)) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -261,6 +270,9 @@ func runWebSocketSendLoopWithTimeout(ctx context.Context, transport webSocketSen
 			cancel()
 			if err != nil {
 				return
+			}
+			if sent != nil {
+				sent(msg)
 			}
 		}
 	}

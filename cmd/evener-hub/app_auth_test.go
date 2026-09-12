@@ -21,11 +21,8 @@ import (
 )
 
 func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, "openai-codex", authopenai.AuthRecord{
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -40,7 +37,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, nil))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -64,12 +61,26 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 	}
 }
 
+// stateRootAuthConfig is a hub config whose registry and auth controller
+// both keep OAuth records under stateRoot, and whose registry reads env. A
+// test that seeds auth/<instance>.json itself passes the root it seeded; the
+// default fixture would mint a fresh one. The default fixture registry is
+// also hermetic - it reads no environment at all - so a test about
+// env-vs-OAuth precedence passes the variables it is about.
+func stateRootAuthConfig(t *testing.T, stateRoot string, env map[string]string) hubcore.WebConfig {
+	t.Helper()
+	store := newTestCredentialsStore(t)
+	return hubcore.WebConfig{
+		Past:         hubcore.NewPastIndex(""),
+		HubStateRoot: stateRoot,
+		Registry:     newTestRegistry(t, stateRoot, "", store, env),
+		CredsStore:   store,
+	}
+}
+
 func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	t.Setenv("OPENAI_API_KEY", "env-token")
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(xdgStateHome), "openai-codex", authopenai.AuthRecord{
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -84,7 +95,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, map[string]string{"OPENAI_API_KEY": "env-token"}))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -99,6 +110,17 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth || !status.HasStoredOAuth || status.StoredEmail != "stored@example.com" || status.Email != "stored@example.com" {
 		t.Fatalf("status=%+v, want stored OAuth to win over env-token", status)
 	}
+
+	// Positive control: the plain API-key provider is the one that does read
+	// the environment, so an env layer that never reaches the registry fails
+	// here instead of making the Codex assertion above vacuously true.
+	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus(openai): %v", err)
+	}
+	if !envStatus.SignedIn || envStatus.ActiveSource != "env:OPENAI_API_KEY" || envStatus.EnvVar != "OPENAI_API_KEY" {
+		t.Fatalf("status(openai)=%+v, want OPENAI_API_KEY to resolve from the environment", envStatus)
+	}
 }
 
 // TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance is spec §5.1: the
@@ -106,12 +128,9 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 // OPENAI_API_KEY in the environment leaves it signed out rather than claiming
 // a sign-in the child could never use.
 func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	t.Setenv("OPENAI_API_KEY", "env-token")
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, map[string]string{"OPENAI_API_KEY": "env-token"}))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -125,6 +144,17 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 	}
 	if status.SignedIn || status.ActiveSource != "none" || status.HasStoredOAuth || status.EnvVar != "" {
 		t.Fatalf("status=%+v, want signed out with source none: an API key is not a Codex credential", status)
+	}
+
+	// Positive control: the plain API-key provider is the one that does read
+	// the environment, so an env layer that never reaches the registry fails
+	// here instead of making the Codex assertion above vacuously true.
+	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus(openai): %v", err)
+	}
+	if !envStatus.SignedIn || envStatus.ActiveSource != "env:OPENAI_API_KEY" || envStatus.EnvVar != "OPENAI_API_KEY" {
+		t.Fatalf("status(openai)=%+v, want OPENAI_API_KEY to resolve from the environment", envStatus)
 	}
 }
 
@@ -239,11 +269,8 @@ func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
 }
 
 func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, "openai-codex", authopenai.AuthRecord{
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -257,7 +284,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, nil))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -272,8 +299,8 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 	if !resp.Removed || resp.Status.ActiveSource != "none" {
 		t.Fatalf("logout=%+v, want removed and source none", resp)
 	}
-	if _, err := authopenai.LoadAuth(userStateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
-		t.Fatalf("LoadAuth() err=%v, want ErrAuthNotFound", err)
+	if _, err := authopenai.LoadAuth(stateRoot, "openai-codex"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(%s) err=%v, want ErrAuthNotFound after logout", stateRoot, err)
 	}
 }
 
@@ -330,6 +357,123 @@ func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
 	}
 	if record.AccessToken != "access-token" || record.Email != "oauth@example.com" {
 		t.Fatalf("record=%+v, want saved token and email", record)
+	}
+}
+
+// TestAuth_LoginComplete_WritesUnderTheConfiguredStateRoot pins the state
+// root the controller is handed as the root its OAuth records land in. A
+// fixture with a private root must not read or write the shared auth/*.json
+// under the ambient XDG_STATE_HOME, or parallel fixtures overwrite each other.
+func TestAuth_LoginComplete_WritesUnderTheConfiguredStateRoot(t *testing.T) {
+	envStateDir := oaitest.IsolateOpenAIAuth(t)
+	configuredRoot := t.TempDir()
+	store, err := credentials.LoadStore(filepath.Join(configuredRoot, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	c := newHubAuthControllerWithStore(configuredRoot, store)
+	attachTestRegistry(t, c)
+	c.cfg = authopenai.Config{IssuerBaseURL: "https://auth.example.test"}
+	c.client = &http.Client{}
+	c.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
+		return authopenai.TokenSet{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			IDToken:      hubAuthTestJWT(t, map[string]any{"email": "oauth@example.com"}),
+			TokenType:    "Bearer",
+			Scope:        "openid profile email",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	start, err := c.LoginStart(appwire.AuthLoginStartParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("LoginStart: %v", err)
+	}
+	authorizeURL, err := url.Parse(start.URL)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	state := authorizeURL.Query().Get("state")
+	if _, err := c.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{
+		Provider:    "openai-codex",
+		FlowID:      start.FlowID,
+		RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
+	}); err != nil {
+		t.Fatalf("LoginComplete: %v", err)
+	}
+
+	record, err := authopenai.LoadAuth(configuredRoot, "openai-codex")
+	if err != nil {
+		t.Fatalf("LoadAuth(%s): %v; the record must land under the configured hub state root", configuredRoot, err)
+	}
+	if record.AccessToken != "access-token" {
+		t.Fatalf("record=%+v, want the saved access token", record)
+	}
+	if _, err := authopenai.LoadAuth(envStateDir, "openai-codex"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(%s) err=%v, want ErrAuthNotFound: nothing may land under the env state root", envStateDir, err)
+	}
+}
+
+// TestHubRPCAuthStoresOAuthWhereTheRegistryReads pins how the hub wires the
+// auth controller: its OAuth records live in the registry's state root, the
+// directory registry credential resolution reads auth/<instance>.json from,
+// not under HubStateRoot. The hub loads its registry at
+// cmdutil.DefaultStateRoot() whatever hub_state_root says, so a record kept
+// under HubStateRoot would be a login the registry, the credential probe and
+// every spawned child never see.
+func TestHubRPCAuthStoresOAuthWhereTheRegistryReads(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	registryRoot := t.TempDir()
+	hubStateRoot := t.TempDir()
+	store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if err := authopenai.SaveAuth(registryRoot, "openai-codex", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Hour),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email",
+		AccessToken:  "stored-access-token",
+		RefreshToken: "stored-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "stored@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:         hubcore.NewPastIndex(""),
+		HubStateRoot: hubStateRoot,
+		Registry:     newTestRegistry(t, registryRoot, "", store, nil),
+		CredsStore:   store,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("AuthStatus: %v", err)
+	}
+	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth {
+		t.Fatalf("status=%+v, want the record under the registry state root %s to sign the instance in", status, registryRoot)
+	}
+	logout, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("AuthLogout: %v", err)
+	}
+	if !logout.Removed {
+		t.Fatalf("logout=%+v, want the record under the registry state root removed", logout)
+	}
+	if _, err := authopenai.LoadAuth(registryRoot, "openai-codex"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(%s) err=%v, want ErrAuthNotFound after logout", registryRoot, err)
 	}
 }
 
@@ -808,6 +952,205 @@ func TestAuth_InstanceStatus_EnvVarReportedFromRegistrySource(t *testing.T) {
 	}
 	if !status.SignedIn {
 		t.Errorf("SignedIn=false, want true")
+	}
+}
+
+// The three tests below pin one rule: the instance a credential write was
+// checked against is the instance it lands on. A rename holds credMu
+// exclusively while it re-keys providers.toml and reloads the registry, so a
+// check made outside that lock describes an instance the write no longer
+// reaches.
+
+// TestAuth_ApiKeySetRechecksTheInstanceUnderTheCredentialLock: the fixture's
+// entry shadows the curated Codex provider with a bearer instance, so a key
+// is exactly what it reads. Once a rename moves that entry away, the name
+// resolves to the curated provider again, which authenticates with an OAuth
+// record alone — and a key stored under it is enough to make it reappear as
+// an implicit instance.
+func TestAuth_ApiKeySetRechecksTheInstanceUnderTheCredentialLock(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, `[providers.openai-codex]
+base = "openai"
+`)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath)
+	if ctrl.instanceIsCodex("openai-codex") {
+		t.Fatal("the fixture's entry must be the bearer shadow a key belongs under")
+	}
+
+	ctrl.credMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "openai-codex", Value: "sk-x"})
+		done <- err
+	}()
+	// Only so a check made outside the lock has run by the time the rename
+	// lands: what the test asserts does not depend on the wait.
+	time.Sleep(100 * time.Millisecond)
+	renameProvidersEntry(t, ctrl, tomlPath, `[providers.work]
+base = "openai"
+`)
+	ctrl.credMu.Unlock()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "evener openai login") {
+			t.Fatalf("ApiKeySet = %v, want the Codex refusal for the name the rename left behind", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ApiKeySet never returned after the rename released the lock")
+	}
+	if v, ok := ctrl.creds.Get("openai-codex"); ok {
+		t.Fatalf("the key landed under openai-codex (%q), which reads OAuth records alone", v)
+	}
+}
+
+// TestAuth_LoginCompleteRechecksTheInstanceBeforeItSavesTheRecord: the token
+// exchange is where a browser round trip's worth of time passes, so the
+// rename happens inside it. The record must not land under a name that no
+// longer authenticates through OAuth.
+func TestAuth_LoginCompleteRechecksTheInstanceBeforeItSavesTheRecord(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, codexInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	ctrl.cfg = authopenai.Config{IssuerBaseURL: "https://auth.example.test"}
+	ctrl.client = &http.Client{}
+	ctrl.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
+		renameProvidersEntry(t, ctrl, tomlPath, `[providers.work2]
+base = "openai-codex"
+`)
+		return authopenai.TokenSet{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			TokenType:    "Bearer",
+			Scope:        "openid profile email",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	start, err := ctrl.LoginStart(appwire.AuthLoginStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("LoginStart: %v", err)
+	}
+	authorizeURL, err := url.Parse(start.URL)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	state := authorizeURL.Query().Get("state")
+
+	_, err = ctrl.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{
+		Provider:    "work",
+		FlowID:      start.FlowID,
+		RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
+	})
+	if err == nil || !strings.Contains(err.Error(), "OAuth is not supported") {
+		t.Fatalf("LoginComplete = %v, want the refusal for the name the rename left behind", err)
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: the record must not land under the stale name", err)
+	}
+}
+
+// TestAuth_DevicePollRechecksTheInstanceBeforeItSavesTheRecord is the same
+// property on the device flow, whose own exchange is the long step.
+func TestAuth_DevicePollRechecksTheInstanceBeforeItSavesTheRecord(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, codexInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	ctrl.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "U", VerificationURL: "https://x", DeviceAuthID: "d", Interval: time.Second}, nil
+	}
+	ctrl.pollDeviceOnce = func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error) {
+		return authopenai.DeviceCodeSuccess{AuthorizationCode: "ac", CodeVerifier: "cv"}, false, nil
+	}
+	ctrl.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
+		renameProvidersEntry(t, ctrl, tomlPath, `[providers.work2]
+base = "openai-codex"
+`)
+		return authopenai.TokenSet{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	_, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
+	if err == nil || !strings.Contains(err.Error(), "OAuth is not supported") {
+		t.Fatalf("DevicePoll = %v, want the refusal for the name the rename left behind", err)
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: the record must not land under the stale name", err)
+	}
+}
+
+// TestAuth_LogoutClearsTheStoreTheSchemeUnderTheLockNames: which layer a
+// logout clears is decided by the instance's auth scheme, so that decision
+// belongs in the same locked write as the removal. The fixture's bearer
+// shadow says "clear the stored key"; once the rename moves it away the name
+// is the curated Codex provider, whose logout clears the OAuth record and
+// leaves the stored key alone.
+func TestAuth_LogoutClearsTheStoreTheSchemeUnderTheLockNames(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	if err := authopenai.SaveAuth(stateDir, "openai-codex", makeOAuthRecord("openai-codex", "codex@example.com")); err != nil {
+		t.Fatalf("SaveAuth(openai-codex): %v", err)
+	}
+	tomlPath := writeProvidersToml(t, dir, `[providers.openai-codex]
+base = "openai"
+`)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	if err := ctrl.creds.Set("openai-codex", "sk-x"); err != nil {
+		t.Fatalf("seed the stored key: %v", err)
+	}
+	if ctrl.instanceIsCodex("openai-codex") {
+		t.Fatal("the fixture's entry must be the bearer shadow whose logout clears the stored key")
+	}
+
+	ctrl.credMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "openai-codex"})
+		done <- err
+	}()
+	// Only so a decision made outside the lock has run by the time the rename
+	// lands: what the test asserts does not depend on the wait.
+	time.Sleep(100 * time.Millisecond)
+	renameProvidersEntry(t, ctrl, tomlPath, `[providers.work]
+base = "openai"
+`)
+	ctrl.credMu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Logout: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Logout never returned after the rename released the lock")
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "openai-codex"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(openai-codex) err = %v, want ErrAuthNotFound: the OAuth record is the layer the name's scheme clears", err)
+	}
+	if v, ok := ctrl.creds.Get("openai-codex"); !ok || v != "sk-x" {
+		t.Fatalf("stored key = %q/%v, want sk-x/true: a Codex logout clears the record alone", v, ok)
+	}
+}
+
+// renameProvidersEntry is what an instance rename leaves behind for a
+// credential write already in flight: providers.toml re-keyed and the
+// registry reloaded onto it.
+func renameProvidersEntry(t *testing.T, c *hubAuthController, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("rewrite providers.toml: %v", err)
+	}
+	if err := c.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
 	}
 }
 

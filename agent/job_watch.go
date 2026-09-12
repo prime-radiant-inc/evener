@@ -248,7 +248,7 @@ type watchArgs struct {
 	Every              int
 	EventFilter        *watchEventFilter
 	// AfterSeconds and RepeatSeconds are the timer triggers (self only);
-	// Note rides every timer fire. All three are create-only.
+	// Note rides every fire of any watch. All three are create-only.
 	AfterSeconds         int
 	RepeatSeconds        int
 	Note                 string
@@ -330,9 +330,9 @@ type watchResult struct {
 	Events             []string
 	EventFilter        *watchEventFilter
 	ProgressIntervalMS int
-	// TimerSeconds, OneShot, and Note describe a timer watch; a timer reports
-	// its interval in seconds and leaves ProgressIntervalMS zero so the result
-	// speaks in the units the model asked in.
+	// TimerSeconds and OneShot describe a timer watch; a timer reports its
+	// interval in seconds and leaves ProgressIntervalMS zero so the result
+	// speaks in the units the model asked in. Note labels any watch.
 	TimerSeconds     int
 	OneShot          bool
 	Note             string
@@ -819,17 +819,17 @@ func watchArgsIsTimer(a watchArgs) bool {
 // output_match condition and NO other trigger source — the only shape eligible
 // for terminal catch-up (spec §7.1 "Terminal target"). events/progress/every on a
 // terminal target can never fire, so they still fail target_terminal. Clear
-// requests are never catch-up. A time field or a note is excluded too: catch-up
-// runs before validateWatchTriggerShape, so admitting those shapes would serve a
-// scan instead of the timer rules' correction.
+// requests are never catch-up. A time field is excluded too: catch-up runs
+// before validateWatchTriggerShape, so admitting that shape would serve a scan
+// instead of the timer rules' correction. A note is not a trigger — it is the
+// watch's prose payload — so it rides the scan's notification like any other.
 func watchArgsIsOutputMatchOnly(a watchArgs) bool {
 	return !a.Clear &&
 		a.OutputMatch != "" &&
 		len(a.Events) == 0 &&
 		a.Every == 0 &&
 		a.ProgressIntervalMS == 0 &&
-		!watchArgsIsTimer(a) &&
-		a.Note == ""
+		!watchArgsIsTimer(a)
 }
 
 func validateWatchEventArgs(a watchArgs) error {
@@ -908,8 +908,6 @@ func validateWatchTriggerShape(a watchArgs) error {
 				return fmt.Errorf("invalid_request: %s and %s are mutually exclusive", name, other.name)
 			}
 		}
-	} else if a.Note != "" {
-		return errors.New("invalid_request: note applies to timers")
 	}
 	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && a.Source != a.Target && isWatchSessionTarget(a.Target) {
 		return errors.New("invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds")
@@ -2189,6 +2187,7 @@ type watchHistoryEntry struct {
 	source             string
 	target             string
 	condition          string
+	note               string
 	sendTo             string
 	receiverSessionID  string
 	receiverDelegateID string
@@ -2213,6 +2212,7 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 		source:             cfg.sourcePublic,
 		target:             cfg.target,
 		condition:          watchConditionSummary(cfg),
+		note:               cfg.note,
 		sendTo:             sendTo,
 		receiverSessionID:  cfg.receiverSessionID,
 		receiverDelegateID: cfg.receiverDelegateID,
@@ -2387,6 +2387,7 @@ func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspec
 		Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
 		Watching:   true,
 		Condition:  watchConditionSummary(cfg),
+		Note:       cfg.note,
 		Deliveries: cfg.deliveries,
 		CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 	}
@@ -2404,6 +2405,7 @@ func inspectResultFromWatchHistory(h watchHistoryEntry) jobWatchInspectToolResul
 		Source:     watchPublicSource(h.source, h.target),
 		Watching:   false,
 		Condition:  h.condition,
+		Note:       h.note,
 		Deliveries: h.deliveries,
 		EndReason:  h.endReason,
 		EndedAt:    h.endedAt.Format(time.RFC3339Nano),
@@ -2512,7 +2514,7 @@ func watchConditionSummary(cfg *watchConfig) string {
 	// The note is bounded where it is stored, not at the tighter output_match
 	// bound: job_list, formatJobWatch, and the tool description's verbatim claim
 	// must agree on what the model gets back.
-	if cfg.timer && cfg.note != "" {
+	if cfg.note != "" {
 		parts = append(parts, "note: "+limitWatchText(cfg.note, watchMessageMaxChars))
 	}
 	if cfg.wildcardEvents {
@@ -3196,14 +3198,15 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil && jm.emit != nil {
 		jm.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restart callback cancellation: %v", err)}, nil)
 	}
-	recs, err := jm.store.Load()
-	if err != nil {
-		return err
-	}
+	// One journal read for both consumers: LoadEvents returns the raw events
+	// and Fold derives the same job records Load would fold from them, so this
+	// path does one readAllLocked+fold instead of two. No cache is added — the
+	// events are a local of this call only.
 	stored, err := jm.store.LoadEvents()
 	if err != nil {
 		return err
 	}
+	recs := jobstore.Fold(stored)
 	spoke := watchGenerationsThatSpoke(stored)
 	for _, watch := range jm.watchesLostAtRestore {
 		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
@@ -3464,7 +3467,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		}
 		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
 		if cfg.timer {
-			n.WatchID, n.Fires, n.Note, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.note, cfg.timerSeconds, cfg.oneShot
+			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
 		}
 		notifications = append(notifications, n)
 		cfg.deliveries++ // periodic ticks never trip the condition-fire budget
@@ -3525,11 +3528,42 @@ func watchNotification(jobID, reason string) jobNotification {
 	}
 }
 
+// watchSendDiagnosticNotification builds a send-rail diagnostic (a drop, a
+// failed persist, an eviction) that names the watch whose delivery failed.
+// The watch id rides the display-only OriginWatchID field — never WatchID,
+// which would subject the diagnostic to the orphan-tick drop once its watch
+// detaches (see OriginWatchID's doc comment in jobs.go).
+func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotification {
+	n := watchNotification(jobID, reason)
+	n.OriginWatchID = watchID
+	return n
+}
+
 func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {
 	n := watchNotification(jobID, reason)
 	if cfg == nil {
 		return n
 	}
+	// The note rides the notification body through withNotificationNote
+	// (agent/job_notify.go), whose escapeNotificationBody escapes only "<"
+	// (kata 72kp): body text is not inside a quoted attribute, so "&" is not
+	// a structural hazard there and passes through verbatim. The frontend
+	// card (NotificationCard.tsx) decodes the full entity set (& < > " ')
+	// on every prose/excerpt, so a note that literally contains "&lt;",
+	// "&amp;", "&quot;" or "&#39;" would decode and display wrong.
+	// Pre-escaping "&" here composes with the body's "<"-only escaping into
+	// the same "&"-first order escapeNotificationText uses for attribute
+	// values, which the card's single decode inverts exactly — a literal
+	// "&lt;" in the note renders "&lt;", not "<". The pre-escape runs here
+	// (not in escapeNotificationBody, which job output and other body text
+	// also share) so only the watch-note lane changes encoding; cfg.note
+	// itself stays raw for list/inspect/frame readers.
+	n.Note = strings.ReplaceAll(cfg.note, "&", "&amp;")
+	// The originating watch rides a display-only field, never WatchID: the
+	// session drops a non-terminal WatchID-bearing entry whose timer key no
+	// longer resolves, and a condition watch's key slot is not its id — so a
+	// stamped fire or teardown would vanish as an orphaned tick.
+	n.OriginWatchID = cfg.watchID
 	visibleSessionID := cfg.receiverSessionID
 	if visibleSessionID == "" {
 		visibleSessionID = jm.sessionID
@@ -3557,13 +3591,16 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	d.message = limitWatchText(strings.TrimSpace(d.send.Message), watchMessageMaxChars)
 	watchID := ""
 	generation := ""
+	note := ""
 	if d.cfg != nil {
 		watchID = d.cfg.watchID
 		generation = d.cfg.generation
+		note = d.cfg.note
 	}
 	d.frame = jm.buildWatchFrame(&watchConfig{
 		watchID:    watchID,
 		generation: generation,
+		note:       note,
 		send:       d.send,
 	}, d.watchedIdentity, d.trigger, d.deliveryID, events.SessionEvent{
 		Kind:       d.eventKind,
@@ -3579,6 +3616,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 
 // recordWatchSend persists a fired send as pending and returns its state.
 // ok=false means the send was superseded or unresolvable (already handled).
+// A persist failure after a durable prefix landed (persisted=true) still
+// returns ok=true with the persisted state, so the journal and the runtime
+// map can be reconciled against it instead of a ghost ok=false.
 // Pure observation: no delivery, no Session calls (spec §3).
 func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
@@ -3604,7 +3644,14 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
 		}
-		return jobstore.WatchSendState{}, nil, false, perr
+		if !persisted {
+			return jobstore.WatchSendState{}, nil, false, perr
+		}
+		// The pending event (and any durable prefix of its co-generated
+		// group) is already journaled and committed to the runtime map:
+		// surface the persisted state with ok=true alongside the failure
+		// instead of a ghost ok=false that hides the durable prefix.
+		return persistedState, d.cfg, true, perr
 	}
 	if !persisted {
 		return jobstore.WatchSendState{}, nil, false, nil
@@ -3643,10 +3690,16 @@ func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens [
 	}
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	for _, d := range deliveries {
-		state, _, ok, err := jm.recordWatchSend(d)
-		if err != nil || !ok {
+		state, _, ok, _ := jm.recordWatchSend(d)
+		if !ok {
 			continue // recordWatchSend already produced diagnostics/drops
 		}
+		// A partial-persist failure still returns ok=true with the persisted
+		// state: the pending frame is already journaled and committed to the
+		// runtime map, so it owes the owner a wake like any recorded send —
+		// otherwise the frame stalls until unrelated activity. The failure
+		// itself is already queued as a diagnostic at the persist site, so it
+		// coexists with the token/kick below.
 		recorded = true
 		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
 			tokens = append(tokens, watchSendTokenNotification("", state))
@@ -3722,7 +3775,7 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 	if ensurePending {
 		if err := jm.appendWatchSendPendingState(cfg, state); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
-				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
 			return false, err
 		}
@@ -3745,14 +3798,14 @@ func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchCon
 		WatchSend: &dropped,
 	}}); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send dropped state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send dropped state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return err
 	}
 	jm.removePendingWatchSend(cfg, dropped.Key, dropped.UpdateSeq)
 	jm.releaseStableWatchReceipt(dropped.DeliveryID)
 	jm.enqueueWatchNotifications([]jobNotification{
-		watchNotification(state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason),
+		watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason),
 	})
 	return nil
 }
@@ -3929,47 +3982,120 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			enqueueReceipt.controller.AbortWatchEnqueue(enqueueReceipt)
 		}
 	}()
-	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
+	// Persist the pending event and any cap-overflow eviction terminal events
+	// as one group: AppendBatch writes them with a single fsync and rolls the
+	// whole group back on failure (all-or-nothing). A lone pending event stays
+	// on the appendEvent seam inside appendWatchSendEvents.
+	// Without the batch seam (jm.appendEvents == nil) a multi-event group has
+	// no atomic write: keep the pre-batch sequential protocol instead, so a
+	// later eviction write can fail while the pending event is already
+	// durable — persisted=true with each durable prefix committed to the
+	// runtime map — instead of leaving a durable prefix behind an ok=false
+	// return that never commits it.
+	if len(record.evictions) != 0 && jm.appendEvents == nil {
+		if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
+			jm.enqueueWatchNotifications([]jobNotification{
+				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			})
+			return state, false, err
+		}
+		jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+		var evictionDiagnostics []jobNotification
+		for _, eviction := range record.evictions {
+			applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
+			if err != nil {
+				jm.removeWatchSendTerminalSnapshots(applied)
+				jm.enqueueWatchNotifications([]jobNotification{
+					watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+				})
+				return record.persisted, true, err
+			}
+			jm.removeWatchSendTerminalSnapshots(applied)
+			evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
+		}
+		for _, diagnostic := range evictionDiagnostics {
+			jm.enqueueWatchNotifications([]jobNotification{diagnostic})
+		}
+		if enqueueReceipt != nil {
+			completed, verr := jm.verifyStableWatchEnqueue(enqueueReceipt, record.persisted)
+			enqueueCompleted = completed
+			if verr != nil {
+				return record.persisted, true, verr
+			}
+		}
+		return record.persisted, true, nil
+	}
+	group := append([]jobstore.Event(nil), record.pendingEvents...)
+	var evictionSnapshots []watchSendTerminalSnapshot
+	for _, eviction := range record.evictions {
+		evictionSnapshots = append(evictionSnapshots, eviction.terminal)
+		group = append(group, eviction.terminal.events...)
+	}
+	if err := jm.appendWatchSendEvents(group); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return state, false, err
 	}
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
-	if enqueueReceipt != nil {
-		jm.observeWatchReceiptBoundary()
-		deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
-		if err != nil {
-			return record.persisted, true, err
-		}
-		enqueueCompleted = true
-		jm.rememberStableWatchReceipt(deliveryReceipt)
-		folded, err := jm.store.LoadWatchSends()
-		if err != nil {
-			return record.persisted, true, err
-		}
-		pending := folded.Pending[record.persisted.Key]
-		if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
-			return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
-		}
-	}
+	// The eviction events landed with the pending event above: drop the
+	// evicted keys from the runtime map (releasing their receipts) and surface
+	// their diagnostics BEFORE the fallible stable-enqueue verification below,
+	// so the journal and the runtime map agree on every return path.
+	jm.removeWatchSendTerminalSnapshots(evictionSnapshots)
 	var evictionDiagnostics []jobNotification
 	for _, eviction := range record.evictions {
-		applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
-		if err != nil {
-			jm.removeWatchSendTerminalSnapshots(applied)
-			jm.enqueueWatchNotifications([]jobNotification{
-				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-			})
-			return record.persisted, true, err
-		}
-		jm.removeWatchSendTerminalSnapshots(applied)
 		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
 	}
 	for _, diagnostic := range evictionDiagnostics {
 		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	}
+	if enqueueReceipt != nil {
+		completed, verr := jm.verifyStableWatchEnqueue(enqueueReceipt, record.persisted)
+		enqueueCompleted = completed
+		if verr != nil {
+			return record.persisted, true, verr
+		}
+	}
 	return record.persisted, true, nil
+}
+
+// verifyStableWatchEnqueue completes an admitted stable enqueue and checks the
+// persisted pending frame survives a durable refold. Both persist branches
+// (the nil-seam sequential protocol and the batch group write) share it so
+// their verification cannot diverge. completed reports whether
+// CompleteWatchEnqueue consumed the receipt: the caller must still skip the
+// deferred abort when a later refold check fails. A nil receipt is a
+// non-stable send: nothing to verify.
+func (jm *jobManager) verifyStableWatchEnqueue(enqueueReceipt *delegateWatchReceipt, persisted jobstore.WatchSendState) (completed bool, err error) {
+	if enqueueReceipt == nil {
+		return false, nil
+	}
+	jm.observeWatchReceiptBoundary()
+	deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchSendDiagnosticNotification(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return false, err
+	}
+	jm.rememberStableWatchReceipt(deliveryReceipt)
+	folded, err := jm.store.LoadWatchSends()
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchSendDiagnosticNotification(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return true, err
+	}
+	pending := folded.Pending[persisted.Key]
+	if pending == nil || pending.DeliveryID != persisted.DeliveryID || pending.UpdateSeq != persisted.UpdateSeq {
+		verr := errors.New("stable watch pending frame did not survive durable refold")
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchSendDiagnosticNotification(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(verr.Error(), watchReadErrorMaxChars)),
+		})
+		return true, verr
+	}
+	return true, nil
 }
 
 func (jm *jobManager) beginWatchPersistence() func() {
@@ -4242,7 +4368,7 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 				TS:        now,
 				WatchSend: &evictedState,
 			}}},
-			diagnostic: watchNotification(evictedState.Key.ResolvedWatchedIdentity, "watch send evicted: "+evictedState.TriggerIdentity),
+			diagnostic: watchSendDiagnosticNotification(evictedState.Key.WatchID, evictedState.Key.ResolvedWatchedIdentity, "watch send evicted: "+evictedState.TriggerIdentity),
 		})
 		overflow--
 	}
@@ -4661,6 +4787,17 @@ func (jm *jobManager) removeWatchSendTerminalSnapshots(snapshots []watchSendTerm
 }
 
 func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	// Batch multi-event groups through AppendBatch: one fsync, all-or-nothing,
+	// so a co-generated group either lands together or rolls back together.
+	// Single-event appends stay on the appendEvent seam — one fsync either way,
+	// and fault-injection harnesses stubbing only appendEvent keep intercepting
+	// settle/drop/pending writes (same shape as appendJobEvents).
+	if len(events) > 1 && jm.appendEvents != nil {
+		return jm.appendEvents(events)
+	}
 	for _, e := range events {
 		if err := jm.appendEvent(e); err != nil {
 			return err
@@ -4862,7 +4999,7 @@ func (s *Session) renderUnreachableChildPendingsWithLoaders(
 			continue
 		}
 		jm.removeRuntimePendingWatchSend(dropped)
-		n := watchNotification(state.Key.ResolvedWatchedIdentity, dropped.DiagnosticReason)
+		n := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, dropped.DiagnosticReason)
 		n.Provenance = provenance.Clone(state.Provenance)
 		s.enqueueJobNotification(n)
 	}
@@ -5151,6 +5288,12 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	b.WriteString(limitWatchText(jobID, watchTriggerMaxChars))
 	b.WriteString("\n")
 	writeWatchFrameTopField(&b, "trigger", limitWatchText(trigger, watchTriggerMaxChars))
+	// A send delivers the frame instead of a rendered notification body, so the
+	// note has to ride here or a stable receiver never sees why the watch was
+	// armed. Bounded where the note is stored, as watchConditionSummary bounds it.
+	if cfg.note != "" {
+		writeWatchFrameTopField(&b, "note", limitWatchText(cfg.note, watchMessageMaxChars))
+	}
 	writeWatchFrameProvenance(&b, p)
 	writeWatchFrameEvent(&b, ev)
 

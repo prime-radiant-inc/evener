@@ -1,4 +1,4 @@
-import { cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
@@ -274,6 +274,33 @@ describe("mutations returning the updated instance list", () => {
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
 
+  // The listing an edit answers with is only the truth if the store kept it.
+  // A caller that steers a view on the strength of its own save has to hear
+  // that verdict: a response a newer request superseded is a document the
+  // store already threw away.
+  test("edit() reports whether the store applied its response", async () => {
+    const fake = connectFakeClient();
+    let finishEdit!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/edit",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishEdit = resolve;
+        }),
+    );
+    const superseded = credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" });
+    await Promise.resolve();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    finishEdit({ instances: [], availableProviders: [] });
+    expect(await superseded).toBe(false);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+
+    fake.on("evener/instance/edit", () => ({ instances: [], availableProviders: [] }));
+    expect(await credentialsStore.getState().edit({ name: "work", baseUrl: "https://x" })).toBe(true);
+    expect(credentialsStore.getState().instances).toEqual([]);
+  });
+
   test("remove() calls evener/instance/remove and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
@@ -413,7 +440,9 @@ describe("useCredentialsStore", () => {
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     const { result } = renderHook(() => useCredentialsStore((s) => s.instances.length));
     expect(result.current).toBe(0);
-    await credentialsStore.getState().fetch();
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
     expect(result.current).toBe(1);
   });
 

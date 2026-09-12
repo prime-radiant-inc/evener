@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -311,6 +312,9 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	}
 	if len(resp.Deleted) != 1 {
 		t.Fatalf("want 1 deleted ref, got %+v", resp)
+	}
+	if resp.Skipped == nil || len(resp.Skipped) != 0 {
+		t.Fatalf("successful deletion must return an empty skipped array, got %#v", resp.Skipped)
 	}
 	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
 		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); !os.IsNotExist(err) {
@@ -702,9 +706,9 @@ func TestProjectDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 
 	var events []string
 	prevRefresh := hubRosterRefresh
-	hubRosterRefresh = func(r *hubcore.Roster) {
+	hubRosterRefresh = func(ctx context.Context, r *hubcore.Roster) error {
 		events = append(events, "roster-refresh")
-		prevRefresh(r)
+		return prevRefresh(ctx, r)
 	}
 	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
 
@@ -1630,7 +1634,132 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("project delete: %v", err)
 	}
-	if len(got.Deleted) != 0 {
-		t.Fatalf("expected nothing actually deleted (session skipped), got %+v", got.Deleted)
+	if got.Deleted == nil || len(got.Deleted) != 0 {
+		t.Fatalf("skipped deletion must return an empty deleted array, got %#v", got.Deleted)
+	}
+}
+
+func TestProjectDeleteResumesAfterRemovingDelegateParent(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	if err := os.MkdirAll(work, 0755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	parentID, childID := projectDeleteCanonicalSessionIDs[0], projectDeleteCanonicalSessionIDs[1]
+	writeSession(t, stateDir, parentID, project.CanonicalPath)
+	writeSession(t, stateDir, childID, project.CanonicalPath)
+	meta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.ParentSessionID, meta.JobTreeRootSessionID, meta.IsSubagent = parentID, parentID, true
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	oldRemove := removeProjectSessionFile
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == childID+".future-artifact" {
+			return errors.New("interrupted child cleanup")
+		}
+		return oldRemove(path)
+	}
+	web := NewWebServer(hubcore.WebConfig{HubStateRoot: root, StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
+	if _, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", parentID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("parent not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID+".meta.json")); err != nil {
+		t.Fatalf("child not retained: %v", err)
+	}
+	removeProjectSessionFile = oldRemove
+	restored := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := restored.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	_ = NewWebServer(hubcore.WebConfig{HubStateRoot: root, StateDir: root, Past: restored, Roster: hubcore.NewRosterWithEntries()})
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("recovery retained child: %v", err)
+	}
+}
+
+func TestDeletionPreservesSuccessWhenPostCleanupRosterScanFails(t *testing.T) {
+	for _, wholeProject := range []bool{false, true} {
+		t.Run(fmt.Sprint("project=", wholeProject), func(t *testing.T) {
+			root := t.TempDir()
+			work := filepath.Join(root, "work")
+			if err := os.MkdirAll(work, 0755); err != nil {
+				t.Fatal(err)
+			}
+			project, err := identifier.ResolveProject(work)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stateDir := filepath.Join(root, "projects", project.ID)
+			id := projectDeleteCanonicalSessionIDs[0]
+			writeSession(t, stateDir, id, project.CanonicalPath)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			runDir := filepath.Join(root, "run")
+			if err := os.MkdirAll(runDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			roster.Refresh()
+			web := NewWebServer(hubcore.WebConfig{HubStateRoot: root, StateDir: root, Past: past, Roster: roster})
+			oldRemove := removeProjectSessionFile
+			t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+			removeProjectSessionFile = func(path string) error {
+				if err := oldRemove(path); err != nil {
+					return err
+				}
+				if filepath.Base(path) == id+".meta.json" {
+					if err := os.Remove(runDir); err != nil {
+						return err
+					}
+					return os.WriteFile(runDir, []byte("not a directory"), 0600)
+				}
+				return nil
+			}
+			var deleted []string
+			if wholeProject {
+				response, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath})
+				if err != nil {
+					t.Errorf("completed project deletion failed: %v", err)
+				}
+				deleted = response.Deleted
+				if _, deleting := web.cfg.DeletionStore.DeletingProject(project.ID); deleting {
+					t.Error("completed cleanup left deletion in progress")
+				}
+			} else {
+				response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: localAppRef(id)})
+				if err != nil {
+					t.Errorf("completed session deletion failed: %v", err)
+				}
+				deleted = response.Deleted
+			}
+			if len(deleted) != 1 || deleted[0] != id {
+				t.Errorf("deleted=%v", deleted)
+			}
+			if roster.OwnershipError() == nil {
+				t.Error("fixture did not preserve roster scan failure")
+			}
+			if _, err := os.Stat(filepath.Join(stateDir, "sessions", id+".meta.json")); !os.IsNotExist(err) {
+				t.Errorf("artifact was not removed: %v", err)
+			}
+		})
 	}
 }

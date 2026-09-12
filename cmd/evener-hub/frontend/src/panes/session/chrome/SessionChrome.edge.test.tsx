@@ -428,3 +428,99 @@ test("delete with skipped sessions shows a warning toast", async () => {
 
   expect(await screen.findByText('Couldn\'t delete "Skip Session": still in use')).toBeTruthy();
 });
+
+test.each(["success", "failure"])("force stop requires confirmation and waits for exit: %s", async (outcome) => {
+  const user = userEvent.setup();
+  const ref = "local:force-stop";
+  const fake = connectFakeClient();
+  setLocation(ref);
+  let stopped = false;
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: stopped ? "notLoaded" : "restartRequired" },
+      evener: { ref, capabilities: { ...CAPABILITIES, shutdown: false }, queue: { revision: 0 } },
+    }),
+  );
+  let finish: (() => void) | undefined;
+  fake.on(
+    "evener/thread/forceStop",
+    () =>
+      new Promise((resolve, reject) => {
+        finish = () => {
+          if (outcome === "failure") reject(new Error("exit not confirmed"));
+          else {
+            stopped = true;
+            resolve({});
+          }
+        };
+      }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  renderWithToast(<SessionChrome ref={ref} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    expect.objectContaining({ params: { ref } }),
+  ]);
+  expect(
+    (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
+  finish?.();
+  if (outcome === "success") {
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+  } else {
+    expect(await screen.findByText("Couldn't force stop session: exit not confirmed")).toBeTruthy();
+    expect(
+      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  }
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+});
+
+// The original inline footer button offered force stop to nested sessions
+// too: its gate was just `local: && !recoveryOwnerRef && !closed`, with no
+// parentRef check. The hub's force-stop contract rejects a descendant with
+// "no direct daemon ownership claim" once its parent is gone, and the dialog
+// surfaces that error — that was the accepted recovery path for a nested
+// fork whose owning session is unresponsive. This pins that behavior: the
+// menu still offers the action for a nested session, and confirming surfaces
+// the hub's rejection.
+test.each(["subagent", "fork"])("a nested %s session still offers Force stop and surfaces rejection", async (kind) => {
+  const user = userEvent.setup();
+  const ref = `local:nested-${kind}`;
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "restartRequired" },
+      evener: {
+        ref,
+        kind,
+        parentRef: "local:parent",
+        capabilities: { ...CAPABILITIES, shutdown: false },
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  fake.on("evener/thread/forceStop", () => {
+    throw new Error("no direct daemon ownership claim");
+  });
+  setLocation(ref);
+  await threadsStore.getState().ensureThread(ref);
+  renderWithToast(<SessionChromeView ref={ref} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  const toasts = await screen.findAllByText("Couldn't force stop session: no direct daemon ownership claim");
+  expect(toasts.length).toBeGreaterThanOrEqual(1);
+  expect(
+    (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+  ).toBe(false);
+});

@@ -7,7 +7,6 @@
 import { memo, useId, useLayoutEffect, useState } from "react";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
@@ -34,21 +33,20 @@ import { supersededBySuccess } from "./toolSupersession";
 import { parseArgs, parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
-  classifyJobStatus,
   effectiveRowKind,
   removeSubagentRow,
   rowKeyForDelegateItem,
-  type SubagentRow,
   turnScopeKey,
   upsertSubagentRow,
-  useSubagentRow,
 } from "./tools/subagentModuleStore";
+import delegateStyles from "./tools/subagentmodule.module.css";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
+  lifecycle: requireClass(delegateStyles.lifecycle, "subagentmodule.module.css", "lifecycle"),
 };
 
 type DelegateStatusKey = "running" | "done" | "stopped" | "failed" | "unknown";
@@ -58,7 +56,15 @@ const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
   done: "ended",
   stopped: "ended",
   failed: "failed",
-  unknown: "needs-you",
+  unknown: "idle",
+};
+
+const DELEGATE_LABEL: Record<DelegateStatusKey, string> = {
+  running: "Running",
+  done: "Idle · reported",
+  stopped: "Stopped",
+  failed: "Failed",
+  unknown: "Status unavailable",
 };
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
@@ -76,27 +82,6 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   // Transcripts recorded before the rename carry the brief under `task`.
   const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
-}
-
-// Both status readers take the delegate call's ALREADY-PARSED output envelope
-// rather than the item: three separate reads (delegate_id, transcript_ref,
-// status) want the same JSON string, and taking the item made each one parse
-// it again - the status read worst of all, since it ran on every tool row,
-// delegate or not, for a value only a delegate row ever displays.
-function delegateStatusFromOutput(parsedOutput: Record<string, unknown> | undefined): DelegateStatusKey {
-  return classifyJobStatus(parsedOutput === undefined ? undefined : str(parsedOutput, "status"));
-}
-
-function delegateStatusForOutput(
-  parsedOutput: Record<string, unknown> | undefined,
-  delegateRow: SubagentRow | undefined,
-  stableDelegate: EvenerDelegateInfo | undefined,
-  live: boolean,
-): DelegateStatusKey {
-  if (stableDelegate) return classifyJobStatus(stableDelegateDisplayStatus(stableDelegate));
-  const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
-  if (live && !hasSettledOutputStatus) return "running";
-  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromOutput(parsedOutput);
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -119,28 +104,41 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const isDelegate = item.toolName === "delegate";
   const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
   const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
-  const delegateRow = useSubagentRow(
-    isDelegate ? turnScopeKey(sessionRef, item.turnId) : "",
-    isDelegate ? rowKeyForDelegateItem(item) : "",
-  );
   const stableDelegate = thread?.delegates?.find((delegate) => {
     if (sessionRef === undefined || stableDelegateId === undefined) return false;
     return delegate.delegateId === stableDelegateId;
   });
-  const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
-  const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+  const delegateKind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stableDelegate);
+  const delegateStatus =
+    isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+  const lifecycleStatus = stableDelegate ? stableDelegateDisplayStatus(stableDelegate) : undefined;
+  const lifecycle = isDelegate ? (
+    <div
+      className={CLASS.lifecycle}
+      data-testid="delegate-lifecycle"
+      data-kind={delegateKind}
+      data-attention={stableDelegate?.needsAttention ? "true" : undefined}
+    >
+      {lifecycleStatus === "exhausted"
+        ? "Exhausted"
+        : lifecycleStatus === "idle"
+          ? "Idle"
+          : DELEGATE_LABEL[delegateKind]}
+      {stableDelegate?.needsAttention && <span>◆ Needs attention</span>}
+    </div>
+  ) : null;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
     if (!isDelegate) return;
-    const projected = rowFromDelegateItem(item);
+    const projected = rowFromDelegateItem(item, live);
     if (!projected) {
       removeSubagentRow(delegateScopeKey, rowKeyForDelegateItem(item));
       return;
     }
     const { rowKey, migrateFromRowKey, row } = projected;
     upsertSubagentRow(delegateScopeKey, { rowKey, ...row }, migrateFromRowKey);
-  }, [delegateScopeKey, isDelegate, item]);
+  }, [delegateScopeKey, isDelegate, item, live]);
 
   // A file-referencing tool (read_file/edit_file/write_file) exposes the file it
   // touches via descriptor.openBesidePath; ToolCallItem turns that into an "open
@@ -226,8 +224,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // ToolSummaryContext so shell's own descriptor can strip a redundant
   // "cd <cwd> && " prefix from its summary.
   const statedIntent = statedIntentOf(item);
-  const useProjectedSummary = projectedSummary !== undefined && statedIntent === undefined;
-  const summary = useProjectedSummary ? projectedSummary : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+  // The descriptor's own summary (read_file's "Read <path> · lines N-M", shell's
+  // "Ran <cmd>", …) is the row's summary at every verbosity level. The projected
+  // summary is only a fallback for a descriptor that renders nothing — never a
+  // replacement for a real one. Overriding a real summary with the projected
+  // neutral text is what showed "Action summary unavailable" for every
+  // intent-less tool call, including read_file rows that clearly read a file.
+  const descriptorSummary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+  const useProjectedSummary = projectedSummary !== undefined && descriptorSummary.trim() === "";
   let intent = item.description;
   if (isDelegate) {
     intent = delegateIntentOf(item);
@@ -289,6 +293,19 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const disclosureFallback = configDefault || (autoDefault && !superseded);
   const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
 
+  // A descriptor whose summary duplicates what its expanded body shows
+  // (shell: the raw one-line command vs the body's pretty-printed block)
+  // swaps its summary text for a placeholder while the row is open. The
+  // summary line itself stays - hiding it lifted the disclosure chevron off
+  // the line it rides (onto the intent line, or adrift on an intent-less
+  // row) - and the swap keeps the call from appearing twice. The placeholder
+  // outranks the projected fallback the same way the descriptor's own summary
+  // does: a real line about the call beats a neutral "unavailable" one
+  // while the open body below shows the command whole.
+  const expandedSummary = expanded ? descriptor.summaryWhenExpanded : undefined;
+  const summary =
+    expandedSummary !== undefined ? expandedSummary : useProjectedSummary ? projectedSummary : descriptorSummary;
+
   // Two-level disclosure: the summary line has its own open/closed state,
   // independent of the body disclosure. At verbosity levels where toolCalls is
   // true (tools/activity/full) the summary defaults open; at chat/intent it
@@ -301,19 +318,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const summaryConfigDefault = summaryOpenByDefault(config);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryConfigDefault);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
-  // A descriptor whose summary duplicates its expanded body (shell: the raw
-  // command vs the body's pretty-printed block) hides the summary while the
-  // body is open — the body is the single representation. ToolRow's own
-  // summaryHidden prop drives this; the summary disclosure key stays untouched
-  // so re-collapsing the body restores the summary to its prior state.
-  const summaryHidden = expanded && (descriptor.summaryHiddenWhenExpanded ?? false);
-
-  // ToolRow gates the summary on summaryHidden only in two-level mode
-  // (intent-bearing rows with onToggleSummary). For intent-less rows the
-  // summary prop itself must carry the gate: an empty string makes
-  // hasSummary false, so the summary line does not render at all.
-  const summaryVisible = summaryOpen && !summaryHidden;
-
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
   // row"). Checked AFTER the hooks above so the hook order stays stable across
@@ -323,8 +327,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
 
   // A failed row is never a bare summary line even with no body/images: the
   // reader must be able to open it and read the error, so it is always an
-  // expandable disclosure.
-  if (!Body && !hasOutputImages && !failed) {
+  // expandable disclosure. A descriptor may also report per-item that its
+  // body renders nothing (hasBody) — a summary-only rendering offers no
+  // disclosure that would open to nothing.
+  if ((!Body || descriptor.hasBody?.(item) === false) && !hasOutputImages && !failed) {
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
@@ -341,6 +347,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           trailingAfter={trailingAfter}
           title={detail}
         />
+        {lifecycle}
       </div>
     );
   }
@@ -366,15 +373,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
       data-attention={failed ? "error" : undefined}
     >
       <ToolRow
-        // A descriptor whose summary duplicates what its expanded body shows
-        // (shell: the raw one-line command vs the body's pretty-printed
-        // block) drops the summary line while open - the body is the single
-        // representation. Collapsed, the summary stays: it is the only glance.
-        // summaryVisible gates the summary for both intent-less rows (where
-        // ToolRow's summaryHidden has no effect, since two-level mode is
-        // intent-bearing only) and intent-bearing rows (where ToolRow also
-        // applies its own summaryHidden gate).
-        summary={isDelegate || !summaryVisible ? "" : summary}
+        // The summary text is the descriptor's own - or its expanded
+        // placeholder (expandedSummary above). The empty-string gate below
+        // serves the remaining no-summary states: delegate rows
+        // (subagentModule owns their presentation) and a two-level row whose
+        // summary line the reader collapsed (summaryOpen=false).
+        summary={isDelegate || !summaryOpen ? "" : summary}
         summaryLink={summaryLink}
         intent={intent}
         icon={descriptor.icon}
@@ -389,12 +393,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         summaryOpen={summaryOpen}
         onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)}
-        summaryHidden={summaryHidden}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
         title={detail}
         bodyId={bodyId}
       />
+      {lifecycle}
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next

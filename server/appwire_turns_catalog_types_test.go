@@ -40,7 +40,7 @@ func TestAppTurnsFromNotifications_DecodesEveryCatalogedNotification(t *testing.
 		}},
 		{Notification: appwire.Notification{
 			Method: appwire.NotifyTurnCompleted,
-			Params: []byte(`{"turnId":"turn_1","turn":{"id":"turn_1","status":"completed"}}`),
+			Params: []byte(`{"turn":{"id":"turn_1","status":"completed"}}`),
 		}},
 	}
 

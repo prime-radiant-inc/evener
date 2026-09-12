@@ -148,10 +148,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		_, _ = resolveGitHead(context.Background(), repo)
 		_, _ = resolveGitHead(context.Background(), filepath.Join(root, "missing"))
 
-		_ = warningPayload([]byte(`{"warning":{"message":"nested"},"source":"daemon","title":"Title","hint":"Hint"}`))
-		_ = warningPayload([]byte(`{"message":"plain"}`))
-		_ = warningMessage([]byte(`{"warning":"warning text"}`))
-		_ = warningMessage([]byte(`not-json`))
 		writeAPIWireError(httptest.NewRecorder(), http.StatusBadGateway, appwire.WireError{Code: appwire.CodeInvalidParams, Message: "bad", Data: appwire.ErrorData{EvenerErrorInfo: "detail"}})
 		writeAPIWireError(httptest.NewRecorder(), http.StatusBadGateway, appwire.WireError{Code: appwire.CodeInternalError, Message: "bad", Data: map[string]any{"evenerErrorInfo": "detail"}})
 		for _, code := range []int{appwire.CodeInvalidRequest, appwire.CodeMethodNotFound, appwire.CodeConflict, appwire.CodeUnavailable, -999} {

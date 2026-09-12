@@ -447,6 +447,11 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 	}
 	entry.CredentialHeaders = headers
 	if v := strings.TrimSpace(*apiKeyEnv); v != "" {
+		// The flag names the variable holding the key; a key typed there is
+		// the same category error the pane refuses (registry.CheckAPIKeyEnvName).
+		if err := registry.CheckAPIKeyEnvName(v); err != nil {
+			return fmt.Errorf("--api-key-env: %w", err)
+		}
 		entry.APIKeyEnv = []string{v}
 	}
 
@@ -552,16 +557,20 @@ func parseKeyValues(pairs []string, flagName string) (map[string]string, error) 
 }
 
 // parseCredentialHeaders splits repeated K=V credential headers and holds
-// spec §11.2's boundary through the rule both authoring surfaces share
-// (registry.CheckCredentialHeaderValue): the value carries $VARIABLE
-// references, so no key is ever typed on a command line or written into
-// providers.toml. The refusal never echoes the value it refused.
+// spec §11.2's boundary through the rules both authoring surfaces share: the
+// name is an HTTP header token (registry.CheckCredentialHeaderName) and the
+// value carries $VARIABLE references (registry.CheckCredentialHeaderValue),
+// so no key is ever typed on a command line or written into providers.toml.
+// The refusal never echoes the value it refused.
 func parseCredentialHeaders(pairs []string) (map[string]string, error) {
 	headers, err := parseKeyValues(pairs, "--credential-header")
 	if err != nil {
 		return nil, err
 	}
 	for k, v := range headers {
+		if err := registry.CheckCredentialHeaderName(k); err != nil {
+			return nil, fmt.Errorf("--credential-header: %w", err)
+		}
 		if err := registry.CheckCredentialHeaderValue(v); err != nil {
 			return nil, fmt.Errorf("--credential-header %s: %w (a value is an auth scheme word and $VARIABLE references, as in %s=Bearer $PORTKEY_KEY)", k, err, k)
 		}

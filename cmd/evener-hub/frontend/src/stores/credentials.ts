@@ -60,7 +60,10 @@ export interface CredentialsStoreState {
   error: string | null;
   fetch(): Promise<void>;
   create(params: InstanceCreateParams): Promise<void>;
-  edit(params: InstanceEditParams): Promise<void>;
+  // Resolves true when the listing this edit answered with is the one the
+  // store now holds, false when a newer request superseded it. The instance
+  // sheet steers itself on the store's verdict, never on the raw response.
+  edit(params: InstanceEditParams): Promise<boolean>;
   remove(name: string): Promise<void>;
   setDefault(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
@@ -112,14 +115,17 @@ let requestVersion = 0;
 let requestedList = false;
 
 // Reads and writes share ordering: only the most recently started request
-// can replace the listing, even when responses arrive out of order.
-async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<void> {
+// can replace the listing, even when responses arrive out of order. Reports
+// whether THIS response is the one that replaced it: a superseded response
+// carries a listing the store discarded, and a caller steering a view on the
+// strength of its own write has to be able to tell the two apart.
+async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<boolean> {
   const version = ++requestVersion;
   try {
     const response = await request();
-    if (version === requestVersion) {
-      credentialsStore.setState({ ...listState(response), loading: false, error: null });
-    }
+    if (version !== requestVersion) return false;
+    credentialsStore.setState({ ...listState(response), loading: false, error: null });
+    return true;
   } finally {
     if (version === requestVersion) credentialsStore.setState({ loading: false });
   }
@@ -152,7 +158,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async edit(params) {
     const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/edit", params));
+    return applyMutation(() => client.request("evener/instance/edit", params));
   },
 
   async remove(name) {

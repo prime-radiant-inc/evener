@@ -27,7 +27,10 @@ func withSessionResume[R any](
 	once func() (R, error),
 ) (R, error) {
 	attempt := func() (R, error) {
-		return withDeletionTargetOwnership(cfg, ref, "", clientMutationID, once)
+		if clientMutationID == "" {
+			return withSessionActionOwnership(ctx, cfg, ref, "", once)
+		}
+		return withDeletionTargetOwnership(ctx, cfg, ref, "", clientMutationID, once)
 	}
 	resp, err := attempt()
 	if err == nil {
@@ -39,8 +42,11 @@ func withSessionResume[R any](
 	if ref != "" && !hubKnowsRef(cfg, ref) {
 		return resp, err
 	}
-	if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref}); resumeErr != nil {
+	if _, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref}); resumeErr != nil {
 		var zero R
+		if clientMutationID != "" {
+			return zero, blockedUnknownMutationError(clientMutationID, resumeErr)
+		}
 		return zero, resumeErr
 	}
 	return attempt()
@@ -52,7 +58,7 @@ func withSessionResume[R any](
 // we must NOT resurrect it just to kill it (kata qp94 carve-out). An unknown
 // ref or any non-session-unavailable failure is still returned unchanged.
 func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
-	_, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (struct{}, error) {
+	_, err := withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return struct{}{}, err
@@ -63,6 +69,14 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return struct{}{}, source.ShutdownThread(ctx, params)
 	})
 	if err != nil && params.Ref != "" && hubKnowsRef(cfg, params.Ref) && isSessionUnavailableError(err) {
+		if cfg.Roster != nil {
+			if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+				return appwire.Unavailable(err.Error())
+			}
+		}
+		if restartErr := daemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); restartErr != nil {
+			return restartErr
+		}
 		return nil
 	}
 	return err

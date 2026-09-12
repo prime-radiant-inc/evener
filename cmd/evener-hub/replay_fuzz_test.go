@@ -83,8 +83,8 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 // turn. The live side synthesizes the SessionEvent stream the turn would have
 // produced, feeds it through a fresh AppEventProjector, and folds the emitted
 // notifications back into final ThreadItems (the streaming projector emits
-// item/started + deltas + item/completed; reasoning never emits a completed
-// item, so its text is assembled from deltas — exactly as a client must).
+// item/started + deltas + item/completed; reasoning completion supplies status
+// while its text is assembled from deltas — exactly as a client must).
 //
 // normalizeMetamorphic strips ONLY the documented, legitimate live/reload
 // differences before comparing; every strip is cited. Anything outside the
@@ -252,9 +252,9 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 
 // foldLiveItems reduces the projector's notification stream into the final
 // ordered ThreadItems a client would render: item/started seeds an item,
-// item/completed replaces it, and reasoning/agentMessage deltas accumulate into
-// the item's text (reasoning items never receive an item/completed, so the delta
-// fold is the only way their text materializes). turn/completed carrying embedded
+// item/completed settles it, and reasoning/agentMessage deltas accumulate into
+// the item's text. Reasoning completion carries only terminal status, so its
+// accumulated text survives that frame. turn/completed carrying embedded
 // items (the no-active-turn systemAnnouncement path) contributes those items.
 func foldLiveItems(notes []appprojector.AppNotification) []appwire.ThreadItem {
 	items := map[string]*appwire.ThreadItem{}
@@ -276,7 +276,11 @@ func foldLiveItems(notes []appprojector.AppNotification) []appwire.ThreadItem {
 			// appwire_projection.go's own item/started|completed sites now send
 			// appwire.ItemLifecycleParams (kcb5), not map[string]any.
 			if p, ok := n.Params.(appwire.ItemLifecycleParams); ok {
-				put(p.Item)
+				item := p.Item
+				if n.Method == appwire.NotifyItemCompleted && item.Type == "reasoning" && item.Text == "" {
+					item.Text = get(item.ID).Text
+				}
+				put(item)
 			}
 		case appwire.NotifyReasoningSummaryDelta:
 			if p, ok := n.Params.(appwire.ReasoningSummaryDeltaParams); ok {

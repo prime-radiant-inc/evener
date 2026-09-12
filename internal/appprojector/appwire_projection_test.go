@@ -1500,21 +1500,39 @@ func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
 }
 
 func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
-	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(events.SessionEvent{
-		Kind:      events.EventSteeringInjected,
-		SessionID: "th_1",
-		Data:      events.SteeringInjectedData{Text: "stay focused"},
-	})
-	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
-		t.Fatalf("out=%+v", out)
-	}
-	params, ok := out[0].Params.(map[string]any)
-	if !ok {
-		t.Fatalf("params=%T", out[0].Params)
-	}
-	if params["threadId"] != "th_1" || params["ref"] != "local:th_1" || params["text"] != "stay focused" {
-		t.Fatalf("params=%+v", params)
+	for name, images := range map[string][]events.UserInputImage{
+		"nil":   nil,
+		"empty": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			out := projector.Project(events.SessionEvent{
+				Kind:      events.EventSteeringInjected,
+				SessionID: "th_1",
+				Data:      events.SteeringInjectedData{Text: "stay focused", Images: images},
+			})
+			if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
+				t.Fatalf("out=%+v", out)
+			}
+			params, ok := out[0].Params.(map[string]any)
+			if !ok {
+				t.Fatalf("params=%T", out[0].Params)
+			}
+			if params["threadId"] != "th_1" || params["ref"] != "local:th_1" || params["text"] != "stay focused" {
+				t.Fatalf("params=%+v", params)
+			}
+			wire, err := json.Marshal(out[0].Params)
+			if err != nil {
+				t.Fatalf("marshal params: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(wire, &payload); err != nil {
+				t.Fatalf("unmarshal params: %v", err)
+			}
+			if _, present := payload["images"]; present {
+				t.Fatalf("wire payload contains images for %s input: %s", name, wire)
+			}
+		})
 	}
 }
 
@@ -2822,9 +2840,8 @@ func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 
 // notificationTurn reads the "turn" payload off either shape a producer might
 // use: appwire.TurnStartedParams (turn/started, converted - kcb5) or a bare
-// map[string]any (turn/completed, deliberately left unconverted - kcb5's own
-// TurnCompletedParams declaration doesn't match what producers send, see
-// appwire_projection.go's own comment on its turn/completed sites).
+// map[string]any (turn/completed, deliberately left unconverted - see
+// appwire_projection.go's own comment on its turn/completed sites for why).
 func notificationTurn(t *testing.T, items []AppNotification, method string) appwire.Turn {
 	t.Helper()
 	for _, item := range items {

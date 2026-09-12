@@ -19,14 +19,14 @@ func setThreadModelWithResume(ctx context.Context, cfg hubcore.WebConfig, source
 	if !shouldResumeAfterSessionUnavailable(err) {
 		return err
 	}
-	if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
+	if _, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
 		return resumeErr
 	}
 	return setThreadModelOnce(ctx, cfg, sources, params)
 }
 
 func setThreadModelOnce(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadModelSetParams) error {
-	_, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (struct{}, error) {
+	_, err := withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return struct{}{}, err

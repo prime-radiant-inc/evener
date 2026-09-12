@@ -5,14 +5,9 @@
 
 import { afterEach, expect, test, vi } from "vitest";
 import type { CommandDescriptor } from "../../protocol/types.gen";
+import { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 import type { Command } from "./commands";
-import {
-  copyToClipboard,
-  rememberableId,
-  sessionScopedHandoffMatch,
-  slashCommandInvocation,
-  visibleCatalogCommands,
-} from "./commands";
+import { copyToClipboard, rememberableId, sessionScopedHandoffMatch } from "./commands";
 
 // --- copyToClipboard ---
 

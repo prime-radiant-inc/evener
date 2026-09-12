@@ -1,10 +1,13 @@
 package hub
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -32,7 +36,7 @@ var (
 	hubCanonicalizeDir = fspaths.CanonicalizeDir
 	hubResolveLaunch   = launchconfig.Resolve
 	hubParseModelRef   = cmdutil.ParseModelRef
-	hubRosterRefresh   = func(r *hubcore.Roster) { r.Refresh() }
+	hubRosterRefresh   = func(ctx context.Context, r *hubcore.Roster) error { return r.RefreshAndWait(ctx) }
 	hubRosterList      = func(r *hubcore.Roster) []hubcore.LiveEntry { return r.List() }
 	hubForkSession     = agent.ForkSession
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
@@ -153,17 +157,26 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
 	defer cancelDetached()
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
-		Project:    spawnResolved.Project,
-		Resolved:   spawnResolved,
-		WorkingDir: workingDir,
-		PluginRoot: cfg.PluginRoot,
-		Provider:   modelRef.Provider,
+		Project:       spawnResolved.Project,
+		Resolved:      spawnResolved,
+		WorkingDir:    workingDir,
+		PluginRoot:    cfg.PluginRoot,
+		AgentsDocPath: hubAgentsDocPath(cfg),
+		Provider:      modelRef.Provider,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
+	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+			if !canUseSpawnEntry {
+				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
+			}
+			// Spawning already established this daemon's identity. An unrelated
+			// discovery failure must not hide its identity or discard initial input.
+			fmt.Fprintf(os.Stderr, "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
+		}
 		if entry.ThreadID == "" || entry.SessionID == "" {
 			for _, live := range hubRosterList(cfg.Roster) {
 				if live.PID == entry.PID {
@@ -180,13 +193,9 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	ref := localSpawnWorkspaceRef(entry)
 	var source appsource.Source
-	if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" {
-		// SpawnDaemon already returned this exact, freshly published rendezvous
-		// entry. Route the initial read and turn through it directly instead of
-		// depending on a concurrent roster status probe to admit the new daemon.
-		source = appsource.NewLocalDaemonSource("local", func() []rendezvous.Entry {
-			return []rendezvous.Entry{entry}
-		}, nil)
+	if canUseSpawnEntry {
+		// Exact-entry RPCs share the persistent source's recovery cancellation.
+		source, err = spawnedLocalDaemonSource(sources)
 	} else {
 		source, err = sourceForThread(sources, ref, "")
 	}
@@ -204,10 +213,33 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Evener:        appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
+		thread = applyHubForkCapability(cfg, thread)
 		annotateThreadProjects([]appwire.Thread{thread})
 		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
-	threadResp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
+	startEpoch := sessionRecoveryState(cfg, ref, "").Epoch
+	read := func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+		if canUseSpawnEntry {
+			return readSpawnedLocalThread(ctx, sources, entry)
+		}
+		return source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
+	}
+	var threadResp appwire.ThreadReadResponse
+	if cfg.Roster != nil && canUseSpawnEntry {
+		if !cfg.Roster.HasConfirmedEntry(entry) {
+			threadResp, err = cfg.Roster.ReadSpawnedThread(ctx, entry, read)
+			if err != nil && threadResp.Thread.ID != "" {
+				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
+			}
+		} else {
+			threadResp, err = read(ctx)
+		}
+	} else {
+		threadResp, err = read(ctx)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || isSessionRecoveryAdmissionError(err) {
+		return appwire.ThreadStartResponse{}, err
+	}
 	if err != nil {
 		threadResp.Thread = appwire.Thread{
 			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: workingDir,
@@ -215,6 +247,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 	}
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
+	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
@@ -222,11 +255,24 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InternalError("create initial turn mutation id: " + err.Error())
 		}
-		turnResp, err := source.StartTurn(ctx, appwire.TurnStartParams{
+		turnParams := appwire.TurnStartParams{
 			Ref:                ref,
 			ClientMutationID:   clientMutationID,
 			ExpectedInstanceID: expectedInstanceID,
 			Input:              params.Input,
+		}
+		turnResp, err := withDeletionTargetOwnership(ctx, cfg, ref, "", clientMutationID, func() (appwire.TurnStartResponse, error) {
+			if err := sessionActionRecoveryError(ctx, cfg, ref, "", startEpoch); err != nil {
+				return appwire.TurnStartResponse{}, err
+			}
+			if canUseSpawnEntry {
+				local, err := spawnedLocalDaemonSource(sources)
+				if err != nil {
+					return appwire.TurnStartResponse{}, err
+				}
+				return local.StartTurnAtEntry(ctx, entry, turnParams)
+			}
+			return source.StartTurn(ctx, turnParams)
 		})
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
@@ -273,11 +319,21 @@ func launchSourceID(params appwire.ThreadStartParams) string {
 }
 
 func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	return resumeThread(ctx, cfg, sources, params, false)
+}
+
+func hubThreadAutoResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	return resumeThread(ctx, cfg, sources, params, true)
+}
+
+func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, automatic bool) (response appwire.ThreadResumeResponse, resumeErr error) {
+	requestedRefID := ""
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, err
 		}
+		requestedRefID = ref.ThreadID
 		if ref.SourceID != "local" {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
@@ -295,13 +351,103 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if sessionID == "" {
 		return appwire.ThreadResumeResponse{}, appwire.InvalidParams("sessionId or ref is required")
 	}
+	requestedID := sessionID
 	if cfg.ResumeLocks != nil {
-		lock := cfg.ResumeLocks.For(sessionID)
-		lock.Lock()
-		defer lock.Unlock()
+		epoch := sessionRequestRecoveryEpoch(ctx, cfg, "", requestedID)
+		if err := sessionConnectionRecoveryError(ctx, cfg, "", requestedID); err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
+		target, aliases, err := resumeOwnership(cfg, requestedID, requestedRefID)
+		if err != nil {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+		}
+		epochs := make(map[string]uint64, len(aliases))
+		for _, id := range aliases {
+			epochs[id] = sessionRequestRecoveryEpoch(ctx, cfg, "", id)
+		}
+		epochs[requestedID] = epoch
+		// Use force stop's sorted ownership order, retaining the original mutexes.
+		for _, id := range aliases {
+			cfg.ResumeLocks.For(id).Lock()
+		}
+		defer func() {
+			for _, id := range slices.Backward(aliases) {
+				cfg.ResumeLocks.For(id).Unlock()
+			}
+		}()
+		for _, id := range aliases {
+			if err := sessionConnectionRecoveryError(ctx, cfg, "", id); err != nil {
+				return appwire.ThreadResumeResponse{}, err
+			}
+			state := cfg.ResumeLocks.RecoveryState(id)
+			if state.Epoch != epochs[id] || state.Stopping > 0 || (automatic && state.ResumeRequired) {
+				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires a fresh explicit thread/resume request")}
+			}
+		}
+		currentTarget, currentAliases, err := resumeOwnership(cfg, requestedID, requestedRefID)
+		if err != nil {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+		}
+		if currentTarget != target || !slices.Equal(currentAliases, aliases) {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable("session ownership changed; refresh before resuming")
+		}
+		sessionID = target
+		defer func() {
+			if resumeErr != nil {
+				return
+			}
+			if !automatic {
+				if err := cfg.ResumeLocks.ExplicitResumeCompleted(requestedID, epoch); err != nil {
+					response = appwire.ThreadResumeResponse{}
+					resumeErr = appwire.Unavailable("persist completed session recovery: " + err.Error())
+					return
+				}
+				// The response was projected while this resume still held the
+				// recovery fence. Re-project so it reports the fork authority a
+				// read issued after the clear reports.
+				response.Thread = applyHubForkCapability(cfg, response.Thread)
+			}
+			cfg.ResumeLocks.RecordResolvedSession(requestedID, sessionID, epoch)
+		}()
+
 	}
-	if err := deletionFenceError(cfg, params.Ref, sessionID, ""); err != nil {
+
+	if err := deletionFenceError(cfg, params.Ref, requestedID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
+	}
+	for _, id := range []string{requestedID, sessionID} {
+		if err := deletionFenceError(cfg, "", id, ""); err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
+	}
+
+	var discoveryErr error
+	if cfg.Roster != nil {
+		discoveryErr = hubRosterRefresh(ctx, cfg.Roster)
+	}
+	if err := daemonRestartRequiredError(ctx, cfg, "", sessionID, ""); err != nil {
+		return appwire.ThreadResumeResponse{}, err
+	}
+	if discoveryErr != nil {
+		// Incomplete discovery cannot authorize a replacement, but a direct
+		// probe can establish that a previously confirmed owner still serves
+		// this session. Keep the global discovery failure for other owners.
+		if owner, ok := liveDaemonForThread(cfg.Roster, sessionID); ok && owner.Protocol == appwire.ProtocolVersion {
+			if err := cfg.Roster.RefreshEntry(ctx, owner.Entry); err != nil {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(discoveryErr, err).Error())
+			}
+			return hubResumedThreadResponse(ctx, cfg, sources, owner.SessionID, owner.ThreadID)
+		}
+		return appwire.ThreadResumeResponse{}, appwire.Unavailable(discoveryErr.Error())
+	}
+	owner, _, err := lookupDaemonOwner(ctx, cfg, "", sessionID, true)
+	if err != nil {
+		return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+	}
+	if owner.SessionID != "" {
+		if _, directlyOwned := liveDaemonForThread(cfg.Roster, sessionID); !directlyOwned {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable("session is retained by " + localAppRef(owner.SessionID) + "; open the owning session or refresh after it stops")
+		}
 	}
 	if cfg.Spawner == nil {
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
@@ -319,26 +465,205 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		// has already put the session in the roster, so reuse it instead of
 		// spawning again. Only this Hub's exact flag-day protocol establishes
 		// ownership; an older daemon can be healthy while remaining unroutable
-		// through the current local source. Refresh also preserves a dead daemon
-		// as a crash marker for diagnostics. Both cases must fall through
-		// to spawning.
+		// through the current local source. A dead daemon may remain as a
+		// crash marker and must fall through to spawning.
 		if cfg.Roster != nil {
-			hubRosterRefresh(cfg.Roster)
-			if le, ok := cfg.Roster.Find(sessionID); ok &&
-				!le.Crashed &&
+			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
-				return hubResumedThreadResponse(ctx, sources, le.SessionID, le.ThreadID)
+				return hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
 			}
 		}
 	}
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	if err != nil {
-		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(cfg, sessionID, err).Error())
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
+		if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" && !cfg.Roster.HasConfirmedEntry(entry) {
+			// A successful scan can still miss an owner whose status probe
+			// failed. Confirm the exact spawned endpoint through its read before
+			// relying on the shared roster for subsequent requests.
+			read, err := cfg.Roster.ReadSpawnedThread(ctx, entry, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+				return readSpawnedLocalThread(ctx, sources, entry)
+			})
+			if err != nil {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
+			}
+			annotateThreadProjects([]appwire.Thread{read.Thread})
+			read.Thread = applyHubForkCapability(cfg, read.Thread)
+			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
+		}
+		if refreshErr != nil && !cfg.Roster.HasConfirmedEntry(entry) {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(refreshErr.Error())
+		}
 	}
-	return hubResumedThreadResponse(ctx, sources, entry.SessionID, entry.ThreadID)
+	return hubResumedThreadResponse(ctx, cfg, sources, entry.SessionID, entry.ThreadID)
+}
+
+// resumeOwnership keeps the verified stopped transcript authoritative even when
+// roster cleanup removes its marker, and reserves every retained ownership alias.
+func resumeOwnership(cfg hubcore.WebConfig, requestedID, requestedRefID string) (string, []string, error) {
+	var aliases []string
+	visited := make(map[string]bool)
+	current := requestedID
+	for {
+		if cfg.ResumeLocks.HasSeparatePendingRecovery(requestedID, current) {
+			return "", nil, errors.New("resume target has a newer pending recovery; resume the current owning session")
+		}
+		if visited[current] {
+			return "", nil, errors.New("completed session aliases contain a cycle; refresh session ownership before resuming")
+		}
+		visited[current] = true
+		target, groupAliases, err := resumeOwnershipStep(cfg, current)
+		if err != nil {
+			return "", nil, err
+		}
+		aliases = append(aliases, groupAliases...)
+		if target == current {
+			break
+		}
+		current = target
+	}
+	if requestedRefID != "" {
+		aliases = append(aliases, requestedRefID)
+	}
+	slices.Sort(aliases)
+	return current, slices.Compact(aliases), nil
+}
+
+// Each completed group can lead to a newer group after daemon clear. Keep every
+// hop's ownership aliases so one reservation covers the complete resolved path.
+func resumeOwnershipStep(cfg hubcore.WebConfig, requestedID string) (string, []string, error) {
+	aliases := cfg.ResumeLocks.RecoveryAliases(requestedID)
+	durableTarget := cfg.ResumeLocks.RecoveryState(requestedID).ResumeSessionID
+	target := durableTarget
+	found := target != ""
+	resolvedTarget := cfg.ResumeLocks.ResolvedSessionID(requestedID)
+	referenceTarget := durableTarget
+	if referenceTarget == "" {
+		referenceTarget = resolvedTarget
+	}
+	var entries []rendezvous.Entry
+	if cfg.RunDir != "" {
+		var err error
+		entries, err = rendezvous.ListStrict(cfg.RunDir)
+		if err != nil {
+			// Preserve normal discovery's partial-failure recording and direct probe.
+			if cfg.Roster == nil {
+				return "", nil, err
+			}
+			if owner, ok := liveDaemonForThread(cfg.Roster, requestedID); ok {
+				entries = []rendezvous.Entry{owner.Entry}
+			}
+		}
+	}
+	var claims []rendezvous.Entry
+	for _, entry := range entries {
+		if !slices.Contains(forceStopAliases(entry), requestedID) && (referenceTarget == "" || !slices.Contains(forceStopAliases(entry), referenceTarget)) {
+			continue
+		}
+		if entry.SourceID != "" && entry.SourceID != "local" {
+			return "", nil, errors.New("daemon claims a foreign session source")
+		}
+		claims = append(claims, entry)
+		aliases = append(aliases, forceStopAliases(entry)...)
+	}
+	if len(claims) > 0 {
+		// A completed self-target cannot settle a conflicting exited successor.
+		// Only a redirect can advance traversal toward a separately resolved group.
+		completedRedirect := resolvedTarget
+		if completedRedirect == requestedID {
+			completedRedirect = ""
+		}
+		current, err := resumeClaimTarget(cfg, claims, durableTarget, completedRedirect)
+		if err != nil {
+			return "", nil, err
+		}
+		target, found = current, true
+	}
+	if !found && resolvedTarget != "" {
+		target, found = resolvedTarget, true
+	}
+	if !found {
+		if len(aliases) > 1 {
+			return "", nil, errors.New("current session identity is missing for this recovery group; restore its daemon rendezvous marker before resuming")
+		}
+		target = requestedID
+	}
+	// An older partially overlapping group cannot revive a transcript redirected
+	// by a newer stop. Its obligation remains until its own recovery is resolved.
+	if state := cfg.ResumeLocks.RecoveryState(target); state.ResumeRequired && state.ResumeSessionID != "" && state.ResumeSessionID != target {
+		return "", nil, errors.New("resume target belongs to a newer recovery; resume the current owning session")
+	}
+	aliases = append(aliases, requestedID, target)
+	return target, aliases, nil
+}
+
+// Distinct retained transcripts need process evidence: old crash markers are
+// not live owners, and an unverified process is never proof that a target is free.
+func resumeClaimTarget(cfg hubcore.WebConfig, claims []rendezvous.Entry, durableTarget, resolvedTarget string) (string, error) {
+	target := durableTarget
+	conflict := false
+	for _, entry := range claims {
+		current := entry.SessionID
+		if current == "" {
+			current = entry.ThreadID
+		}
+		if current == "" {
+			return "", errors.New("retained daemon has no current session identity")
+		}
+		if target != "" && target != current {
+			conflict = true
+		}
+		if target == "" {
+			target = current
+		}
+	}
+	if !conflict {
+		return target, nil
+	}
+	controller := cfg.DaemonProcesses
+	if controller == nil {
+		controller = daemonprocess.NewController()
+	}
+	liveTarget := ""
+	for _, entry := range claims {
+		current := entry.SessionID
+		if current == "" {
+			current = entry.ThreadID
+		}
+		process, err := controller.Open(daemonprocess.Target{PID: entry.PID, SessionID: current, StateDir: entry.StateDir, StartedAt: entry.StartedAt})
+		if errors.Is(err, daemonprocess.ErrExited) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("cannot verify retained daemon ownership: %w", err)
+		}
+		if err := process.Close(); err != nil {
+			return "", fmt.Errorf("close retained daemon ownership: %w", err)
+		}
+		if liveTarget != "" && liveTarget != current {
+			return "", errors.New("multiple live daemons claim different current sessions")
+		}
+		liveTarget = current
+	}
+	if liveTarget != "" {
+		if durableTarget != "" && durableTarget != liveTarget {
+			return "", errors.New("live daemon conflicts with the persisted recovery target")
+		}
+		return liveTarget, nil
+	}
+	if durableTarget != "" {
+		return durableTarget, nil
+	}
+	// Completed aliases guide the next hop only after all competing claims are
+	// verified exited. A live or unverified process never loses to this fallback.
+	if resolvedTarget != "" {
+		return resolvedTarget, nil
+	}
+
+	return "", errors.New("retained exited daemons have ambiguous current sessions and no persisted recovery target")
 }
 
 // resumeFailureError explains a failed replacement spawn when the daemon this
@@ -360,11 +685,13 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 // The roster is re-read rather than reused from the pre-spawn check: the spawn
 // attempt takes seconds, and naming a pid that has since exited would send the
 // operator after a process that is not there.
-func resumeFailureError(cfg hubcore.WebConfig, sessionID string, err error) error {
+func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID string, err error) error {
 	if cfg.Roster == nil {
 		return err
 	}
-	hubRosterRefresh(cfg.Roster)
+	if refreshErr := hubRosterRefresh(ctx, cfg.Roster); refreshErr != nil {
+		return errors.Join(err, refreshErr)
+	}
 	blocker, ok := cfg.Roster.Find(sessionID)
 	if !ok || blocker.Crashed || blocker.Protocol == appwire.ProtocolVersion {
 		return err
@@ -380,7 +707,7 @@ func resumeFailureError(cfg hubcore.WebConfig, sessionID string, err error) erro
 // both a fresh spawn and the double-check reuse of an already-resumed daemon
 // resolve the thread the same way. threadID falls back to sessionID when the
 // rendezvous entry omitted it.
-func hubResumedThreadResponse(ctx context.Context, sources *appsource.Registry, sessionID, threadID string) (appwire.ThreadResumeResponse, error) {
+func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, threadID string) (appwire.ThreadResumeResponse, error) {
 	if threadID == "" {
 		threadID = sessionID
 	}
@@ -394,11 +721,12 @@ func hubResumedThreadResponse(ctx context.Context, sources *appsource.Registry, 
 		return appwire.ThreadResumeResponse{}, err
 	}
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
+	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 
 func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeRequest, error) {
-	req := hubcore.ResumeRequest{SessionID: id}
+	req := hubcore.ResumeRequest{SessionID: id, AgentsDocPath: hubAgentsDocPath(cfg)}
 	if cfg.Past != nil {
 		if pe, ok := cfg.Past.Find(id); ok {
 			// Restore root, not the live working dir: a session actively
@@ -423,6 +751,18 @@ func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeReq
 					Model: provider + "/" + pe.Meta.Model,
 				}}
 			}
+			// The resumed daemon still honors the api_log launch option
+			// (buildResumeArgs passes it through), so the session's launch
+			// layers must be consulted here or an explicit choice is
+			// silently dropped and the hub floor fills the gap. Only
+			// api_log is carried: the persisted session meta governs model
+			// and provider on resume. A resolve failure is swallowed — a
+			// broken launch.toml must not block resume; the unset value
+			// then falls through to the hub floor and the daemon's own
+			// default.
+			if resolved, resolveErr := hubResolveLaunch(hubLaunchConfigRoot(cfg), req.WorkingDir, launchconfig.Layer{}); resolveErr == nil {
+				req.Resolved.Effective.APILog = resolved.Effective.APILog
+			}
 		}
 	}
 	return req, nil
@@ -437,7 +777,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if params.Aside {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("aside is only supported for local evener threads")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.ThreadForkResponse{}, err
@@ -450,25 +790,156 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return source.ForkThread(ctx, params)
 		})
 	}
-	unlockDeletionTarget := lockDeletionTarget(cfg, params.Ref, ref.ThreadID)
-	defer unlockDeletionTarget()
-	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
+	// A request that cannot be carried out however it is routed is answered
+	// first, ahead of every fence and lookup below. None of them belongs on the
+	// path of a malformed call, and the recovery fence in particular reaches
+	// ownershipEntry's scan of every project directory while a recovery is
+	// unconfirmed — so a bad parameter combination would otherwise be reported
+	// as an unavailable session, after that scan.
+	turn, err := validateThreadForkParams(params)
+	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
-	if params.Aside {
-		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
-			return appwire.ThreadForkResponse{}, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
+	refFor := func(id string) string {
+		if id == ref.ThreadID {
+			return params.Ref
 		}
-		stateDir := cfg.StateDir
-		if cfg.Past != nil {
-			if pe, ok := cfg.Past.Find(ref.ThreadID); ok {
-				stateDir = pe.StateDir
+		return ""
+	}
+	// A target the hub already knows is gone is answered before daemon
+	// discovery, which is the one fence below that can fail for its own
+	// reasons: deletion is terminal and tells the client to stop, a discovery
+	// failure is transient and tells it to retry, so letting the transient
+	// answer mask the terminal one keeps a client retrying a fork that can
+	// never succeed.
+	//
+	// Both identities, for the same reason the locked pass covers both: a
+	// stable alias resolves to the session a fork would branch, and a deletion
+	// fence on that session is every bit as terminal as one on the alias. The
+	// resolution here is the roster as it stands, which may be a scan old —
+	// acceptable for an answer that is terminal whichever way it lands, and
+	// re-derived below once the refresh has run. These reads take no lock; the
+	// locked pass still re-reads both identities under theirs. With no deletion
+	// store there is nothing to read, and resolving for it would be a roster
+	// lookup per fork for an answer that cannot exist.
+	if cfg.DeletionStore != nil {
+		for _, id := range forkFenceTargets(ref.ThreadID, forkTargetSessionID(cfg, ref.ThreadID)) {
+			if err := deletionFenceErrorNaming(cfg, refFor(id), id, params.Ref, ""); err != nil {
+				return appwire.ThreadForkResponse{}, err
 			}
+		}
+	}
+	// One roster refresh serves every fence below, and it has to land before
+	// them: a live-delegate fence read off the previous scan admits a delegate
+	// the parent daemon picked up since, and this is also the scan that resolves
+	// the session the branch will actually read — which the recovery and
+	// deletion fences have to reserve alongside the alias the client asked
+	// about, and cannot if they run first.
+	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return appwire.ThreadForkResponse{}, err
+	}
+	sessionID := forkTargetSessionID(cfg, ref.ThreadID)
+	// Sample every epoch, then take every lock, then check: an epoch read after
+	// its own lock cannot see a recovery that began while this request waited
+	// for that lock, and acquiring in sorted order is the convention
+	// resumeThread and forceStopThread already follow, so two requests holding
+	// these per-session locks cannot deadlock against each other.
+	targets := forkFenceTargets(ref.ThreadID, sessionID)
+	epochs := make(map[string]uint64, len(targets))
+	for _, id := range targets {
+		epochs[id] = sessionRequestRecoveryEpoch(ctx, cfg, refFor(id), id)
+	}
+	var unlockTargets []func()
+	defer func() {
+		for _, unlock := range slices.Backward(unlockTargets) {
+			unlock()
+		}
+	}()
+	lockOrder := slices.Clone(targets)
+	slices.Sort(lockOrder)
+	for _, id := range lockOrder {
+		unlockTargets = append(unlockTargets, lockDeletionTarget(cfg, refFor(id), id))
+	}
+	// The target had to be resolved before the locks, so that both identities
+	// could be taken in one sorted pass. A thread/clear landing while this
+	// request waited for them moves the session the ref names, and the fences
+	// below would then reserve one session while the branch read another. Refuse
+	// instead, the same recheck resumeThread performs after acquiring these
+	// mutexes; the client re-reads and asks again.
+	//
+	// Both sources the hub can read cheaply under the locks have to still agree
+	// with the pre-lock answer. The rendezvous is the one that catches a clear:
+	// the roster learns of it only when its watcher next re-lists, so asking the
+	// roster alone would compare the pre-lock reading to the same stale reading.
+	// Refreshing the roster here is not the alternative — that probes daemons
+	// while two per-session mutexes are held. The roster is still asked because
+	// a snapshot that HAS caught up has to agree too: a move the roster already
+	// knows about is refused by this same recheck rather than waiting for the
+	// rendezvous read to notice it independently. In a configuration that gives
+	// the hub only one of the two sources, both readings reach that one source
+	// and the comparison is a re-read rather than a second opinion.
+	current, rendezvousErr := forkTargetSessionIDUnderLock(cfg, ref.ThreadID)
+	if rendezvousErr != nil {
+		// The client's refusal is retryable and says nothing an operator can
+		// act on. A hub whose process handles cannot be opened at all — a
+		// permission or sandbox problem, not a per-fork one — would otherwise
+		// refuse every fork with no server-side trace, so the one refusal that
+		// reaches the client is traced here and only here.
+		log.Printf("fork refused: cannot verify session ownership for %s: %v", params.Ref, rendezvousErr)
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("cannot verify session ownership: " + rendezvousErr.Error())
+	}
+	if current != sessionID || forkTargetSessionID(cfg, ref.ThreadID) != sessionID {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("session ownership changed; refresh before forking")
+	}
+	// Deletion across every identity first, then recovery across every
+	// identity: the two refusals differ in kind — a deleted target is terminal
+	// and carries MutationOutcomeTargetDeleted, a recovery fence is retryable
+	// once the session is resumed — so which one a client is told about must
+	// not depend on the order the locks above happened to need.
+	for _, id := range targets {
+		if err := deletionFenceErrorNaming(cfg, refFor(id), id, params.Ref, ""); err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
+	}
+	for _, id := range targets {
+		if err := sessionActionRecoveryError(ctx, cfg, refFor(id), id, epochs[id]); err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
+	}
+	// Over the same targets as the two passes above, and for the same reason:
+	// the capability projection fences both identities on this signal
+	// (hubForkRecoveryFencedNow for the alias, hubForkResolvedSessionFenced for
+	// the session it resolves to), so the RPC states the rule the same way
+	// rather than a second time in a second shape. Both identities land on one
+	// roster entry whenever a daemon is live, so this costs a Find for the
+	// resolved id and changes no answer.
+	for _, id := range targets {
+		if hubForkLiveStatusFenced(cfg, id) {
+			return appwire.ThreadForkResponse{}, sessionResumeRequiredError()
+		}
+	}
+	entry, ok, entryErr := ownershipEntry(ctx, cfg, sessionID)
+	if entryErr != nil {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable(entryErr.Error())
+	}
+	if !ok {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
+	}
+	// Both identities are fenced: the transcript about to be branched, and the
+	// one the capability projection answered for, so the RPC stays at least as
+	// strict as the action it advertised.
+	if hubForkLiveDelegateFenced(cfg, ref.ThreadID) || hubForkLiveDelegateFenced(cfg, sessionID) {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("a delegate running inside a live daemon cannot be forked")
+	}
+	if params.Aside {
+		stateDir := entry.StateDir
+		if stateDir == "" {
+			stateDir = cfg.StateDir
 		}
 		if stateDir == "" {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
 		}
-		childID, err := hubAsideSession(stateDir, ref.ThreadID)
+		childID, err := hubAsideSession(stateDir, sessionID)
 		if err != nil {
 			return appwire.ThreadForkResponse{}, err
 		}
@@ -483,30 +954,18 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			Evener:    appwire.EvenerThread{Ref: childRef},
 		}}, nil
 	}
-	turn, err := parseSourceTurnID(params.SourceTurnID)
-	if err != nil {
-		return appwire.ThreadForkResponse{}, appwire.InvalidParams(err.Error())
-	}
-	if params.DeferInput && strings.TrimSpace(params.EditedInput) != "" {
-		return appwire.ThreadForkResponse{}, appwire.InvalidParams("editedInput and deferInput are mutually exclusive")
-	}
-	if !params.DeferInput && strings.TrimSpace(params.EditedInput) == "" {
-		return appwire.ThreadForkResponse{}, appwire.InvalidParams("editedInput is required")
-	}
-	stateDir := cfg.StateDir
-	if cfg.Past != nil {
-		if pe, ok := cfg.Past.Find(ref.ThreadID); ok {
-			stateDir = pe.StateDir
-		}
+	stateDir := entry.StateDir
+	if stateDir == "" {
+		stateDir = cfg.StateDir
 	}
 	if stateDir == "" {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
 	}
 	var childID, originalInput string
 	if params.DeferInput {
-		childID, originalInput, err = hubForkSessionAt(stateDir, ref.ThreadID, turn, params.Label)
+		childID, originalInput, err = hubForkSessionAt(stateDir, sessionID, turn, params.Label)
 	} else {
-		childID, err = hubForkSession(stateDir, ref.ThreadID, turn, params.EditedInput, params.Label)
+		childID, err = hubForkSession(stateDir, sessionID, turn, params.EditedInput, params.Label)
 	}
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
@@ -526,6 +985,319 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}, nil
 }
 
+// validateThreadForkParams rejects the parameter combinations no fork can carry
+// out, and returns the source turn a divergent fork branches from. It reads only
+// the request, so the handler can answer a malformed one without refreshing
+// daemon ownership or resolving the target's transcript.
+func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
+	if params.Aside {
+		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
+			return 0, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
+		}
+		return 0, nil
+	}
+	turn, err := parseSourceTurnID(params.SourceTurnID)
+	if err != nil {
+		return 0, appwire.InvalidParams(err.Error())
+	}
+	if params.DeferInput && strings.TrimSpace(params.EditedInput) != "" {
+		return 0, appwire.InvalidParams("editedInput and deferInput are mutually exclusive")
+	}
+	if !params.DeferInput && strings.TrimSpace(params.EditedInput) == "" {
+		return 0, appwire.InvalidParams("editedInput is required")
+	}
+	return turn, nil
+}
+
+// hubForkLiveStatusFenced reports whether the daemon behind this thread is
+// announcing a recovery fence in the status it reports. Both the capability
+// projection and fork admission decide that signal here, with one predicate
+// rather than two descriptions of it.
+//
+// It reads the roster and never probes a daemon itself, so what it answers is
+// as fresh as the last scan. Admission refreshes immediately before calling it,
+// so there it is current; the projection reads whatever scan last landed, and
+// its staleness is bounded by the roster's own change notification — a daemon
+// that raises or drops a status flag moves the fingerprint (rosterFingerprint)
+// even when nothing else about it changed, so navigation re-projects rather
+// than holding the old answer indefinitely.
+//
+// Its restart-required conjunct overlaps refreshDaemonRestartRequiredError,
+// which in admission runs first and refuses with its own error whenever it can
+// resolve the same daemon as this thread's owner.
+func hubForkLiveStatusFenced(cfg hubcore.WebConfig, threadID string) bool {
+	return forkThreadOwnerFor(cfg, threadID).statusFenced()
+}
+
+// forkThreadOwner is the roster's answer about one thread. liveDaemonForThread
+// is a map lookup that falls through to a full roster snapshot clone-and-sort
+// for any thread that is not a live daemon's current session — the bulk of a
+// list response — so a caller that needs the answer more than once resolves it
+// into this and hands it on rather than asking again.
+type forkThreadOwner struct {
+	entry hubcore.LiveEntry
+	live  bool
+}
+
+func forkThreadOwnerFor(cfg hubcore.WebConfig, threadID string) forkThreadOwner {
+	if cfg.Roster == nil {
+		return forkThreadOwner{}
+	}
+	entry, live := liveDaemonForThread(cfg.Roster, threadID)
+	return forkThreadOwner{entry: entry, live: live}
+}
+
+// statusFenced reports whether this daemon is announcing a recovery fence in
+// the status it reports.
+func (o forkThreadOwner) statusFenced() bool {
+	if !o.live {
+		return false
+	}
+	return hubForkRecoveryFenced(appwire.Thread{
+		Status: appwire.ThreadStatus{Type: o.entry.Status, ActiveFlags: o.entry.ActiveFlags},
+	})
+}
+
+// sessionID is the session this daemon is running, with the fallback order
+// liveDaemonForSession uses: a probe that answered without naming its session
+// leaves LiveEntry.SessionID empty, and the rendezvous entry it carries still
+// names the daemon's current one. A live owner that names no session at all
+// answers the requested id — the claim path under the locks answers the same,
+// and a resolver that fell through to the recovery redirect here could disagree
+// with it and refuse a fork for an ownership change that did not happen.
+//
+// It answers "" only when no daemon owns the thread.
+func (o forkThreadOwner) sessionID(threadID string) string {
+	if !o.live {
+		return ""
+	}
+	return cmp.Or(o.entry.SessionID, o.entry.Entry.SessionID, o.entry.ThreadID, threadID)
+}
+
+// forkTargetSessionIDUnderLock resolves the session the requested thread names
+// right now, from the sources a clear updates synchronously: the rendezvous
+// entry the daemon rewrites as it swaps sessions (cmd/evener/serve.go's clear
+// hook writes it through rvreg.UpdateSessionID, before the replacement session
+// goes live, so the file is never behind the daemon), and the recovery locks'
+// own resolution for a redirect whose daemon has since exited. Those are the
+// two resumeOwnershipStep reads, which is why resumeThread's recheck is not
+// fooled by a roster that has not caught up.
+//
+// Every local claim on the alias that forkClaimIsLiveOwner admits is collected,
+// not just the first the directory listed: two daemons can claim one stable
+// workspace ref, and nothing downstream catches that — ownershipEntry refuses a
+// session id found in two project directories, never a second daemon claiming
+// the same alias. So the claims go through resumeClaimTarget, the conflict
+// check the resume path already uses for this shape, which settles them by
+// liveness and refuses when it cannot.
+//
+// It diverges from resumeOwnershipStep in one deliberate way: a ListStrict
+// failure refuses the fork as unverifiable, where resumeOwnershipStep degrades
+// to the roster. A recheck that fell back to the reading it exists to
+// second-guess would answer nothing, and a retryable refusal is the safe
+// direction for a mutation. A claim whose own process cannot be verified is
+// refused the same way, and for the same reason.
+//
+// For a thread nothing currently claims it answers the requested id, the same
+// thing the roster-backed resolution answers when no live daemon owns the
+// thread.
+//
+// Each resolver falls back to the other's source when its own is not
+// configured — this one to the roster with no run dir, the pre-lock one to the
+// rendezvous with no roster — so a hub given only one of the two cannot make
+// them disagree about an alias nothing has touched and refuse a valid fork as
+// an ownership change. With both configured, which production always is
+// (main.go builds the roster from the run dir that becomes WebConfig.RunDir),
+// neither fallback runs and the rendezvous stays authoritative.
+func forkTargetSessionIDUnderLock(cfg hubcore.WebConfig, threadID string) (string, error) {
+	if cfg.RunDir == "" && cfg.Roster != nil {
+		// No rendezvous to read: answer from the roster, which is what the
+		// pre-lock resolver would have read, rather than skipping to the tail
+		// and disagreeing with it over an alias nothing has touched.
+		return forkTargetSessionID(cfg, threadID), nil
+	}
+	if cfg.RunDir != "" {
+		entries, err := rendezvous.ListStrict(cfg.RunDir)
+		if err != nil {
+			return "", err
+		}
+		controller := cfg.DaemonProcesses
+		if controller == nil {
+			controller = daemonprocess.NewController()
+		}
+		var claims []rendezvous.Entry
+		for _, entry := range entries {
+			if entry.SourceID != "" && entry.SourceID != "local" {
+				continue
+			}
+			if !slices.Contains(forceStopAliases(entry), threadID) {
+				continue
+			}
+			live, verifyErr := forkClaimIsLiveOwner(controller, entry)
+			if verifyErr != nil {
+				// Which entry could not be verified rides on the error rather
+				// than being logged here: this resolver also answers the
+				// pre-lock path, which swallows the error, so logging at the
+				// failure would trace forks that were never refused. The
+				// refusing call site logs it once.
+				return "", fmt.Errorf("daemon claiming %s (pid %d): %w", localAppRef(threadID), entry.PID, verifyErr)
+			}
+			if live {
+				claims = append(claims, entry)
+			}
+		}
+		if len(claims) > 0 {
+			// The claims are the authority when any exist; the recovery
+			// redirect below is the fallback for an alias nothing claims, so
+			// neither target is passed in here.
+			return resumeClaimTarget(cfg, claims, "", "")
+		}
+	}
+	return forkRedirectSessionID(cfg, threadID), nil
+}
+
+// forkRedirectSessionID is what a thread no live daemon owns resolves to: the
+// session a recovery redirected it onto, else the thread itself. A completed
+// explicit resume records that redirect and never clears it
+// (ResumeLocks.RecordResolvedSession), so an alias whose daemon has since
+// stopped still names the session the resume settled on. Both resolvers end
+// here, which is what keeps them from disagreeing while nothing is changing:
+// one that stopped at the alias would read "ownership changed" off a redirect
+// that has been stable since before the request started.
+// Redirects chain. PersistForceStop rewrites only the aliases of the group it
+// is handed and RecordResolvedSession writes onto whichever group an alias
+// currently points at, so resuming A onto B and later B onto C leaves both
+// records standing: one hop would branch B, a session already retired.
+// resumeOwnership traverses the same chains for the same reason, which is why
+// its loop and cycle guard exist.
+//
+// A cycle stops rather than refusing. Both resolvers share this tail, so
+// whatever a corrupted chain answers they answer alike and no fork is refused
+// for an ownership change that did not happen; whether that id can be forked at
+// all is still ownershipEntry's to decide.
+func forkRedirectSessionID(cfg hubcore.WebConfig, threadID string) string {
+	if cfg.ResumeLocks == nil {
+		return threadID
+	}
+	current := threadID
+	seen := map[string]bool{current: true}
+	for {
+		next := cmp.Or(
+			cfg.ResumeLocks.RecoveryState(current).ResumeSessionID,
+			cfg.ResumeLocks.ResolvedSessionID(current),
+		)
+		if next == "" || next == current || seen[next] {
+			return current
+		}
+		seen[next] = true
+		current = next
+	}
+}
+
+// forkFenceTargets is every identity one fork has to reserve, in request order:
+// the alias the client asked about, then the session the branch actually reads
+// when the two differ. Fences are checked in this order so a refusal reports
+// the identity the client named whenever both are fenced the same way; the
+// locks are taken over a sorted copy, which is a separate concern.
+func forkFenceTargets(requestedID, sessionID string) []string {
+	targets := []string{requestedID}
+	if sessionID != "" && sessionID != requestedID {
+		targets = append(targets, sessionID)
+	}
+	return targets
+}
+
+// forkTargetSessionID resolves the transcript a fork request names. A daemon
+// keeps its stable workspace ref across thread/clear while its session id moves
+// on (cmd/evener/serve.go's clear hook writes the replacement id into the
+// rendezvous entry and leaves WorkspaceRef alone), and both the live read and
+// the capability projection answer that stable ref with the CURRENT session. A
+// fork has to branch the transcript the client was reading; the requested ref
+// stays the identity for recovery and deletion fencing, which reserve the
+// alias the client asked about.
+func forkTargetSessionID(cfg hubcore.WebConfig, threadID string) string {
+	if cfg.Roster == nil && cfg.RunDir != "" {
+		// No roster to read: answer from the rendezvous, the under-lock
+		// resolver's source, for the same reason it falls back to the roster.
+		// A verification failure is not this resolver's to report — the
+		// under-lock pass reaches it again and refuses with the reason — so an
+		// unanswerable claim falls through to the shared tail below.
+		if sessionID, err := forkTargetSessionIDUnderLock(cfg, threadID); err == nil {
+			return sessionID
+		}
+	}
+	return forkTargetSessionIDFor(cfg, threadID, forkThreadOwnerFor(cfg, threadID))
+}
+
+// forkTargetSessionIDFor is forkTargetSessionID with the roster already asked,
+// for a caller that needs the same answer more than once in one pass.
+func forkTargetSessionIDFor(cfg hubcore.WebConfig, threadID string, owner forkThreadOwner) string {
+	if sessionID := owner.sessionID(threadID); sessionID != "" {
+		return sessionID
+	}
+	// No live daemon owns the thread, so the recovery redirect answers — the
+	// same tail forkTargetSessionIDUnderLock reaches, so the pre-lock reading
+	// and the recheck cannot disagree while nothing is moving. The roster has
+	// already applied forkClaimIsLiveOwner's rule for this reading: a marker
+	// whose process is gone is retained as crashed and liveDaemonForThread
+	// skips it.
+	return forkRedirectSessionID(cfg, threadID)
+}
+
+// forkClaimIsLiveOwner reports whether a rendezvous claim still has a daemon
+// behind it. This is the single liveness rule both fork resolutions answer
+// from. The pre-lock one gets it from the roster, which marks an entry whose
+// PID is confirmed gone as Crashed and retains it only for crash reporting, so
+// liveDaemonForThread never returns one; the under-lock collection applies it
+// here. Without that, a daemon that cleared to a new session and then crashed
+// would leave a marker the two readings disagreed about, and every fork through
+// its alias would be refused for an ownership change that never happened.
+//
+// The two sides reach that rule through different mechanisms and neither should
+// be "simplified" into the other: the roster asks whether the PID exists at all
+// (processAlive's signal 0, internal/hubcore/roster_unix.go), while this probe
+// binds the process and verifies it is still the generation the rendezvous
+// describes (daemonprocess's pidfd on Linux, an O_NOFOLLOW handle plus verify()
+// on Darwin). They agree on the case that decides this — a PID confirmed gone
+// is dead to both — and the stricter one only ever withholds liveness from a
+// PID that has been reused, which is not an owner either.
+//
+// There are three outcomes, not two, and the third is why this returns an
+// error. A claim whose process verifies is live. A claim whose process has
+// exited is gone and is dropped. A claim whose verification fails for any other
+// reason — a malformed entry, a stale one, a PID since reused — is
+// UNVERIFIABLE, and the caller refuses the fork rather than resolving through
+// it: with a single claim resumeClaimTarget returns it without opening
+// anything, so calling an unverifiable claim live would let a file alone
+// authorize a fork with ownership never established.
+//
+// The caller stops at the first unverifiable claim, so an alias carrying one
+// unverifiable entry and one that verifies refuses as unverifiable without
+// reaching the ambiguity path — the conservative reading: a set the hub cannot
+// fully account for is not a set it should pick a winner from.
+//
+// An ambiguous alias is therefore probed twice, here and again in
+// resumeClaimTarget's conflict branch; that is accepted rather than threaded
+// through, since only a contested alias pays it.
+func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.Entry) (bool, error) {
+	process, err := controller.Open(daemonprocess.Target{
+		PID:       entry.PID,
+		SessionID: cmp.Or(entry.SessionID, entry.ThreadID),
+		StateDir:  entry.StateDir,
+		StartedAt: entry.StartedAt,
+	})
+	if errors.Is(err, daemonprocess.ErrExited) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// The daemon answered, which is the whole question here; the probe handle
+	// is released immediately and a close failure does not change that answer.
+	_ = process.Close()
+	return true, nil
+}
+
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
 	return strings.TrimSpace(params.SourceTurnID) != "" ||
 		strings.TrimSpace(params.EditedInput) != "" ||
@@ -543,4 +1315,24 @@ func parseSourceTurnID(raw string) (int, error) {
 		return 0, errors.New("sourceTurnId must be a positive turn number")
 	}
 	return turn, nil
+}
+
+// readSpawnedLocalThread keeps pre-admission reads in the same recovery scope
+// as ordinary calls so a stalled read cannot retain resume ownership forever.
+func readSpawnedLocalThread(ctx context.Context, sources *appsource.Registry, entry rendezvous.Entry) (appwire.ThreadReadResponse, error) {
+	local, err := spawnedLocalDaemonSource(sources)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	return local.ReadThreadAtEntry(ctx, entry, appwire.ThreadReadParams{Ref: localSpawnWorkspaceRef(entry)})
+}
+
+func spawnedLocalDaemonSource(sources *appsource.Registry) (*appsource.LocalDaemonSource, error) {
+	source, ok := sources.Source("local")
+	if ok {
+		if local, ok := source.(*appsource.LocalDaemonSource); ok {
+			return local, nil
+		}
+	}
+	return nil, appwire.Unavailable("local daemon source is not configured")
 }

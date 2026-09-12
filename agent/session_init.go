@@ -577,8 +577,9 @@ func (s *Session) hasConfiguredDelegateCapability() bool {
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
-	// LifetimeContext owns this restored session tree when supplied by a
-	// one-shot run. Nil preserves daemon/background ownership.
+	// LifetimeContext owns this restored session tree exactly as
+	// SessionConfig.LifetimeContext owns a fresh one: run and serve each supply
+	// their own, and nil is the library/test shape that roots at Background.
 	LifetimeContext         context.Context
 	StateDir                string
 	Project                 identifier.Project
@@ -615,6 +616,20 @@ type RestoreSessionConfig struct {
 	// exists so a CHILD session inherits its parent's answer (children are built
 	// from the parent's own toSnapshot), which is a different question.
 	TurnEndsProcess bool
+
+	// AgentsDocPath carries through to the restored Session's SessionConfig,
+	// REPLACING the persisted value rather than merging with it, exactly like
+	// TurnEndsProcess above. Which personal AGENTS.md a session reads belongs
+	// to whoever is restoring it — a hub hands over its own concrete config
+	// root, the same one Settings edits — not to the session on disk, whose
+	// snapshot predates the flag or names a root the hub has since left. Empty
+	// is the restorer's own answer as much as a path is, and means the one thing
+	// it means everywhere: no personal doc resolves in this environment. A hub
+	// whose config root is unresolvable and a plain `evener serve --resume` both
+	// read the file their own environment names and never one a departed hub
+	// persisted. The persisted field exists so a CHILD built from its parent's
+	// snapshot inherits the parent's answer; it does not outlive the run.
+	AgentsDocPath string
 
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
@@ -715,6 +730,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
 		return nil, err
 	}
+	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
 	}
@@ -1468,8 +1484,8 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 
-	// Cache project docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.currentEnv(), s.profile.ProjectDocFiles()...)
+	// Cache instruction docs once; reused every round for system prompt rebuilds.
+	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing

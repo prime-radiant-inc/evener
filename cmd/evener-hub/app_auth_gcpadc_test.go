@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
@@ -132,5 +133,40 @@ func TestAuth_ApiKeySet_RefusesGCPADCInstance(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	if _, ok := store.Get("vertex"); ok {
 		t.Fatal("a refused key must not be stored")
+	}
+}
+
+// TestAuth_CredentialJsonSetRechecksTheInstanceUnderTheCredentialLock: the
+// paste is refused for anything but a gcp-adc instance, and a rename holding
+// the credential lock can make the name stop being one between that refusal
+// and the write it guards. The check that decides the write must be the one
+// inside the lock.
+func TestAuth_CredentialJsonSetRechecksTheInstanceUnderTheCredentialLock(t *testing.T) {
+	ctrl, dir := newVertexController(t)
+	tomlPath := ctrl.providersConfigPath
+
+	ctrl.credMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "vertex", Value: authorizedUserJSON})
+		done <- err
+	}()
+	// Only so a check made outside the lock has run by the time the rename
+	// lands: what the test asserts does not depend on the wait.
+	time.Sleep(100 * time.Millisecond)
+	renameProvidersEntry(t, ctrl, tomlPath, strings.ReplaceAll(vertexInstanceToml, "providers.vertex", "providers.vertex2"))
+	ctrl.credMu.Unlock()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "apiKey/set") {
+			t.Fatalf("CredentialJsonSet = %v, want the refusal for the name the rename left behind", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CredentialJsonSet never returned after the rename released the lock")
+	}
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if v, ok := store.Get("vertex"); ok {
+		t.Fatalf("the credential JSON landed under vertex (%q), which no longer names a gcp-adc instance", v)
 	}
 }

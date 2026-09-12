@@ -31,23 +31,28 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("renders each marketplace's name/kind/sourceLabel; the segment label owns the heading and count", () => {
+test("renders each marketplace as one tappable row carrying name, kind, and source; tapping selects it", async () => {
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  expect(screen.getByText("acme-plugins")).toBeTruthy();
-  expect(screen.getByText("github")).toBeTruthy();
-  expect(screen.getByText("github: acme/plugins")).toBeTruthy();
+  const onSelect = vi.fn();
+  render(<MarketplacesSection onSelect={onSelect} />);
+  const row = screen.getByRole("button", { name: /acme-plugins/ });
+  expect(within(row).getByText("github")).toBeTruthy();
+  expect(within(row).getByText("github: acme/plugins")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   // No in-section heading or count: the page-level SegmentedControl carries
   // "Marketplaces (n)" - asserted in index.test.tsx.
   expect(screen.queryByRole("heading")).toBeNull();
   expect(screen.queryByText("1 entry")).toBeNull();
+  await userEvent.setup().click(row);
+  expect(onSelect).toHaveBeenCalledWith("acme-plugins");
 });
 
 test("shows the empty state when there are no marketplaces", () => {
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   expect(screen.getByText("No marketplaces registered. Add one below.")).toBeTruthy();
 });
 
@@ -55,7 +60,7 @@ test("the Add form and the + Add marketplace button are mutually exclusive", asy
   const user = userEvent.setup();
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   expect(screen.getByRole("button", { name: "+ Add marketplace" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   expect(screen.queryByRole("button", { name: "+ Add marketplace" })).toBeNull();
@@ -66,7 +71,7 @@ test("only the field matching the checked source radio is shown", async () => {
   const user = userEvent.setup();
   connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   expect(screen.getByPlaceholderText("https://github.com/owner/repo.git")).toBeTruthy();
   expect(screen.queryByPlaceholderText("owner/repo")).toBeNull();
@@ -93,7 +98,7 @@ test("the local-path field browses real directories and sends the picked one", a
     return { marketplaces: [] };
   });
   fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/opt" : path }));
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("radio", { name: "Local path" }));
 
@@ -116,7 +121,7 @@ test("submitting the github kind sends {kind:github,repo} and closes on success"
     expect(params).toEqual({ name: "", source: { kind: "github", repo: "acme/plugins" } });
     return { marketplaces: [MARKETPLACE_A] };
   });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("radio", { name: "owner/repo" }));
   await user.type(screen.getByPlaceholderText("owner/repo"), "acme/plugins");
@@ -133,7 +138,7 @@ test("a non-empty name is appended to the success toast and sent in the payload"
     expect(params).toEqual({ name: "my-name", source: { kind: "url", url: "https://example.com/x.git" } });
     return { marketplaces: [] };
   });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
   await user.type(screen.getByPlaceholderText("defaults to the marketplace's own name"), "my-name");
@@ -150,7 +155,7 @@ test("a failed add toasts failure and keeps the form open", async () => {
   fake.on("evener/marketplace/add", () => {
     throw new Error("boom");
   });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
   await user.click(screen.getByRole("button", { name: "Add" }));
@@ -166,142 +171,9 @@ test("Cancel closes the form without calling addMarketplace", async () => {
   extensionsStore.setState({ marketplaces: [] });
   const addSpy = vi.fn();
   fake.on("evener/marketplace/add", addSpy);
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.getByRole("button", { name: "+ Add marketplace" })).toBeTruthy();
   expect(addSpy).not.toHaveBeenCalled();
-});
-
-test("Refresh calls refreshMarketplace and toasts success", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("evener/marketplace/refresh", (params) => {
-    expect(params).toEqual({ name: "acme-plugins" });
-    return { marketplaces: [MARKETPLACE_A] };
-  });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  await user.click(screen.getByRole("button", { name: "Refresh" }));
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Refreshed acme-plugins")).toBe(true),
-  );
-});
-
-test("Refresh on an expanded marketplace also re-browses it (the cache the refresh just invalidated)", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("evener/marketplace/refresh", () => ({ marketplaces: [MARKETPLACE_A] }));
-  const browseSpy = vi.fn(() => ({ name: "acme-plugins", plugins: [] }));
-  fake.on("evener/marketplace/browse", browseSpy);
-  render(<MarketplacesSection expandedMarketplaces={new Set(["acme-plugins"])} />);
-  await user.click(screen.getByRole("button", { name: "Refresh" }));
-  await waitFor(() => expect(browseSpy).toHaveBeenCalledWith({ name: "acme-plugins" }));
-});
-
-test("Refresh disables its own button while the RPC is in flight, and re-enables after", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  let resolveRefresh: (v: { marketplaces: MarketplaceEntry[] }) => void = () => {};
-  fake.on(
-    "evener/marketplace/refresh",
-    () =>
-      new Promise((resolve) => {
-        resolveRefresh = resolve;
-      }),
-  );
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  const refreshButton = screen.getByRole("button", { name: "Refresh" });
-  await user.click(refreshButton);
-  expect((refreshButton as HTMLButtonElement).disabled).toBe(true);
-
-  resolveRefresh({ marketplaces: [MARKETPLACE_A] });
-  await waitFor(() => expect((refreshButton as HTMLButtonElement).disabled).toBe(false));
-});
-
-test("Refresh only disables the clicked row's own button, not other rows'", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  const MARKETPLACE_B: MarketplaceEntry = {
-    name: "other-plugins",
-    source: { kind: "url", url: "https://x" },
-    lastUpdated: 1,
-  };
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] });
-  fake.on("evener/marketplace/refresh", () => new Promise(() => {})); // never resolves - observe mid-flight only
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  const buttons = screen.getAllByRole("button", { name: "Refresh" });
-  await user.click(buttons[0]!);
-  expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
-  expect((buttons[1] as HTMLButtonElement).disabled).toBe(false);
-});
-
-test("a failed refresh re-enables the button too", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("evener/marketplace/refresh", () => {
-    throw new Error("boom");
-  });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  const refreshButton = screen.getByRole("button", { name: "Refresh" });
-  await user.click(refreshButton);
-  await waitFor(() => expect((refreshButton as HTMLButtonElement).disabled).toBe(false));
-});
-
-test("Remove opens a confirm dialog; confirming removes and toasts success", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("evener/marketplace/remove", (params) => {
-    expect(params).toEqual({ name: "acme-plugins" });
-    return { marketplaces: [] };
-  });
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  const dialog = screen.getByRole("dialog", { name: "Remove marketplace" });
-  expect(screen.getByText('Remove marketplace "acme-plugins"? Installed plugins from it are unaffected.')).toBeTruthy();
-  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-  await waitFor(() =>
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Removed marketplace acme-plugins")).toBe(true),
-  );
-});
-
-test("cancelling the remove confirm does not call removeMarketplace", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  const removeSpy = vi.fn();
-  fake.on("evener/marketplace/remove", removeSpy);
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(removeSpy).not.toHaveBeenCalled();
-});
-
-test("the confirm dialog's buttons disable while removal is in flight, and it stays open until it resolves", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  let resolveRemove: (v: { marketplaces: MarketplaceEntry[] }) => void = () => {};
-  fake.on(
-    "evener/marketplace/remove",
-    () =>
-      new Promise((resolve) => {
-        resolveRemove = resolve;
-      }),
-  );
-  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  const dialog = screen.getByRole("dialog", { name: "Remove marketplace" });
-  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-
-  expect((within(dialog).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
-  expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByRole("dialog", { name: "Remove marketplace" })).toBeTruthy(); // still open mid-flight
-
-  resolveRemove({ marketplaces: [] });
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });

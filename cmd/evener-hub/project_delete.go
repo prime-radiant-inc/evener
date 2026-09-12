@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
@@ -25,13 +26,33 @@ func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, s
 	navigation := s.emptyNavigationMutation()
 	if changed {
 		hint := navigationChangeHint{Projects: []string{project}}
-		var err error
-		navigation, err = s.navigation.Refresh(ctx, hint)
-		if err != nil {
-			return appwire.ProjectDeleteResponse{}, appwire.Unavailable(err.Error())
+		navigation = s.navigationAfterDeletion(ctx, hint)
+	}
+	return appwire.ProjectDeleteResponse{
+		Deleted:    append([]string{}, deleted...),
+		Skipped:    append([]projectDeleteSkip{}, skipped...),
+		Navigation: navigation,
+	}, nil
+}
+
+// Roster and navigation refreshes do not undo committed artifact removal.
+// Keep discovery errors visible in the roster and log stale projections while
+// returning the durable deletion outcome to the caller.
+func (s *WebServer) refreshRosterAfterDeletion(ctx context.Context) {
+	if s.cfg.Roster != nil {
+		if err := hubRosterRefresh(ctx, s.cfg.Roster); err != nil {
+			fmt.Fprintf(os.Stderr, "[hub] deletion completed with stale roster: %v\n", err)
 		}
 	}
-	return appwire.ProjectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation}, nil
+}
+
+func (s *WebServer) navigationAfterDeletion(ctx context.Context, hint navigationChangeHint) hubapi.NavigationMutation {
+	navigation, err := s.navigation.Refresh(ctx, hint)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] deletion completed with stale navigation: %v\n", err)
+		return s.emptyNavigationMutation()
+	}
+	return navigation
 }
 
 var (
@@ -43,15 +64,31 @@ var (
 	// 8at6): a retained crash marker (LiveEntry.Crashed=true, written by
 	// hubcore.Roster.Refresh only once a daemon's PID is confirmed gone) is
 	// historical error state, not a live daemon, and must not block deletion.
-	// A reachable daemon and a live PID whose status probe merely timed out
-	// both carry Crashed=false, so they still block it. Used at both the
+	// Confirmed live daemons and unresolved live-process claims block it;
+	// a failed first probe cannot authorize deletion. Used at both the
 	// whole-project entry preflight and the per-session ownership re-check
 	// below, so the TOCTOU protection applies the same rule at both sites.
 	projectSessionLive = func(roster *hubcore.Roster, id string) bool {
-		entry, ok := roster.Find(id)
-		return ok && !entry.Crashed
+		if unconfirmedDaemonForThread(roster, id) {
+			return true
+		}
+		_, live := liveDaemonForThread(roster, id)
+		return live
 	}
 )
+
+// projectSessionOwnership checks direct ownership and persisted delegate
+// ancestry. Independent forks do not inherit their ancestor's live ownership.
+func projectSessionOwnership(ctx context.Context, cfg hubcore.WebConfig, id string) (bool, error) {
+	if cfg.Roster == nil {
+		return false, nil
+	}
+	if projectSessionLive(cfg.Roster, id) {
+		return true, nil
+	}
+	owner, _, err := lookupDaemonOwner(ctx, cfg, "", id, true)
+	return owner.SessionID != "" || owner.ThreadID != "", err
+}
 
 // projectDelete removes every session file under a project and scrubs only the
 // decision rows for artifacts it removed. It validates both the project key
@@ -81,7 +118,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 		return appwire.ProjectDeleteResponse{}, appwire.InternalError("load deletion state: " + s.deletionStoreErr.Error())
 	}
 	if record, ok := s.cfg.DeletionStore.DeletingProject(project.ID); ok {
-		releaseOwnership, ownerErr := s.acquireProjectDeletionOwnership(record, nil)
+		releaseOwnership, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, nil)
 		if ownerErr != nil {
 			skipped := []projectDeleteSkip{{ID: ownerErr.ThreadID, Reason: ownerErr.Error()}}
 			if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
@@ -94,7 +131,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 				releaseOwnership()
 			}
 		}()
-		result := s.cleanupProjectDeletion(record, nil)
+		result := s.cleanupProjectDeletion(ctx, record, nil)
 		if len(result.DecisionErrors) > 0 {
 			return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
 		}
@@ -141,9 +178,16 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 
 	// Whole-project fast path: refuse when anything is live at entry.
 	if s.cfg.Roster != nil {
+		if err := s.cfg.Roster.OwnershipError(); err != nil {
+			return appwire.ProjectDeleteResponse{}, appwire.Unavailable(err.Error())
+		}
 		var liveNames []string
 		for _, e := range entries {
-			if projectSessionLive(s.cfg.Roster, e.ID) {
+			live, err := projectSessionOwnership(ctx, s.cfg, e.ID)
+			if err != nil {
+				return appwire.ProjectDeleteResponse{}, appwire.Unavailable(err.Error())
+			}
+			if live {
 				liveNames = append(liveNames, hubcore.ShortID(e.ID))
 			}
 		}
@@ -171,7 +215,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 		})
 		stateDirs[entry.ID] = entry.StateDir
 	}
-	ownedTargets, skipped, releaseOwnership := s.acquireProjectDeletionCandidates(targets, stateDirs)
+	ownedTargets, skipped, releaseOwnership := s.acquireProjectDeletionCandidates(ctx, targets, stateDirs)
 	defer func() {
 		if releaseOwnership != nil {
 			releaseOwnership()
@@ -185,7 +229,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	if err != nil {
 		return appwire.ProjectDeleteResponse{}, appwire.InternalError("commit deletion fence: " + err.Error())
 	}
-	result := s.cleanupProjectDeletion(record, stateDirs)
+	result := s.cleanupProjectDeletion(ctx, record, stateDirs)
 	result.Skipped = append(skipped, result.Skipped...)
 	if len(result.DecisionErrors) > 0 {
 		return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
@@ -219,6 +263,7 @@ type projectDeletionCleanupResult struct {
 }
 
 func (s *WebServer) acquireProjectDeletionCandidates(
+	ctx context.Context,
 	targets []hubcore.DeletionTarget,
 	stateDirs map[string]string,
 ) ([]hubcore.DeletionTarget, []projectDeleteSkip, func()) {
@@ -235,7 +280,7 @@ func (s *WebServer) acquireProjectDeletionCandidates(
 	for _, target := range targets {
 		record := hubcore.DeletionRecord{ProjectID: "", Targets: []hubcore.DeletionTarget{target}}
 		stateDir := stateDirs[target.ThreadID]
-		releaseTarget, err := s.acquireProjectDeletionOwnership(record, map[string]string{target.ThreadID: stateDir})
+		releaseTarget, err := s.acquireProjectDeletionOwnership(ctx, record, map[string]string{target.ThreadID: stateDir})
 		if err == nil {
 			owned = append(owned, target)
 			releases = append(releases, releaseTarget)
@@ -256,14 +301,14 @@ func (s *WebServer) resumeProjectDeletions() error {
 	}
 	var firstErr error
 	for _, record := range s.cfg.DeletionStore.Deleting() {
-		release, err := s.acquireProjectDeletionOwnership(record, nil)
+		release, err := s.acquireProjectDeletionOwnership(context.Background(), record, nil)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		result := s.cleanupProjectDeletion(record, nil)
+		result := s.cleanupProjectDeletion(context.Background(), record, nil)
 		release()
 		if len(result.Skipped) > 0 || len(result.DecisionErrors) > 0 {
 			if firstErr == nil {
@@ -275,6 +320,7 @@ func (s *WebServer) resumeProjectDeletions() error {
 }
 
 func (s *WebServer) acquireProjectDeletionOwnership(
+	ctx context.Context,
 	record hubcore.DeletionRecord,
 	stateDirs map[string]string,
 ) (func(), *projectDeletionOwnershipError) {
@@ -294,9 +340,16 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 		lock := s.lockForSession(target.ThreadID)
 		lock.Lock()
 		locks = append(locks, lock)
-		if s.cfg.Roster != nil && projectSessionLive(s.cfg.Roster, target.ThreadID) {
+		if s.cfg.Roster != nil {
+			if err := s.cfg.Roster.OwnershipError(); err != nil {
+				release()
+				return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: err}
+			}
+		}
+		live, ownershipErr := projectSessionOwnership(ctx, s.cfg, target.ThreadID)
+		if live || ownershipErr != nil {
 			release()
-			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Live: true}
+			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Live: live, Err: ownershipErr}
 		}
 		stateDir := s.projectDeletionStateDir(record.ProjectID, target.ThreadID, stateDirs)
 		if stateDir == "" {
@@ -370,6 +423,7 @@ func (s *WebServer) sessionDecisionAuthority() hubcore.FavoriteAuthority {
 }
 
 func (s *WebServer) cleanupProjectDeletion(
+	ctx context.Context,
 	record hubcore.DeletionRecord,
 	stateDirs map[string]string,
 ) projectDeletionCleanupResult {
@@ -409,9 +463,7 @@ func (s *WebServer) cleanupProjectDeletion(
 		// UI's immediate follow-up navigation read is built from a roster that
 		// already dropped the deleted sessions (their rendezvous files were
 		// just unlinked) instead of showing ghost rows until the 5s tick.
-		if s.cfg.Roster != nil {
-			hubRosterRefresh(s.cfg.Roster)
-		}
+		s.refreshRosterAfterDeletion(ctx)
 		// Bust the tree memo unconditionally: a no-delta past rebuild plus a
 		// nil PokeAttention would otherwise leave InputsVersion unmoved and
 		// navigation serving the memoized pre-delete snapshot for its bucket.

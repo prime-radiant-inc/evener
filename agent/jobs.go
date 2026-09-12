@@ -529,9 +529,10 @@ type jobNotification struct {
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
 	WatchSend *watchSendToken
-	// Timer fields (in-memory only). WatchID identifies the firing timer so
+	// Watch fields (in-memory only). WatchID identifies the firing timer so
 	// the session can fold repeated ticks; Fires is how many folded into this
-	// entry; Note, IntervalSeconds, and Terminal carry what the block needs.
+	// entry; IntervalSeconds and Terminal carry what the timer block needs.
+	// Note is the watch's own prose payload and rides every fire, timer or not.
 	// Only the timer fire path stamps WatchID, and the session drops a
 	// non-terminal entry whose watch key no longer resolves (an orphaned tick).
 	WatchID         string
@@ -539,6 +540,16 @@ type jobNotification struct {
 	Note            string
 	IntervalSeconds int
 	Terminal        bool
+	// OriginWatchID is the watch that produced this notification, carried for
+	// display only (rendered as the watch_id frame attribute so a reader can
+	// identify which watch to inspect or clear). It is NEVER consulted by
+	// delivery gating: unlike WatchID above — which the session's orphan-tick
+	// drop reads, and which only the timer path may stamp because only a
+	// timer's key slot reconstructs from its id — stamping a timer-identity
+	// field on a condition fire or teardown would swallow that notice as an
+	// orphaned tick once its watch detaches. Job-targeted fires, teardown
+	// notices, and send-rail diagnostics stamp this; timer fires keep WatchID.
+	OriginWatchID string
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a

@@ -3,18 +3,23 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
-import { StrictMode } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { StrictMode, useSyncExternalStore } from "react";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { AppwireClient } from "../../protocol/client";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
+import { FakeSocket } from "../../protocol/testing/fakeSocket";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
+import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
+import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
@@ -91,9 +96,22 @@ function stubSessionSlots(): void {
 stubSessionSlots();
 
 afterAll(() => {
+  // A test that restored a slot mid-file (and, under test.each, has no
+  // onTestFinished to re-stub it) leaves vi.mocked(...).mockRestore absent;
+  // re-stub first so handing the real components back can't fail.
+  stubSessionSlots();
   vi.mocked(ComposerModule.Composer).mockRestore();
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
 });
+
+// Force stop lives in the session "⋯" menu (SessionChrome) now that the inline
+// footer button is retired; this walks the same menu path a user would. Tests
+// using it must restore the real SessionChrome and render it (or the real
+// Composer, which mounts it) themselves.
+async function openForceStopDialog(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+}
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -355,21 +373,32 @@ test("omits the old live Detail toolbar while transcript and older-history conte
   );
 
   expect(await screen.findByText("hello")).toBeTruthy();
-  expect(screen.getByTestId("load-older-row").textContent).not.toBe("");
+  // Idle paging is silent now (no "Older turns" banner); the row and its
+  // automatic-fetch sentinel are what must remain reachable.
+  expect(screen.getByTestId("load-older-row")).toBeTruthy();
+  expect(screen.getByTestId("load-older-sentinel")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
-  transcriptDisplayStore.setState({ viewport: "desktop" });
-  transcriptDisplayStore.getState().setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  act(() => {
+    transcriptDisplayStore.setState({ viewport: "desktop" });
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  });
   await waitFor(() =>
     expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Full detail"),
   );
   const status = screen.getByTestId("transcript-view-announcement");
-  transcriptDisplayStore
-    .getState()
-    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { roundTimings: true }));
+  act(() => {
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { roundTimings: true }));
+  });
   await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
-  transcriptDisplayStore
-    .getState()
-    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true }));
+  act(() => {
+    transcriptDisplayStore
+      .getState()
+      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true }));
+  });
   await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
   expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
 });
@@ -387,14 +416,14 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
-function setNavigationTitle(ref: string, title: string): void {
+function setNavigationTitle(ref: string, title: string, topLevel = true): void {
   const key = { kind: "location", ref } as const;
   const data = {
     generation_id: "generation_test",
     revision: 1,
     ref,
-    top_level_ref: ref,
-    top_level: true,
+    top_level_ref: topLevel ? ref : "local:continuation",
+    top_level: topLevel,
     session: {
       ref,
       host_id: "local",
@@ -402,7 +431,7 @@ function setNavigationTitle(ref: string, title: string): void {
       title,
       project: "test-project",
       state: "idle",
-      kind: "session",
+      kind: topLevel ? "session" : "fork",
       live: true,
       children: [],
     },
@@ -569,7 +598,7 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   );
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
 
-  const clientMutationId = await seedPendingSend();
+  const clientMutationId = await act(async () => seedPendingSend());
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
@@ -604,8 +633,10 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   expect(screen.queryByTestId("pending-chips")).toBeNull();
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-  await mutationStorage.settleApplied(clientMutationId);
-  await refreshPendingTurnsProjection("ref_a");
+  await act(async () => {
+    await mutationStorage.settleApplied(clientMutationId);
+    await refreshPendingTurnsProjection("ref_a");
+  });
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
@@ -644,7 +675,6 @@ test("cold-start skeleton clears when the first turn terminates without an autho
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } },
       },
     } as AnyNotification);
@@ -664,11 +694,13 @@ test("an explicitly rejected first send leaves cold-start state for durable reco
   );
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
 
-  const clientMutationId = await seedPendingSend();
+  const clientMutationId = await act(async () => seedPendingSend());
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
-  await mutationStorage.transferToRecovery(clientMutationId, "rejected");
-  await refreshPendingTurnsProjection("ref_a");
+  await act(async () => {
+    await mutationStorage.transferToRecovery(clientMutationId, "rejected");
+    await refreshPendingTurnsProjection("ref_a");
+  });
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
   expect((await mutationStorage.getRecovery(clientMutationId))?.recoveryKind).toBe("rejected");
 });
@@ -1328,7 +1360,6 @@ test("scrolled away: a turn FAILING while unseen upgrades the real pill to the e
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_2",
         turn: { id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } },
       },
     } as AnyNotification);
@@ -2028,4 +2059,1025 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
   } finally {
     spy.mockRestore();
   }
+});
+
+test("explains that an incompatible daemon needs an explicit restart", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain("Session restart required");
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+test("refreshes a restarted session without closing its pane", async () => {
+  const fake = connectFakeClient();
+  let replaced = false;
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: replaced ? "idle" : "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  replaced = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+  expect(refresh).toHaveBeenCalledOnce();
+  await act(async () => {
+    await refresh.mock.results[0]?.value;
+  });
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+test("shows an explicit session refresh failure", async () => {
+  const fake = connectFakeClient();
+  let failRefresh = false;
+  fake.on("thread/read", () => {
+    if (failRefresh) throw new Error("refresh rejected");
+    return readResponse("ref_a", { status: { type: "restartRequired" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  failRefresh = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+  expect(await screen.findByText("refresh rejected")).toBeTruthy();
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("restartRequired");
+});
+
+test.each([false, true])("restart-required empty transcript suppresses first-send UI (pending=%s)", async (pending) => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  if (pending) await act(async () => seedPendingSend());
+  expect(screen.queryByText(/send the first message/i)).toBeNull();
+  expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
+  expect(screen.getByText("Session unavailable until restart")).toBeTruthy();
+});
+
+test("explicit Resume follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {
+  const hydration = vi.spyOn(threadsStore.getState(), "ensureThread");
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  onTestFinished(() => {
+    hydration.mockRestore();
+    refresh.mockRestore();
+  });
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  let stopped = false;
+  let resumed = false;
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const currentThread = () =>
+    readResponse(currentRef, {
+      status: { type: "idle" },
+      turns: [turnFixture("current-turn", "Current transcript after clear")],
+    });
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        if (!request.id || request.method === "initialize" || request.method === "ping") return;
+        requests.push(request);
+        let result: unknown = {};
+        switch (request.method) {
+          case "thread/read":
+            result =
+              request.params.ref === currentRef
+                ? currentThread()
+                : readResponse(stableRef, {
+                    status: { type: stopped ? "notLoaded" : "restartRequired" },
+                    turns: [turnFixture("old-turn", "Saved transcript before clear")],
+                    evener: {
+                      ref: stableRef,
+                      capabilities: CAPABILITIES,
+                      resumeRequired: true,
+                      mutationStateAuthoritative: false,
+                      queue: { revision: 0 },
+                    },
+                  });
+            break;
+          case "evener/thread/forceStop":
+            stopped = true;
+            break;
+          case "thread/resume":
+            resumed = true;
+            result = currentThread();
+            break;
+          case "thread/turns/list":
+            result = { data: [], nextCursor: null };
+            break;
+          case "turn/start":
+            result = { turn: { id: "new-turn", status: "inProgress", itemsView: "full" } };
+            break;
+        }
+        socket.receive({ id: request.id, result });
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={client}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await screen.findByText("Saved transcript before clear");
+  let uncertain = "";
+  await act(async () => {
+    uncertain = await seedPendingSend(stableRef);
+    await mutationStorage.markUnknown(uncertain, "blockedUnknown");
+    await refreshPendingTurnsProjection(stableRef);
+  });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(resumed).toBe(false);
+  // Reconnect starts discovery after hydration. Observe that original promise
+  // when it starts; a snapshot of spy results here would miss the pending scan.
+  let observeDiscovery!: (completion: Promise<void>) => void;
+  const readyDiscovery = new Promise<void>((resolve) => {
+    observeDiscovery = resolve;
+  });
+  const connectionReady = MutationOutbox.prototype.connectionReady;
+  const discovery = vi.spyOn(MutationOutbox.prototype, "connectionReady").mockImplementation(function (
+    this: MutationOutbox,
+  ) {
+    const completion = connectionReady.call(this);
+    observeDiscovery(completion);
+    return completion;
+  });
+  onTestFinished(() => discovery.mockRestore());
+  await user.click(screen.getByRole("button", { name: "Resume session" }));
+  await screen.findByText("Current transcript after clear");
+  expect(window.location.pathname).toBe("/s/local%3Acurrent-b");
+  expect(screen.queryByText("Saved transcript before clear")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(0);
+  expect(hydration).toHaveBeenCalledWith(stableRef);
+  expect(hydration).toHaveBeenCalledWith(currentRef);
+  expect(refresh).toHaveBeenCalledWith(currentRef);
+  await act(async () => {
+    await Promise.all(hydration.mock.results.map((result) => result.value));
+    await Promise.all(refresh.mock.results.map((result) => result.value));
+    await readyDiscovery;
+    await flushPendingTurnsProjectionForTests();
+  });
+  expect(await mutationStorage.listOutbox(stableRef)).toEqual([
+    expect.objectContaining({ clientMutationId: uncertain, state: "blockedUnknown" }),
+  ]);
+  expect(await mutationStorage.listOutbox(currentRef)).toHaveLength(0);
+  await user.type(screen.getByRole("textbox", { name: /^message$/i }), "Follow up on current transcript");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+  expect(requests.find(({ method }) => method === "turn/start")?.params).toEqual(
+    expect.objectContaining({ ref: currentRef }),
+  );
+  await flushPendingTurnsProjectionForTests();
+});
+
+test("offers explicit resume after restart even without pending messages", async () => {
+  const fake = connectFakeClient();
+  const resumeTransport = vi.spyOn(fake, "resumeThread");
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+  fake.on("thread/resume", () => {
+    status = "idle";
+    return readResponse("ref_a", { status: { type: "idle" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const refresh = await screen.findByRole("button", { name: "Refresh session" });
+  status = "notLoaded";
+  fireEvent.click(refresh);
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(resume);
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(resumeTransport).toHaveBeenCalledWith("ref_a");
+});
+
+test.each(["success", "refused"])(
+  "failed initial read has confirmed recovery without navigation: %s",
+  async (outcome) => {
+    const fake = connectFakeClient();
+    const ref = "local:unconfirmed";
+    let stopped = false;
+    fake.on("thread/read", () => {
+      if (!stopped) throw new Error("ownership unconfirmed");
+      return readResponse(ref, { status: { type: "notLoaded" } });
+    });
+    fake.on("evener/thread/forceStop", () => {
+      if (outcome === "refused") throw new Error("no direct daemon ownership claim");
+      stopped = true;
+      return {};
+    });
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
+    expect(threadsStore.getState().threads.has(ref)).toBe(false);
+    const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Force stop…" }));
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Force stop…" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    if (outcome === "success") {
+      expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      // Hydration publishes Resume before storage reconciliation completes.
+      // The dialog closes only when the complete refresh promise settles.
+      expect(refresh).toHaveBeenCalledWith(ref);
+      await act(async () => {
+        await refresh.mock.results[0]?.value;
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } else {
+      expect(await screen.findByText("no direct daemon ownership claim")).toBeTruthy();
+      expect(
+        (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    }
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  },
+);
+
+test.each(["success", "refused"])("hydrated restart recovery works without navigation: %s", async (outcome) => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:incompatible-root";
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse(ref, { status: { type: status } }));
+  fake.on("evener/thread/forceStop", () => {
+    if (outcome === "refused") throw new Error("no direct daemon ownership claim");
+    status = "notLoaded";
+    return {};
+  });
+  fake.on("thread/resume", () => {
+    status = "idle";
+    return readResponse(ref, { status: { type: status } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <SessionChromeModule.SessionChrome ref={ref} />
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  await screen.findByRole("button", { name: "Refresh session" });
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    { method: "evener/thread/forceStop", params: { ref } },
+  ]);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  if (outcome === "refused") {
+    expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
+    expect(
+      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
+  } else {
+    const resume = await screen.findByRole("button", { name: "Resume session" });
+    // Hydration publishes Resume before storage reconciliation completes.
+    // The dialog closes only when the complete refresh promise settles.
+    expect(refresh).toHaveBeenCalledWith(ref);
+    await act(async () => {
+      await refresh.mock.results[0]?.value;
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+    await user.click(resume);
+    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([
+      { method: "thread/resume", params: { ref } },
+    ]);
+  }
+});
+
+test("confirmed force stop refreshes the session and exposes explicit Resume", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:force-stop-resume";
+  setNavigationTitle(ref, "Force stop recovery");
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse(ref, { status: { type: status } }));
+  fake.on("evener/thread/forceStop", () => {
+    status = "notLoaded";
+    return {};
+  });
+  fake.on("thread/resume", () => {
+    status = "idle";
+    return readResponse(ref, { status: { type: status } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <SessionChromeModule.SessionChrome ref={ref} />
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  await user.click(resume);
+  await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([
+    { method: "thread/resume", params: { ref } },
+  ]);
+});
+
+test.each(["notLoaded", "active", "idle"])(
+  "explicitly resumes a %s session before reconciling its uncertain send",
+  async (recoveryStatus) => {
+    const fake = connectFakeClient();
+    let status = "restartRequired";
+    let mutationId = "";
+    let resumed = false;
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: status },
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          mutationStateAuthoritative: resumed,
+          queue: { revision: 1, clientMutationIds: resumed ? [mutationId] : [] },
+        },
+      }),
+    );
+    fake.on("thread/resume", () => {
+      resumed = true;
+      status = "idle";
+      return readResponse("ref_a", { status: { type: "idle" } });
+    });
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await screen.findByRole("alert");
+    await act(async () => {
+      mutationId = await seedPendingSend();
+      await mutationStorage.markUnknown(mutationId, "blockedUnknown");
+      await refreshPendingTurnsProjection("ref_a");
+      await flushPendingTurnsProjectionForTests();
+    });
+    const holds: ReturnType<typeof holdIndexedDBEvent>[] = [];
+    let announceRead: (() => void) | undefined;
+    const readHeld = new Promise<void>((resolve) => {
+      announceRead = resolve;
+    });
+    const getAll = IDBObjectStore.prototype.getAll;
+    const reads = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args
+    ) {
+      const request = getAll.apply(this, args);
+      if (this.name === "outbox" && threadsStore.getState().threads.get("ref_a")?.status.type === recoveryStatus) {
+        const hold = holdIndexedDBEvent(request, "success");
+        holds.push(hold);
+        void hold.reached.then(() => announceRead?.());
+      }
+      return request;
+    });
+    const releaseReads = () => {
+      reads.mockRestore();
+      for (const hold of holds.splice(0)) hold.release();
+    };
+    try {
+      status = recoveryStatus;
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+        await readHeld;
+      });
+      const resume = await screen.findByRole("button", { name: "Resume session" });
+      expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+      expect((resume as HTMLButtonElement).disabled).toBe(true);
+      releaseReads();
+      await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(resume);
+      await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    } finally {
+      releaseReads();
+    }
+  },
+);
+
+test("keeps recovery failure visible on a compatible session until reconciliation succeeds", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set() }));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test.each(["active", "idle"])("retained %s child preserves uncertainty until its owner releases it", async (status) => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const mutationId = await seedPendingSend("local:retained-child");
+  await mutationStorage.markUnknown(mutationId, "blockedUnknown");
+  const fake = connectFakeClient();
+  let resumed = false;
+  let owned = true;
+  fake.on("thread/read", () =>
+    readResponse("local:retained-child", {
+      status: { type: resumed ? "idle" : owned ? status : "notLoaded" },
+      evener: {
+        ref: "local:retained-child",
+        capabilities: CAPABILITIES,
+        kind: "subagent",
+        parentRef: owned ? "local:parent" : undefined,
+        mutationStateAuthoritative: resumed,
+        queue: { revision: 1, clientMutationIds: resumed ? [mutationId] : [] },
+      },
+    }),
+  );
+  fake.on("thread/resume", () => {
+    resumed = true;
+    return readResponse("local:retained-child", { status: { type: status } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <SessionChromeModule.SessionChrome ref="local:retained-child" />
+      <Session params={{ ref: "local:retained-child" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const refresh = await screen.findByRole("button", { name: "Refresh session" });
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Open owning session" }).getAttribute("href")).toContain("parent");
+  expect(threadsStore.getState().restartBlockingObligations.size).toBe(0);
+  expect(threadsStore.getState().mutationAuthorityRefs.has("local:retained-child")).toBe(false);
+  await flushPendingTurnsProjectionForTests();
+  expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+  fireEvent.click(refresh);
+  await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+  await flushPendingTurnsProjectionForTests();
+  expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  // A session retained by its owner offers no force stop anywhere in the
+  // pane: the owner directs recovery (the notice above links to it).
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.queryByRole("menuitem", { name: /Force stop/ })).toBeNull();
+  await user.keyboard("{Escape}");
+  owned = false;
+  fireEvent.click(refresh);
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(resume);
+  await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
+
+test.each(["idle", "active"])(
+  "hydrated %s session keeps recovery when subsequent reads stall without navigation",
+  async (status) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const fake = connectFakeClient();
+    const ref = "local:retained-unresponsive";
+    let stopped = false;
+    let reads = 0;
+    let finishRead: (() => void) | undefined;
+    fake.on("thread/read", () => {
+      reads++;
+      if (reads === 2)
+        return new Promise((resolve) => {
+          finishRead = () => resolve(readResponse(ref, { status: { type: "notLoaded" } }));
+        });
+      return readResponse(ref, { status: { type: stopped ? "notLoaded" : status } });
+    });
+    fake.on("evener/thread/forceStop", () => {
+      stopped = true;
+      finishRead?.();
+      return {};
+    });
+    render(
+      <ClientProvider client={fake}>
+        <SessionChromeModule.SessionChrome ref={ref} />
+        <Session params={{ ref }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status));
+    act(() => {
+      void threadsStore.getState().refreshThread(ref);
+    });
+    await waitFor(() => expect(reads).toBe(2));
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status);
+    const user = userEvent.setup();
+    await openForceStopDialog(user);
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref } },
+    ]);
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  },
+);
+
+test("a fresh client offers explicit Resume for a server-fenced stopped session", async () => {
+  const fake = connectFakeClient();
+  const ref = "local:stopped-on-another-client";
+  let resumed = false;
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: resumed ? "idle" : "notLoaded" } });
+    response.thread.evener.resumeRequired = !resumed;
+    return response;
+  });
+  fake.on("thread/resume", () => {
+    resumed = true;
+    return readResponse(ref, { status: { type: "idle" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull());
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([
+    { method: "thread/resume", params: { ref } },
+  ]);
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+});
+
+test.each(["pending", "failed"])(
+  "saved session retains confirmed recovery when resumed daemon read is %s",
+  async (outcome) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const fake = connectFakeClient();
+    const ref = "local:saved-resume-stall";
+    let daemonStarted = false;
+    let rejectRead: (error: Error) => void = () => {};
+    const resumedRead = new Promise<ReturnType<typeof readResponse>>((_, reject) => {
+      rejectRead = reject;
+    });
+    fake.on("thread/read", () => {
+      const response = readResponse(ref, { status: { type: "notLoaded" } });
+      response.thread.evener.resumeRequired = true;
+      return response;
+    });
+    fake.on("thread/resume", () => {
+      daemonStarted = true;
+      return resumedRead;
+    });
+    fake.on("evener/thread/forceStop", () => {
+      expect(daemonStarted).toBe(true);
+      rejectRead(new Error("resumed daemon read canceled"));
+      return {};
+    });
+    try {
+      render(
+        <ClientProvider client={fake}>
+          <SessionChromeModule.SessionChrome ref={ref} />
+          <Session params={{ ref }} paneId="p1" focused={true} />
+        </ClientProvider>,
+      );
+      const user = userEvent.setup();
+      const resume = await screen.findByRole("button", { name: "Resume session" });
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      await user.keyboard("{Escape}");
+      await user.click(resume);
+      expect(daemonStarted).toBe(true);
+      if (outcome === "failed") {
+        act(() => rejectRead(new Error("resumed daemon read failed")));
+        await screen.findByText("resumed daemon read failed");
+      } else expect((resume as HTMLButtonElement).disabled).toBe(true);
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+      await openForceStopDialog(user);
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await waitFor(() =>
+        expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+          { method: "evener/thread/forceStop", params: { ref } },
+        ]),
+      );
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+    } finally {
+      await act(async () => rejectRead(new Error("fixture cleanup")));
+    }
+  },
+);
+
+test("recovery rejection blocks durable dispatch and refreshes the Resume control", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    const ref = "local:failed-stop-recovery";
+    // Advancing the discovery clock does not finish its IndexedDB-backed
+    // hydration. This store publication is the reconciliation completion edge.
+    const nextReconciliation = () =>
+      new Promise<void>((resolve) => {
+        const unsubscribe = threadsStore.subscribe((state, previous) => {
+          if (
+            state.mutationReconciliationFailures !== previous.mutationReconciliationFailures &&
+            !state.mutationReconciliationFailures.has(ref)
+          ) {
+            unsubscribe();
+            resolve();
+          }
+        });
+        onTestFinished(unsubscribe);
+      });
+    let fenced = false;
+    let reads = 0;
+    let mutationId = "";
+    fake.on("thread/read", () => {
+      reads++;
+      const response = readResponse(ref, { status: { type: "idle" } });
+      response.thread.evener.resumeRequired = fenced;
+      response.thread.evener.capabilities = { ...CAPABILITIES, send: !fenced };
+      response.thread.evener.instanceId = "known-instance";
+      response.thread.evener.mutationStateAuthoritative = true;
+      return response;
+    });
+    fake.on("turn/queue", (params) => {
+      mutationId = params.clientMutationId;
+      fenced = true;
+      throw new WireError("session recovery requires Resume on a fresh connection", -32014, {
+        evenerErrorInfo: "actionUnavailable",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+      });
+    });
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().refreshThread(ref);
+    });
+    await act(async () => {
+      await threadsStore.getState().queue(ref, "preserve this uncertain message");
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
+    expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
+    const reconciled = nextReconciliation();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+      await reconciled;
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+    expect(reads).toBeGreaterThan(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000);
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("preserve this uncertain message");
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each(["pending", "failed"])(
+  "saved Send exposes confirmed recovery when automatic resume is %s",
+  async (outcome) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const fake = connectFakeClient();
+    const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+    onTestFinished(() => refresh.mockRestore());
+    const ref = "local:saved-auto-resume";
+    let daemonStarted = false;
+    let stopped = false;
+    let mutationId = "";
+    let rejectRead: (error: Error) => void = () => {};
+    const resumedRead = new Promise<never>((_, reject) => {
+      rejectRead = reject;
+    });
+    const blocked = () =>
+      new WireError("resumed daemon read unavailable", -32014, {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: mutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+      });
+    fake.on("thread/read", () => {
+      const response = readResponse(ref, { status: { type: "notLoaded" } });
+      response.thread.evener.instanceId = "saved-instance";
+      response.thread.evener.mutationStateAuthoritative = false;
+      response.thread.evener.resumeRequired = stopped;
+      return response;
+    });
+    fake.on("turn/start", (params) => {
+      mutationId = params.clientMutationId;
+      daemonStarted = true;
+      return resumedRead;
+    });
+    fake.on("evener/thread/forceStop", () => {
+      expect(daemonStarted).toBe(true);
+      stopped = true;
+      rejectRead(blocked());
+      return {};
+    });
+    try {
+      render(
+        <ClientProvider client={fake}>
+          <SessionChromeModule.SessionChrome ref={ref} />
+          <Session params={{ ref }} paneId="p1" focused={true} />
+        </ClientProvider>,
+      );
+      await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded"));
+      await act(async () => {
+        await threadsStore.getState().refreshThread(ref);
+      });
+      expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      await user.keyboard("{Escape}");
+      await act(async () => {
+        await threadsStore.getState().send(ref, "continue the saved conversation");
+        await flushPendingTurnsProjectionForTests();
+      });
+      await waitFor(() => expect(daemonStarted).toBe(true));
+      if (outcome === "failed") {
+        await act(async () => rejectRead(blocked()));
+        await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
+      }
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+      await openForceStopDialog(user);
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+      refresh.mockClear();
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await waitFor(() => expect(stopped).toBe(true));
+      expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+        { method: "evener/thread/forceStop", params: { ref } },
+      ]);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+      expect(refresh).toHaveBeenCalledWith(ref);
+      await act(async () => {
+        await Promise.all(refresh.mock.results.map((result) => result.value));
+        await flushPendingTurnsProjectionForTests();
+      });
+      expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("continue the saved conversation");
+    } finally {
+      await act(async () => rejectRead(blocked()));
+    }
+  },
+);
+
+test.each(["model", "compact"])(
+  "saved %s action retains recovery while automatic resume stalls without navigation",
+  async (action) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const fake = connectFakeClient();
+    const ref = "local:saved-action";
+    let daemonStarted = false;
+    let stopped = false;
+    let rejectAction: (error: Error) => void = () => {};
+    const pendingAction = new Promise<never>((_, reject) => {
+      rejectAction = reject;
+    });
+    void pendingAction.catch(() => {});
+    fake.on("thread/read", () => {
+      const saved = readResponse(ref, { status: { type: "notLoaded" } });
+      saved.thread.evener.resumeRequired = stopped;
+      return saved;
+    });
+    const method = action === "model" ? "thread/model/set" : "thread/compact/start";
+    fake.on(method, () => {
+      daemonStarted = true;
+      return pendingAction;
+    });
+    fake.on("evener/thread/forceStop", () => {
+      expect(daemonStarted).toBe(true);
+      stopped = true;
+      rejectAction(new Error("resumed daemon read canceled"));
+      return {};
+    });
+    render(
+      <ClientProvider client={fake}>
+        <SessionChromeModule.SessionChrome ref={ref} />
+        <Session params={{ ref }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded"));
+    const user = userEvent.setup();
+    try {
+      // A saved snapshot cannot establish whether an automatic resume has launched a daemon.
+      await openForceStopDialog(user);
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+      const request =
+        action === "model"
+          ? threadsStore.getState().setModel(ref, "openai", "next-model")
+          : threadsStore.getState().compact(ref);
+      const settled = request.catch((error: unknown) => error);
+      await waitFor(() => expect(daemonStarted).toBe(true));
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+      await openForceStopDialog(user);
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await settled;
+      expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      await user.keyboard("{Escape}");
+      expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+        { method: "evener/thread/forceStop", params: { ref } },
+      ]);
+      expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(
+        0,
+      );
+    } finally {
+      rejectAction(new Error("fixture cleanup"));
+    }
+  },
+);
+
+test.each(["idle", "active"])(
+  "independent nested fork keeps confirmed recovery during stalled %s reads",
+  async (status) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const fake = connectFakeClient();
+    const ref = "local:original-fork";
+    setNavigationTitle(ref, "Original fork", false);
+    let stopped = false;
+    let held = false;
+    let finishRead: (() => void) | undefined;
+    fake.on("thread/read", () => {
+      const snapshot = readResponse(ref, { status: { type: stopped ? "notLoaded" : status } });
+      snapshot.thread.evener.parentRef = "local:continuation";
+      snapshot.thread.evener.mutationStateAuthoritative = !stopped;
+      snapshot.thread.evener.resumeRequired = stopped;
+      if (held)
+        return new Promise((resolve) => {
+          finishRead = () => resolve(snapshot);
+        });
+      return snapshot;
+    });
+    fake.on("evener/thread/forceStop", () => {
+      stopped = true;
+      held = false;
+      return {};
+    });
+    render(
+      <ClientProvider client={fake}>
+        <SessionChromeModule.SessionChrome ref={ref} />
+        <Session params={{ ref }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(true));
+    held = true;
+    let refreshing: Promise<void> | undefined;
+    act(() => {
+      refreshing = threadsStore.getState().refreshThread(ref);
+    });
+    try {
+      await waitFor(() => expect(finishRead).toBeTypeOf("function"));
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status);
+      const user = userEvent.setup();
+      await openForceStopDialog(user);
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+      await openForceStopDialog(user);
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+        { method: "evener/thread/forceStop", params: { ref } },
+      ]);
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+    } finally {
+      held = false;
+      finishRead?.();
+      await act(async () => {
+        await refreshing;
+      });
+    }
+  },
+);
+
+// Regression for the review finding on the footer-button removal: a FENCED
+// notLoaded snapshot (resumeRequired -> Send=false) renders no composer card
+// at all, which used to leave the ⋯ menu - the only force-stop surface -
+// unmounted. Session.tsx now mounts SessionChrome's menu-only placement in
+// the footer for exactly this state. This drives the REAL Session + Composer
+// tree (no slot stubs) to prove the menu is reachable there.
+test("a fenced notLoaded session keeps force stop reachable in the pane footer", async () => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:fenced-not-loaded";
+  setNavigationTitle(ref, "Fenced saved session");
+  let stopped = false;
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = !stopped;
+    response.thread.evener.mutationStateAuthoritative = false;
+    // pastThreadCapabilities advertises Send for a saved snapshot; the hub's
+    // resume fence (applyThreadResumeRequirement) takes it away - which is
+    // what kills the composer's follow-up card and its chrome mount.
+    if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
+    return response;
+  });
+  fake.on("evener/thread/forceStop", () => {
+    stopped = true;
+    return {};
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  // The fence kills the composer card entirely - no invitation, no chrome.
+  const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
+  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  const user = userEvent.setup();
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref } },
+    ]),
+  );
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });

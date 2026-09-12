@@ -40,6 +40,8 @@ const KNOWN_NOTIFICATIONS: ReadonlySet<string> = new Set(NOTIFICATION_NAMES);
 export interface AppwireClientLike {
   connect: AppwireClient["connect"];
   request: AppwireClient["request"];
+  forceStop: AppwireClient["forceStop"];
+  resumeThread: AppwireClient["resumeThread"];
   onNotification: AppwireClient["onNotification"];
   onReady: AppwireClient["onReady"];
   onStateChange: AppwireClient["onStateChange"];
@@ -81,6 +83,7 @@ const DEFAULT_INITIALIZE_RESPONSE: InitializeResponse = {
 export interface RecordedCall {
   method: MethodName;
   params: unknown;
+  opts?: { timeoutMs?: number };
 }
 
 export class FakeClient implements AppwireClientLike {
@@ -144,7 +147,11 @@ export class FakeClient implements AppwireClientLike {
       });
   }
 
-  request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {
+  request<M extends MethodName>(
+    method: M,
+    params: MethodTypes[M]["params"],
+    opts?: { timeoutMs?: number },
+  ): Promise<MethodTypes[M]["result"]> {
     // Checked before the ready-gate below: a method the hub does not serve is
     // a bug regardless of connection state, and reporting "not ready" for it
     // would hide the real defect behind a plausible-looking one.
@@ -162,7 +169,11 @@ export class FakeClient implements AppwireClientLike {
     if (this.state !== "ready") {
       return Promise.reject(new Error(`FakeClient: cannot call "${method}" while state is "${this.state}"`));
     }
-    this.calls.push({ method, params });
+    if (opts === undefined) {
+      this.calls.push({ method, params });
+    } else {
+      this.calls.push({ method, params, opts });
+    }
     const handler = this.handlers.get(method);
     if (!handler) {
       return Promise.reject(new Error(`FakeClient: no handler scripted for "${method}"`));
@@ -195,6 +206,14 @@ export class FakeClient implements AppwireClientLike {
   retryNowCalls = 0;
   retryNow(): void {
     this.retryNowCalls += 1;
+  }
+
+  async resumeThread(ref: string): ReturnType<AppwireClient["resumeThread"]> {
+    return this.request("thread/resume", { ref });
+  }
+
+  async forceStop(ref: string): Promise<void> {
+    await this.request("evener/thread/forceStop", { ref });
   }
 
   // --- test-side injection: simulates the server/transport side ---

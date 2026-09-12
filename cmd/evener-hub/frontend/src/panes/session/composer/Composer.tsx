@@ -32,7 +32,7 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
-import type { PaletteRunContext } from "../../../shell/palette/commands";
+import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { workspaceStore } from "../../../shell/workspace";
@@ -56,11 +56,12 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
-import { useAskDockPending } from "./askDock";
+import { useAskDockPending } from "./askDockPending";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
-import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./builtinCommand";
+import { runBuiltinCommand } from "./builtinCommand";
+import { type BuiltinMatch, matchBuiltinInvocation } from "./builtinInvocation";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
@@ -165,6 +166,7 @@ export function Composer({ ref }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by textEditor.write() below; consumed (and cleared) by the
   // cursor-restore layout effect once `text`'s new value has committed.
@@ -1038,7 +1040,7 @@ export function Composer({ ref }: ComposerProps) {
   // submittedText is snapshotted the same way submitAction's own
   // clearIfUnchanged is, so a clear on success never clobbers an edit made
   // while the RPC was still in flight.
-  async function handleBuiltinSubmit(match: BuiltinMatch): Promise<void> {
+  async function handleBuiltinSubmit(match: BuiltinMatch<ScopedCommand>): Promise<void> {
     const submittedText = textRef.current;
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
@@ -1091,6 +1093,17 @@ export function Composer({ ref }: ComposerProps) {
     if (route === "none") {
       toasts.push("error", "Send is not available for this session");
       return;
+    }
+    // Hand off before Send becomes disabled. Never refocus on completion:
+    // the user may have moved to another control or session while submitting.
+    const initiator = submitButtonRef.current;
+    if (
+      initiator &&
+      !initiator.disabled &&
+      (event.nativeEvent as SubmitEvent).submitter === initiator &&
+      initiator.ownerDocument.activeElement === initiator
+    ) {
+      textareaRef.current?.focus();
     }
     void submitAction(route);
   }
@@ -1419,6 +1432,7 @@ export function Composer({ ref }: ComposerProps) {
                         action is Steer, and Send's job is the patient one. */}
                       <Tooltip label={submitTooltip}>
                         <Button
+                          ref={submitButtonRef}
                           type="submit"
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"

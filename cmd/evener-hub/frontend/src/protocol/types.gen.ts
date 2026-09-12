@@ -15,6 +15,16 @@ export interface AgentMessageResetParams {
   itemId: string;
 }
 
+export interface AgentsDocResponse {
+  path: string;
+  exists: boolean;
+  content: string;
+}
+
+export interface AgentsDocSetParams {
+  content: string;
+}
+
 export interface ArchiveParams {
   kind: string;
   id: string;
@@ -359,6 +369,7 @@ export interface EvenerSubagentPreviewResponse {
 }
 
 export interface EvenerThread {
+  resumeRequired?: boolean;
   ref: string;
   instanceId?: string;
   parentRef?: string;
@@ -374,6 +385,7 @@ export interface EvenerThread {
   diagnostics?: EvenerDiagnostics;
   queue: QueueState;
   pendingMutations?: PendingMutation[];
+  mutationStateAuthoritative?: boolean;
   tasks?: TaskAggregate;
   goal?: GoalState;
   usage?: EvenerUsage;
@@ -539,11 +551,18 @@ export interface InstanceCreateParams {
 
 export interface InstanceEditParams {
   name: string;
+  newName?: string;
   baseUrl?: string;
   clearBaseUrl?: boolean;
   protocol?: string;
+  clearProtocol?: boolean;
   surface?: string;
+  clearSurface?: boolean;
   vars?: Record<string, string>;
+  apiKeyEnv?: string;
+  clearApiKeyEnv?: boolean;
+  credentialHeader?: string;
+  clearCredentialHeader?: boolean;
 }
 
 export interface InstanceEntry {
@@ -555,6 +574,8 @@ export interface InstanceEntry {
   auth: string;
   baseUrl?: string;
   vars?: Record<string, string>;
+  apiKeyEnv?: string;
+  credentialHeader?: string;
   implicit: boolean;
   hidden?: boolean;
   isDefault: boolean;
@@ -804,6 +825,7 @@ export interface LaunchConfigLayer {
   mcps?: MCPServerSpec[];
   env?: Record<string, string>;
   verbose?: boolean;
+  apiLog?: boolean;
   traceFile?: string;
   cpuProfile?: string;
   exportATIFPath?: string;
@@ -898,6 +920,12 @@ export interface MarketplaceCatalogPlugin {
   category?: string;
   homepage?: string;
   author?: string;
+}
+
+export interface MarketplaceEditParams {
+  name: string;
+  newName?: string;
+  source?: MarketplaceSourceInput;
 }
 
 export interface MarketplaceEntry {
@@ -1509,6 +1537,7 @@ export interface SettingsAgentEntry {
 export interface SettingsHubOverview {
   version?: string;
   commit?: string;
+  buildChannel?: string;
   listenAddr?: string;
   runDir?: string;
   spawnTimeout?: string;
@@ -1551,6 +1580,17 @@ export interface Source {
   label: string;
   kind: string;
   online: boolean;
+}
+
+export interface SpawnSlashCatalogParams {
+  cwd: string;
+  harness?: string;
+  launchOverrides?: LaunchConfigLayer;
+}
+
+export interface SpawnSlashCatalogResponse {
+  commands: CommandDescriptor[];
+  skills?: EvenerSkillInfo[];
 }
 
 export interface TaskAggregate {
@@ -1643,6 +1683,10 @@ export interface ThreadClosedParams {
 }
 
 export interface ThreadCompactStartParams {
+  ref: string;
+}
+
+export interface ThreadForceStopParams {
   ref: string;
 }
 
@@ -1999,7 +2043,6 @@ export interface TurnCancelQueuedResponse {
 export interface TurnCompletedParams {
   threadId: string;
   ref: string;
-  turnId: string;
   turn: Turn;
 }
 
@@ -2090,6 +2133,32 @@ export interface TurnSteerResponse {
   receipt: MutationReceipt;
 }
 
+export interface UpdateApplyParams {
+  channel?: string;
+}
+
+export interface UpdateApplyResponse {
+  release: string;
+  channel: string;
+  installed: string[];
+  restarting: boolean;
+}
+
+export interface UpdateCheckParams {
+  channel?: string;
+}
+
+export interface UpdateCheckResponse {
+  channel: string;
+  buildChannel: string;
+  currentVersion: string;
+  currentCommit: string;
+  latestTag?: string;
+  latestCommit?: string;
+  updateAvailable: boolean;
+  applicable: boolean;
+}
+
 export interface UpgradeParams {
   requested?: string;
 }
@@ -2134,6 +2203,7 @@ export const METHOD_NAMES = [
   "thread/reasoning-effort/set",
   "thread/vision-model/set",
   "thread/compact/start",
+  "evener/thread/forceStop",
   "thread/shutdown",
   "turn/start",
   "turn/steer",
@@ -2166,6 +2236,8 @@ export const METHOD_NAMES = [
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
+  "evener/update/check",
+  "evener/update/apply",
   "evener/auth/status",
   "evener/auth/test",
   "evener/auth/login/start",
@@ -2194,6 +2266,7 @@ export const METHOD_NAMES = [
   "evener/marketplace/add",
   "evener/marketplace/remove",
   "evener/marketplace/refresh",
+  "evener/marketplace/edit",
   "evener/marketplace/browse",
   "evener/plugin/list",
   "evener/plugin/install",
@@ -2203,11 +2276,14 @@ export const METHOD_NAMES = [
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
   "evener/command/list",
+  "evener/spawn/slashCatalog",
   "evener/settings/overview",
   "evener/settings/transcriptDisplay/get",
   "evener/settings/transcriptDisplay/patch",
   "evener/settings/keybindings/get",
   "evener/settings/keybindings/patch",
+  "evener/settings/agentsDoc/get",
+  "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
 ] as const;
 
@@ -2250,6 +2326,7 @@ export const NOTIFICATION_NAMES = [
   "evener/sandbox/escalation/resolved",
   "evener/settings/transcriptDisplay/changed",
   "evener/settings/keybindings/changed",
+  "evener/settings/agentsDoc/changed",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -2318,6 +2395,7 @@ export interface MethodTypes {
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
   "thread/vision-model/set": { params: ThreadVisionModelSetParams; result: EmptyResponse };
   "thread/compact/start": { params: ThreadCompactStartParams; result: EmptyResponse };
+  "evener/thread/forceStop": { params: ThreadForceStopParams; result: EmptyResponse };
   "thread/shutdown": { params: ThreadShutdownParams; result: EmptyResponse };
   "turn/start": { params: TurnStartParams; result: TurnStartResponse };
   "turn/steer": { params: TurnSteerParams; result: TurnSteerResponse };
@@ -2350,6 +2428,8 @@ export interface MethodTypes {
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
+  "evener/update/check": { params: UpdateCheckParams; result: UpdateCheckResponse };
+  "evener/update/apply": { params: UpdateApplyParams; result: UpdateApplyResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
   "evener/auth/test": { params: AuthTestParams; result: AuthTestResponse };
   "evener/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };
@@ -2378,6 +2458,7 @@ export interface MethodTypes {
   "evener/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
   "evener/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };
   "evener/marketplace/refresh": { params: MarketplaceNameParams; result: MarketplaceListResponse };
+  "evener/marketplace/edit": { params: MarketplaceEditParams; result: MarketplaceListResponse };
   "evener/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
   "evener/plugin/list": { params: EmptyParams; result: PluginListResponse };
   "evener/plugin/install": { params: PluginRefParams; result: PluginListResponse };
@@ -2387,11 +2468,14 @@ export interface MethodTypes {
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
+  "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
   "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
   "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };
   "evener/settings/keybindings/get": { params: EmptyParams; result: KeybindingsOverrides };
   "evener/settings/keybindings/patch": { params: KeybindingsPatchParams; result: KeybindingsOverrides };
+  "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
+  "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
 }
 
@@ -2432,6 +2516,7 @@ export interface NotificationTypes {
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
   "evener/settings/keybindings/changed": KeybindingsOverrides;
+  "evener/settings/agentsDoc/changed": AgentsDocResponse;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,9 +87,10 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
 	}
 	var out struct {
-		Protocol string `json:"protocol"`
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
+		Protocol    string   `json:"protocol"`
+		Provider    string   `json:"provider"`
+		Model       string   `json:"model"`
+		LaunchFlags []string `json:"launch_flags"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
@@ -96,9 +98,12 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 	if out.Protocol != appwire.ProtocolVersion || out.Provider != "gw" || out.Model != "glm-5" {
 		t.Fatalf("launch check output=%+v", out)
 	}
+	if !slices.Contains(out.LaunchFlags, "api-log") {
+		t.Fatalf("launch_flags=%v, want it to advertise api-log", out.LaunchFlags)
+	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
-	if out.Protocol != "evener-appwire-v4" {
-		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v4\"", out.Protocol)
+	if out.Protocol != "evener-appwire-v5" {
+		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v5\"", out.Protocol)
 	}
 }
 

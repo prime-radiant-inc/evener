@@ -10,7 +10,9 @@ import (
 // ProtocolVersion is compared exactly at the handshake
 // (internal/appserver/server.go), so bumping it makes a mixed pair of binaries
 // fail once, loudly, at initialize -- rather than agreeing there and then
-// disagreeing on every request.
+// disagreeing on every request. Daemon reads must identify authoritative
+// mutation state: a client cannot safely release uncertain sends from a peer
+// that does not supply that evidence.
 //
 // v4 makes transcript reads item-only and rejects retired paging fields. v3
 // dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
@@ -20,7 +22,11 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v4"
+const ProtocolVersion = "evener-appwire-v5"
+
+// ThreadStatusRestartRequired identifies a live daemon that cannot serve this
+// hub's protocol. Its current activity is unavailable until explicitly restarted.
+const ThreadStatusRestartRequired = "restartRequired"
 
 const (
 	MethodInitialize                  = "initialize"
@@ -40,6 +46,7 @@ const (
 	MethodThreadVisionModelSet        = "thread/vision-model/set"
 	MethodThreadCompactStart          = "thread/compact/start"
 	MethodThreadShutdown              = "thread/shutdown"
+	MethodEvenerThreadForceStop       = "evener/thread/forceStop"
 	MethodTurnStart                   = "turn/start"
 	MethodTurnSteer                   = "turn/steer"
 	MethodTurnInterrupt               = "turn/interrupt"
@@ -72,6 +79,8 @@ const (
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
+	MethodEvenerUpdateCheck           = "evener/update/check"
+	MethodEvenerUpdateApply           = "evener/update/apply"
 	MethodEvenerAuthStatus            = "evener/auth/status"
 	MethodEvenerAuthTest              = "evener/auth/test"
 	MethodEvenerAuthLoginStart        = "evener/auth/login/start"
@@ -100,6 +109,7 @@ const (
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
 	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceEdit       = "evener/marketplace/edit"
 	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
 	MethodEvenerPluginList            = "evener/plugin/list"
 	MethodEvenerPluginInstall         = "evener/plugin/install"
@@ -109,6 +119,7 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
+	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
 	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, and probed MCP servers. See
@@ -591,11 +602,14 @@ type TaskAggregate struct {
 }
 
 type EvenerThread struct {
-	Ref        string `json:"ref"`
-	InstanceID string `json:"instanceId,omitempty"`
-	ParentRef  string `json:"parentRef,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Profile    string `json:"profile,omitempty"`
+	// ResumeRequired means recovery stopped this session and automatic actions
+	// must wait for an explicit thread/resume. Saved transcripts remain readable.
+	ResumeRequired bool   `json:"resumeRequired,omitempty"`
+	Ref            string `json:"ref"`
+	InstanceID     string `json:"instanceId,omitempty"`
+	ParentRef      string `json:"parentRef,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	Profile        string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
@@ -613,6 +627,9 @@ type EvenerThread struct {
 	// value (Depth==0, Preview==nil) means "no queued messages".
 	Queue            QueueState        `json:"queue"`
 	PendingMutations []PendingMutation `json:"pendingMutations,omitempty"`
+	// MutationStateAuthoritative identifies a daemon snapshot that can settle
+	// uncertain sends. Saved transcript data cannot prove a mutation absent.
+	MutationStateAuthoritative bool `json:"mutationStateAuthoritative,omitempty"`
 	// Tasks carries the task-list progress for a session snapshot. It is nil
 	// when the source cannot authoritatively read task state, including an old
 	// daemon or a missing persisted task file; a present zero is real zero.
@@ -805,11 +822,10 @@ type GoalUpdatedParams struct {
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the
-// completed turn and its ID.
+// completed turn.
 type TurnCompletedParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId"`
 	Turn     Turn   `json:"turn"`
 }
 
@@ -1708,6 +1724,10 @@ type ThreadCompactStartParams struct {
 	Ref string `json:"ref"`
 }
 
+type ThreadForceStopParams struct {
+	Ref string `json:"ref"`
+}
+
 type ThreadShutdownParams struct {
 	Ref string `json:"ref"`
 }
@@ -2080,6 +2100,41 @@ type UpgradeResponse struct {
 	ShareBinDir    string   `json:"shareBinDir"`
 	Installed      []string `json:"installed"`
 	RestartMessage string   `json:"restartMessage"`
+}
+
+// UpdateCheckParams selects the channel to compare the running build against.
+// Empty means the running binary's own upgrade channel.
+type UpdateCheckParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateCheckResponse reports the running build and what the channel points
+// at. Applicable is false for dev builds, which are never self-updated; the
+// Latest* fields are empty then and no network request was made.
+type UpdateCheckResponse struct {
+	Channel         string `json:"channel"`
+	BuildChannel    string `json:"buildChannel"`
+	CurrentVersion  string `json:"currentVersion"`
+	CurrentCommit   string `json:"currentCommit"`
+	LatestTag       string `json:"latestTag,omitempty"`
+	LatestCommit    string `json:"latestCommit,omitempty"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+	Applicable      bool   `json:"applicable"`
+}
+
+// UpdateApplyParams selects the channel to install. Empty means the running
+// binary's own upgrade channel.
+type UpdateApplyParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateApplyResponse is returned just before the hub execs the installed
+// binary in place; Restarting is always true on success.
+type UpdateApplyResponse struct {
+	Release    string   `json:"release"`
+	Channel    string   `json:"channel"`
+	Installed  []string `json:"installed"`
+	Restarting bool     `json:"restarting"`
 }
 
 type AuthStatusParams struct {
@@ -2729,6 +2784,16 @@ type InstanceEntry struct {
 	Auth       string            `json:"auth"`
 	BaseURL    string            `json:"baseUrl,omitempty"`
 	Vars       map[string]string `json:"vars,omitempty"`
+	// APIKeyEnv and CredentialHeader are the AUTHORED api_key_env (its first
+	// entry) and credential header (as NAME=VALUE) from providers.toml, so
+	// the sheet's form can prefill them. Never the registry's own defaults
+	// for an implicit instance, and never a secret: the loader accepts a
+	// hand-written literal that both authoring surfaces would refuse
+	// (registry.CheckCredentialHeaderValue guards those, not the file). That
+	// rule takes $VARIABLE references with at most one auth scheme word
+	// ahead of them, and the entry omits any header it refuses.
+	APIKeyEnv        string `json:"apiKeyEnv,omitempty"`
+	CredentialHeader string `json:"credentialHeader,omitempty"`
 	// Implicit is true for an instance that exists from the environment
 	// alone: it has no entry in providers.toml, so it cannot be removed.
 	Implicit bool `json:"implicit"`
@@ -2826,17 +2891,30 @@ type InstanceCreateParams struct {
 // BaseURL and ClearBaseURL are never both meaningful in the same request: send
 // one or the other.
 //
-// Protocol and Surface have no clear operation yet — Name identifies the
-// instance and an empty Vars map is a no-op edit either way, so those two
-// are the only fields still unreachable. Giving them the same ClearXxx
-// treatment as BaseURL is ledgered for whenever a form needs to clear one.
+// The rename and credential fields obey the same rule. NewName renames
+// the instance (empty means unchanged). APIKeyEnv/ClearAPIKeyEnv and
+// CredentialHeader/ClearCredentialHeader set or drop the authored
+// api_key_env and credential_headers; CredentialHeader is NAME=VALUE with a
+// $VAR value, exactly as InstanceCreateParams takes it. ClearProtocol and
+// ClearSurface drop an authored protocol or surface so the base provider's
+// value applies again, the same shape as ClearBaseURL. A Vars entry
+// whose value is empty DELETES that variable: a blank var never meant
+// anything, so the empty value is free to mean "remove". Each set/clear
+// pair follows BaseURL/ClearBaseURL: never both meaningful in one request.
 type InstanceEditParams struct {
-	Name         string            `json:"name"`
-	BaseURL      string            `json:"baseUrl,omitempty"`
-	ClearBaseURL bool              `json:"clearBaseUrl,omitempty"`
-	Protocol     string            `json:"protocol,omitempty"`
-	Surface      string            `json:"surface,omitempty"`
-	Vars         map[string]string `json:"vars,omitempty"`
+	Name                  string            `json:"name"`
+	NewName               string            `json:"newName,omitempty"`
+	BaseURL               string            `json:"baseUrl,omitempty"`
+	ClearBaseURL          bool              `json:"clearBaseUrl,omitempty"`
+	Protocol              string            `json:"protocol,omitempty"`
+	ClearProtocol         bool              `json:"clearProtocol,omitempty"`
+	Surface               string            `json:"surface,omitempty"`
+	ClearSurface          bool              `json:"clearSurface,omitempty"`
+	Vars                  map[string]string `json:"vars,omitempty"`
+	APIKeyEnv             string            `json:"apiKeyEnv,omitempty"`
+	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
+	CredentialHeader      string            `json:"credentialHeader,omitempty"`
+	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.
@@ -2858,9 +2936,9 @@ type CommandDescriptor struct {
 	PluginName   string `json:"pluginName,omitempty"`
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
-	// Source is "plugin" or "user"; "project" is reserved for a future
-	// project-scoped catalog (project commands are cwd-dependent and never
-	// appear in the hub-wide catalog).
+	// Source is "plugin", "user", or "project". "project" is returned by the
+	// spawn-scoped catalog (project commands are cwd-dependent); it never
+	// appears in the hub-wide catalog.
 	Source string `json:"source,omitempty"`
 }
 
@@ -2904,6 +2982,7 @@ type LaunchConfigLayer struct {
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`
+	APILog                      *bool             `json:"apiLog,omitempty"`
 	TraceFile                   string            `json:"traceFile,omitempty"`
 	CPUProfile                  string            `json:"cpuProfile,omitempty"`
 	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`            //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
@@ -3015,6 +3094,26 @@ type PluginPreviewParams struct {
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
 }
 
+// SpawnSlashCatalogParams requests the slash catalog a spawn with these
+// inputs would load. Field names and shapes match ThreadStartParams exactly:
+// when this call and a thread/start agree on all three, the menu shows what
+// that start would load. Model, effort, access mode, and prompt text do not
+// affect the inventory and are deliberately absent.
+type SpawnSlashCatalogParams struct {
+	CWD             string             `json:"cwd"`
+	Harness         string             `json:"harness,omitempty"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogResponse is the pre-session slash inventory: the commands
+// and skills a session started with the params would offer. Row shapes reuse
+// CommandDescriptor and EvenerSkillInfo verbatim so the web composer merges
+// them with mergeSlashCommands unchanged.
+type SpawnSlashCatalogResponse struct {
+	Commands []CommandDescriptor `json:"commands"`
+	Skills   []EvenerSkillInfo   `json:"skills,omitempty"`
+}
+
 // PluginPreviewResponse is the launch plugin inventory and structured
 // diagnostics returned by evener/plugin/preview.
 type PluginPreviewResponse struct {
@@ -3073,8 +3172,8 @@ type MarketplaceEntry struct {
 }
 
 // MarketplaceListResponse is the result of evener/marketplace/list. Every
-// marketplace mutation (add/remove/refresh) also returns this, so a client
-// can re-render from the response without a separate list round-trip.
+// marketplace mutation (add/edit/remove/refresh) also returns this, so a
+// client can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
@@ -3084,6 +3183,17 @@ type MarketplaceListResponse struct {
 type MarketplaceAddParams struct {
 	Name   string                 `json:"name,omitempty"`
 	Source MarketplaceSourceInput `json:"source"`
+}
+
+// MarketplaceEditParams is the params for evener/marketplace/edit (spec
+// 2026-09-07 §3). NewName renames the registered marketplace (empty means
+// unchanged); Source replaces its source and re-fetches it (absent means
+// unchanged). Installed plugins are unaffected beyond being re-keyed under
+// the new name.
+type MarketplaceEditParams struct {
+	Name    string                  `json:"name"`
+	NewName string                  `json:"newName,omitempty"`
+	Source  *MarketplaceSourceInput `json:"source,omitempty"`
 }
 
 // MarketplaceNameParams identifies one registered marketplace by name — the
@@ -3189,6 +3299,8 @@ type SettingsHubOverview struct {
 	// Commit is the git commit the binary was built from; empty in dev builds.
 	// Source: web_settings.go settingsData.HubCommit (buildinfo.GitSHA).
 	Commit string `json:"commit,omitempty"`
+	// BuildChannel is buildinfo.BuildChannel(): release, snapshot, or dev.
+	BuildChannel string `json:"buildChannel,omitempty"`
 	// ListenAddr is the hub HTTP server's bind address.
 	// Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
 	ListenAddr string `json:"listenAddr,omitempty"`

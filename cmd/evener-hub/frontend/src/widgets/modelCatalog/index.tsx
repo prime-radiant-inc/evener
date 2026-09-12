@@ -12,7 +12,6 @@
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type { ModelDescriptor, ModelListDiagnostic } from "../../protocol/types.gen";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -22,6 +21,9 @@ import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
 import styles from "./modelCatalog.module.css";
 import { buildPickerRows, pickableRows } from "./pickerRows";
+import type { ModelCatalogEntry, ModelCatalog as ModelCatalogShape } from "./types";
+
+export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),
@@ -53,19 +55,14 @@ const CLASS = {
 
 const SKELETON_LINES = 4;
 
+// Keep the historical type/value declaration merge: consumers import the
+// catalog shape and the picker component from this module under the same name.
+export interface ModelCatalog extends ModelCatalogShape {}
+
 // The widget requires a display label, while the generated AppWire descriptor
 // makes it optional because daemon/source callers may know only an identity.
 // Keeping the generated type as the source of truth prevents this view model
 // from drifting when the model/list contract changes.
-export type ModelCatalogEntry = Omit<ModelDescriptor, "displayName"> & { displayName: string };
-export type ModelCatalogDiagnostic = ModelListDiagnostic;
-
-export interface ModelCatalog {
-  models: ModelCatalogEntry[];
-  recent: ModelCatalogEntry[];
-  diagnostics?: ModelCatalogDiagnostic[];
-}
-
 export interface ModelCatalogProps {
   value: string;
   onChange: (qualified: string) => void;

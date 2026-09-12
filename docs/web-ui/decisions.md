@@ -1,7 +1,79 @@
 # Web UI: the design decisions, and whether they are still true
 
-Status: **current**. This is the blessed design's provenance — what we chose,
-out of what alternatives, and whether the code does it today.
+Status: **historical decision record**. This records what we chose, from which
+alternatives, and what source review found at the time. The current
+[design system](design-system.md#design-model-an-editorial-instrument) governs new work;
+dated verdicts below are not a competing current mandate.
+
+## 2026-09-11 the reasoning placeholder is content-free, on Loader's grid
+
+Turning the Reasoning content flag off still streamed a live thought open and
+then folded it away: the projector escalated any in-progress reasoning item to
+a critical row regardless of the flag, and the reasoning renderer streams an
+in-progress item open as the turn's current thought. The escalation is gone.
+Jesse asked that a live thought instead show a content-free "Thinking…" and
+picked the catalog `Loader`'s pulsing pixel grid as its motion.
+
+The projector now emits a distinct `thinking` entry for the turn's live current
+reasoning item when the flag is off (transcriptDisplay/projector.ts). It
+carries the source item only for a length estimate and never any rendered text,
+so the row cannot leak the thought. The renderer draws just
+`<Loader label=…>`: the label plus an approximate token figure
+(characters/4, marked "~" - the wire carries no live token accounting for a
+reasoning stream, so a real count would be fabricated). The placeholder
+disappears the moment the thought stops being the turn's current activity.
+
+A critical reasoning row (a failed or interrupted turn, still projected as
+critical so the turn explains itself) renders redacted: a neutral "Thought
+failed" / "Thought not shown" summary, with no thought body, preview, or
+disclosure. This narrows the 2026-08-25 "preserve terminal transcript failures"
+behavior for reasoning specifically - a broken turn still explains itself, but
+not by showing content the reader disabled. The projector no longer derives a
+reasoning critical entry's summary from the item's own text.
+
+This is the one approved exception to the motion budget's ban on pulses and
+shimmer on live data (design-system.md §5). The grid pulses while the
+placeholder is shown and, unlike Cadence, is not gated on deltas actually
+arriving, so it keeps pulsing if the stream stalls; Cadence's decaying trace
+stays the honest liveness signal. Every other idle pulse or shimmer remains
+banned, and `widgets/loader`'s own doc note no longer claims its motion is
+reserved away from agent liveness.
+
+## Editorial instrument (2026-09-09)
+
+The user approved a comprehensive Tufte-inspired editorial direction and the
+`editorial-instrument` / `tools-and-collaborators` studies. The governing
+[specification](../superpowers/specs/2026-09-09-tufte-webui-design.md) supersedes the
+Beautiful UI aesthetic mandate, **not** its interaction contracts, widget APIs,
+semantic attention law, accessibility requirements or MIT attribution.
+
+**Implemented foundations:** warm paper/ink neutrals; Source Serif 4 for reading and
+editorial headings alongside Inter operations and JetBrains Mono evidence; shared
+`--font-prose` and body-scaled 18px `--font-size-prose`; structural card shadow none;
+3px chip / 4px control and overlay radii; flat Card/InspectorCard/PaneScaffold;
+sentence-case fine-rule tables; visibly bounded fields. Dark default, all preferences,
+44/64rem measures and shared phone sizing contracts remain. Nested navigation and focus
+repairs are behavior changes, not merely styling. Source Serif 4
+5.3.0 is self-hosted with real italic under OFL-1.1, not loaded from a CDN.
+
+Contrast is a constraint, not an aesthetic vote: the warm light ground required darker
+alive/danger/accent `-ink` colors and re-derived diff washes. Original pairing, thresholds
+and grayscale comparisons remain intact. Historical palette/header-band assertions changed
+only to match this explicit approval. Vitest and coverage-v8 moved together from 4.1.10 to
+4.1.11 to address GHSA-82fw-gwwq-j7x9; this is an explicit dependency repair, not visual work.
+
+The canonical [guide](design-system.md#inline-tools-and-delegates) now documents the
+implemented inline tool/delegate grammar, including owner-derived lifecycle, separate
+launch receipts, truthful unknown state and retained child-authored words on resumption.
+[Source coverage](design-system.md#editorial-source-coverage) includes direct shell,
+form, composer and ledger work and distinguishes surfaces inheriting shared styling.
+The editorial rationale is [durable design law](design-system.md#design-model-an-editorial-instrument),
+not just a new font and spacing prescription: evidence stays near claims, distinct facts retain
+their provenance, and inspection preserves context. The guide's separate
+[acceptance snapshot](design-system.md#acceptance-and-limits) records automation, panel review
+and remaining limits; source implementation alone does not establish browser acceptance.
+Dated decisions below describe their period and remain useful for interaction intent,
+not as competing current palette/type law.
 
 ## Directory selection (2026-09-05)
 
@@ -33,10 +105,10 @@ what survived, so the gap between the two is a work list instead of a feeling.
 
 ## How to read a verdict
 
-- **LIVE** — the rule holds in the React app today, with a citation.
+- **LIVE** — the rule held at the recorded review, with a citation.
 - **CHANGED** — something related shipped, but the rule differs. The note says
   how, and whether the difference was reasoned.
-- **ABSENT** — no trace in the current code.
+- **ABSENT** — no trace in the code reviewed then.
 
 A CHANGED or ABSENT verdict is not automatically a defect. Several are
 documented, reasoned departures where the implementer hit something the
@@ -54,16 +126,17 @@ closed questions, not work. The ones with no such reasoning are the work list.
   `history/examples/direction-{a,b,c}-*.html`.
 - **The brief every direction had to render**:
   `history/examples/_mockup-brief.md`. Its eight non-negotiable principles are
-  reproduced below, because they are the actual design law and outlived the
-  mockups that tested them.
+  reproduced below as the historical starting point. Later decisions and the
+  canonical guide identify departures.
 - **Which alternative shipped**: the commit subjects cited in the tables
   below. `git log --oneline --all -- docs/web-ui` finds the rest.
 
 ## The eight principles
 
-Reproduced from `_mockup-brief.md`. Every direction and every mockup had to
-honour these; they are upstream of any individual A/B/C/D choice, and none of
-them has been retired.
+Reproduced from `_mockup-brief.md`. Every original direction and mockup had to
+honour these. They are historical, not eight unchanged current mandates: later
+decisions supersede parts of them, including steering emphasis and typography.
+The current system uses serif for reading, sans for operations and mono for machine evidence.
 
 1. **Conversation-first.** User and assistant prose are the loudest, most
    readable thing. Tool calls are visually subordinate.
@@ -916,3 +989,30 @@ uniform radius. The user's own message keeps its `--accent-bg` wash
 reverses the bubble decision for the agent side only, and it is the one
 2026-09-06 change that is taste rather than measurement; it is the shape
 both major chat assistants converged on for long technical answers.
+
+## 2026-09-07 detail sheets are editors
+
+The provider instance sheet shipped as an inspector: a stack of quiet
+buttons whose "Edit" opened a one-field dialog (Base URL), and nothing could
+rename an instance or change its api_key_env or credential header after
+creation. Jesse called the whole pattern out. The rule in design-system.md
+§10 now reads: a detail sheet is the item's editor. Editable facts are
+prefilled form fields in place with a dirty-gated Save in the footer;
+rename is editing the name field; dialogs are reserved for write-only
+secret entry and multi-step flows. `InstanceSheet` is the reference
+implementation (spec
+`docs/superpowers/specs/2026-09-07-settings-sheet-editors-and-agents-doc-design.md`);
+the marketplaces list follows in its own slice, and the installed-plugin
+sheet already edited its two switches in place and is unchanged.
+
+Two consequences ride along. Protocol and surface are exposed on both the
+sheet and the Add form as selects over the registry's four-value
+vocabularies, with an "inherit from base" empty option. From the sheet
+that option sends the new clear flag; the Add form's create params have no
+clear flags, so it just omits the field. And the wire's instance entry now
+carries the authored api_key_env and credential header (never a secret:
+`registry.CheckCredentialHeaderValue`, the rule both authoring surfaces
+share, takes $VARIABLE references with at most one auth scheme word ahead
+of them, and the hub omits from the entry any header that rule refuses —
+the loader itself would accept a hand-written literal) so the form can
+prefill them.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -542,4 +543,33 @@ func hubInstanceListOverRPC(t *testing.T, web *WebServer) (appwire.InstanceListR
 	}
 	resp, ok := raw.(appwire.InstanceListResponse)
 	return resp, ok
+}
+
+func TestRunMainPreparesRuntimeDirectoryBeforeRequests(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(strconv.FormatBool(blocked), func(t *testing.T) {
+			_, cfg, deps := newTraceMainTestDeps(t)
+			if blocked {
+				if err := os.WriteFile(cfg.RunDir, []byte("occupied"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ready := false
+			deps.afterWeb = func(web *WebServer) {
+				ready = true
+				if err := web.cfg.Roster.RefreshAndWait(t.Context()); err != nil {
+					t.Errorf("initial ownership discovery: %v", err)
+				}
+			}
+			var stderr bytes.Buffer
+			err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps)
+			if blocked {
+				if err == nil || ready {
+					t.Fatalf("unusable runtime directory reached requests: err=%v ready=%v", err, ready)
+				}
+			} else if err != nil || !ready {
+				t.Fatalf("fresh runtime directory: err=%v ready=%v", err, ready)
+			}
+		})
+	}
 }

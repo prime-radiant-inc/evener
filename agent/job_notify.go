@@ -185,6 +185,16 @@ func escapeNotificationBody(s string) string {
 	return s
 }
 
+// withNotificationNote appends a watch's note to a rendered notification body.
+// The note is the watch's own prose payload — the reason the model armed it —
+// so every fire shows it back, whatever the watch triggers on.
+func withNotificationNote(body, note string) string {
+	if note == "" {
+		return body
+	}
+	return body + "\nNote: " + escapeNotificationBody(note)
+}
+
 // notificationAttr renders one key="value" wrapper attribute with value
 // escaped by escapeNotificationText, so a delimiter inside value cannot move
 // the opening tag's own boundary (the web parser's tag match is naive about
@@ -240,6 +250,14 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 	if n.TranscriptRef != "" {
 		attrs = append(attrs, notificationAttr("transcript_ref", n.TranscriptRef))
 	}
+	// A job-targeted fire, teardown notice, or send-rail diagnostic carries
+	// no timer WatchID, but its originating watch rides OriginWatchID — emit
+	// it so a reader can identify which watch to inspect or clear. Timers
+	// keep their existing emit path below; the WatchID guard keeps the two
+	// from ever doubling the attribute.
+	if n.OriginWatchID != "" && n.WatchID == "" {
+		attrs = append(attrs, notificationAttr("watch_id", n.OriginWatchID))
+	}
 	if n.Status == jobNotificationEventWatch && n.JobID == "" {
 		if n.WatchID != "" {
 			attrs = append(attrs, notificationAttr("watch_id", n.WatchID))
@@ -252,19 +270,10 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 			default:
 				sentence = fmt.Sprintf("Timer fired (every %ds).", n.IntervalSeconds)
 			}
-			body := sentence
-			if n.Note != "" {
-				body += "\nNote: " + escapeNotificationBody(n.Note)
-			}
-			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), body)
+			return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), withNotificationNote(sentence, n.Note))
 		}
-		return fmt.Sprintf(
-			"<job-notification %s>\n"+
-				"Watch event triggered: %s.\n"+
-				"</job-notification>",
-			strings.Join(attrs, " "),
-			escapeNotificationBody(n.Reason),
-		)
+		body := fmt.Sprintf("Watch event triggered: %s.", escapeNotificationBody(n.Reason))
+		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>", strings.Join(attrs, " "), withNotificationNote(body, n.Note))
 	}
 
 	// A resumable exhaustion needs an explicit recovery cue even when its
@@ -289,7 +298,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 			instruction = "Complete output below."
 		}
 	}
-	body := strings.TrimSpace(fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction))
+	body := withNotificationNote(strings.TrimSpace(fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction)), n.Note)
 	if excerpt.text != "" {
 		body += "\nexcerpt:\n" + escapeNotificationBody(excerpt.text)
 	}

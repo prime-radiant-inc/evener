@@ -3,7 +3,6 @@
 // - handleConfirmedAction clear stored key failure error toast
 // - handleConfirmedAction remove failure error toast
 // - findInstance returns undefined for apiKey dialog when instance is gone
-// - findInstance returns undefined for edit dialog when instance is gone
 
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -65,8 +64,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -162,21 +161,5 @@ describe("CredentialsSection edge cases", () => {
     act(() => credentialsStore.setState({ instances: [PERSONAL] }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Set API key for work" })).toBeNull());
-  });
-
-  // An open edit dialog stops rendering if its instance disappears.
-  test("an edit dialog closes when a refreshed list removes its instance", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" />);
-    await screen.findByText("work");
-    const user = userEvent.setup();
-    const inspector = await openSheet(user, "work");
-    await user.click(within(inspector).getByRole("button", { name: "Edit" }));
-    await screen.findByRole("dialog", { name: "Edit work" });
-
-    act(() => credentialsStore.setState({ instances: [PERSONAL] }));
-
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit work" })).toBeNull());
   });
 });

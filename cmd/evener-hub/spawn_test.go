@@ -18,6 +18,7 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
@@ -54,9 +55,10 @@ func TestBuildSpawnArgs(t *testing.T) {
 			ReasoningEffort: "medium",
 			AppReplaySize:   &ssering,
 		}},
-		WorkingDir: "/Users/jesse/git/foo",
-		StateDir:   "/Users/jesse/.local/state/evener/projects/foo",
-		RunDir:     "/Users/jesse/.cache/evener/run",
+		WorkingDir:    "/Users/jesse/git/foo",
+		StateDir:      "/Users/jesse/.local/state/evener/projects/foo",
+		RunDir:        "/Users/jesse/.cache/evener/run",
+		AgentsDocPath: "/Users/jesse/.config/evener/AGENTS.md",
 	}
 	args := buildSpawnArgs(req)
 	want := map[string]string{
@@ -68,6 +70,7 @@ func TestBuildSpawnArgs(t *testing.T) {
 		"--dir":              "/Users/jesse/git/foo",
 		"--state-dir":        "/Users/jesse/.local/state/evener/projects/foo",
 		"--run-dir":          "/Users/jesse/.cache/evener/run",
+		"--agents-doc":       "/Users/jesse/.config/evener/AGENTS.md",
 		"--addr":             "127.0.0.1:0",
 	}
 	got := pairsToMap(args)
@@ -118,10 +121,11 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 func TestBuildResumeArgsOmitAmbientModelKnobs(t *testing.T) {
 	maxRounds := 50
 	req := hubcore.ResumeRequest{
-		SessionID:  "01JRESUME",
-		WorkingDir: "/wd",
-		StateDir:   "/st",
-		RunDir:     "/rn",
+		SessionID:     "01JRESUME",
+		WorkingDir:    "/wd",
+		StateDir:      "/st",
+		RunDir:        "/rn",
+		AgentsDocPath: "/Users/jesse/.config/evener/AGENTS.md",
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
 			Model:           "openai/gpt-env",
 			FastCheapModel:  "openai/gpt-4.1-nano",
@@ -137,7 +141,7 @@ func TestBuildResumeArgsOmitAmbientModelKnobs(t *testing.T) {
 			t.Fatalf("resume args must not include ambient %s: %v", forbidden, args)
 		}
 	}
-	for _, required := range []string{"serve", "--resume", "01JRESUME", "--agent", "default", "--reasoning-effort", "medium", "--max-rounds", "50"} {
+	for _, required := range []string{"serve", "--resume", "01JRESUME", "--agent", "default", "--reasoning-effort", "medium", "--max-rounds", "50", "--agents-doc", "/Users/jesse/.config/evener/AGENTS.md"} {
 		if !hasArg(args, required) {
 			t.Fatalf("resume args missing %q: %v", required, args)
 		}
@@ -153,7 +157,7 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-	  printf '{"protocol":"evener-appwire-v4"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -661,7 +665,7 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v4"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -716,7 +720,7 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v4"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -786,7 +790,7 @@ func TestHubSpawnerListsModelsFromEvenerLaunchContract(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v4","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
+	  printf '{"protocol":"evener-appwire-v5","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
   exit 0
 fi
 exit 2
@@ -808,7 +812,7 @@ func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testin
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh
 case " $* " in
-	  *" --protocol evener-appwire-v4 "*)
+	  *" --protocol evener-appwire-v5 "*)
     printf '{"protocol":"evener-appwire-v2"}\n'
     exit 0
     ;;
@@ -1099,9 +1103,16 @@ func TestResolveEvenerStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 
 // newSpawnGateRegistry builds a hermetic registry holding exactly the named
 // instances, resolved against an env and a state root the test owns, and
-// wraps it in the holder the spawn gate reads.
-func newSpawnGateRegistry(t *testing.T, stateRoot string, env map[string]string, instances map[string]registry.Provider) *hubcore.ProviderRegistry {
+// wraps it in the holder the spawn gate reads. A caller that hands this
+// registry to a hub fixture passes the store that fixture writes through
+// evener/auth/apiKey, so the two resolve the same credentials; the spawn-gate
+// callers that read no store at all pass none.
+func newSpawnGateRegistry(t *testing.T, stateRoot string, env map[string]string, instances map[string]registry.Provider, creds ...*credentials.Store) *hubcore.ProviderRegistry {
 	t.Helper()
+	var store *credentials.Store
+	if len(creds) > 0 {
+		store = creds[0]
+	}
 	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 		opts := []registry.Option{
 			registry.WithOffline(true),
@@ -1114,8 +1125,11 @@ func newSpawnGateRegistry(t *testing.T, stateRoot string, env map[string]string,
 			}),
 			registry.WithInstances(instances),
 		}
+		if store != nil {
+			opts = append(opts, registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}))
+		}
 		r, err := registry.Load(append(opts, extra...)...)
-		return r, nil, err
+		return r, store, err
 	})
 	if err := holder.Reload(); err != nil {
 		t.Fatalf("registry: %v", err)
@@ -1330,7 +1344,7 @@ func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v4"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

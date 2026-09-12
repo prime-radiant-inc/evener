@@ -205,6 +205,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if runDir == "" {
 		runDir = rendezvous.DefaultDir()
 	}
+	// Initial ownership discovery must be ready before any request can resume
+	// a saved session; the background watcher is not a startup barrier.
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		return fmt.Errorf("prepare runtime directory: %w", err)
+	}
 	stateGlob := cfg.StateGlob
 	if stateGlob == "" {
 		stateGlob = DefaultStateGlob()
@@ -267,7 +272,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RunDir:              runDir,
 		HubToken:            hubToken,
 		Registry:            hubReg,
-		StateRoot:           hubStateRoot,
 		ProvidersConfigPath: providersConfigPath,
 		CredentialsPath:     credentialsPath,
 		NoUserLayer:         noUserLayer,
@@ -340,6 +344,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	cfg.Addr = hubListener.Addr().String()
 
+	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
+	if err != nil {
+		_ = hubListener.Close()
+		return fmt.Errorf("load recovery state: %w", err)
+	}
 	deletionStore, err := hubcore.NewDeletionStore(hubStateRoot)
 	if err != nil {
 		_ = hubListener.Close()
@@ -379,7 +388,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Favorite:                  favorite,
 		PinSections:               pinSections,
 		Spawner:                   spawner,
+		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
+		ResumeLocks:               resumeLocks,
 		PastPerPage:               cfg.PastResultsPerPage,
 		StateDir:                  stateDir,
 		CredsStore:                credsStore,

@@ -739,6 +739,22 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 	}
 }
 
+func TestServerAppWireInitializeReportsBuildVersion(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	conn := srv.AppServer().NewConnection("test")
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.InitializeResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if strings.TrimSpace(data.ServerInfo.Version) == "" {
+		t.Fatal("initialize must report a build version so strict AppWire clients can connect")
+	}
+}
+
 func TestServerAppWireInitializeAdvertisesTurnList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	conn := srv.AppServer().NewConnection("test")
@@ -2856,5 +2872,24 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 	}
 	if len(resp.Thread.Turns[0].Items) < 2 || resp.Thread.Turns[0].Items[1].Text != "second" {
 		t.Fatalf("second item text missing, want the seeded tail in the same logical turn")
+	}
+}
+
+// A cancelled input that never reached the projector has no SessionEnd event.
+func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.SetProcessingTurn("durable-turn")
+	before := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"})
+	if before.Thread.Evener.ActiveTurnID != "durable-turn" {
+		t.Fatalf("reserved active turn = %q", before.Thread.Evener.ActiveTurnID)
+	}
+	srv.SetProcessing(false)
+	after := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"})
+	if after.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("unincorporated active turn = %q", after.Thread.Evener.ActiveTurnID)
+	}
+	if after.Thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("unincorporated status = %q", after.Thread.Status.Type)
 	}
 }

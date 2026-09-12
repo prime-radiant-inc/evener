@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -12,14 +13,78 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
+const threadListSourceTimeout = 3 * time.Second
+
+const threadListSourceWorkers = 4
+
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-	var threads []appwire.Thread
+	return hubThreadListWithSourceTimeout(ctx, cfg, sources, params, threadListSourceTimeout)
+}
+
+func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams, sourceTimeout time.Duration) (appwire.ThreadListResponse, error) {
+	threads := make([]appwire.Thread, 0)
 	liveIDs := map[string]struct{}{}
-	for _, source := range sources.All() {
+	allSources := sources.All()
+	type sourceResult struct {
+		index int
+		resp  appwire.ThreadListResponse
+		err   error
+	}
+	allowed := make([]int, 0, len(allSources))
+	for index, source := range allSources {
 		if !sourceAllowedForList(source.ID(), params) {
 			continue
 		}
-		resp, err := source.ListThreads(ctx, params)
+		allowed = append(allowed, index)
+	}
+	results := make(chan sourceResult, len(allowed))
+	jobs := make(chan int)
+	workerCount := min(threadListSourceWorkers, len(allowed))
+	for range workerCount {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					source := allSources[index]
+					sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
+					resp, err := source.ListThreads(sourceCtx, params)
+					cancel()
+					results <- sourceResult{index: index, resp: resp, err: err}
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, index := range allowed {
+			select {
+			case jobs <- index:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	listed := make([]sourceResult, 0, len(allowed))
+	for range allowed {
+		select {
+		case result := <-results:
+			listed = append(listed, result)
+		case <-ctx.Done():
+			return appwire.ThreadListResponse{}, ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
+	}
+	slices.SortFunc(listed, func(a, b sourceResult) int { return a.index - b.index })
+	for _, result := range listed {
+		source := allSources[result.index]
+		resp, err := result.resp, result.err
 		if err != nil {
 			if sourceExplicitlyRequestedForList(source.ID(), params) {
 				return appwire.ThreadListResponse{}, err
@@ -28,7 +93,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		}
 		for _, thread := range resp.Data {
 			sourceID := threadListSourceID(source.ID(), thread)
-			for _, id := range []string{thread.ID, thread.SessionID} {
+			for _, id := range threadListIDs(sourceID, thread) {
 				if key := threadListSourceKey(sourceID, id); key != "" {
 					liveIDs[key] = struct{}{}
 				}
@@ -38,6 +103,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if err != nil {
 				return appwire.ThreadListResponse{}, err
 			}
+			thread = applyHubForkCapability(cfg, thread)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -52,7 +118,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if _, ok := liveIDs[threadListSourceKey("local", entry.ID)]; ok {
 				continue
 			}
-			thread, err := pastEntryThread(ctx, cfg, entry, false)
+			thread, err := pastEntryThreadForList(ctx, cfg, entry)
 			if err != nil {
 				return appwire.ThreadListResponse{}, err
 			}
@@ -110,6 +176,14 @@ func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {
 	return defaultSourceID
 }
 
+func threadListIDs(sourceID string, thread appwire.Thread) []string {
+	ids := []string{thread.ID, thread.SessionID}
+	if ref, err := appwire.ParseRef(thread.Evener.Ref); err == nil && ref.SourceID == sourceID {
+		ids = append(ids, ref.ThreadID)
+	}
+	return ids
+}
+
 func threadListSourceKey(sourceID, threadID string) string {
 	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 }
@@ -139,7 +213,7 @@ func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	var entry hubcore.PastEntry
 	var ok bool
-	for _, id := range []string{live.ID, live.SessionID} {
+	for _, id := range threadListIDs("local", live) {
 		if id == "" {
 			continue
 		}
@@ -151,7 +225,7 @@ func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, source
 	if !ok {
 		return live, nil
 	}
-	past, err := pastEntryThread(ctx, cfg, entry, false)
+	past, err := pastEntryThreadForList(ctx, cfg, entry)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return appwire.Thread{}, ctxErr

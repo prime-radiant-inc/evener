@@ -65,7 +65,7 @@ the same way the ordinary runtime build does.
 | Command | Summary |
 | --- | --- |
 | `make build-runtime` | The actual recipe `build` runs: builds evener via scripts/ops/build-runtime-pair.sh. |
-| `make build-linux` | Cross-compile evener-linux-amd64 for Linux eval deployments. Starts by running `go clean -cache`, which wipes the whole Go build cache. |
+| `make build-linux` | Cross-compile evener-linux-amd64 for Linux eval deployments, forcing a rebuild of the linux target closure (`go build -a`) so embedded files stay fresh without wiping the shared Go build cache. |
 | `make build-hub` | Alias for build-runtime. |
 | `make build-llmcall` | Build the llmcall standalone CLI binary. |
 | `make build-dev` | Build the evener-dev dev/test infrastructure binary (agent-shards, module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck, tomlcheck, transcript-v2-upgrade). Not installed for end users; used by make targets and go run ./cmd/evener-dev/bin. |

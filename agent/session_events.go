@@ -381,6 +381,16 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 // the delivered envelope. It performs no side effects beyond the send; the
 // Notification hook decision belongs to the caller.
 func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
+	data, ev, _ := s.sendEventContext(context.Background(), kind, data, p)
+	return data, ev
+}
+
+// sendEventContext is the bounded variant used by shutdown's terminal
+// boundary. An authoritative consumer normally provides backpressure so the
+// event cannot be lost; when that consumer is wedged, the close deadline must
+// release eventsMu so teardown can close the stream and preserve the durable
+// closed state.
+func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent, bool) {
 	data = enrichDiagnosticData(kind, data)
 	ev := events.New(data)
 	ev.SessionID = s.id
@@ -390,11 +400,53 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 	// (Enqueue/DrainAsSteer, the ProcessInput loop), so the lock — not a recover()
 	// — is what guarantees we never send on a closed channel. Delivery of detached
 	// emitters' events before teardown is ensured separately by the WaitGroups.
+
+	// closeSignal is minted once and never replaced, so the hot path only has
+	// to read it. Taking the exclusive lock on every event to find it already
+	// there serialized emission on the same lock close needs to publish the
+	// shared deadline; only a session's first emitter upgrades to mint it.
+	s.closeCtxMu.RLock()
+	closeSignal := s.closeSignal
+	s.closeCtxMu.RUnlock()
+	if closeSignal == nil {
+		s.closeCtxMu.Lock()
+		if s.closeSignal == nil {
+			s.closeSignal = make(chan struct{})
+		}
+		closeSignal = s.closeSignal
+		s.closeCtxMu.Unlock()
+	}
 	s.eventsMu.RLock()
 	open := !s.eventsClosed
+	delivered := false
 	if open {
+		s.closeCtxMu.RLock()
+		closeCtx := s.closeCtx
+		s.closeCtxMu.RUnlock()
+		// Until a close publishes its budget, the session's own lifetime is the
+		// ONLY thing that can release a send parked below: the caller's context
+		// is context.Background() for every ordinary emit, and closeSignal is
+		// closed off that same unpublished budget. The goroutine parked there
+		// can be the daemon's input loop, and shutdown waits for that loop
+		// before it reaches the call that would publish either -- so without
+		// this arm the wait and the publisher wait on each other.
+		//
+		// A budget published BEFORE this send arrives supersedes the lifetime
+		// outright, and a nil channel never fires. A budget published while the
+		// send is already parked is handled on the arm itself: close publishes
+		// and then cancels the session context a few statements later, so an
+		// already-parked send sees the lifetime end with a fresh budget in hand
+		// and must come back to that budget rather than drop an event it still
+		// has its whole window to deliver.
+		var lifetimeDone <-chan struct{}
+		if closeCtx != nil {
+			ctx = closeCtx
+		} else {
+			lifetimeDone = s.sessionContext().Done()
+		}
 		select {
 		case s.events <- ev:
+			delivered = true
 		default:
 			// The buffer is full, and what to do about it depends entirely on
 			// whether anything is reading.
@@ -421,7 +473,37 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 			// against silent projection corruption, and it is why the consumer's
 			// per-event work is bounded on purpose (server.BridgeEvent).
 			if s.authoritativeConsumer {
-				s.events <- ev
+				if observe := s.testOnlyBlockedSendEntered; observe != nil {
+					observe()
+				}
+				select {
+				case s.events <- ev:
+					delivered = true
+				case <-ctx.Done():
+				case <-closeSignal:
+				case <-lifetimeDone:
+					// The lifetime ended under this send. If a close published
+					// its budget in the meantime, that budget owns the event
+					// exactly as it would for a send that arrived after the
+					// publication, so re-park on it. At daemon shutdown there
+					// is none and none is possible -- the call that would
+					// publish one waits on the goroutine parked here -- so that
+					// path still leaves immediately.
+					s.closeCtxMu.RLock()
+					published := s.closeCtx
+					s.closeCtxMu.RUnlock()
+					if published != nil {
+						if observe := s.testOnlyBlockedSendEntered; observe != nil {
+							observe()
+						}
+						select {
+						case s.events <- ev:
+							delivered = true
+						case <-published.Done():
+						case <-closeSignal:
+						}
+					}
+				}
 			}
 		}
 	}
@@ -429,7 +511,7 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 	if open && s.descendantEvent != nil {
 		s.descendantEvent(ev)
 	}
-	return data, ev
+	return data, ev, open && delivered
 }
 
 // SetDescendantEventFunc installs the callback inherited by subsequently
@@ -466,8 +548,27 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // hook fires unconditionally; the recursion regression tests (recursion_test.go,
 // TestNewSession_InvalidMatcherNotificationHookDoesNotRecurse) guard against a
 // future synchronous warning-emitter being introduced inside the dispatch path.
+//
+// The hook runs SYNCHRONOUSLY on whichever goroutine emitted the warning, and in
+// the daemon that goroutine is the input loop shutdown waits for before it closes
+// the session. So the base context is the session's own lifetime, not a
+// background one: a hook already running when shutdown starts is interrupted by
+// the same cancellation instead of holding the shutdown budget for its full
+// timeout. A close that has already published its budget supersedes that, and an
+// exhausted deadline of either kind declines the hook rather than launching one
+// nothing is left to wait for.
 func (s *Session) fireNotificationHook(message string) {
-	s.runNotificationHook(context.Background(), message)
+	ctx := s.sessionContext()
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if closeCtx != nil {
+		ctx = closeCtx
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	s.runNotificationHook(ctx, message)
 }
 
 func warningHookMessage(data events.EventData) string {

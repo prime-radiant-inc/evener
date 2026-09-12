@@ -128,6 +128,14 @@ outcome. Once the outer logical model call settles, an
 the final attempt and count. A clean EOF after an attempt without its settlement
 is an explicitly unsettled group; a partial tail has unknown finality.
 
+**Recording is opt-in.** API-request logging is off by default, so an empty
+or missing `<SID>.api.jsonl` is expected for most sessions — the file is still
+created and flock-held for session ownership, it just carries no records. A
+session records only when it was launched with `--api-log on` (or the `api_log`
+launch option / the hub's `hub.toml` `api_log` default). An empty log with
+live forensics needed means the session must be relaunched with logging
+enabled; it is not evidence of log corruption.
+
 **Read it via:** `doctor_evener` `apilog <selector>` for attempt metadata and
 aggregates. The model-facing `read_transcript` tool does not accept API-log
 selectors or expose request/response bodies. Credential values are excluded.

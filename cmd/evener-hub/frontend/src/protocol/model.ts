@@ -210,7 +210,16 @@ export interface ThreadDiagnostics {
 
 export interface ThreadModel {
   ref: string;
+  parentRef?: string;
   threadId: string;
+  // The serving session image bytes belong to (the wire Thread.sessionId at
+  // hydrate, falling back to the thread id exactly as the hub's
+  // stampThreadImageURLs does). reducer.ts rebuilds sha-addressed
+  // /s/{route}/images/{sha} fallbacks from this — never from ref, which can
+  // be a stable workspace alias for a different session than the one that
+  // served the bytes. Optional so models assembled by hand (test fixtures,
+  // dev harnesses) keep compiling; the reducer falls back to threadId there.
+  imageSessionId?: string;
   // The current daemon/session instance behind this stable ref. Clear uses
   // it as the fencing precondition so an intent cannot replace a newer
   // instance that took the ref after a reconnect or restart.

@@ -48,7 +48,6 @@ type HubSpawner struct {
 	RunDir              string
 	HubToken            string
 	Registry            *hubcore.ProviderRegistry // live registry the credential gate reads
-	StateRoot           string                    // hub-level state root; used for resolving
 	ProvidersConfigPath string                    // providers.toml the child reads as its user layer
 	CredentialsPath     string                    // credentials.toml the child resolves keys from
 	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
@@ -157,6 +156,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
@@ -202,6 +202,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
@@ -281,6 +282,28 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	return resolved, func() {}, nil
 }
 
+// applyHubAPILogDefault fills the hub.toml api_log setting into a resolved
+// launch config as the floor default: it applies only when every launch layer
+// left api_log unset, so an explicit per-session choice (either direction)
+// always wins over the hub-wide default. The floor pins BOTH directions into
+// the child argv rather than deferring to the child binary's own default:
+// an evener predating the api_log flag still records by default, which would
+// silently defeat the hub's opt-out, so the hub-wide policy must be explicit
+// even when it matches what a current binary would do anyway. Mutating the
+// copy in req.Resolved is safe because Resolved was copied by value out of
+// the resolver.
+func applyHubAPILogDefault(resolved *launchconfig.Resolved, apiLog bool) {
+	if resolved == nil || resolved.Effective.APILog != nil {
+		return
+	}
+	value := apiLog
+	resolved.Effective.APILog = &value
+	if resolved.Provenance == nil {
+		resolved.Provenance = map[string]launchconfig.LayerName{}
+	}
+	resolved.Provenance["api_log"] = launchconfig.LayerHub
+}
+
 // buildSpawnArgs assembles the arg slice for `evener serve` from a hubcore.SpawnRequest.
 //
 // Always passes --addr 127.0.0.1:0 so the daemon binds an ephemeral port,
@@ -299,6 +322,9 @@ func buildSpawnArgs(req hubcore.SpawnRequest) []string {
 	if req.PluginRoot != "" {
 		args = append(args, "--plugin-root", req.PluginRoot)
 	}
+	if req.AgentsDocPath != "" {
+		args = append(args, "--agents-doc", req.AgentsDocPath)
+	}
 	if req.AppReplaySize > 0 {
 		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
 	}
@@ -316,6 +342,9 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	}
 	if req.RunDir != "" {
 		args = append(args, "--run-dir", req.RunDir)
+	}
+	if req.AgentsDocPath != "" {
+		args = append(args, "--agents-doc", req.AgentsDocPath)
 	}
 	if req.AppReplaySize > 0 {
 		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
@@ -732,6 +761,14 @@ func launchCheckWaitError(ctx context.Context) error {
 	return appwire.HubLaunchError("evener launch-check timed out")
 }
 
+// requiredLaunchFlag is the serve flag the hub passes on every spawn and
+// resume (the api_log floor pins both directions), so every child binary
+// must advertise it in launch-check's launch_flags before the hub will
+// launch it: a pre-change evener would otherwise accept the protocol, then
+// die on the unknown flag before writing its rendezvous record, surfacing
+// as a misleading spawn timeout.
+const requiredLaunchFlag = "api-log"
+
 func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
@@ -756,13 +793,17 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 		return appwire.HubLaunchError("evener launch-check failed: " + msg)
 	}
 	var resp struct {
-		Protocol string `json:"protocol"`
+		Protocol    string   `json:"protocol"`
+		LaunchFlags []string `json:"launch_flags"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&resp); err != nil {
 		return appwire.HubLaunchError("evener launch-check returned invalid response")
 	}
 	if resp.Protocol != appwire.ProtocolVersion {
 		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
+	}
+	if !slices.Contains(resp.LaunchFlags, requiredLaunchFlag) {
+		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check did not advertise the --%s flag: upgrade the evener binary the hub spawns", requiredLaunchFlag))
 	}
 	return nil
 }

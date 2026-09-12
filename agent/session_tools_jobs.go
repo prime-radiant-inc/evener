@@ -1576,10 +1576,15 @@ type jobWatchListToolResult struct {
 }
 
 type jobWatchInspectToolResult struct {
-	WatchID    string `json:"watch_id"`
-	Source     string `json:"source,omitempty"`
-	Watching   bool   `json:"watching"`
-	Condition  string `json:"condition,omitempty"`
+	WatchID   string `json:"watch_id"`
+	Source    string `json:"source,omitempty"`
+	Watching  bool   `json:"watching"`
+	Condition string `json:"condition,omitempty"`
+	// Note rides beside the Condition string: note text is free prose that
+	// may itself contain delimiter-looking text ("; events: [...]"), which
+	// the flattened Condition grammar cannot carry unambiguously (RoboRev PR
+	// #954). Readers prefer this field and fall back to the note: clause.
+	Note       string `json:"note,omitempty"`
 	Deliveries int    `json:"deliveries,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`
 	EndReason  string `json:"end_reason,omitempty"`
@@ -1810,8 +1815,8 @@ func formatJobWatch(out jobWatchToolResult) string {
 	case out.ProgressIntervalMS > 0:
 		cond = append(cond, fmt.Sprintf("progress_interval_ms %dms", out.ProgressIntervalMS))
 	}
-	// A note is only admitted alongside after_seconds or repeat_seconds, so a
-	// bare check cannot label a non-timer watch.
+	// The note labels any watch, not just a timer: it is the prose payload the
+	// fire shows back, so it renders after whatever the watch triggers on.
 	if out.Note != "" {
 		cond = append(cond, "note: "+out.Note)
 	}
@@ -2188,7 +2193,7 @@ func normalizeWatchArgsForOperation(a *watchArgs) {
 
 // watchTriggerFieldNames lists the create-only arguments in the DefJobWatch
 // property order: the fields that select what a created watch fires on, plus
-// note, which is the timer's payload rather than a trigger. They are meaningful
+// note, which is the watch's payload rather than a trigger. They are meaningful
 // only for operation="create"; list/inspect/clear take only watch_id, so one of
 // these beside them was previously parsed and then silently ignored.
 var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter", "after_seconds", "repeat_seconds", "note"}

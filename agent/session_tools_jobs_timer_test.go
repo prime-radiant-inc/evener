@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
@@ -150,5 +151,39 @@ func TestJobWatchTool_NegativeTimerReportsTheBoundsError(t *testing.T) {
 		if !res.IsError || !strings.Contains(res.Output, tc.want) {
 			t.Errorf("%s: result = %+v, want the error %q", tc.name, res, tc.want)
 		}
+	}
+}
+
+// TestWatchInspectResultsCarryNote pins the structured-note contract: note
+// text is free prose that may itself contain delimiter-looking text like
+// "; events: [...]", which the flattened Condition grammar cannot carry
+// unambiguously (RoboRev PR #954) — so list/inspect rows carry the note in
+// its own field, verbatim, alongside the Condition string. Both the live
+// config path and the ended-history path must carry it.
+func TestWatchInspectResultsCarryNote(t *testing.T) {
+	t.Parallel()
+	const note = "check; events: [communicate]"
+	cfg := &watchConfig{
+		watchID:      "watch_a1",
+		sourcePublic: "self",
+		outputMatch:  "ready",
+		events:       []string{"assistant.tool"},
+		note:         note,
+		createdAt:    time.Now(),
+	}
+	fromCfg := inspectResultFromWatchConfig(watchKey{}, cfg)
+	if fromCfg.Note != note {
+		t.Fatalf("config inspect note = %q, want %q", fromCfg.Note, note)
+	}
+	fromHistory := inspectResultFromWatchHistory(watchHistoryEntry{
+		id:        "watch_a1",
+		source:    "self",
+		condition: watchConditionSummary(cfg),
+		note:      note,
+		endReason: "fired",
+		endedAt:   time.Now(),
+	})
+	if fromHistory.Note != note {
+		t.Fatalf("history inspect note = %q, want %q", fromHistory.Note, note)
 	}
 }

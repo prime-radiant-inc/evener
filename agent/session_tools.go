@@ -446,10 +446,10 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
-	// Use the caller's stated intent as the vision prompt. The calling LLM
+	// Use the caller's vision_prompt as the vision prompt. The calling LLM
 	// knows what it needs — we just ask the vision model to answer that question
 	// under one unconditional observation contract.
-	prompt := visionPrompt(r.ImageIntent)
+	prompt := visionPrompt(r.ImagePrompt)
 
 	mt := r.ImageMediaType
 	if mt == "" {

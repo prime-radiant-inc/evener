@@ -43,14 +43,13 @@ import {
   clearViewportOverride,
   connectPage,
   createStartupDeadline,
-  devtoolsHttpURL,
   evaluate,
   navigateTo,
   realizedViewport,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
-import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -60,6 +59,16 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
 const GEOMETRY_TOLERANCE = 0.5;
+const COMPOSER_SEND_STATES = [
+  { theme: "dark", fontSize: "m" },
+  { theme: "light", fontSize: "m" },
+  { theme: "dark", fontSize: "xl" },
+  { theme: "light", fontSize: "xl" },
+];
+const NARROW_DESKTOP_SEND_GEOMETRY = {
+  m: { width: 70.890625, height: 24 },
+  xl: { width: 82.109375, height: 24 },
+};
 
 async function measureAt(cdpEndpoint, url, width) {
   const page = await connectPage(cdpEndpoint);
@@ -169,6 +178,58 @@ async function measureAt(cdpEndpoint, url, width) {
       focus,
       viewport: { ...measurementViewport, mobile: realizedLayout.mobile },
     };
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+async function measureComposerSend(cdpEndpoint, url, width) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width, height: 900, mobile: width < 900 });
+    await send(
+      "Emulation.setTouchEmulationEnabled",
+      width < 900 ? { enabled: true, maxTouchPoints: 1 } : { enabled: false },
+    );
+    await navigateTo(page, url);
+    const host = await evaluate(send, "location.host");
+    if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+
+    const measurements = [];
+    for (const state of COMPOSER_SEND_STATES) {
+      measurements.push(
+        await evaluate(
+          send,
+          `(async () => {
+            document.documentElement.dataset.theme = ${JSON.stringify(state.theme)};
+            document.body.dataset.fontSize = ${JSON.stringify(state.fontSize)};
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const buttons = [...document.querySelectorAll('button[data-testid="composer-submit"][aria-label="Send"]')];
+            const button = buttons[0];
+            const label = button
+              ? [...button.querySelectorAll('span')].find((candidate) => candidate.textContent?.trim() === 'Send')
+              : null;
+            const box = button?.getBoundingClientRect();
+            return {
+              theme: ${JSON.stringify(state.theme)},
+              fontSize: ${JSON.stringify(state.fontSize)},
+              matchingButtons: buttons.length,
+              tag: button?.tagName.toLowerCase() ?? null,
+              accessibleName: button?.getAttribute('aria-label') ?? null,
+              width: box?.width ?? null,
+              height: box?.height ?? null,
+              labelDisplay: label ? getComputedStyle(label).display : null,
+            };
+          })()`,
+        ),
+      );
+    }
+    return measurements;
   } finally {
     await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
     await clearViewportOverride(send);
@@ -498,6 +559,28 @@ async function verifyChatFocus(cdpEndpoint, url) {
     // awaits it. Linux Chrome may otherwise collect the bare returned Promise
     // between animation frames and reject Runtime.evaluate with -32000.
     return await evaluate(send, "window.__overflowGuardChatFocus = window.inspectChatFocus()");
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+// The reload-shaped column regression: a settled transcript whose final turn
+// ends in intent-bearing tool calls projects that trailing run as a top-level
+// virtual-list row with no .turn wrapper, so it takes the full pane width
+// while every turn above it is clamped to --session-measure and centered. The
+// horizontal-overflow scan cannot see this (nothing escapes a scroller), so
+// this compares the two boxes directly. 1024px: wide enough that the 44rem
+// measure leaves visible margins on both sides.
+async function verifyIntentColumn(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width: 1024, height: 900, mobile: false });
+    await navigateTo(page, url);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    return await evaluate(send, "window.__overflowGuardIntentColumn = window.inspectIntentColumn()");
   } finally {
     await clearViewportOverride(send);
     page.close();
@@ -926,39 +1009,71 @@ async function main() {
 
   let failed = 0;
   try {
+    const viteDeadline = createStartupDeadline();
     try {
       await waitForHttp(
         `http://127.0.0.1:${vitePort}/overflowharness.html`,
         "vite dev server",
         guard.getViteLaunchError,
+        { signal: viteDeadline.signal },
       );
     } catch (err) {
       throw new Error(
         describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
-    }
-    const startupDeadline = createStartupDeadline();
-    try {
-      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
-      await waitForHttp(
-        devtoolsHttpURL(cdpEndpoint, "/json/version"),
-        "chrome devtools endpoint",
-        guard.getChromeLaunchError,
-        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
-      );
-    } catch (err) {
-      throw new Error(
-        describeBrowserStartupFailure({
-          error: err,
-          subsystem: "chrome",
-          chromeBinary: guard.chromeBinary,
-          chromeArgv: guard.getChromeArgv(),
-          chromeStderr: guard.getChromeError(),
-          viteStderr: guard.getViteError(),
-        }),
-      );
     } finally {
-      startupDeadline.clear();
+      viteDeadline.clear();
+    }
+    cdpEndpoint = await waitForBrowserReady(guard);
+
+    for (const width of sweep.filter((candidate) => candidate < 900 || candidate === 900)) {
+      const sendMeasurements = await measureComposerSend(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+        width,
+      );
+      const sendFailures = [];
+      for (const measurement of sendMeasurements) {
+        const label = `${measurement.theme}/${measurement.fontSize}`;
+        if (
+          measurement.matchingButtons !== 1 ||
+          measurement.tag !== "button" ||
+          measurement.accessibleName !== "Send"
+        ) {
+          sendFailures.push(`${label} accessible Send identity=${JSON.stringify(measurement)}`);
+        }
+        const shouldCollapseLabel = width <= 559;
+        if ((measurement.labelDisplay === "none") !== shouldCollapseLabel) {
+          sendFailures.push(
+            `${label} Send label display=${measurement.labelDisplay}, expected ${shouldCollapseLabel ? "compact" : "visible"}`,
+          );
+        }
+        if (
+          width < 900 &&
+          (measurement.width < 44 - GEOMETRY_TOLERANCE || measurement.height < 44 - GEOMETRY_TOLERANCE)
+        ) {
+          sendFailures.push(`${label} Send is ${measurement.width}x${measurement.height}px, expected at least 44x44px`);
+        }
+        if (width === 900) {
+          const expected = NARROW_DESKTOP_SEND_GEOMETRY[measurement.fontSize];
+          if (
+            !expected ||
+            !nearlyEqual(measurement.width, expected.width) ||
+            !nearlyEqual(measurement.height, expected.height)
+          ) {
+            sendFailures.push(
+              `${label} narrow desktop Send is ${measurement.width}x${measurement.height}px, ` +
+                `expected ${expected?.width ?? "unknown"}x${expected?.height ?? "unknown"}px`,
+            );
+          }
+        }
+      }
+      if (sendFailures.length > 0) {
+        failed++;
+        console.log(`${width}px composer Send ... FAIL - ${sendFailures.join("; ")}`);
+      } else {
+        console.log(`${width}px composer Send ... PASS - ${JSON.stringify(sendMeasurements)}`);
+      }
     }
 
     const paging = await verifyItemPaging(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?paging=1`);
@@ -1024,6 +1139,23 @@ async function main() {
       console.log(`Chat focus transition ... FAIL - ${JSON.stringify(chatFocus)}`);
     } else {
       console.log("Chat focus transition ... PASS - closed action summary visibly owns focus");
+    }
+
+    const intentColumn = await verifyIntentColumn(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?intenttail=1&w=1024`,
+    );
+    if (
+      !intentColumn.groupFound ||
+      intentColumn.turnLeft === null ||
+      intentColumn.turnRight === null ||
+      Math.abs(intentColumn.groupLeft - intentColumn.turnLeft) > GEOMETRY_TOLERANCE ||
+      Math.abs(intentColumn.groupRight - intentColumn.turnRight) > GEOMETRY_TOLERANCE
+    ) {
+      failed++;
+      console.log(`intent group column ... FAIL - ${JSON.stringify(intentColumn)}`);
+    } else {
+      console.log("intent group column ... PASS - top-level intent group shares the turn content column");
     }
 
     const panelCollapse = await verifyPanelCollapse(

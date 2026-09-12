@@ -80,7 +80,7 @@ export function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | unde
   return questions.length > 0 ? questions : undefined;
 }
 
-// One line of a composed [answers] reply (askCompose.ts's composeAskAnswers,
+// One line of a composed [answers] reply (protocol/askAnswers.ts's composeAskAnswers,
 // byte-exact format): "N. [Header] → resolution text[ — note: "..."]". Safe
 // headers are raw; headers containing ]/CR/LF are JSON strings, so their
 // delimiters cannot be mistaken for the framing brackets.

@@ -69,6 +69,7 @@ var launchConfigLayerSchema = map[string]any{
 			"additionalProperties": map[string]any{"type": "string"},
 		},
 		"verbose":                   map[string]any{"type": []string{"boolean", "null"}},
+		"apiLog":                    map[string]any{"type": []string{"boolean", "null"}},
 		"traceFile":                 map[string]any{"type": "string"},
 		"cpuProfile":                map[string]any{"type": "string"},
 		"exportATIFPath":            map[string]any{"type": "string"},

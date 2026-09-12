@@ -296,14 +296,14 @@ test("a working session offers Stop before its turn has announced a name", async
 // This state is not reachable from a correct daemon any more, which is why the
 // frame is hand-built here. That is the point of the breadcrumb: it exists for
 // the trigger nobody has found yet.
-test("a working session drawn with no Stop leaves a sighting naming the frame that did it", () => {
+test("a working session drawn with no Stop leaves a sighting naming the frame that did it", async () => {
   resetStoplessComposerSightingsForTests();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   try {
     const fake = new FakeClient("ready");
     connectionStore.getState().connect(fake);
     fake.on("thread/read", () => ({ thread: thread("idle", daemonCapabilities(false)) }) as ThreadReadResponse);
-    return threadsStore
+    await threadsStore
       .getState()
       .ensureThread(REF)
       .then(() => {
@@ -327,6 +327,23 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
         expect(screen.queryByTestId("composer-stop")).toBeNull();
         const sightings = stoplessComposerSightings();
         expect(sightings).toHaveLength(1);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls).toStrictEqual([
+          [
+            "[evener 5gdv] composer is showing a working session with no Stop. Please attach this to kata 5gdv:",
+            {
+              ref: REF,
+              status: "active",
+              activeTurnId: undefined,
+              capabilities: { ...daemonCapabilities(true), interrupt: false },
+              capabilitySource: "statusFrame",
+              // This frame names no in-flight turn, so there is nothing to steer.
+              showSteer: false,
+              ended: false,
+            },
+          ],
+        ]);
+        expect(warn).toHaveBeenCalledWith(expect.any(String), sightings[0]);
         expect(sightings[0]).toMatchObject({
           ref: REF,
           status: "active",
@@ -354,7 +371,6 @@ test("the turn ending puts the controls back to a plain send", async () => {
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turnId: "turn_5",
         turn: { id: "turn_5", status: "completed", itemsView: "" },
       },
     });
@@ -413,7 +429,6 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turnId: "turn_5",
         turn: { id: "turn_5", status: "interrupted", itemsView: "" },
       },
     });

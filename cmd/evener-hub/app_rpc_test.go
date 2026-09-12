@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,15 +23,19 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -683,6 +688,12 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 }
 
 func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	for _, cleared := range []bool{false, true} {
+		t.Run(fmt.Sprint("cleared=", cleared), func(t *testing.T) { testHubSteersSurvivingDaemon(t, cleared) })
+	}
+}
+
+func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 	const (
 		daemonProtocol = appwire.ProtocolVersion
 		threadID       = "th_compatible"
@@ -704,6 +715,18 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	})
 	defer daemonHTTP.Close()
 
+	resumeID := threadID
+	if cleared {
+		resumeID = "workspace_before_clear"
+		entries, err := rendezvous.List(runDir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("rendezvous entries=%+v error=%v", entries, err)
+		}
+		entry := entries[0]
+		entry.WorkspaceRef = "local:" + resumeID
+		writeRendezvous(t, runDir, entry)
+	}
+
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
 
@@ -724,11 +747,11 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + resumeID})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+	if resumed.Thread.ID != threadID || resumed.Thread.Evener.Ref != "local:"+threadID || resumeCalls != 0 {
 		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
 	}
 
@@ -8492,7 +8515,7 @@ func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v4","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+	  printf '{"protocol":"evener-appwire-v5","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -8570,78 +8593,147 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 }
 
 func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
-	const sessionID = "033snFBSHFr78ZbQQMAeBD"
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:        sessionID,
-			SessionID: sessionID,
-			Source:    "local",
-			Evener: appwire.EvenerThread{
-				Ref:          params.Ref,
-				Capabilities: appwire.ThreadCapabilities{Send: true},
-			},
-		}}, nil
-	})
-	var gotPrompt string
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		gotPrompt = inputTextForTest(params.Input)
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
-	})
-	daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
-	dropper := &dropFirstConnectionListener{
-		Listener: daemonHTTP.Listener,
-		dropped:  make(chan struct{}),
-	}
-	daemonHTTP.Listener = dropper
-	daemonHTTP.Start()
-	defer daemonHTTP.Close()
+	for _, fault := range []string{"probe", "listing", "status", "stale-instance"} {
+		t.Run(fault, func(t *testing.T) {
+			const sessionID = "033snFBSHFr78ZbQQMAeBD"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          params.Ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+						Diagnostics: &appwire.EvenerDiagnostics{Delegates: []appwire.EvenerDelegateInfo{
+							{ChildSessionID: "active-child", Lifecycle: "running", Status: "running"},
+							{ChildSessionID: "idle-child", Lifecycle: "idle", Status: "completed", Resumable: true},
+							{ChildSessionID: "closed-child", Lifecycle: "closed", Status: "completed", Terminal: true},
+						}},
+					},
+				}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				if fault == "status" {
+					return appwire.ThreadListResponse{}, appwire.Unavailable("status temporarily unavailable")
+				}
+				return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+			})
+			var gotPrompt string
+			var turns int
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				gotPrompt = inputTextForTest(params.Input)
+				turns++
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+			})
+			daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
+			dropper := &dropFirstConnectionListener{
+				Listener: daemonHTTP.Listener,
+				dropped:  make(chan struct{}),
+			}
+			if fault == "probe" {
+				daemonHTTP.Listener = dropper
+			}
+			daemonHTTP.Start()
+			defer daemonHTTP.Close()
 
-	runDir := t.TempDir()
-	entry := rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-	}
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
-	roster := hubcore.NewRoster(runDir, failedRPCProber{})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:  runDir,
-		Roster:  roster,
-		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			runDir := t.TempDir()
+			entry := rendezvous.Entry{
+				PID:       os.Getpid(),
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			if fault == "stale-instance" {
+				entry.InstanceID = "fresh-instance"
+			}
+			var spawns int
+			spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+				spawns++
+				writeRendezvous(t, runDir, entry)
+				if fault == "listing" || fault == "stale-instance" {
+					if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return entry, nil
+			}}
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			if fault == "stale-instance" {
+				old := entry
+				old.InstanceID = "previous-instance"
+				writeRendezvous(t, runDir, old)
+				roster.Refresh()
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:  runDir,
+				Roster:  roster,
+				Spawner: spawner,
+				Past:    hubcore.NewPastIndex(""),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Model: "openai/gpt-5",
-		CWD:   "/tmp",
-		Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	select {
-	case <-dropper.dropped:
-	default:
-		t.Fatal("startup test did not drop the first daemon connection")
-	}
-	if gotPrompt != "review the open PRs" {
-		t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
-	}
-	if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
-		t.Fatalf("response=%+v", resp)
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+				Model: "openai/gpt-5",
+				CWD:   "/tmp",
+				Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
+			})
+			if err != nil {
+				t.Fatalf("ThreadStart: %v", err)
+			}
+			if fault == "probe" {
+				select {
+				case <-dropper.dropped:
+				default:
+					t.Fatal("startup test did not drop the first daemon connection")
+				}
+			}
+			if gotPrompt != "review the open PRs" {
+				t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
+			}
+			if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
+				t.Fatalf("response=%+v", resp)
+			}
+
+			if spawns != 1 || turns != 1 {
+				t.Fatalf("spawns=%d turns=%d", spawns, turns)
+			}
+			if live, ok := roster.Find(sessionID); !ok || live.PID != entry.PID || live.Crashed {
+				t.Errorf("spawned daemon is not registered: %+v, present=%v", live, ok)
+			}
+			if live, _ := roster.Find(sessionID); live.InstanceID != entry.InstanceID {
+				t.Errorf("registered instance=%q, want %q", live.InstanceID, entry.InstanceID)
+			}
+			if state, ok := roster.SubagentState("active-child"); !ok || state != appwire.ThreadStatusActive {
+				t.Errorf("active child projection: state=%q live=%v", state, ok)
+			}
+			if state, ok := roster.SubagentState("idle-child"); !ok || state != appwire.ThreadStatusIdle {
+				t.Errorf("idle child projection: state=%q live=%v", state, ok)
+			}
+			if roster.IsSubagentActive("closed-child") {
+				t.Error("closed child published as live")
+			}
+			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref}); err != nil {
+				t.Fatalf("subsequent ThreadRead: %v", err)
+			}
+			if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+				Ref: resp.Thread.Evener.Ref, ClientMutationID: "follow-up", ExpectedInstanceID: sessionID,
+				Input: []appwire.InputItem{{Type: "text", Text: "continue review"}},
+			}); err != nil {
+				t.Fatalf("subsequent TurnStart: %v", err)
+			}
+			if spawns != 1 || turns != 2 || gotPrompt != "continue review" {
+				t.Fatalf("follow-up delivery: spawns=%d turns=%d prompt=%q", spawns, turns, gotPrompt)
+			}
+
+		})
 	}
 }
 
@@ -8977,10 +9069,11 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 		got = req
 		return rendezvous.Entry{PID: 301, ThreadID: "th_orclaude", SessionID: "th_orclaude"}, nil
 	}
+	credsStore := newTestCredentialsStore(t)
 	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENROUTER_API_KEY": "k"}, map[string]registry.Provider{
 		"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic},
-	})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg})
+	}, credsStore)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg, CredsStore: credsStore})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -9106,7 +9199,7 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	stateRoot := t.TempDir()
 	launchRoot := t.TempDir()
 	cwd := t.TempDir()
-	c := newHubLaunchController(launchRoot)
+	c := newHubLaunchController(launchRoot, false)
 	if _, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
 		Layer:  "global",
@@ -9227,6 +9320,58 @@ func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
 	}
 }
 
+// TestResumeRequestForConfigCarriesLaunchAPILog proves the resume path
+// consults the session's launch layers for api_log: buildResumeArgs passes
+// the value through to the daemon, so without this carry an explicit
+// api_log choice would be silently dropped and the hub floor (or the
+// daemon's own default) would fill the gap instead. An unset layer must
+// stay nil so the hub floor still applies, and a broken launch.toml must
+// not block the resume.
+func TestResumeRequestForConfigCarriesLaunchAPILog(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		launchTOML string // global launch.toml content; "" writes nothing
+		wantNil    bool
+		wantOn     bool
+	}{
+		{name: "layer true is carried", launchTOML: "api_log = true\n", wantOn: true},
+		{name: "layer false is carried, not dropped", launchTOML: "api_log = false\n", wantOn: false},
+		{name: "unset stays nil for the hub floor", launchTOML: "", wantNil: true},
+		{name: "broken launch.toml resumes with api_log unset", launchTOML: "not = [toml", wantNil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			sessionID := hubtest.SessionID(t)
+			_, past := makeResumeSession(t, root, sessionID, "openai", "gpt-4o")
+			launchRoot := filepath.Join(root, "launchroot")
+			if tc.launchTOML != "" {
+				if err := os.MkdirAll(launchRoot, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(launchRoot, "launch.toml"), []byte(tc.launchTOML), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past, LaunchConfigRoot: launchRoot}, sessionID)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantNil {
+				if req.Resolved.Effective.APILog != nil {
+					t.Fatalf("APILog = %v, want nil", *req.Resolved.Effective.APILog)
+				}
+				return
+			}
+			if got := req.Resolved.Effective.APILog; got == nil || *got != tc.wantOn {
+				t.Fatalf("APILog = %v, want %v", got, tc.wantOn)
+			}
+			if got := req.Resolved.Effective.Model; got != "openai/gpt-4o" {
+				t.Fatalf("Model = %q, want openai/gpt-4o (api_log carry must not clobber it)", got)
+			}
+		})
+	}
+}
+
 // TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive proves the
 // native worktree tools spec §7 "Hub consumers" migration: a session
 // actively inside a worktree must resume with `--dir` set to its restore
@@ -9311,6 +9456,259 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 	if resp.Thread.ID != "th_resumed" || resp.Thread.Evener.Ref != "local:th_resumed" {
 		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
+	for _, fault := range []string{"status", "listing", "confirmed", "read", "identity"} {
+		t.Run(fault, func(t *testing.T) {
+			const sessionID = "resumed-owner"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				if fault == "confirmed" {
+					return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+				}
+				return appwire.ThreadListResponse{}, appwire.Unavailable("inventory unavailable")
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				if fault == "read" {
+					return appwire.ThreadReadResponse{}, appwire.Unavailable("read unavailable")
+				}
+				id := sessionID
+				if fault == "identity" {
+					id = "different-owner"
+				}
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "delivered"}}, nil
+			})
+			peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer peer.Close()
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
+			spawns := 0
+			spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				spawns++
+				writeRendezvous(t, runDir, entry)
+				if fault == "confirmed" {
+					roster.Refresh()
+				}
+				if fault == "listing" || fault == "confirmed" {
+					if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return entry, nil
+			}}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks()})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if spawns != 1 {
+				t.Fatalf("spawns=%d", spawns)
+			}
+			if fault == "read" || fault == "identity" {
+				if err == nil || roster.HasConfirmedEntry(entry) {
+					t.Fatalf("unverified owner admitted: error=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Thread.ID != sessionID || !roster.HasConfirmedEntry(entry) {
+				t.Fatalf("resume did not publish owner: %+v", response.Thread)
+			}
+			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID}); err != nil {
+				t.Fatal(err)
+			}
+			turn, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, ClientMutationID: "resume-followup", ExpectedInstanceID: sessionID, Input: []appwire.InputItem{{Type: "text", Text: "continue"}}})
+			if err != nil || turn.Turn.ID != "delivered" {
+				t.Fatalf("followup=%+v error=%v", turn, err)
+			}
+		})
+	}
+}
+
+func TestHubRPCSubscribedReadRefreshesReplacedDaemonOwnership(t *testing.T) {
+	for _, sameEndpoint := range []bool{false, true} {
+		t.Run(fmt.Sprint("same endpoint=", sameEndpoint), func(t *testing.T) {
+			testHubSubscribedReadReplacedOwner(t, sameEndpoint, appwire.MethodThreadRead, serveProtocolMismatch)
+		})
+	}
+}
+
+func TestHubRPCSessionActionsRefreshReplacedDaemonOwnership(t *testing.T) {
+	for _, method := range []string{appwire.MethodThreadShutdown, appwire.MethodThreadModelSet, appwire.MethodThreadVisionModelSet, appwire.MethodThreadCompactStart, appwire.MethodGoalSet} {
+		t.Run(method, func(t *testing.T) { testHubSubscribedReadReplacedOwner(t, true, method, serveProtocolMismatch) })
+	}
+}
+
+func TestHubRPCTurnStartRefreshesReplacedDaemonBeforeRelay(t *testing.T) {
+	testHubSubscribedReadReplacedOwner(t, true, appwire.MethodTurnStart, serveProtocolMismatch)
+}
+
+func TestHubRPCCachedRouteRefreshesTypedProtocolMismatch(t *testing.T) {
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodTurnStart, appwire.MethodThreadModelSet} {
+		t.Run(method, func(t *testing.T) { testHubSubscribedReadReplacedOwner(t, true, method, serveTypedProtocolMismatch) })
+	}
+}
+
+func testHubSubscribedReadReplacedOwner(t *testing.T, sameEndpoint bool, method string, replacement http.HandlerFunc) {
+	root := t.TempDir()
+	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+	})
+	var handlerMu sync.RWMutex
+	serve := http.HandlerFunc(daemon.ServeWebSocket)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerMu.RLock()
+		handler := serve
+		handlerMu.RUnlock()
+		handler(w, r)
+	}))
+	defer peer.Close()
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	if !roster.HasConfirmedEntry(entry) {
+		t.Fatal("owner not confirmed")
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	entry.Protocol = "evener-appwire-v4"
+	if sameEndpoint {
+		handlerMu.Lock()
+		serve = replacement
+		handlerMu.Unlock()
+	} else {
+		peer.Close()
+		entry.Endpoint = protocolMismatchPeer(t)
+	}
+	writeRendezvous(t, runDir, entry)
+	if method != appwire.MethodThreadRead {
+		params := map[string]any{"ref": "local:" + sessionID}
+		switch method {
+		case appwire.MethodTurnStart:
+			params["clientMutationId"] = "replacement-send"
+			params["expectedInstanceId"] = sessionID
+			params["input"] = []appwire.InputItem{{Type: "text", Text: "keep this message"}}
+		case appwire.MethodThreadModelSet:
+			params["modelProvider"], params["model"] = "test", "test-model"
+		case appwire.MethodThreadVisionModelSet:
+			params["visionModel"] = "test/vision"
+		case appwire.MethodGoalSet:
+			params["objective"] = "test goal"
+		}
+		var response any
+		err := client.Request(context.Background(), method, params, &response)
+		if !isDaemonRestartRequiredError(err) {
+			t.Fatalf("error=%v", err)
+		}
+		if method == appwire.MethodTurnStart {
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatal(err)
+			}
+			data, ok := wire.Data.(map[string]any)
+			if !ok || data["clientMutationId"] != "replacement-send" || data["mutationOutcome"] != "unknown" || data["retryDisposition"] != "blocked" {
+				t.Fatalf("mutation outcome=%+v", wire.Data)
+			}
+		}
+		return
+	}
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Thread.Status.Type != appwire.ThreadStatusRestartRequired {
+		t.Fatalf("status=%s", response.Thread.Status.Type)
+	}
+	if response.Thread.Evener.Capabilities.Send || len(response.Thread.Turns) != 2 {
+		t.Fatalf("thread=%+v", response.Thread)
+	}
+}
+
+func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T) {
+	for _, state := range []string{"healthy", "unreachable", "absent"} {
+		t.Run(state, func(t *testing.T) {
+			const sessionID = "confirmed-owner"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			thread := appwire.Thread{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: thread}, nil
+			})
+			peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer peer.Close()
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			if state != "absent" {
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID})
+				roster.Refresh()
+				if _, ok := roster.Find(sessionID); !ok {
+					t.Fatal("owner was not confirmed")
+				}
+			}
+			if state == "unreachable" {
+				peer.Close()
+			}
+			if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			spawned := false
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				spawned = true
+				return rendezvous.Entry{}, errors.New("unexpected replacement")
+			}}})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if spawned {
+				t.Fatal("spawned despite incomplete ownership discovery")
+			}
+			if state == "healthy" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.Thread.ID != sessionID {
+					t.Fatalf("thread=%+v", response.Thread)
+				}
+			} else if err == nil {
+				t.Fatal("resume succeeded without a verified owner")
+			}
+			if roster.OwnershipError() == nil {
+				t.Fatal("partial confirmation cleared the discovery failure")
+			}
+		})
 	}
 }
 
@@ -9590,10 +9988,6 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 		}
 		if !strings.Contains(string(got.Params), "subscribe failed after start") || !strings.Contains(string(got.Params), `"source":"hub"`) {
 			t.Fatalf("warning params=%s", got.Params)
-		}
-		payload := warningPayload(got.Params)
-		if payload["source"] != "hub" || payload["title"] != "Live updates unavailable" {
-			t.Fatalf("warning payload=%+v", payload)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for relay warning")
@@ -10034,100 +10428,111 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 }
 
 func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) {
-	root := t.TempDir()
-	workingDir := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
-	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	staleAddress := ln.Addr().String()
-	staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
-	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
-	})
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	defer daemonHTTP.Close()
-
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       -1,
-		Address:   staleAddress,
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  staleEndpoint,
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-		StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
-	})
-	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
-	roster := hubcore.NewRoster(runDir, prober)
-	roster.Refresh()
-	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
-		t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
-	}
-	resumeCalled := false
-	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			if req.WorkingDir != workingDir {
-				t.Fatalf("resume request=%+v", req)
+	for _, refreshFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint("refresh failure=", refreshFailure), func(t *testing.T) {
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
 			}
-			resumeCalled = true
-			entry := rendezvous.Entry{
-				PID:        110,
-				Address:    daemonHTTP.Listener.Addr().String(),
-				Protocol:   appwire.ProtocolVersion,
-				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:   "local",
-				ThreadID:   sessionID,
-				SessionID:  sessionID,
-				WorkingDir: workingDir,
-				StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
-			prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
-			writeRendezvous(t, runDir, entry)
+			staleAddress := ln.Addr().String()
+			staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
+			if err := ln.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				appserver.Subscribe(ctx, sessionID)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID:       -1,
+				Address:   staleAddress,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  staleEndpoint,
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+				StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
+			})
+			prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
+			roster := hubcore.NewRoster(runDir, prober)
 			roster.Refresh()
-			return entry, nil
-		},
-	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:      runDir,
-		Roster:      roster,
-		Spawner:     spawner,
-		Past:        past,
-		ResumeLocks: hubcore.NewResumeLocks(),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
+				t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
+			}
+			resumeCalled := false
+			spawner := &fakeRPCSpawner{
+				resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+					if req.WorkingDir != workingDir {
+						t.Fatalf("resume request=%+v", req)
+					}
+					resumeCalled = true
+					entry := rendezvous.Entry{
+						PID:        110,
+						Address:    daemonHTTP.Listener.Addr().String(),
+						Protocol:   appwire.ProtocolVersion,
+						Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+						SourceID:   "local",
+						ThreadID:   sessionID,
+						SessionID:  sessionID,
+						WorkingDir: workingDir,
+						StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+					}
+					prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
+					writeRendezvous(t, runDir, entry)
+					if refreshFailure {
+						if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
-	if err != nil {
-		t.Fatalf("TurnStart: %v", err)
-	}
-	if !resumeCalled {
-		t.Fatal("resume was not called after local transport error")
-	}
-	if resp.Turn.ID != "turn_recovered" {
-		t.Fatalf("turn=%+v", resp.Turn)
+					roster.Refresh()
+					return entry, nil
+				},
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:      runDir,
+				Roster:      roster,
+				Spawner:     spawner,
+				Past:        past,
+				ResumeLocks: hubcore.NewResumeLocks(),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+			if err != nil {
+				t.Fatalf("TurnStart: %v", err)
+			}
+			if !resumeCalled {
+				t.Fatal("resume was not called after local transport error")
+			}
+			if resp.Turn.ID != "turn_recovered" {
+				t.Fatalf("turn=%+v", resp.Turn)
+			}
+
+		})
 	}
 }
 
@@ -10729,7 +11134,11 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 
 func buildRPCParentSessionWithWorkingDir(t *testing.T, stateDir, workingDir string) string {
 	t.Helper()
-	parentID := "02wMz5Txv1C3Hut0M8GCeB"
+	return buildRPCSessionWithWorkingDir(t, stateDir, "02wMz5Txv1C3Hut0M8GCeB", workingDir)
+}
+
+func buildRPCSessionWithWorkingDir(t *testing.T, stateDir, parentID, workingDir string) string {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -10796,11 +11205,13 @@ func TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate(t *test
 func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10849,11 +11260,13 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10886,11 +11299,13 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10915,6 +11330,122 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// A rename whose credential move fails still reached providers.toml and the
+// registry, so every other client's instance list is stale by exactly as much
+// as it would be on success: the broadcast has to fire even though the call
+// comes back an error naming what was left behind. The failure is injected on
+// the credentials store's own temp path, so the whole move is the real one.
+func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	if err := credsStore.Set("base", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	breakCredentialWrites(t, credsStore.Path())
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
+		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
+	}
+	// The file is the new name either way, which is what the other clients
+	// are now out of date against.
+	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated after a rename whose credential move failed")
+	}
+}
+
+// The sibling case: the credential move succeeded and the reload that follows
+// it failed, so the rename is on disk in full — providers.toml and
+// credentials.toml both carry the new name — and only the hub's view of it is
+// behind. Every other client is stale by exactly as much as after a clean
+// rename, so the broadcast has to fire here too.
+func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	if err := credsStore.Set("base", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// The stored key under the new name is what marks the move as done, so
+	// this refuses the reload that runs after it and no earlier one: every
+	// load before the move — including the one right after providers.toml is
+	// written — still finds the key under the old name.
+	load := testRegistryLoader(t.TempDir(), tomlPath, credsStore, nil)
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if v, _ := credsStore.Get("personal"); v != "" {
+			return nil, nil, errors.New("registry refused the reload after the credential move")
+		}
+		return load(extra...)
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            reg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "registry refused the reload after the credential move") {
+		t.Fatalf("evener/instance/edit = %v, want the failed reload reported", err)
+	}
+	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+	if v, _ := credsStore.Get("personal"); v != "sk-stored" {
+		t.Fatalf("the credential move did not run: personal = %q", v)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated after a rename whose final reload failed")
+	}
+}
+
 // TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove
 // sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc
 // comment for why evener/auth/updated is the right (reused) notification.
@@ -10923,11 +11454,13 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10961,11 +11494,13 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -11007,6 +11542,19 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	return srv
 }
 
+// newTestCredentialsStore loads a credentials store over a file of this test's
+// own, so writes through evener/auth/apiKey never reach the developer's
+// credentials.toml or another test's.
+func newTestCredentialsStore(t *testing.T) *credentials.Store {
+	t.Helper()
+	credsPath := filepath.Join(t.TempDir(), "credentials.toml")
+	store, err := credentials.LoadStore(credsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credsPath, err)
+	}
+	return store
+}
+
 // newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
 // returns the constructed *WebServer, for tests that need to wire an
 // onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
@@ -11014,25 +11562,267 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 // starts serving requests.
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
-	if cfg.Registry == nil {
-		// Every auth and instance answer comes from the registry, so a hub
-		// fixture without one answers nothing. Offline, uncached and with no
-		// user layer: what the test's own environment and state root say, and
-		// nothing from the developer's providers.toml.
-		cfg.Registry = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-			return cmdutil.LoadRegistry(append(extra,
-				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer())...)
-		})
-		if err := cfg.Registry.Reload(); err != nil {
-			t.Fatalf("registry: %v", err)
+	// An unset root falls back to a HOME/XDG-derived default, which under this
+	// package's TestMain is the one throwaway root every test in the binary
+	// shares, so two parallel tests that both leave a root unset read each
+	// other's launch.toml, credentials.toml and plugin store. A test that means
+	// to exercise a seeded XDG environment passes the root explicitly.
+	for _, root := range []*string{&cfg.HubStateRoot, &cfg.LaunchConfigRoot, &cfg.PluginRoot} {
+		if *root == "" {
+			*root = t.TempDir()
 		}
 	}
+	// credentials.toml gets the same treatment: the auth controller keeps its
+	// OAuth records in the registry's state root, but the store it writes
+	// keys to follows no root, so without a default parallel tests calling
+	// evener/auth/apiKey/set or apiKey/clear would share the process-wide
+	// XDG-derived store and overwrite each other's keys. CredentialsPath is
+	// the same file, as in production (main.go loads the store from
+	// cmdutil.CredentialsPath and hands children that path).
+	if cfg.CredsStore == nil {
+		// A caller that brings its own registry has already chosen where that
+		// registry resolves credentials from, and a store minted here would
+		// not be it: evener/auth/apiKey/set would write a file the registry
+		// never reads, so Reload and every status answer would keep reporting
+		// the credential the registry's own source holds.
+		if cfg.Registry != nil {
+			t.Fatalf("newHubRPCTestServerWithWeb: an injected Registry must come with the CredsStore it resolves from; without it evener/auth/apiKey/set writes a store the registry never reads")
+		}
+		cfg.CredsStore = newTestCredentialsStore(t)
+	}
+	if cfg.CredentialsPath == "" {
+		cfg.CredentialsPath = cfg.CredsStore.Path()
+	}
+	if cfg.Registry == nil {
+		// Every auth and instance answer comes from the registry, so a hub
+		// fixture without one answers nothing. newTestRegistry loads it
+		// straight from this server's own store and state root - offline,
+		// uncached, no user layer and no ambient environment - so the store
+		// the auth handlers write is the one the registry resolves from,
+		// stray OAuth records come from this server's state root, and nothing
+		// reaches the developer's providers.toml or credentials.toml.
+		// cmdutil.LoadRegistry will not do: it loads the process-wide
+		// credentials.toml before any caller option applies, so the fixture
+		// failed whenever that file was malformed, had loose permissions or
+		// was rewritten by another test.
+		cfg.Registry = newTestRegistry(t, cfg.HubStateRoot, "", cfg.CredsStore, nil)
+	}
+	return startHubRPCTestServer(t, cfg)
+}
+
+// startHubRPCTestServer serves cfg exactly as given, with none of
+// newHubRPCTestServerWithWeb's per-test defaults. It is for the rare test
+// whose subject is an unset root: an empty LaunchConfigRoot means "none" to
+// the handlers, and the fixture would fill it in.
+func startHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
 	web := NewWebServer(cfg)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
 	return srv, web
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnRoots pins the fixture's isolation
+// contract: a caller that leaves HubStateRoot, LaunchConfigRoot or PluginRoot
+// unset gets a directory of its own, not the package-wide throwaway root every
+// test in this binary shares. Without it two parallel tests both writing
+// launch.toml, credentials.toml or the plugin store read each other's writes.
+func TestHubRPCTestServerGivesEachTestItsOwnRoots(t *testing.T) {
+	t.Parallel()
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer first.Close()
+	second, secondWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer second.Close()
+
+	for _, root := range []struct {
+		name   string
+		got    func(hubcore.WebConfig) string
+		shared string
+	}{
+		{"HubStateRoot", func(c hubcore.WebConfig) string { return c.HubStateRoot }, cmdutil.DefaultStateRoot()},
+		{"LaunchConfigRoot", func(c hubcore.WebConfig) string { return c.LaunchConfigRoot }, cmdutil.DefaultConfigRoot()},
+		{"PluginRoot", func(c hubcore.WebConfig) string { return c.PluginRoot }, plugins.DefaultRoot()},
+	} {
+		a, b := root.got(firstWeb.cfg), root.got(secondWeb.cfg)
+		if a == "" || b == "" {
+			t.Errorf("%s left empty (%q, %q); it falls back to the shared package root", root.name, a, b)
+			continue
+		}
+		if a == b {
+			t.Errorf("%s is %q for both servers; the fixture is not isolating them", root.name, a)
+		}
+		for _, got := range []string{a, b} {
+			if got == root.shared {
+				t.Errorf("%s resolved to the package-wide default %q", root.name, root.shared)
+			}
+		}
+	}
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnCredentials pins the credential half
+// of the same contract. newHubAuthControllerWithStore ignores its state-root
+// argument, so a nil CredsStore lands on the process-wide XDG-derived
+// credentials.toml: two parallel tests calling evener/auth/apiKey/set read
+// each other's keys, and one calling apiKey/clear wipes the other's.
+func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
+	t.Parallel()
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer first.Close()
+	second, secondWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer second.Close()
+
+	shared := cmdutil.CredentialsPath()
+	var paths []string
+	for i, cfg := range []hubcore.WebConfig{firstWeb.cfg, secondWeb.cfg} {
+		if cfg.CredsStore == nil {
+			t.Errorf("server %d has a nil CredsStore; the auth controller falls back to the process-wide store", i)
+			continue
+		}
+		paths = append(paths, cfg.CredsStore.Path())
+		if cfg.CredsStore.Path() == shared {
+			t.Errorf("server %d keeps credentials at the process-wide default %q", i, shared)
+		}
+		if cfg.CredentialsPath != cfg.CredsStore.Path() {
+			t.Errorf("server %d has CredentialsPath %q but a store at %q; a spawned child resolves keys from a different file than the hub writes",
+				i, cfg.CredentialsPath, cfg.CredsStore.Path())
+		}
+	}
+	if len(paths) == 2 && paths[0] == paths[1] {
+		t.Errorf("both servers keep credentials at %q; the fixture is not isolating them", paths[0])
+	}
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnOAuthState pins that a fixture
+// server's auth controller and registry share that server's own state root:
+// an OAuth record under one server's root signs that server in and is
+// invisible to another, so parallel tests never read or overwrite each
+// other's auth/<instance>.json.
+func TestHubRPCTestServerGivesEachTestItsOwnOAuthState(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer first.Close()
+	second, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer second.Close()
+
+	if err := authopenai.SaveAuth(firstWeb.cfg.HubStateRoot, "openai-codex", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Hour),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email",
+		AccessToken:  "stored-access-token",
+		RefreshToken: "stored-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "stored@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	codexStatus := func(name string, srv *httptest.Server) appwire.AuthStatusResponse {
+		client := dialHubRPC(t, srv)
+		defer client.Close()
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("%s Initialize: %v", name, err)
+		}
+		status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+		if err != nil {
+			t.Fatalf("%s AuthStatus: %v", name, err)
+		}
+		return status
+	}
+	if got := codexStatus("first", first); !got.SignedIn || got.ActiveSource != authopenai.AuthSourceOAuth {
+		t.Errorf("first status=%+v, want signed in from the record under its own state root %s", got, firstWeb.cfg.HubStateRoot)
+	}
+	if got := codexStatus("second", second); got.SignedIn || got.HasStoredOAuth {
+		t.Errorf("second status=%+v, want signed out: the first server's record must not be visible to it", got)
+	}
+}
+
+// TestHubRPCTestServerRegistryReadsItsOwnCredentials pins the other half of
+// credential isolation: the store the auth handlers write has to be the store
+// the registry resolves from. A default registry loaded through
+// cmdutil.LoadRegistry reads the process-wide credentials.toml instead, so a
+// key set through evener/auth/apiKey/set lands in the server's own store while
+// the reload behind that same call resolves from the shared file: the caller
+// is told "none" for the key it just stored, and a parallel test's registry
+// answers from whatever the shared file happens to hold.
+func TestHubRPCTestServerRegistryReadsItsOwnCredentials(t *testing.T) {
+	t.Parallel()
+	first := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer first.Close()
+	second := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer second.Close()
+
+	firstClient := dialHubRPC(t, first)
+	defer firstClient.Close()
+	secondClient := dialHubRPC(t, second)
+	defer secondClient.Close()
+	for _, client := range []*appwire.Client{firstClient, secondClient} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+
+	var stored appwire.AuthStatusResponse
+	if err := firstClient.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet,
+		appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-first-server"}, &stored); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	if stored.ActiveSource != "store" {
+		t.Fatalf("first server resolved %q right after storing a key; its registry is not reading the store its handlers write", stored.ActiveSource)
+	}
+
+	var other appwire.AuthStatusResponse
+	if err := secondClient.Request(context.Background(), appwire.MethodEvenerAuthStatus,
+		appwire.AuthStatusParams{Provider: "anthropic"}, &other); err != nil {
+		t.Fatalf("evener/auth/status: %v", err)
+	}
+	if other.ActiveSource == "store" {
+		t.Fatalf("second server resolved a stored key for anthropic; it is reading the first server's credentials")
+	}
+}
+
+// TestHubRPCTestServerRegistryIgnoresTheProcessCredentialsFile pins the last
+// piece of shared state out of the fixture's default registry: loading it must
+// not read the process-wide credentials.toml at all. cmdutil.LoadRegistry
+// loads that file before any caller option applies, so a file that is
+// malformed, has group- or world-readable permissions, or is rewritten by
+// another test failed every fixture server, whatever store the test handed it.
+func TestHubRPCTestServerRegistryIgnoresTheProcessCredentialsFile(t *testing.T) {
+	// t.Setenv, hence no t.Parallel: the process credentials path is
+	// process-wide state, and the testing package resumes parallel tests only
+	// once the sequential ones have finished.
+	broken := filepath.Join(t.TempDir(), "credentials.toml")
+	if err := os.WriteFile(broken, []byte("[[[not credentials\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", broken, err)
+	}
+	t.Setenv(envvars.EVENERCredentialsConfig.Name, broken)
+	if _, err := credentials.LoadStore(cmdutil.CredentialsPath()); err == nil {
+		t.Fatalf("LoadStore(%s) succeeded; this test needs a process credentials file that cannot be loaded", cmdutil.CredentialsPath())
+	}
+
+	srv, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer srv.Close()
+	if err := web.cfg.Registry.Reload(); err != nil {
+		t.Fatalf("registry reload: %v; the fixture registry is still reading the process credentials file", err)
+	}
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var status appwire.AuthStatusResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthStatus,
+		appwire.AuthStatusParams{Provider: "anthropic"}, &status); err != nil {
+		t.Fatalf("evener/auth/status: %v", err)
+	}
+	if status.ActiveSource == "store" {
+		t.Fatalf("anthropic resolved a stored key; the registry is reading credentials this test never wrote")
+	}
 }
 
 // TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods
@@ -11043,30 +11833,37 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 // Auth / Instance / Launch / Plugin / Misc / PluginAutoUpgrade) in both
 // directions.
 //
-// Every named method is then dispatched over the wire and must not answer
-// methodNotFound — reachability the router set alone cannot show — except the
-// handlers listed in notDispatched, which act outside the process.
+// Two dispatches over the wire tie that set to what /rpc actually serves: a
+// registered read-only method (model/list, answered by a LiveModels stub so
+// it never asks a live provider) must not answer methodNotFound, and an
+// unregistered name must. Dispatching every named method instead adds no
+// reachability — /rpc serves the same appRPC whose router the set check
+// inspects — while running for real any handler for which empty params are a
+// valid write.
 func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
-	// A temp-dir-backed credentials store, shared with the registry below:
-	// the dispatch loop further down calls every expected method with empty
-	// params, including the credential-mutating evener/auth/* handlers
-	// (apiKey/set, logout, apiKey/clear). A nil CredsStore makes
-	// newHubAuthControllerWithStore fall back to the real on-disk default
-	// (~/.config/evener/credentials.toml via the ambient HOME/XDG env) -
-	// this test must never read or write a developer's actual store.
-	credsStore, loadErr := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	if loadErr != nil {
-		t.Fatalf("LoadStore: %v", loadErr)
-	}
+	// One store for the registry and the auth controller both: a nil CredsStore
+	// makes newHubAuthControllerWithStore fall back to the on-disk default
+	// store under the ambient HOME/XDG env, which the whole package shares.
+	credsStore := newTestCredentialsStore(t)
+	var liveModelsCalled atomic.Bool
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 		CredsStore:          credsStore,
+		// model/list is the one registered method dispatched below. With
+		// LiveModels unset, NewWebServer falls back to fetchLiveModels, which
+		// loads the default client and asks every discovered provider,
+		// including the implicit Ollama endpoint. The stub keeps the probe
+		// offline and records that the dispatch reached it.
+		LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			liveModelsCalled.Store(true)
+			return nil
+		},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -11096,6 +11893,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadClear,
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
+		appwire.MethodEvenerThreadForceStop,
 		appwire.MethodThreadModelSet,
 		appwire.MethodThreadVisionModelSet,
 		appwire.MethodEvenerThreadNameSet,
@@ -11133,6 +11931,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerLaunchSetLayer,
 		appwire.MethodEvenerLaunchTrustRepo,
 		appwire.MethodEvenerUpgrade,
+		appwire.MethodEvenerUpdateCheck,
+		appwire.MethodEvenerUpdateApply,
 		appwire.MethodModelList,
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,
@@ -11146,15 +11946,19 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerMobilePairing,
 		appwire.MethodEvenerHarnessesList,
 		appwire.MethodEvenerCommandList,
+		appwire.MethodEvenerSpawnSlashCatalog,
 		appwire.MethodEvenerSettingsOverview,
 		appwire.MethodEvenerSettingsTranscriptDisplayGet,
 		appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.MethodEvenerSettingsKeybindingsGet,
 		appwire.MethodEvenerSettingsKeybindingsPatch,
+		appwire.MethodEvenerSettingsAgentsDocGet,
+		appwire.MethodEvenerSettingsAgentsDocSet,
 		appwire.MethodEvenerMarketplaceList,
 		appwire.MethodEvenerMarketplaceAdd,
 		appwire.MethodEvenerMarketplaceRemove,
 		appwire.MethodEvenerMarketplaceRefresh,
+		appwire.MethodEvenerMarketplaceEdit,
 		appwire.MethodEvenerMarketplaceBrowse,
 		appwire.MethodEvenerPluginList,
 		appwire.MethodEvenerPluginInstall,
@@ -11174,51 +11978,29 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		t.Errorf("hub handler set differs from the set this test names:\n  named but NOT registered: %v\n  registered but NOT named: %v", missing, extra)
 	}
 
-	// notDispatched are named above but never called: their handlers act
-	// outside this process. evener/upgrade runs the real self-update (fetch and
-	// install over the running binary), and the marketplace, plugin and
-	// auto-upgrade handlers work against the plugin root — which, with no
-	// PluginRoot configured, is the developer's own plugins.DefaultRoot — and
-	// fetch its remote sources. app_plugins_test.go and
-	// app_plugin_autoupgrade_test.go drive those against fixture roots.
-	notDispatched := map[string]bool{
-		appwire.MethodEvenerUpgrade:              true,
-		appwire.MethodEvenerMarketplaceList:      true,
-		appwire.MethodEvenerMarketplaceAdd:       true,
-		appwire.MethodEvenerMarketplaceRemove:    true,
-		appwire.MethodEvenerMarketplaceRefresh:   true,
-		appwire.MethodEvenerMarketplaceBrowse:    true,
-		appwire.MethodEvenerPluginList:           true,
-		appwire.MethodEvenerPluginInstall:        true,
-		appwire.MethodEvenerPluginUpgrade:        true,
-		appwire.MethodEvenerPluginRemove:         true,
-		appwire.MethodEvenerPluginEnable:         true,
-		appwire.MethodEvenerPluginDisable:        true,
-		appwire.MethodEvenerPluginSetAutoUpgrade: true,
-		appwire.MethodEvenerPluginCheckNow:       true,
+	// Two dispatches tie the set above to what /rpc actually serves: /rpc
+	// serves this same appRPC, so landing on a registered method here is what
+	// shows the wire path reaches the router the set check inspected. model/list
+	// is the read-only pick — it answers from the offline registry this test
+	// configured and writes nothing. We only care about the dispatch outcome,
+	// not the response body, so pass a nil out: the handler may succeed or
+	// reject the empty params with some other error; what it must never return
+	// is methodNotFound.
+	registeredErr := client.Request(context.Background(), appwire.MethodModelList, appwire.EmptyParams{}, nil)
+	var registeredWire appwire.WireError
+	if errors.As(registeredErr, &registeredWire) && registeredWire.Code == appwire.CodeMethodNotFound {
+		t.Errorf("method %q is not registered (methodNotFound)", appwire.MethodModelList)
 	}
-
-	for _, method := range expected {
-		if notDispatched[method] {
-			continue
-		}
-		// We only care about the dispatch outcome, not the response body, so
-		// pass a nil out. A registered handler may succeed or reject the empty
-		// params with some other error; what it must never return is
-		// methodNotFound.
-		err := client.Request(context.Background(), method, appwire.EmptyParams{}, nil)
-		var wire appwire.WireError
-		if errors.As(err, &wire) && wire.Code == appwire.CodeMethodNotFound {
-			t.Errorf("method %q is not registered (methodNotFound)", method)
-		}
+	if !liveModelsCalled.Load() {
+		t.Errorf("model/list did not reach the LiveModels stub; the probe is no longer offline")
 	}
 
 	// Sanity check: an unregistered method must report methodNotFound, proving
 	// the assertion above is meaningful.
-	err := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
-		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)
+	unknownErr := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
+	var unknownWire appwire.WireError
+	if !errors.As(unknownErr, &unknownWire) || unknownWire.Code != appwire.CodeMethodNotFound {
+		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", unknownErr, unknownErr)
 	}
 }
 
@@ -11309,5 +12091,37 @@ func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("error = %v, want error containing \"model is required\"", err)
+	}
+}
+
+func TestHubRPCSavedDelegateReadDoesNotClaimMutationAuthority(t *testing.T) {
+	for _, status := range []string{appwire.ThreadStatusActive, appwire.ThreadStatusIdle} {
+		t.Run(status, func(t *testing.T) {
+			cfg, childID := runningSubagentProjectionConfigWithState(t, status)
+			entries := cfg.Roster.List()
+			entries[0].Protocol = appwire.ProtocolVersion
+			entries[0].Endpoint = "ws://unused.invalid/appwire"
+			cfg.Roster = hubcore.NewRosterWithEntries(entries...)
+			sources := appsource.NewRegistry()
+			sources.Add(&pastFallbackRelaySource{
+				thread:  appwire.Thread{ID: childID, Evener: appwire.EvenerThread{Ref: "local:" + childID}},
+				readErr: errors.New("delegate transport failed"),
+			})
+			app := newHubAppServer(cfg, sources)
+			hub := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + childID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Thread.Status.Type != status || response.Thread.Evener.MutationStateAuthoritative {
+				t.Fatalf("saved delegate status=%q mutation authority=%v", response.Thread.Status.Type, response.Thread.Evener.MutationStateAuthoritative)
+			}
+		})
 	}
 }

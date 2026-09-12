@@ -101,6 +101,7 @@ no router (reserved).
 | `thread/reasoning-effort/set` | both | `ThreadReasoningEffortSetParams` | `EmptyResponse` | Sets reasoning effort, normalizing and validating the value. |
 | `thread/vision-model/set` | both | `ThreadVisionModelSetParams` | `EmptyResponse` | Sets the vision side-channel routing ("", "off", or a model ref). |
 | `thread/compact/start` | both | `ThreadCompactStartParams` | `EmptyResponse` | Starts a context-compaction pass on the session. |
+| `evener/thread/forceStop` | hub | `ThreadForceStopParams` | `EmptyResponse` | Explicitly terminates a verified local daemon and confirms exit; saved session data is retained. |
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
 | `turn/start` | both | `TurnStartParams` | `TurnStartResponse` | Starts a new user turn and reserves a turn ID. |
 | `turn/steer` | both | `TurnSteerParams` | `TurnSteerResponse` | Injects a steering message into the active turn. |
@@ -133,6 +134,8 @@ no router (reserved).
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
+| `evener/update/check` | hub | `UpdateCheckParams` | `UpdateCheckResponse` | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
+| `evener/update/apply` | hub | `UpdateApplyParams` | `UpdateApplyResponse` | Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds. |
 | `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
 | `evener/auth/test` | hub | `AuthTestParams` | `AuthTestResponse` | Tests the effective credentials for one configured provider instance without starting a session. |
 | `evener/auth/login/start` | hub | `AuthLoginStartParams` | `AuthLoginStartResponse` | Begins an OAuth login flow; returns a flow ID and URL. |
@@ -161,6 +164,7 @@ no router (reserved).
 | `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
 | `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
 | `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
+| `evener/marketplace/edit` | hub | `MarketplaceEditParams` | `MarketplaceListResponse` | Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated. |
 | `evener/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
 | `evener/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
 | `evener/plugin/install` | hub | `PluginRefParams` | `PluginListResponse` | Installs a plugin from a marketplace; returns the updated list. |
@@ -170,11 +174,14 @@ no router (reserved).
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
+| `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
 | `evener/settings/keybindings/get` | hub | `EmptyParams` | `KeybindingsOverrides` | Reads the canonical user keybinding overrides (version, revision, rules). |
 | `evener/settings/keybindings/patch` | hub | `KeybindingsPatchParams` | `KeybindingsOverrides` | Replaces the user keybinding overrides using an expected revision and returns the canonical value. |
+| `evener/settings/agentsDoc/get` | hub | `EmptyParams` | `AgentsDocResponse` | Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content. |
+| `evener/settings/agentsDoc/set` | hub | `AgentsDocSetParams` | `AgentsDocResponse` | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 
 ## Notifications (server → client)
@@ -211,8 +218,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
-| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
-| `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
+| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list. |
+| `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
@@ -220,6 +227,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
 | `evener/settings/transcriptDisplay/changed` | `TranscriptDisplayChangedParams` | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
 | `evener/settings/keybindings/changed` | `KeybindingsOverrides` | Broadcast after the user keybinding overrides change; carries the revision and canonical rules. |
+| `evener/settings/agentsDoc/changed` | `AgentsDocResponse` | Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content. |
 
 ## Type reference
 
@@ -246,6 +254,22 @@ An embedded type contributes its own fields inline.
 | `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
+
+
+### `AgentsDocResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | `string` |  |  |
+| `exists` | `bool` |  |  |
+| `content` | `string` |  |  |
+
+
+### `AgentsDocSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `content` | `string` |  |  |
 
 
 ### `ArchiveParams`
@@ -691,11 +715,18 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `newName` | `string` | yes |  |
 | `baseUrl` | `string` | yes |  |
 | `clearBaseUrl` | `bool` | yes |  |
 | `protocol` | `string` | yes |  |
+| `clearProtocol` | `bool` | yes |  |
 | `surface` | `string` | yes |  |
+| `clearSurface` | `bool` | yes |  |
 | `vars` | `map[string]string` | yes |  |
+| `apiKeyEnv` | `string` | yes |  |
+| `clearApiKeyEnv` | `bool` | yes |  |
+| `credentialHeader` | `string` | yes |  |
+| `clearCredentialHeader` | `bool` | yes |  |
 
 
 ### `InstanceEntry`
@@ -710,6 +741,8 @@ _(no fields)_
 | `auth` | `string` |  |  |
 | `baseUrl` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |
+| `apiKeyEnv` | `string` | yes |  |
+| `credentialHeader` | `string` | yes |  |
 | `implicit` | `bool` |  |  |
 | `hidden` | `bool` | yes |  |
 | `isDefault` | `bool` |  |  |
@@ -1006,6 +1039,7 @@ _(no fields)_
 | `mcps` | `[]appwire.MCPServerSpec` | yes |  |
 | `env` | `map[string]string` | yes |  |
 | `verbose` | `*bool` | yes |  |
+| `apiLog` | `*bool` | yes |  |
 | `traceFile` | `string` | yes |  |
 | `cpuProfile` | `string` | yes |  |
 | `exportATIFPath` | `string` | yes |  |
@@ -1078,6 +1112,15 @@ _(no fields)_
 | `name` | `string` |  |  |
 | `description` | `string` | yes |  |
 | `plugins` | `[]appwire.MarketplaceCatalogPlugin` |  |  |
+
+
+### `MarketplaceEditParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `newName` | `string` | yes |  |
+| `source` | `*appwire.MarketplaceSourceInput` | yes |  |
 
 
 ### `MarketplaceListResponse`
@@ -1436,6 +1479,23 @@ _(no fields)_
 | `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
 
 
+### `SpawnSlashCatalogParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `harness` | `string` | yes |  |
+| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+
+
+### `SpawnSlashCatalogResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `commands` | `[]appwire.CommandDescriptor` |  |  |
+| `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
+
+
 ### `TaskListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1491,6 +1551,13 @@ _(no fields)_
 
 
 ### `ThreadCompactStartParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+
+
+### `ThreadForceStopParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
@@ -1869,7 +1936,6 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
 | `turn` | `appwire.Turn` |  |  |
 
 
@@ -1987,6 +2053,44 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `receipt` | `appwire.MutationReceipt` |  |  |
+
+
+### `UpdateApplyParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` | yes |  |
+
+
+### `UpdateApplyResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `release` | `string` |  |  |
+| `channel` | `string` |  |  |
+| `installed` | `[]string` |  |  |
+| `restarting` | `bool` |  |  |
+
+
+### `UpdateCheckParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` | yes |  |
+
+
+### `UpdateCheckResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` |  |  |
+| `buildChannel` | `string` |  |  |
+| `currentVersion` | `string` |  |  |
+| `currentCommit` | `string` |  |  |
+| `latestTag` | `string` | yes |  |
+| `latestCommit` | `string` | yes |  |
+| `updateAvailable` | `bool` |  |  |
+| `applicable` | `bool` |  |  |
 
 
 ### `UpgradeParams`

@@ -145,7 +145,13 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "evener",
-    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: {
+      ref,
+      mutationStateAuthoritative: true,
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
     turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
     ...overrides,
   };
@@ -171,6 +177,9 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
       <Composer ref={ref} />
     </ClientProvider>,
   );
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
   return fake;
 }
 
@@ -227,9 +236,89 @@ function composerSteerButton(): HTMLButtonElement {
   return screen.getByTestId("composer-steer") as HTMLButtonElement;
 }
 
-test("an unconfirmed storage commit stays visible and repeated Steer clicks cannot duplicate it", async () => {
-  const fake = await mountComposer("ref_a");
-  fake.on("turn/steer", (params) => ({
+test.each(["pointer", "keyboard"] as const)(
+  "ordinary %s Send returns focus to Message after successful submission",
+  async (activation) => {
+    const fake = await mountComposer("ref_a", {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: FULL_CAPABILITIES,
+        queue: { revision: 0 },
+      },
+      turns: [],
+    });
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_focus", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    }));
+    const user = userEvent.setup();
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    await user.type(message, "ordinary focus proof");
+    expect(document.activeElement).toBe(message);
+    expect(send.disabled).toBe(false);
+
+    if (activation === "pointer") {
+      await user.click(send);
+    } else {
+      // Navigate the real controls, stopping if Tab wraps without reaching Send.
+      do {
+        await user.tab();
+      } while (
+        document.activeElement !== send &&
+        document.activeElement !== message &&
+        document.activeElement !== document.body
+      );
+      expect(document.activeElement).toBe(send);
+      await user.keyboard("{Enter}");
+    }
+
+    await waitFor(() => {
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+        {
+          method: "turn/start",
+          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ordinary focus proof" }] }),
+        },
+      ]);
+      expect(message.value).toBe("");
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(message.disabled).toBe(false);
+    expect(send.disabled).toBe(true);
+    // The contract is usable composer focus, not a jsdom-specific BODY blur.
+    await waitFor(() => expect(document.activeElement).toBe(message));
+  },
+);
+
+function idleFocusThread(ref: string): Partial<Thread> {
+  return {
+    status: { type: "idle" },
+    evener: { ref, mutationStateAuthoritative: true, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  };
+}
+
+function acceptFocusSubmission(fake: FakeClient, method: "turn/start" | "turn/queue"): void {
+  if (method === "turn/start") {
+    fake.on(method, (params) => ({
+      turn: { id: "turn_focus", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    }));
+    return;
+  }
+  fake.on(method, (params) => ({
     receipt: {
       clientMutationId: params.clientMutationId,
       disposition: "applied",
@@ -237,6 +326,211 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
       projectionState: "reflected",
     },
   }));
+}
+
+test.each(["pointer", "keyboard"] as const)(
+  "ordinary %s Send keeps Message focus when routing to Queue",
+  async (activation) => {
+    const fake = await mountComposer("ref_a");
+    acceptFocusSubmission(fake, "turn/queue");
+    const user = userEvent.setup();
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    await user.type(message, "queue focus proof");
+    expect(send.disabled).toBe(false);
+    if (activation === "pointer") {
+      await user.click(send);
+    } else {
+      do {
+        await user.tab();
+      } while (
+        document.activeElement !== send &&
+        document.activeElement !== message &&
+        document.activeElement !== document.body
+      );
+      expect(document.activeElement).toBe(send);
+      await user.keyboard("{Enter}");
+    }
+    await waitFor(() => {
+      expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([
+        {
+          method: "turn/queue",
+          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "queue focus proof" }] }),
+        },
+      ]);
+      expect(message.value).toBe("");
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    await flushPendingTurnsProjectionForTests();
+    expect(message.disabled).toBe(false);
+    expect(send.disabled).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(message));
+  },
+);
+
+test.each(["other control", "sibling Composer", "replacement Composer"] as const)(
+  "ordinary Send does not steal focus from %s after a delayed commit",
+  async (destination) => {
+    const storage = new PausedCommitStorage();
+    setMutationStorageForTests(storage);
+    const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+    acceptFocusSubmission(fake, "turn/start");
+    const user = userEvent.setup();
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    await user.type(message, "delayed focus proof");
+    try {
+      await user.click(send);
+      await storage.commitStarted;
+      expect(send.disabled).toBe(true);
+      expect(message.value).toBe("delayed focus proof");
+      expect(document.activeElement).toBe(message);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+      fireEvent.submit(message.closest("form")!);
+      expect(document.activeElement).toBe(message);
+
+      let destinationElement: HTMLElement;
+      if (destination === "other control") {
+        render(<button type="button">Elsewhere</button>);
+        destinationElement = screen.getByRole("button", { name: "Elsewhere" });
+        await user.click(destinationElement);
+      } else {
+        if (destination === "replacement Composer") cleanup();
+        fake.on("thread/read", () => readResponse("ref_b", idleFocusThread("ref_b")));
+        await act(async () => {
+          await threadsStore.getState().ensureThread("ref_b");
+        });
+        const second = render(<Composer ref="ref_b" />);
+        destinationElement = second
+          .getAllByRole("textbox", { name: "Message" })
+          .find((element) => element !== message)!;
+        await user.type(destinationElement, "other draft");
+      }
+      expect(document.activeElement).toBe(destinationElement);
+      await act(async () => storage.release());
+      await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+      await flushPendingTurnsProjectionForTests();
+      if (destination !== "replacement Composer") await waitFor(() => expect(message.value).toBe(""));
+      else expect(message.isConnected).toBe(false);
+      expect(document.activeElement).toBe(destinationElement);
+      if (destination !== "other control")
+        expect((destinationElement as HTMLTextAreaElement).value).toBe("other draft");
+    } finally {
+      storage.release();
+    }
+  },
+);
+
+test("ordinary Send does not take another control's focus on programmatic form submission", async () => {
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  acceptFocusSubmission(fake, "turn/start");
+  render(<button type="button">Elsewhere</button>);
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+  await user.type(message, "unfocused submission");
+  await user.click(elsewhere);
+  act(() => message.closest("form")!.requestSubmit(send));
+  expect(document.activeElement).toBe(elsewhere);
+  await waitFor(() => {
+    expect(message.value).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(document.activeElement).toBe(elsewhere);
+});
+
+test("ordinary Send preserves the textarea submission shortcut and next typing", async () => {
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  acceptFocusSubmission(fake, "turn/start");
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  await user.type(message, "shortcut focus proof");
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  await waitFor(() => {
+    expect(message.value).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(document.activeElement).toBe(message);
+  await user.keyboard("next draft");
+  expect(message.value).toBe("next draft");
+});
+
+test("ordinary Send retains draft and reports local failure without late focus theft", async () => {
+  const storage = new PausedCommitStorage();
+  setMutationStorageForTests(storage);
+  let failCommit: (() => void) | undefined;
+  const failure = new Promise<void>((resolve) => {
+    failCommit = resolve;
+  });
+  const enqueue = vi.spyOn(storage, "enqueueIntent").mockImplementationOnce(async () => {
+    await failure;
+    throw new Error("focus proof storage failure");
+  });
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  render(<button type="button">Elsewhere</button>);
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  try {
+    await user.type(message, "keep failed draft");
+    await user.click(send);
+    await waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
+    expect(send.disabled).toBe(true);
+    expect(document.activeElement).toBe(message);
+    await user.click(elsewhere);
+    await act(async () => failCommit?.());
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain(
+        "focus proof storage failure",
+      ),
+    );
+    await flushPendingTurnsProjectionForTests();
+    expect(message.value).toBe("keep failed draft");
+    expect(readDraft("ref_a")).toBe("keep failed draft");
+    expect(send.disabled).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(document.activeElement).toBe(elsewhere);
+  } finally {
+    failCommit?.();
+    storage.release();
+  }
+});
+
+test("ordinary Send empty form no-op leaves another control focused", async () => {
+  const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  render(<button type="button">Elsewhere</button>);
+  const user = userEvent.setup();
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  await user.click(elsewhere);
+  fireEvent.submit(message.closest("form")!);
+  await flushPendingTurnsProjectionForTests();
+  expect(message.value).toBe("");
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/queue")).toHaveLength(0);
+  expect(document.activeElement).toBe(elsewhere);
+});
+
+test("an unconfirmed storage commit stays visible and repeated Steer clicks cannot duplicate it", async () => {
+  const fake = await mountComposer("ref_a");
+  let deliveryObserved: (() => void) | undefined;
+  const delivered = new Promise<void>((resolve) => {
+    deliveryObserved = resolve;
+  });
+  fake.on("turn/steer", (params) => {
+    deliveryObserved?.();
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    };
+  });
   await flushPendingTurnsProjectionForTests();
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let commitObserved: (() => void) | undefined;
@@ -272,19 +566,27 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
   }
   expect(textarea()?.value).toBe("");
   expect(screen.queryByRole("status", { name: "Message storage" })).toBeNull();
+  await act(async () => delivered);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
 });
 
 test("a cancelled storage stall keeps the draft, reports the problem, and allows one safe retry", async () => {
   const fake = await mountComposer("ref_a");
-  fake.on("turn/steer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thr_ref_a",
-      projectionState: "reflected",
-    },
-  }));
+  let deliveryObserved: (() => void) | undefined;
+  const delivered = new Promise<void>((resolve) => {
+    deliveryObserved = resolve;
+  });
+  fake.on("turn/steer", (params) => {
+    deliveryObserved?.();
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    };
+  });
   await flushPendingTurnsProjectionForTests();
   const get = IDBObjectStore.prototype.get;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
@@ -326,6 +628,7 @@ test("a cancelled storage stall keeps the draft, reports the problem, and allows
   fireEvent.click(composerSteerButton());
   await flushPendingTurnsProjectionForTests();
   expect(textarea()?.value).toBe("");
+  await act(async () => delivered);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
 });
 
@@ -468,7 +771,13 @@ test.each(["storage", "composer"] as const)(
   async (source) => {
     const subscribe = source === "storage" ? subscribeMutationPersistence : subscribeComposerSubmissionCommitted;
     const failure = new Error("subscriber failed");
-    const report = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const expectedMessage =
+      source === "storage" ? "Mutation persistence listener failed" : "Composer submission listener failed";
+    const realConsoleError = console.error.bind(console);
+    const report = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      if (args.length === 2 && args[0] === expectedMessage && args[1] === failure) return;
+      realConsoleError(...args);
+    });
     const unsubscribeFailure = subscribe(() => {
       throw failure;
     });
@@ -490,6 +799,7 @@ test.each(["storage", "composer"] as const)(
     } finally {
       unsubscribeFailure();
       unsubscribeObserved();
+      report.mockRestore();
     }
   },
 );
@@ -541,9 +851,11 @@ function askArgs(questions: Array<Record<string, unknown>>): string {
 const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
 
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
-  fake.emitNotification({
-    method: "turn/started",
-    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    });
   });
 }
 
@@ -568,13 +880,17 @@ function ackAskUserCall(
       argumentsJson: askArgs(questions),
     },
   };
-  fake.emitNotification({
-    method: "item/started",
-    params: { ...base, item: { ...base.item, status: "inProgress" } },
+  act(() => {
+    fake.emitNotification({
+      method: "item/started",
+      params: { ...base, item: { ...base.item, status: "inProgress" } },
+    });
   });
-  fake.emitNotification({
-    method: "item/completed",
-    params: { ...base, item: { ...base.item, status: "completed" } },
+  act(() => {
+    fake.emitNotification({
+      method: "item/completed",
+      params: { ...base, item: { ...base.item, status: "completed" } },
+    });
   });
 }
 
@@ -1017,6 +1333,8 @@ test("the composer un-hides once the pending ask resolves through the normal sen
 
   await act(async () => {
     await askDockStore.getState().sendBatch("ref_a", batchId);
+    await turnStarted;
+    await flushPendingTurnsProjectionForTests();
   });
 
   await expect(turnStarted).resolves.toMatchObject({
@@ -1092,7 +1410,13 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: {
+      ref: "ref_a",
+      mutationStateAuthoritative: true,
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
   });
   fake.on("turn/queue", (params) => ({
     receipt: {

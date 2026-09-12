@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
   createTranscriptRenderContext,
   defaultDisclosureScope,
@@ -17,9 +18,11 @@ import { ignoringTurn, itemRendererFor } from "./types";
 import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
+import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
 
 // The expand/collapse state now lives in the shared disclosureStore keyed by
@@ -29,6 +32,7 @@ afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
   resetSubagentModuleStoreForTests();
+  resetThreadsStoreForTests();
 });
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
@@ -36,6 +40,46 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
+
+test.each(["running", "completed"])(
+  "a historical %s receipt is not current lifecycle without an owner projection",
+  (status) => {
+    const thread = makeTranscriptPreviewModel();
+    thread.delegates = [];
+    const output = JSON.stringify({ delegate_id: "dlg_receipt", status, transcript_ref: "local:receipt_child" });
+    const receipt = item({ toolName: "delegate", status: "completed", output });
+    const context = createTranscriptRenderContext({
+      config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+      surface: "preview",
+      thread,
+    });
+    render(
+      <TranscriptRenderProvider value={context}>
+        <ToolCallItem
+          item={receipt}
+          turn={turn}
+          live={false}
+          sessionRef={thread.ref}
+          thread={thread}
+          renderContext={context}
+        />
+      </TranscriptRenderProvider>,
+    );
+
+    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
+    expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show recent activity" }));
+    expect(screen.getByTestId("subagent-receipt").textContent).toContain(`Launch receipt: ${status}`);
+    expect(receipt.output).toBe(output);
+    const body = screen.getByTestId("tool-call-body");
+    fireEvent.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${body.id}"]`)!);
+    expect(screen.queryByTestId("tool-call-body")).toBeNull();
+    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  },
+);
 
 test('self-registers under the wire\'s tool-call item type ("commandExecution")', () => {
   expect(itemRendererFor("commandExecution")).toBe(ToolCallItem);
@@ -568,7 +612,7 @@ test("a body-less descriptor still becomes an expandable details when the call e
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
-test("an expanded shell row drops the one-line summary - the body's pretty-printed block is the single copy", () => {
+test("an expanded shell row swaps the one-line command for a placeholder - the body's block stays the single copy", () => {
   // A nonzero exit auto-expands the row on settle (descriptor.autoExpand).
   render(
     <ToolCallItem
@@ -583,15 +627,16 @@ test("an expanded shell row drops the one-line summary - the body's pretty-print
   );
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(true);
-  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  // The summary line stays (it is the line the disclosure chevron rides), but
+  // its text no longer duplicates the body's pretty-printed command.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
   // The command still appears exactly once: the body's pretty-printed block.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
-  // The row stays toggleable: with no intent and no summary, the chevron
-  // still renders.
+  // The row stays toggleable: the chevron rides the summary line.
   expect(screen.getByTestId("tool-row-chevron")).toBeTruthy();
 });
 
-test("a collapsed shell row keeps the one-line summary; opening the row drops it", () => {
+test("a collapsed shell row keeps the one-line command summary; opening the row swaps it for the placeholder", () => {
   // At activity level the body auto-expands; use tools level to test the
   // collapsed→expanded transition.
   renderTools(
@@ -607,10 +652,14 @@ test("a collapsed shell row keeps the one-line summary; opening the row drops it
   );
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
   expandRow();
-  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  // Collapsing the body again restores the real summary - the swap is a
+  // display state, not a one-way replacement.
+  expandRow();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
 });
 
-test("an expanded row of a descriptor WITHOUT summaryHiddenWhenExpanded keeps its summary", () => {
+test("an expanded row of a descriptor WITHOUT summaryWhenExpanded keeps its summary", () => {
   registerToolRenderer({
     match: "tci_keep_summary",
     summary: () => "did a thing",
@@ -1103,6 +1152,7 @@ test("task-only delegate intent previews preserve an emoji at the Unicode clippi
 });
 
 test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
+  seedCurrentDelegate("ref_current", "dlg_stable", "running");
   render(
     <>
       <ToolCallItem
@@ -1118,6 +1168,7 @@ test("delegate controls require stable delegate_id and reject activation-only jo
           }),
         })}
         turn={turn}
+        sessionRef="ref_current"
         live={false}
       />
       <ToolCallItem
@@ -1144,15 +1195,17 @@ test("delegate controls require stable delegate_id and reject activation-only jo
 });
 
 test("malformed delegate arguments keep status without inventing an intent", () => {
+  seedCurrentDelegate("ref_current", "dlg_current", "completed");
   render(
     <ToolCallItem
       item={item({
         id: "malformed_delegate",
         toolName: "delegate",
         argumentsJSON: "{not-json",
-        output: JSON.stringify({ status: "completed" }),
+        output: JSON.stringify({ delegate_id: "dlg_current", status: "completed" }),
       })}
       turn={turn}
+      sessionRef="ref_current"
       live={false}
     />,
   );
@@ -1164,22 +1217,23 @@ test("malformed delegate arguments keep status without inventing an intent", () 
 });
 
 test("blank and non-string delegate tasks keep status without inventing an intent", () => {
+  seedCurrentDelegate("ref_current", "dlg_current", "completed");
   const blank = item({
     id: "blank_delegate",
     toolName: "delegate",
     argumentsJSON: JSON.stringify({ prompt: " \n\t " }),
-    output: JSON.stringify({ status: "completed" }),
+    output: JSON.stringify({ delegate_id: "dlg_current", status: "completed" }),
   });
   const nonString = item({
     id: "non_string_delegate",
     toolName: "delegate",
     argumentsJSON: JSON.stringify({ prompt: ["not", "text"] }),
-    output: JSON.stringify({ status: "completed" }),
+    output: JSON.stringify({ delegate_id: "dlg_current", status: "completed" }),
   });
   render(
     <>
-      <ToolCallItem item={blank} turn={turn} live={false} />
-      <ToolCallItem item={nonString} turn={turn} live={false} />
+      <ToolCallItem item={blank} sessionRef="ref_current" turn={turn} live={false} />
+      <ToolCallItem item={nonString} sessionRef="ref_current" turn={turn} live={false} />
     </>,
   );
 
@@ -1284,12 +1338,12 @@ test("an intent-less row at the chat level forces summaryOpen=true (summary visi
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
 });
 
-test("a shell row with summaryHiddenWhenExpanded hides the summary when the body opens (tools level)", () => {
+test("a shell row swaps the summary for the placeholder when the body opens (tools level)", () => {
   const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   renderWithConfig(
     toolsConfig,
     item({
-      id: "summary_shell_hidden",
+      id: "summary_shell_swap",
       toolName: "shell",
       description: "Running a command",
       argumentsJSON: JSON.stringify({ command: "echo hi" }),
@@ -1300,12 +1354,17 @@ test("a shell row with summaryHiddenWhenExpanded hides the summary when the body
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
 
   // Expand the body via the body trigger (the .bodyTrigger chevron).
-  // With summaryHiddenWhenExpanded, the summary disappears.
+  // The summary line stays, its text swapped for the placeholder - the body
+  // chevron keeps riding the summary line instead of lifting onto the
+  // intent line.
   const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
   fireEvent.click(bodyTrigger);
-  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
   // The intent line stays.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");
+  // data-body-trigger-intent marks the intent-line chevron placement; the
+  // summary line has the chevron, so the row must not carry it.
+  expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe(null);
 });
 
 test("defaults apply at each level; an explicit summary choice persists across level changes", () => {
@@ -1364,4 +1423,20 @@ test("delegate rows from transcripts recorded before the prompt rename still sho
     />,
   );
   expect(screen.getByTestId("tool-row-intent").textContent).toContain("Legacy brief");
+});
+
+test("a summary-only job_watch clear renders a non-expandable row (hasBody predicate)", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "job_watch",
+        argumentsJSON: JSON.stringify({ operation: "clear", watch_id: "watch_short" }),
+        raw: { watch_id: "watch_short", source: "", watching: false },
+        output: "[watch_id watch_short cleared]",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
 });

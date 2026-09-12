@@ -28,12 +28,12 @@
 
 import { memo, type ReactNode } from "react";
 import { pendingTextJoined } from "../../../../protocol/reducer";
-import { Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 // Direct widget path, NOT the controller-owned widgets barrel: this pane
 // must not take a dependency on the barrel's ownership boundary.
 import { SpeakerAvatar } from "../../../../widgets/speakeravatar";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
+import { AgentMarkdown } from "./AgentMarkdown";
 import styles from "./agentmessageitem.module.css";
 import { MessageTimestamp } from "./MessageTimestamp";
 
@@ -46,6 +46,7 @@ const CLASS = {
   header: requireClass(styles.header, "agentmessageitem.module.css", "header"),
   name: requireClass(styles.name, "agentmessageitem.module.css", "name"),
   meta: requireClass(styles.meta, "agentmessageitem.module.css", "meta"),
+  stamp: requireClass(styles.stamp, "agentmessageitem.module.css", "stamp"),
   stream: requireClass(styles.stream, "agentmessageitem.module.css", "stream"),
 };
 
@@ -107,9 +108,14 @@ export const AgentMessageItem = memo(function AgentMessageItem({
     );
     if (!opensExchange)
       return root(
+        // The stamp follows the bubble in DOM order: below the gutter
+        // breakpoint it is an in-flow line snug under the content (right-
+        // justified); above it the stylesheet takes it out of flow into the
+        // right margin, where DOM order is moot (agentmessageitem.module.css's
+        // .stamp). Either way it never adds height ABOVE the prose.
         <>
-          {timestamp}
           {bubble}
+          {timestamp && <span className={CLASS.stamp}>{timestamp}</span>}
         </>,
         CLASS.message,
       );
@@ -136,7 +142,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
     // stream's tail truncates, so formatting renders while streaming.
     return wrap(
       <div className={CLASS.stream} data-testid="agent-message-stream">
-        <Markdown source={pendingTextJoined(chunks)} live />
+        <AgentMarkdown source={pendingTextJoined(chunks)} live />
       </div>,
       "true",
     );
@@ -147,7 +153,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   // one - mirrors legacy's own "empty finalize" rule (parity-m4-
   // transcript.md #6, renderer.js:2810-2816).
   if (!item.text) return null;
-  return wrap(<Markdown source={item.text} />, "false");
+  return wrap(<AgentMarkdown source={item.text} />, "false");
 }, ignoringTurn);
 
 registerItemRenderer("agentMessage", AgentMessageItem);

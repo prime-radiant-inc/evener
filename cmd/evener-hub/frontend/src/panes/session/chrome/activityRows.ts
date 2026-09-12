@@ -5,7 +5,6 @@
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
 
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import {
   type ActivityDelegate,
   type ActivityEntry,
@@ -13,8 +12,13 @@ import {
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
-} from "./activityData";
-import { isFailedStatus } from "./activityFormat";
+  delegateHasActiveWork,
+  isActivityFailure,
+  isFailedDelegateOutcome,
+  isFailedJobOutcome,
+  isTurnContainer,
+} from "../../../protocol/activityData";
+import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 
 export interface ActivityRowBase {
   id: string;
@@ -56,6 +60,66 @@ export function foldRowID(sessionNodeID: string): string {
   return `${sessionNodeID}:inactive-fold`;
 }
 
+export interface ActivityDelegateState {
+  active: boolean;
+  failed: boolean;
+  status: string;
+}
+
+// A terminal entry's failure is the outcome the daemon already decided, so the
+// rows, the fold's failure count, and the merged badge counts stay one number.
+// Work that has not ended carries no outcome and can only say so through its
+// current status.
+export function jobIsFailed(job: ActivityJob): boolean {
+  return job.terminal ? isFailedJobOutcome(job.outcome) : isActivityFailure(job.outcome, job.status);
+}
+
+// Stable delegates describe one reusable resource; other delegate types are
+// turn containers. Keep this in one place so row visibility, fold failure
+// counts, and the status shown by the row all use the protocol's same truth.
+export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
+  const childActive = delegate.child ? sessionIsActive(delegate.child) : false;
+  const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
+  if (!isTurnContainer(delegate)) {
+    const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+    const ownFailure =
+      delegate.terminal === true ? isFailedDelegateOutcome(delegate.outcome) : isActivityFailure(undefined, status);
+    return {
+      active: delegateHasActiveWork(delegate),
+      failed: ownFailure || childFailed,
+      status,
+    };
+  }
+  const turns = delegate.turns ?? [];
+  let activeTurn: ActivityJob | undefined;
+  for (const turn of turns) {
+    if (!turn.terminal) activeTurn = turn;
+  }
+  const latest = turns.at(-1);
+  if (turns.length === 0) {
+    return {
+      active: childActive,
+      failed: childFailed,
+      status: delegate.child?.aggregate ?? "unknown",
+    };
+  }
+  const failed = childFailed || turns.some(jobIsFailed);
+  const active = delegateHasActiveWork(delegate);
+  return {
+    active,
+    failed,
+    status: activeTurn
+      ? activeTurn.status
+      : childActive
+        ? (delegate.child?.aggregate ?? "working")
+        : failed
+          ? "failed"
+          : latest
+            ? latest.status
+            : (delegate.child?.aggregate ?? "unknown"),
+  };
+}
+
 function jobIsActive(job: ActivityJob): boolean {
   return !job.terminal;
 }
@@ -66,13 +130,14 @@ function sessionIsActive(session: ActivitySessionNode): boolean {
 
 function entryIsActive(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return jobIsActive(entry.job);
-  return !entry.delegate.terminal || (entry.delegate.child ? sessionIsActive(entry.delegate.child) : false);
+  return activityDelegateState(entry.delegate).active;
 }
 
 function entryIsFailed(entry: ActivityEntry): boolean {
-  if (entry.kind === "shell") return isFailedStatus(entry.job.status);
+  if (entry.kind === "shell") return jobIsFailed(entry.job);
   const delegate: ActivityDelegate = entry.delegate;
-  return isFailedStatus(stableDelegateDisplayStatus(delegate) ?? "") || (delegate.child?.counts.failed ?? 0) > 0;
+  const state = activityDelegateState(delegate);
+  return state.failed;
 }
 
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {

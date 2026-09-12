@@ -52,6 +52,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "locate":
 		return cmdLocate(rest, stdout, stderr)
+	case "reconstruct":
+		return cmdReconstruct(rest, stdout, stderr)
 	case "transcript":
 		return cmdTranscript(rest, stdout, stderr)
 	case "apilog":
@@ -93,6 +95,7 @@ USAGE:
 
 SUBCOMMANDS:
   locate      resolve a selector to its transcript/API-log/meta/jobs/mutations paths
+  reconstruct stage a lost transcript from an AgentsView archive and surviving metadata (never changes live state)
   transcript  render a session's turns; --count <tool> prints the structural call count; --health prints mechanical per-session health metrics
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes; --health prints a one-line API-health verdict
   jobs        job inspector: every job the session ran, with status, reason, exit code, output bytes, and timings

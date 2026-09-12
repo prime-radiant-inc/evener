@@ -71,13 +71,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import { isActionUnavailable, isThreadNotFound } from "../../../protocol/sessionErrors";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, type ChipTone, EmptyState, Markdown, Meter, Sheet, useToasts } from "../../../widgets";
+import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
 import { groupTasks } from "./taskGroups";
 import styles from "./taskspanel.module.css";
@@ -178,10 +178,6 @@ export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
 
 function hasTaskOutcomes(tasks: NonNullable<ThreadModel["tasks"]>): boolean {
   return tasks.cancelled !== undefined || tasks.remaining !== undefined;
-}
-
-function taskMeterValue(tasks: NonNullable<ThreadModel["tasks"]>): number {
-  return hasTaskOutcomes(tasks) ? tasks.done + (tasks.cancelled ?? 0) : tasks.done;
 }
 
 export function taskAggregateLabel(tasks: NonNullable<ThreadModel["tasks"]>): string {
@@ -310,11 +306,11 @@ function TaskPromptDisclosure({ task, sessionRef }: { task: TaskRow; sessionRef:
         }}
       >
         <span className={CLASS.promptLabel}>Prompt</span>
-        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-          ▸
-        </span>
         <span className={CLASS.promptPreview}>
           <Markdown source={firstLine} />
+        </span>
+        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
+          ▸
         </span>
       </summary>
       {open && (
@@ -424,8 +420,6 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
   const groups = groupTasks(rows);
   return (
     <>
-      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
-      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
       {groups.settled.length > 0 && (
         <Disclosure
           id={`${sessionRef}\0settled-group`}
@@ -443,6 +437,8 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
           </ul>
         </Disclosure>
       )}
+      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
+      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
     </>
   );
 }
@@ -584,16 +580,6 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
         )}
         {model.tasks && (
           <div className={CLASS.bodyHead} data-testid="tasks-body-head">
-            <Meter
-              label={
-                hasTaskOutcomes(model.tasks)
-                  ? `Task progress: ${taskAggregateLabel(model.tasks)}`
-                  : `Task progress: ${model.tasks.done} of ${model.tasks.total} complete`
-              }
-              value={taskMeterValue(model.tasks)}
-              max={model.tasks.total}
-              tone="neutral"
-            />
             <span className={CLASS.count}>
               {hasTaskOutcomes(model.tasks)
                 ? taskAggregateLabel(model.tasks)

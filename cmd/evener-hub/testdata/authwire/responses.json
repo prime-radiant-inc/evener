@@ -375,6 +375,7 @@
         "surface": "generic",
         "auth": "optional-bearer",
         "baseUrl": "http://127.0.0.1:9/v1",
+        "credentialHeader": "Authorization=Bearer $GATEWAY_KEY",
         "implicit": false,
         "isDefault": false,
         "authModes": [
@@ -393,6 +394,7 @@
         "surface": "anthropic",
         "auth": "header",
         "baseUrl": "https://api.anthropic.com/v1",
+        "apiKeyEnv": "UNKEYED_KEY",
         "implicit": false,
         "isDefault": false,
         "authModes": [

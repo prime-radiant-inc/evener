@@ -79,6 +79,13 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` and
   `${XDG_CONFIG_HOME:-$HOME/.config}/evener/plugins` are user extension roots
   created by Evener startup.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/AGENTS.md` is your personal
+  standing instructions file. Every session loads it ahead of the repo's own
+  instruction docs — AGENTS.md plus whichever sibling the model's surface reads
+  (CLAUDE.md, GEMINI.md) — and Settings → AGENTS.md in the web UI edits it in
+  place. Hub-spawned sessions receive the hub's own path (`--agents-doc`) the
+  way they receive the plugin root, so a per-launch `XDG_CONFIG_HOME` override
+  cannot make Settings and sessions disagree about the file.
 
 Those extension roots are not active just because they exist. Add standalone
 skill paths to `skills_dirs` and plugin roots to `plugin_dirs` in the layered
@@ -111,10 +118,27 @@ past_index_db = "$HOME/.local/state/evener/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
+api_log = false
 EOF
 
 chmod 600 "$hub_config"
 ```
+
+`api_log` controls the hub's default for durable API-request logging on the
+`evener serve` daemons it spawns: `true` passes `--api-log on`, recording every
+provider request and response body to the session's
+`<state-dir>/sessions/<SID>.api.jsonl` for post-mortem inspection. It defaults to
+`false` because those records grow with every model call. The hub's value is
+always passed explicitly (`--api-log on` or `--api-log off`) rather than left to
+the spawned binary's own default, so the opt-out cannot be defeated by an older
+`evener` on `PATH` that still records by default. The hub also refuses to launch
+a binary whose `launch-check` does not advertise the `api-log` flag (see
+`launch_flags` in the launch contract), reporting an upgrade error up front
+instead of letting the launch die on the unknown flag. It is a floor, not a
+force: launch config layers that set `api_log` explicitly (either direction)
+win over the hub-wide value. The `evener/launch/resolve` preview reports the
+same floor (provenance `hub`), so what the Launch settings show matches what a
+spawned session actually runs with.
 
 ## Launch configuration
 
@@ -134,6 +158,11 @@ chmod 600 "$hub_config"
   location.
 - **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
   a single spawn only.
+
+API-request logging is a launch option (`api_log`, in the Debug logging group)
+with the same layering: set it per-launch, per-project, in-repo, or globally in
+`launch.toml`. An unset value inherits the hub default above; evener's built-in
+default is off.
 
 Layers merge in order: global → in-repo → project → per-launch.
 - **Scalars** (model, reasoning_effort, etc.): most-specific value wins.
@@ -311,6 +340,44 @@ then verifies health; see
 
 The hub acquires a `flock` on `hub.lock` in its state root, so one hub process runs
 per `hub_state_root` — one per user under the default layout.
+
+### Updating the hub from Settings
+
+Settings → Hub → Updates shows the running build (version, commit, channel),
+a channel selector (release or snapshot), and whether that channel is ahead
+of the running build. "Update and restart" downloads and installs the
+channel's archive with the same code as `evener upgrade`, then, once the
+apply response has been written to the websocket, the hub `exec`s the
+installed binary in place: same PID, same arguments, same
+environment. That is why it works the same under launchd, systemd, or a
+plain shell, and why nothing needs `KeepAlive`. The `hub.lock` flock and the
+listener are released by the exec and re-acquired by the new process; the
+page polls `/api/health` until the new version answers, then reloads.
+
+The install targets the prefix the running hub was launched from (derived
+from its own binary path, e.g. `/usr/local` for a system install), not
+always `~/.local`. The whole operation runs under a 4-minute overall
+deadline (both downloads, verification, install) so a stalled server fails
+the apply instead of blocking later updates. Before
+extraction, the archive's SHA-256 is checked against the release's
+`checksums.txt` entry (same fail-closed guarantee as `install.sh`); a
+mismatch or missing entry refuses the install. Note the limit: the
+checksums travel over the same GitHub TLS transport as the archive,
+unsigned, so this stops corruption and asset-swaps but not a compromise
+that rewrites both files the way a signature would.
+
+The channel selector has no stored setting. It defaults to the channel the
+running binary was built for, and after an update the installed binary's
+channel becomes the new default.
+
+Dev builds (a worktree `make build-hub`, channel `dev`) are excluded:
+Settings shows a rebuild note instead of the controls, and
+`evener/update/apply` is refused. Use `make build-hub` or
+`scripts/ops/deploy-hub.sh` for those.
+
+Running session daemons keep the binary they were spawned from (see the
+"Existing daemons keep the `evener` binary" note below); restart a session
+to move it to the new build.
 
 ### Trace browser AppWire traffic
 

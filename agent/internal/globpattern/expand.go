@@ -42,6 +42,17 @@ func expand(pattern string, depth int) ([]string, error) {
 		return nil, fmt.Errorf("invalid brace pattern %q: %w", pattern, err)
 	}
 	if !alternatives {
+		// No multi-term group remains, but a single-term group like {**} may:
+		// doublestar treats it as grouping (matching ** recursively) while
+		// this expansion leaves it untouched, so the match cap in globMatches
+		// only fires after doublestar's alternative walk has buffered the
+		// whole subtree, and the ignore-scope depth check reads {**} as a
+		// non-recursive component. Unwrapping the braces is semantics-
+		// preserving — doublestar matches {X} exactly where it matches X —
+		// and puts both consumers on the same pattern doublestar walks.
+		if u, ok := unwrapSingleTermGroup(pattern); ok {
+			return expand(u, depth+1)
+		}
 		return []string{pattern}, nil
 	}
 
@@ -109,6 +120,53 @@ func findExpandableGroup(pattern string) (start, end int, alternatives bool, err
 		return 0, 0, false, fmt.Errorf("unmatched opening brace at byte %d", stack[len(stack)-1])
 	}
 	return 0, 0, false, nil
+}
+
+// unwrapSingleTermGroup removes one layer of single-term braces: the
+// innermost pair whose contents hold no top-level comma, e.g. {**} to ** or
+// a/{b}/c to a/b/c. It reports false when no such pair exists. Escaped braces
+// and character-class contents are literals and never unwrap, matching
+// findExpandableGroup's own scanning rules.
+func unwrapSingleTermGroup(pattern string) (string, bool) {
+	stack := make([]int, 0, 2)
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] == '\\' {
+			i++
+			continue
+		}
+		if pattern[i] == '[' {
+			i++
+			for i < len(pattern) {
+				if pattern[i] == '\\' {
+					i++
+					if i >= len(pattern) {
+						break
+					}
+					i++
+					continue
+				}
+				if pattern[i] == ']' {
+					break
+				}
+				i++
+			}
+			continue
+		}
+		switch pattern[i] {
+		case '{':
+			stack = append(stack, i)
+		case '}':
+			if len(stack) == 0 {
+				return "", false
+			}
+			open := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if !hasTopLevelComma(pattern[open+1 : i]) {
+				return pattern[:open] + pattern[open+1:i] + pattern[i+1:], true
+			}
+		}
+	}
+	return "", false
 }
 
 func hasTopLevelComma(content string) bool {

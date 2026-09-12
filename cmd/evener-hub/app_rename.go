@@ -38,8 +38,12 @@ func setThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		return appwire.EmptyResponse{}, appwire.InvalidParams("name is required")
 	}
 
-	mutation, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (threadNameMutation, error) {
-		return mutateThreadName(ctx, cfg, sources, ref, params)
+	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, "")
+	mutation, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", "", func() (threadNameMutation, error) {
+		if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); err != nil {
+			return threadNameMutation{}, err
+		}
+		return mutateThreadName(ctx, cfg, sources, ref, params, epoch)
 	})
 	if err != nil {
 		return appwire.EmptyResponse{}, err
@@ -48,20 +52,20 @@ func setThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	return appwire.EmptyResponse{}, nil
 }
 
-func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams) (threadNameMutation, error) {
+func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams, epoch uint64) (threadNameMutation, error) {
 	if ref.SourceID != "local" || threadNameIsLive(cfg, ref.ThreadID) || cfg.Past == nil {
-		return renameLiveThread(ctx, cfg, sources, ref, params)
+		return renameLiveThread(ctx, cfg, sources, ref, params, epoch)
 	}
 	entry, ok := cfg.Past.Find(ref.ThreadID)
 	if !ok {
-		return renameLiveThread(ctx, cfg, sources, ref, params)
+		return renameLiveThread(ctx, cfg, sources, ref, params, epoch)
 	}
 	meta, err := loadSessionMetaForRename(entry.StateDir, entry.ID)
 	if err != nil {
 		return threadNameMutation{}, appwire.InternalError("load meta: " + err.Error())
 	}
 	if threadNameIsLive(cfg, ref.ThreadID) {
-		return renameLiveThread(ctx, cfg, sources, ref, params)
+		return renameLiveThread(ctx, cfg, sources, ref, params, epoch)
 	}
 	meta.Name = params.Name
 	meta.NameSource = "user"
@@ -76,7 +80,10 @@ func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 	return threadNameMutation{projectKey: projectKeyForStateDir(entry.StateDir)}, nil
 }
 
-func renameLiveThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams) (threadNameMutation, error) {
+func renameLiveThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams, epoch uint64) (threadNameMutation, error) {
+	if err := sessionActionRecoveryError(ctx, cfg, params.Ref, "", epoch); err != nil {
+		return threadNameMutation{}, err
+	}
 	source, err := sourceForThread(sources, params.Ref, "")
 	if err != nil {
 		return threadNameMutation{}, appwire.Unavailable(err.Error())
@@ -128,6 +135,6 @@ func threadNameIsLive(cfg hubcore.WebConfig, threadID string) bool {
 	if cfg.Roster == nil {
 		return false
 	}
-	_, live := cfg.Roster.Find(threadID)
+	_, live := liveDaemonForThread(cfg.Roster, threadID)
 	return live
 }

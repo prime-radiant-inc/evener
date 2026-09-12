@@ -832,6 +832,50 @@ func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	}
 }
 
+// TestDefReadFileVisionPromptIsSeparateFromIntent pins the read_file split: the
+// image/PDF extraction ask rides its own `vision_prompt` property (the old
+// overload put it on `intent`), and `intent` arrives only from the universal
+// WithIntentParameter injection, carrying the generic tool-intent description.
+func TestDefReadFileVisionPromptIsSeparateFromIntent(t *testing.T) {
+	def := DefReadFile()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_file properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	vp, ok := props["vision_prompt"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_file missing vision_prompt property; got properties: %v", props)
+	}
+	if vp["type"] != "string" {
+		t.Errorf("vision_prompt type = %v, want string", vp["type"])
+	}
+	if desc, _ := vp["description"].(string); !strings.Contains(desc, "Image/PDF") {
+		t.Errorf("vision_prompt description should scope itself to image/PDF reads, got: %q", desc)
+	}
+	if _, has := props["intent"]; has {
+		t.Errorf("DefReadFile must not define its own intent property (vision prose moved to vision_prompt); got: %v", props["intent"])
+	}
+	// The tool-level description must name the argument the vision ask belongs
+	// in, or callers keep assuming it rides `intent` (roborev #1139).
+	if !strings.Contains(def.Description, "vision_prompt") {
+		t.Errorf("read_file description should direct image/PDF asks to vision_prompt, got: %q", def.Description)
+	}
+
+	// The registered schema is what the model sees: intent is injected by the
+	// universal rule, not supplied by the read_file definition.
+	regProps, ok := WithIntentParameter(def).Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("registered read_file properties = %T, want map[string]any", WithIntentParameter(def).Parameters["properties"])
+	}
+	intent, ok := regProps["intent"].(map[string]any)
+	if !ok {
+		t.Fatalf("registered read_file missing injected intent; got properties: %v", regProps)
+	}
+	if desc, _ := intent["description"].(string); desc != toolIntentDescription {
+		t.Errorf("read_file intent should carry the generic tool-intent description, got: %q", desc)
+	}
+}
+
 func TestDefGrepContextLinesParam(t *testing.T) {
 	def := DefGrep()
 	props, ok := def.Parameters["properties"].(map[string]any)

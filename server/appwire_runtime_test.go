@@ -310,11 +310,11 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 
 func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 	records := []appserver.SequencedNotification{
-		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1"}`)}},
+		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"turn_1","status":"inProgress"}}`)}},
 		{Notification: appwire.Notification{Method: "item/started", Params: []byte(`{"turnId":"turn_1","item":{"type":"reasoning","id":"item_reasoning_1","turnId":"turn_1","status":"inProgress"}}`)}},
 		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":"Let me think"}`)}},
 		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":" about this."}`)}},
-		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turnId":"turn_1","turn":{"status":"completed"}}`)}},
+		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turn":{"id":"turn_1","status":"completed"}}`)}},
 	}
 	turns := appTurnsFromNotifications(records)
 	if len(turns) != 1 {
@@ -327,6 +327,12 @@ func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 	if items[0].Type != "reasoning" || items[0].Text != "Let me think about this." {
 		t.Fatalf("reasoning item=%+v", items[0])
 	}
+	// The settle stamp names its turn the way the wire does, in turn.id, which
+	// is the only name appTurnsFromNotifications reads: a frame naming it
+	// anywhere else is dropped and leaves the turn open.
+	if turns[0].Status != appwire.TurnStatusCompleted {
+		t.Fatalf("turn status = %q, want %q", turns[0].Status, appwire.TurnStatusCompleted)
+	}
 }
 
 // TestAppTurnsFromNotificationsCarriesTurnTiming verifies that replaying a
@@ -336,8 +342,8 @@ func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 // ItemsView/Status off the wire Turn and silently drops the timing fields.
 func TestAppTurnsFromNotificationsCarriesTurnTiming(t *testing.T) {
 	records := []appserver.SequencedNotification{
-		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1","turn":{"id":"turn_1","status":"inProgress","startedAt":1700000000}}`)}},
-		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turnId":"turn_1","turn":{"id":"turn_1","status":"completed","completedAt":1700000042,"durationMs":4200}}`)}},
+		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"turn_1","status":"inProgress","startedAt":1700000000}}`)}},
+		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turn":{"id":"turn_1","status":"completed","completedAt":1700000042,"durationMs":4200}}`)}},
 	}
 	turns := appTurnsFromNotifications(records)
 	if len(turns) != 1 {
@@ -811,6 +817,9 @@ func TestAppWireItemPagingSubscriptionCut(t *testing.T) {
 	}
 	if len(response.Thread.Turns) == 0 || len(response.Thread.Turns[0].Items) != 1 {
 		t.Fatalf("item read response = %+v, want one positioned item fragment", response)
+	}
+	if !response.Thread.Evener.MutationStateAuthoritative {
+		t.Fatal("daemon read must carry authoritative mutation state")
 	}
 	item := response.Thread.Turns[0].Items[0]
 	if item.TranscriptKey == "" || item.Position == nil {
@@ -1417,5 +1426,69 @@ func TestPreparedResumeFirstLiveLifecycleUsesAuthoritativeTurnIdentity(t *testin
 		if turn.ID == "turn_1" && len(turn.Items) == 1 && turn.Items[0].Text == "live" {
 			t.Fatalf("live lifecycle recovery replaced historical turn item: %+v", turn.Items[0])
 		}
+	}
+}
+
+func TestDescendantReadDoesNotClaimDurableMutationAuthority(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind: events.EventUserInput, SessionID: "child", Data: events.UserInputData{Text: "child work"},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{},
+	})
+	started := false
+	for _, notification := range srv.AppNotificationsAfter(0, "child") {
+		if notification.Notification.Method != appwire.NotifyThreadStarted {
+			continue
+		}
+		var params appwire.ThreadStartedParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.Thread.Evener.ParentRef != "local:root" {
+			t.Fatalf("started owner = %q", params.Thread.Evener.ParentRef)
+		}
+		started = true
+	}
+	if !started {
+		t.Fatal("child start was not published")
+	}
+	peer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer peer.Close()
+	transport, err := appwire.DialWebSocket(t.Context(), "ws"+strings.TrimPrefix(peer.URL, "http"), peer.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	for _, subscribe := range []bool{false, true} {
+		for _, includeTurns := range []bool{false, true} {
+			response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:child", IncludeTurns: includeTurns, Subscribe: subscribe, ItemLimit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Thread.Evener.ParentRef != "local:root" {
+				t.Fatalf("descendant owner = %q", response.Thread.Evener.ParentRef)
+			}
+			if response.Thread.ID != "child" || response.Thread.Evener.MutationStateAuthoritative {
+				t.Fatalf("descendant subscribe=%v turns=%v thread=%+v", subscribe, includeTurns, response.Thread)
+			}
+			if includeTurns && len(response.Thread.Turns) == 0 {
+				t.Fatal("descendant transcript was lost")
+			}
+		}
+	}
+	root, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !root.Thread.Evener.MutationStateAuthoritative {
+		t.Fatal("root durable projection lost authority")
 	}
 }

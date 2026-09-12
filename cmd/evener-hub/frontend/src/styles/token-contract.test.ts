@@ -529,6 +529,13 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // hub-error text. Error text is the danger hue's canonical, ungateable job,
 // the same as railDialog.module.css's .pickerError and
 // delegateStatus.module.css's .dangerText above.
+// marketplace-sheet-editor task 4: panes/settings/sections/marketplacesPlugins/
+// marketplacesPlugins.module.css earns the same exception for the same
+// structural reason - it lives under panes/settings/sections/, not
+// widgets/<name>/, so it can never match WIDGET_STYLESHEET_RE either. Its one
+// semantic reach is --danger-ink on .sheetError, the MarketplaceSheet's inline
+// failed-save text. Error text is the danger hue's canonical, ungateable job,
+// the same as keybindings.module.css's .rowError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
@@ -541,6 +548,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/transcript/tools/sandboxescalation.module.css",
   "panes/session/transcript/tools/delegateStatus.module.css",
   "panes/settings/sections/keybindings.module.css",
+  "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
@@ -735,6 +743,47 @@ test("dedicated diff backgrounds preserve quiet contrast and grayscale separatio
   }
 });
 
+const METER_STYLESHEET = STYLESHEETS["widgets/meter/meter.module.css"];
+
+// The empty meter track must read as a bounded bar, not vanish into its
+// ground: --surface-2 is pixel-identical to --surface-1 in both themes, so a
+// meter on a surface-1 card/pane showed no extent until the fill painted.
+// The track sinks into --field (the same sunken-track token the switch and
+// the recommendation card's confidence bar use), pinned here as an exact
+// declaration plus a per-theme distinctness floor against both surfaces.
+test("Meter track sinks into --field, distinct from both surfaces in both themes", () => {
+  expect(METER_STYLESHEET).toBeDefined();
+  if (!METER_STYLESHEET) return;
+  expect(declarationInRule(METER_STYLESHEET, "track", "background")).toBe("var(--field)");
+
+  const themes = [
+    {
+      name: "dark",
+      block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+    },
+    {
+      name: "light",
+      block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+    },
+  ];
+
+  for (const theme of themes) {
+    const field = declaredToken(theme.block, "--field");
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    const surface2 = declaredToken(theme.block, "--surface-2");
+    expect([field, surface1, surface2], `${theme.name} theme declares the meter track contrast tokens`).not.toContain(
+      undefined,
+    );
+    if (!field || !surface1 || !surface2) continue;
+
+    const fieldRgb = parseHexColor(field);
+    const surface1Rgb = parseHexColor(surface1);
+    const surface2Rgb = parseHexColor(surface2);
+    expect(contrastRatio(fieldRgb, surface1Rgb), `${theme.name} track vs surface-1`).toBeGreaterThanOrEqual(1.05);
+    expect(contrastRatio(fieldRgb, surface2Rgb), `${theme.name} track vs surface-2`).toBeGreaterThanOrEqual(1.05);
+  }
+});
+
 test("tokens.css dark and light blocks declare the same color token names", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/);
   const lightBlock = extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/);
@@ -749,7 +798,9 @@ test("tokens.css dark and light blocks declare the same color token names", () =
 test("the canonical dark token block directly scopes nested dark wrappers", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*,\s*\[data-theme="dark"\]\s*\{/);
   expect(darkBlock).toContain("color-scheme: dark;");
-  expect(darkBlock).toContain("--surface-1: #232427;");
+  // Approved 2026-09-09 editorial-instrument spec replaces the neutral palette;
+  // this still pins direct nested-theme scoping, not a second palette block.
+  expect(darkBlock).toContain("--surface-1: #232320;");
 });
 
 // --- (f) the -ink text companions clear AA in both themes ---------------

@@ -402,3 +402,69 @@ for (const live of [false, true]) {
     expect(time?.title).toBeTruthy();
   });
 }
+
+// Stamp placement (Jesse, 2026-09-08): a mid-exchange fragment's time is a
+// margin note, not a caption line above the prose. It rides a .stamp wrapper
+// AFTER the bubble in DOM order, so below the gutter breakpoint plain flow
+// puts it under the content; above the breakpoint the stylesheet takes it
+// out of flow into the right margin. The opener's header keeps its inline
+// time - that one never added height.
+
+test("a continuation's timestamp rides a stamp wrapper after the bubble", () => {
+  renderMessage(<AgentMessageItem item={item({ text: "reply", startedAt: STARTED_AT })} turn={turn} live={false} />);
+  const root = screen.getByTestId("agent-message-item");
+  const stamp = root.querySelector("[class*='stamp']");
+  if (!stamp) throw new Error("continuation is missing its stamp wrapper");
+  expect(stamp.querySelector("time")?.textContent).toBe(TIME);
+  const bubble = screen.getByTestId("agent-bubble");
+  expect(bubble.compareDocumentPosition(stamp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("a continuation with no startedAt renders no stamp wrapper at all", () => {
+  renderMessage(<AgentMessageItem item={item({ text: "reply" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("agent-message-item").querySelector("[class*='stamp']")).toBeNull();
+});
+
+test("an exchange opener keeps its time inline in the speaker header - no stamp wrapper", () => {
+  renderMessage(
+    <AgentMessageItem item={item({ text: "r", startedAt: STARTED_AT })} turn={turn} live={false} opensExchange />,
+  );
+  const root = screen.getByTestId("agent-message-item");
+  expect(root.querySelector("[class*='stamp']")).toBeNull();
+  expect(screen.getByTestId("agent-speaker-header").textContent).toBe(`Agent${TIME}`);
+});
+
+// jsdom computes no cascade, so the stamp's layout contract is checked at
+// the declaration level - but only its STRUCTURAL load-bearing edges (the
+// same technique the caret tests above use, kept minimal per the PR 1041
+// review: exact offsets, gaps, and alignment tokens are geometry the browser
+// guards own, not behavior regexes should pin). The contract: in-flow on
+// its own line by default, out of flow (no added height) only when the
+// transcript list itself has room - a CONTAINER query, so a narrow dock
+// split can never leave the flow and clip the stamp away - and .message as
+// its containing block.
+test("the stamp is in-flow by default and leaves the flow only when the transcript list has room (declaration-level)", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.message\s*\{[^}]*position:\s*relative/);
+  const base = /\.stamp\s*\{([^}]*)\}/.exec(css);
+  if (!base) throw new Error("no base .stamp rule outside the container queries");
+  expect(base[1]).toMatch(/display:\s*block/);
+  expect(base[1]).toMatch(/font-style:\s*italic/);
+  const rail = /@container\s*\(min-width:\s*55rem\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  if (!rail) throw new Error("no container-gated .stamp rail rule");
+  expect(rail[1]).toMatch(/\.stamp\s*\{[^}]*position:\s*absolute/);
+  // The wide-measure revert band: the rail's nowrap is not inert on a static
+  // box, so both declarations must be reverted (roborev, PR 1041).
+  const band = /@container\s*\(min-width:\s*55rem\)\s*and\s*\(max-width:\s*75rem\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  if (!band) throw new Error("no wide-measure .stamp revert band");
+  expect(band[1]).toMatch(/\.stamp\s*\{[^}]*position:\s*static/);
+  expect(band[1]).toMatch(/\.stamp\s*\{[^}]*white-space:\s*normal/);
+  // The query resolves against the virtual list's root: it must BE a query
+  // container, or the rail never engages anywhere.
+  const listCss = readFileSync(join(here, "../../../../widgets/virtuallist/virtuallist.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  expect(listCss).toMatch(/\.root\s*\{[^}]*container-type:\s*inline-size/);
+});

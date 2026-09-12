@@ -27,6 +27,9 @@ type LocalDaemonSource struct {
 	itemPagingLocks keyedMutexRegistry
 	itemSnapshots   *itemSnapshotStateCache
 
+	callsMu sync.Mutex
+	calls   map[daemonIdentity]*daemonCalls
+
 	relayMu       sync.Mutex
 	relaySessions map[string]*relaySession
 	legacyRelays  map[string]legacyRelayRead
@@ -240,14 +243,26 @@ func (s *LocalDaemonSource) acquireRelaySession(params appwire.ThreadReadParams)
 	return s.AcquireRelaySession(ref)
 }
 
-func (s *LocalDaemonSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+func (s *LocalDaemonSource) ListThreads(ctx context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
+	}
 	out := appwire.ThreadListResponse{}
-	for _, entry := range s.liveEntries() {
+	for _, entry := range s.listedEntries() {
+		if err := ctx.Err(); err != nil {
+			return appwire.ThreadListResponse{}, err
+		}
 		out.Data = append(out.Data, s.threadFromEntry(entry))
+	}
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
 	}
 	sort.SliceStable(out.Data, func(i, j int) bool {
 		return localThreadLess(out.Data[i], out.Data[j])
 	})
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
+	}
 	return out, nil
 }
 
@@ -296,8 +311,14 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
+	return s.ReadThreadAtEntry(ctx, entry, params)
+}
+
+// ReadThreadAtEntry reads an exact daemon endpoint, including before roster
+// admission, within the source's recovery cancellation scope.
+func (s *LocalDaemonSource) ReadThreadAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	var out appwire.ThreadReadResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.ThreadRead(ctx, params)
 		return callErr
@@ -311,7 +332,7 @@ func (s *LocalDaemonSource) ListTurns(ctx context.Context, params appwire.Thread
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	var out appwire.ThreadTurnsListResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.ThreadTurnsList(ctx, params)
 		return callErr
@@ -336,8 +357,13 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
+	return s.StartTurnAtEntry(ctx, entry, params)
+}
+
+// StartTurnAtEntry sends input to an exact daemon within shared recovery cancellation.
+func (s *LocalDaemonSource) StartTurnAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	var out appwire.TurnStartResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err := s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.TurnStart(ctx, params)
 		return callErr
@@ -351,7 +377,7 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 		return appwire.TurnSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnSteerResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnSteer, params, &out)
 	})
 	return out, err
@@ -362,7 +388,7 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 	if err != nil {
 		return err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodEvenerSandboxEscalationResolve, params, nil)
 	})
 }
@@ -373,7 +399,7 @@ func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.Tu
 		return appwire.TurnInterruptResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnInterruptResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnInterrupt, params, &out)
 	})
 	return out, err
@@ -385,7 +411,7 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 		return appwire.TurnQueueResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnQueueResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnQueue, params, &out)
 	})
 	return out, err
@@ -397,7 +423,7 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 		return appwire.TurnDrainAsSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnDrainAsSteerResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnDrainAsSteer, params, &out)
 	})
 	return out, err
@@ -409,7 +435,7 @@ func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params app
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnPromoteQueuedAsSteerResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params, &out)
 	})
 	return out, err
@@ -421,7 +447,7 @@ func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.Tur
 		return appwire.TurnCancelQueuedResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var resp appwire.TurnCancelQueuedResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		var cerr error
 		resp, cerr = client.TurnCancelQueued(ctx, params)
 		return cerr
@@ -437,7 +463,7 @@ func (s *LocalDaemonSource) CompactThread(ctx context.Context, params appwire.Th
 	if err != nil {
 		return err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadCompactStart(ctx, params)
 	})
 }
@@ -447,7 +473,7 @@ func (s *LocalDaemonSource) ShutdownThread(ctx context.Context, params appwire.T
 	if err != nil {
 		return err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadShutdown(ctx, params)
 	})
 }
@@ -457,7 +483,7 @@ func (s *LocalDaemonSource) SetThreadModel(ctx context.Context, params appwire.T
 	if err != nil {
 		return err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadModelSet(ctx, params)
 	})
 }
@@ -467,7 +493,7 @@ func (s *LocalDaemonSource) SetThreadVisionModel(ctx context.Context, params app
 	if err != nil {
 		return err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadVisionModelSet(ctx, params)
 	})
 }
@@ -477,7 +503,7 @@ func (s *LocalDaemonSource) SetThreadReasoningEffort(ctx context.Context, params
 	if err != nil {
 		return err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadReasoningEffortSet(ctx, params)
 	})
 }
@@ -487,7 +513,7 @@ func (s *LocalDaemonSource) SetThreadName(ctx context.Context, params appwire.Th
 	if err != nil {
 		return err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		return client.ThreadNameSet(ctx, params)
 	})
 }
@@ -498,7 +524,7 @@ func (s *LocalDaemonSource) GoalSet(ctx context.Context, params appwire.GoalSetP
 		return appwire.GoalSetResponse{}, err
 	}
 	var out appwire.GoalSetResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.GoalSet(ctx, params)
 		return callErr
@@ -512,7 +538,7 @@ func (s *LocalDaemonSource) ClearThread(ctx context.Context, params appwire.Thre
 		return appwire.ThreadClearResponse{}, err
 	}
 	var out appwire.ThreadClearResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.ThreadClear(ctx, params)
 		return callErr
@@ -526,7 +552,7 @@ func (s *LocalDaemonSource) ListModels(ctx context.Context, params appwire.Model
 		return appwire.ModelListResponse{}, nil
 	}
 	var out appwire.ModelListResponse
-	err := s.withClient(ctx, localDaemonRendezvousEntry(entries[0]), func(client *appwire.Client) error {
+	err := s.withClient(ctx, localDaemonRendezvousEntry(entries[0]), func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.ModelList(ctx, params)
 		return callErr
@@ -540,7 +566,7 @@ func (s *LocalDaemonSource) ListTasks(ctx context.Context, params appwire.TaskLi
 		return appwire.TaskListResponse{}, err
 	}
 	var out appwire.TaskListResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.TasksList(ctx, params)
 		return callErr
@@ -554,7 +580,7 @@ func (s *LocalDaemonSource) ListJobs(ctx context.Context, params appwire.JobsLis
 		return appwire.JobsListResponse{}, err
 	}
 	var out appwire.JobsListResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.JobsList(ctx, params)
 		return callErr
@@ -568,7 +594,7 @@ func (s *LocalDaemonSource) JobOutput(ctx context.Context, params appwire.JobsOu
 		return appwire.JobsOutputResponse{}, err
 	}
 	var out appwire.JobsOutputResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.JobOutput(ctx, params)
 		return callErr
@@ -642,7 +668,7 @@ func forwardLocalDaemonNotification(ctx context.Context, out chan<- appwire.Noti
 	}
 }
 
-func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(*appwire.Client) error) error {
+func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(context.Context, *appwire.Client) error) error {
 	return s.withClientCallMapper(ctx, entry, fn, localDaemonCallError)
 }
 
@@ -650,7 +676,7 @@ func (s *LocalDaemonSource) withMutationClient(
 	ctx context.Context,
 	entry rendezvous.Entry,
 	clientMutationID string,
-	fn func(*appwire.Client) error,
+	fn func(context.Context, *appwire.Client) error,
 ) error {
 	return s.withClientCallMapper(ctx, entry, fn, func(err error) error {
 		return localDaemonMutationCallError(clientMutationID, err)
@@ -660,9 +686,14 @@ func (s *LocalDaemonSource) withMutationClient(
 func (s *LocalDaemonSource) withClientCallMapper(
 	ctx context.Context,
 	entry rendezvous.Entry,
-	fn func(*appwire.Client) error,
+	fn func(context.Context, *appwire.Client) error,
 	mapCallError func(error) error,
 ) error {
+	ctx, finish := s.beginDaemonCall(ctx, entry)
+	defer finish()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	transport, err := s.dial(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -680,7 +711,10 @@ func (s *LocalDaemonSource) withClientCallMapper(
 		}
 		return localDaemonInitializeError(err)
 	}
-	if err := fn(client); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := fn(ctx, client); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
@@ -809,13 +843,22 @@ func localDaemonMutationEntryError(clientMutationID string, err error) error {
 	return wire
 }
 
+// DaemonInitializeError identifies failures before a daemon accepts session RPCs.
+// Its underlying wire error remains available for protocol error reporting.
+type DaemonInitializeError struct {
+	Err error
+}
+
+func (e DaemonInitializeError) Error() string { return e.Err.Error() }
+func (e DaemonInitializeError) Unwrap() error { return e.Err }
+
 func localDaemonInitializeError(err error) error {
 	mapped := localDaemonCallError(err)
 	var wire appwire.WireError
 	if errors.As(mapped, &wire) && wire.Code != appwire.CodeInternalError {
-		return mapped
+		return DaemonInitializeError{Err: mapped}
 	}
-	return localDaemonDialError(mapped)
+	return DaemonInitializeError{Err: localDaemonDialError(mapped)}
 }
 
 func localDaemonSubscribeReadError(err error) error {
@@ -881,6 +924,19 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 }
 
 func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
+	entries := s.listedEntries()
+	out := make([]LocalDaemonEntry, 0, len(entries))
+	for _, item := range entries {
+		if item.Entry.Protocol == appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// listedEntries preserves confirmed incompatible owners for display, without
+// admitting them to the live RPC routes selected by liveEntries.
+func (s *LocalDaemonSource) listedEntries() []LocalDaemonEntry {
 	if s.entries == nil {
 		return nil
 	}
@@ -888,7 +944,7 @@ func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
 	out := make([]LocalDaemonEntry, 0, len(entries))
 	for _, item := range entries {
 		entry := item.Entry
-		if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" || entry.ThreadID == "" {
+		if entry.Endpoint == "" || localDaemonThreadID(item) == "" || (entry.Protocol != appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired) {
 			continue
 		}
 		sourceID := entry.SourceID
@@ -943,6 +999,9 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
+	if status == appwire.ThreadStatusRestartRequired {
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+	}
 	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0) {
 		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))
 		jobs = append(jobs, item.RunningJobs...)
@@ -950,10 +1009,11 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{Jobs: cloneLocalDaemonJobs(jobs)}
 	}
 	if item.ReadOnlyAlias {
+		thread.Evener.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String()
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 		thread.Evener.Kind = "subagent"
 		if item.OwnerSessionID != "" {
-			thread.Evener.ParentRef = appwire.Ref{SourceID: s.sourceID, ThreadID: item.OwnerSessionID}.String()
+			thread.Evener.ParentRef = localDaemonWorkspaceRef(s.sourceID, item.Entry, item.OwnerSessionID)
 		}
 	}
 	return thread
@@ -990,7 +1050,7 @@ func localDaemonThreadID(item LocalDaemonEntry) string {
 	if item.SessionID != "" {
 		return item.SessionID
 	}
-	return item.Entry.ThreadID
+	return firstLocalNonEmpty(item.Entry.ThreadID, item.Entry.SessionID)
 }
 
 func localDaemonThreadStatus(status string) string {
@@ -1007,6 +1067,8 @@ func localDaemonThreadStatus(status string) string {
 		return appwire.ThreadStatusClosed
 	case appwire.ThreadStatusNotLoaded:
 		return appwire.ThreadStatusNotLoaded
+	case appwire.ThreadStatusRestartRequired:
+		return appwire.ThreadStatusRestartRequired
 	case appwire.ThreadStatusIdle:
 		return appwire.ThreadStatusIdle
 	default:

@@ -19,6 +19,7 @@ const (
 	ChangeCoerceType        ChangeKind = "coerce_type"
 	ChangeDropUnknown       ChangeKind = "drop_unknown"
 	ChangeUnicodeRepair     ChangeKind = "unicode_repair"
+	ChangeMissingOuterBrace ChangeKind = "missing_outer_brace"
 	ChangeFillRequired      ChangeKind = "fill_required"
 	ChangeNormalizeDefault  ChangeKind = "normalize_default"
 	ChangeSynthesize        ChangeKind = "synthesize"

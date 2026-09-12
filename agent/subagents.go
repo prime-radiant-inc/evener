@@ -215,7 +215,7 @@ func teardownChildSession(ctx context.Context, sess *Session, scratch childScrat
 	if sess == nil {
 		return
 	}
-	sess.close(ctx, false)
+	sess.close(ctx, closeOptions{})
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that
@@ -774,6 +774,9 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.ExportATIFPath = parentCfg.ExportATIFPath
 	subCfg.ExportATIFProviderHandles = parentCfg.ExportATIFProviderHandles
 	subCfg.ResolveProfile = parentCfg.ResolveProfile
+	// The personal doc belongs to whoever is running the tree now — the hub's
+	// root — so a delegate reads the same file its live parent does.
+	subCfg.AgentsDocPath = parentCfg.AgentsDocPath
 	subCfg.testOnly = parentCfg.testOnly
 	subCfg.TurnEndsProcess = parentCfg.TurnEndsProcess
 	subCfg.ForceRealIO = parentCfg.ForceRealIO

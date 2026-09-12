@@ -1,10 +1,14 @@
+@import "@fontsource-variable/source-serif-4";
+@import "@fontsource-variable/source-serif-4/wght-italic.css";
+
 /*
  * Font faces + base element wiring. Token *values* (color, type scale,
  * space, radius, motion) live in tokens.css — this file only wires the
- * fonts those tokens name (--font-sans/--font-mono) to actual files, and
+ * fonts those tokens name (--font-sans/--font-prose/--font-mono) to actual files, and
  * applies the base tokens to the document root.
  *
- * Font source: the latin woff2 variable-font subset pre-built by the
+ * Source Serif 4 uses the package CSS (normal + real italic, OFL-1.1).
+ * Inter and JetBrains use the latin woff2 variable-font subset pre-built by the
  * @fontsource-variable packages, imported straight from node_modules so no
  * binary is committed to this repo. One file per family covers every
  * weight (100–800/900 variable axes), replacing the three-per-family

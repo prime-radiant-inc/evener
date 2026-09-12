@@ -37,17 +37,10 @@
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 
-import {
-  Badge,
-  Cadence,
-  type CadenceState,
-  Chevron,
-  IconButton,
-  Menu,
-  type MenuItem,
-  type TreeRowInfo,
-} from "../../widgets";
+import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { Menu, type MenuItem } from "../../widgets/menu";
+import type { TreeRowInfo } from "../../widgets/tree";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
@@ -68,6 +61,7 @@ import {
 } from "./railNodes";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
+import { humanizeState } from "./sessionState";
 
 export { isTopLevelSession } from "./sessionKind";
 
@@ -121,49 +115,10 @@ export function cadenceStateFor(wireState: string): CadenceState {
       return "failed";
     case "awaiting":
     case "warning":
+    case "restartRequired":
       return "needs-you";
     case "active":
       return "working";
-    case "ended":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
-}
-
-// The humanized wire state a row's second line leads with (§2.3) - the same
-// wire state vocabulary cadenceStateFor reads, worded for a person rather
-// than mapped to a Cadence family.
-//
-// "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
-// attention.go, Track A §2 ask-tiering) already draws this same line for the
-// TUI and the older web surface - "Question waiting" when the agent is
-// genuinely blocked on an answer, "Your move" when a turn simply ended with
-// nothing further queued - because those are different urgencies wearing the
-// identical amber dot. This rail's own row never read askPending before,
-// so every "awaiting" row rendered as the same generic "waiting on you" -
-// a person scanning the list for the one session that's actually blocked on
-// them had to open every amber row to find out which. Lowercased to match
-// this line's existing casing ("working"/"failed"/"idle"), not the Go
-// vocabulary's sentence case verbatim.
-//
-// "warning" gets its own word for the same reason (kata 59mx): StateWord
-// already gives it a dedicated "Warning", distinct from either awaiting
-// band, so a warning row reading as generic "waiting on you" was this
-// gloss never having read that vocabulary for this state either - the same
-// gap ask_pending closed for "awaiting" above. Sharing Cadence's "needs-you"
-// dot family (cadenceStateFor) is still correct: that comment's own text
-// says only the dot family is shared by design, never the word.
-function humanizeState(wireState: string, askPending: boolean): string {
-  switch (wireState) {
-    case "active":
-      return "working";
-    case "awaiting":
-      return askPending ? "question waiting" : "your move";
-    case "warning":
-      return "warning";
-    case "errored":
-      return "failed";
     case "ended":
       return "ended";
     default: // "idle", "notLoaded", "", and any future/unknown value
@@ -249,9 +204,10 @@ export function activityGloss(session: RailSession, activity = activeWorkSummary
   const workingCount = activity.workingSubagents;
   const jobCount = activity.runningJobs;
   const parts: string[] = [];
+  if (session.state === "restartRequired") parts.push(humanizeState(session.state, session.ask_pending === true));
   if (workingCount > 0) {
     parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
-  } else if (jobCount === 0 || session.state === "active") {
+  } else if (session.state !== "restartRequired" && (jobCount === 0 || session.state === "active")) {
     parts.push(humanizeState(session.state, session.ask_pending === true));
   }
   if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
@@ -286,6 +242,7 @@ export interface RailRowActions {
   onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
+  onForceStopSession(session: RailSession): Promise<void>;
   onPinSession(
     session: RailSession,
     target: PinTarget,
@@ -489,13 +446,21 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       title={session.title}
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
-      canShutdown={session.live}
+      canShutdown={session.live && session.state !== "restartRequired"}
       treeNode={session}
       panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
       actions={{
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),
         onShutdown: () => actions.onShutdownSession(session),
+        onForceStop:
+          ref.startsWith("local:") &&
+          session.host_id === "local" &&
+          session.kind === "session" &&
+          session.state !== "notLoaded" &&
+          session.state !== "closed"
+            ? () => actions.onForceStopSession(session)
+            : undefined,
         onPin: (target, section) => actions.onPinSession(session, target, section),
         onUnpin: () => actions.onUnpinRequest(session),
         onToggleArchive: () => actions.onToggleArchiveSession(session),
@@ -529,7 +494,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // failed session still wins over that rollup so an error cannot disappear
   // behind a green child.
   let effectiveState = presented;
-  if (effectiveState !== "errored" && hasActiveWork) effectiveState = "active";
+  if (effectiveState !== "errored" && effectiveState !== "restartRequired" && hasActiveWork) effectiveState = "active";
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
   // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
   // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/

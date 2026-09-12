@@ -113,9 +113,11 @@ func openAIProbeServer(t *testing.T) *httptest.Server {
 }
 
 func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.T) {
-	root := providersTestEnv(t, map[string]string{"GROQ_API_KEY": "gk"})
+	const envKey = "credential-sentinel:groq:unprinted"
+	const storedKey = "credential-sentinel:work:unprinted"
+	root := providersTestEnv(t, map[string]string{"GROQ_API_KEY": envKey})
 	path := writeProvidersToml(t, root, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw.example.com/v1\"\n")
-	creds := "schema = 1\n[providers.kimi]\napi_key = \"old\"\n[providers.work]\napi_key = \"w\"\n"
+	creds := "schema = 1\n[providers.kimi]\napi_key = \"old\"\n[providers.work]\napi_key = \"" + storedKey + "\"\n"
 	if err := os.WriteFile(filepath.Join(root, "credentials.toml"), []byte(creds), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +132,7 @@ func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.
 			t.Fatalf("missing %q in\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "gk") || strings.Contains(out, "\"w\"") {
+	if strings.Contains(out, envKey) || strings.Contains(out, storedKey) || strings.Contains(stderr.String(), envKey) || strings.Contains(stderr.String(), storedKey) {
 		t.Fatalf("list prints credential sources, never values (spec §11.2):\n%s", out)
 	}
 	if !strings.Contains(stderr.String(), `credentials.toml entry "kimi" names no instance`) {
@@ -551,6 +553,39 @@ func TestProvidersAddExitsZeroWhenTheProbeCannotRun(t *testing.T) {
 	l, exists, err := registry.ReadConfigFile(filepath.Join(root, "providers.toml"))
 	if err != nil || !exists || l.Providers["gw"].Base != "openai-compatible" {
 		t.Fatalf("the entry must survive a failed probe: %v %v %+v", err, exists, l.Providers["gw"])
+	}
+}
+
+// The NAME half of a credential header is an HTTP header token on this
+// surface as on the pane, so neither authors a header the other would refuse.
+func TestProvidersAddRefusesACredentialHeaderNameThatIsNotAToken(t *testing.T) {
+	root := providersTestEnv(t, nil)
+	var stdout, stderr bytes.Buffer
+	err := runProviders([]string{"add", "bad", "--base", "openai", "--credential-header", "Bad Name=Bearer $PORTKEY_KEY"}, nil, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("a credential header name that is not an HTTP token is refused")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "providers.toml")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused add wrote providers.toml (stat err = %v)", statErr)
+	}
+}
+
+// --api-key-env names the environment variable holding the key, so a key
+// typed there is refused on this surface as on the pane. The accepted shape
+// (`GW_KEY`) is pinned by
+// TestProvidersAddNoProbeWritesWithoutTouchingTheEndpoint.
+func TestProvidersAddRefusesAnAPIKeyEnvThatIsNotAVariableName(t *testing.T) {
+	root := providersTestEnv(t, nil)
+	var stdout, stderr bytes.Buffer
+	err := runProviders([]string{"add", "bad", "--base", "openai", "--api-key-env", "sk-live-abc"}, nil, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("an --api-key-env that is not an environment variable name is refused")
+	}
+	if strings.Contains(err.Error(), "sk-live-abc") {
+		t.Fatalf("the refusal must not echo the value: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "providers.toml")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused add wrote providers.toml (stat err = %v)", statErr)
 	}
 }
 

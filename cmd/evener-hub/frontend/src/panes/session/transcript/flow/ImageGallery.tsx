@@ -144,6 +144,20 @@ export function ImageGallery({ images: supplied, size }: ImageGalleryProps) {
               className={size === "large" ? `${CLASS.thumbImg} ${CLASS.thumbImgLarge}` : CLASS.thumbImg}
               src={image.src}
               alt={altFor(i, total)}
+              // Decode-scheduling only: thumbnails below the fold must not
+              // force the browser to fetch/decode full bytes up front. The
+              // lightbox img below stays eager - opening it is an explicit
+              // user request for the full image. src/onError/data-URI
+              // handling is unchanged.
+              loading="lazy"
+              decoding="async"
+              // Reserve the 96px box before CSS/decode so lazy thumbnails
+              // don't shift layout on load. Only the default cover-crop
+              // thumbnails have a fixed box - size="large" preserves each
+              // image's own aspect ratio (unknown up front), so no attrs
+              // there (React omits undefined attributes).
+              width={size === "large" ? undefined : 96}
+              height={size === "large" ? undefined : 96}
               onError={() => markUnloadable(image.src)}
             />
             {caption !== undefined && (

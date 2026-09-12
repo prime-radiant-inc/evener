@@ -9,15 +9,15 @@ import (
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string"},
-				"offset":    map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
-				"limit":     map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
-				"intent":    map[string]any{"type": "string", "description": "For image/PDF files: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
+				"file_path":     map[string]any{"type": "string"},
+				"offset":        map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
+				"limit":         map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
+				"vision_prompt": map[string]any{"type": "string", "description": "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
 			},
 			"required": []string{"file_path"},
 		},
@@ -326,10 +326,11 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Wake yourself later: `after_seconds` fires once, `repeat_seconds` fires every interval, and `note` is delivered with the wake so you know why you set it. " +
+	desc := "Wake yourself later: `after_seconds` fires once and `repeat_seconds` fires every interval. " +
 		"Source defaults to `self` for these. Use a timer for state Evener cannot tell you about, such as an external service; your delegates and jobs wake you when they finish, so never set a timer to learn whether one finished. " +
 		"To be nudged if a job is still running later, create a one-shot on yourself with a note naming the job (`after_seconds:600, note:\"job_x should be done; check job_status\"`) and call `job_status` when it fires. " +
-		"Each `create` is a new timer; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
+		"`note` is the watch's own prose payload: any create accepts one, and it comes back with every fire so you know why you armed it. " +
+		"Each `create` installs a new watch; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
 		"Create, inspect, list, or clear standing triggers on a source you can observe. " +
 		"For operation=\"create\", set `source` to `self`, `parent`, a stable delegate ID (`dlg_...`), or a concrete shell `job_id`. " +
 		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
@@ -356,7 +357,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Concrete job source only: periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
 				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "Fire once this many seconds from now (60 to 86400); source self only."},
 				"repeat_seconds":       map[string]any{"type": []string{"integer", "null"}, "description": "Fire every this many seconds until cleared (60 to 3600); source self only."},
-				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Delivered with every fire of a timer; use it to say why and, for a loop, where you are."},
+				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Delivered with every fire of any watch; use it to say why you armed it and, for a loop, where you are."},
 				"events": map[string]any{
 					"type":        []string{"array", "null"},
 					"items":       map[string]any{"type": "string"},

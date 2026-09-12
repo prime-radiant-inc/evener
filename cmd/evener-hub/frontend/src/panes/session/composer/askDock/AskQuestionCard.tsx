@@ -23,8 +23,8 @@
 // CSS module throughout rather than forcing a widget that cannot express
 // them.
 import { useEffect, useId, useRef } from "react";
+import type { AskResolution } from "../../../../protocol/askAnswers";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import type { AskResolution } from "./askCompose";
 import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
 import type { AskQuestionRef } from "./deriveAskQuestions";
@@ -51,7 +51,7 @@ export interface AskQuestionCardProps {
   question: AskQuestionRef;
   // Global posting order (1-based) across the WHOLE pending batch this
   // question belongs to, not just its own ask_user call - matches the
-  // [answers] reply's own numbering (askCompose.ts).
+  // [answers] reply's own numbering (protocol/askAnswers.ts).
   number: number;
   answer: AskAnswerState;
   // True while the batch's send is in flight (AskBatch.sending): the

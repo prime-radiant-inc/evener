@@ -29,6 +29,15 @@ type Store struct {
 	seq    int64
 	closed bool
 
+	// foldGen advances every time the durable journal bytes the store has
+	// accounted for change: on every successful append or batch append, on
+	// every rollback or trailing-line repair that rewrites the file, and on
+	// every load that observes bytes the cursor had not yet accounted for
+	// (including foreign appends). It is the fold cache's invalidation key:
+	// a cached fold is served only when its generation still matches.
+	foldGen uint64
+	folds   foldCache
+
 	// disableSync, when set, skips the per-append fsync. Production opens via
 	// Open, which leaves this false, so the durable write path is unchanged. The
 	// on-disk bytes are identical either way.
@@ -90,6 +99,47 @@ type fileCursor struct {
 	// the store's own writes from no write at all, after which the store always
 	// re-reads the whole file.
 	disabled bool
+}
+
+// foldCache caches the last fold of each kind, keyed on the cursor's identity
+// of the log: a generation that advances every time the journal bytes the
+// store has accounted for change. The next load reuses the cached fold only
+// when the generation still matches — anything the store did not do itself
+// (a foreign rewrite, a truncation, a trailing-line repair) drops the cursor
+// or resets it, and the cached fold goes with it. The store's own appends
+// bump the generation on every path that changes the durable bytes
+// (Append, AppendBatch, rollbackAppendLocked, the trailing-line repairs), so
+// a fold cached before an append is never served after it. The generation
+// moves on every append even when the cursor is disabled or invalid, which
+// is what keeps callers that depend on seeing foreign appends instantly
+// correct: a foreign append is only ever observed through a load, and a
+// load that observes new bytes resets the cursor and bumps the generation
+// before folding, so the fresh bytes are folded, never skipped.
+// The cache is process memory only, like the cursor: a crash loses it, and a
+// fresh process folds from byte zero.
+//
+// Cached values are the same private snapshots a fresh fold builds: every
+// load hands back deep copies (see the cloneFold* helpers), so a caller that
+// mutates a loaded record cannot corrupt what the next load reports. A
+// cached fold must be identical to folding the journal bytes it keys on.
+//
+// A hit additionally requires the file to still be the one the cursor was
+// built from (same length, same modification time — the cursorTrustedLocked
+// check, via one stat). The generation alone cannot prove that: a foreign
+// writer could have appended bytes since the last load without moving the
+// generation, and serving the cached fold would hide them. The stat keeps
+// that path honest — any observed change forces the full read-and-fold —
+// while still avoiding the open, scan, decode and fold on a quiet log.
+type foldCache struct {
+	gen       uint64
+	jobs      map[string]*JobRecord
+	ordered   []*JobRecord
+	watches   map[string]*WatchRecord
+	sends     WatchSendRecord
+	jobsOK    bool
+	orderedOK bool
+	watchesOK bool
+	sendsOK   bool
 }
 
 // Open opens (creating if needed) the jobs.jsonl at path and recovers the next
@@ -220,11 +270,16 @@ func (s *Store) Load() (map[string]*JobRecord, error) {
 	if err := s.ensureOpenLocked(); err != nil {
 		return nil, err
 	}
+	if folded, ok, err := s.foldJobsHitLocked(); err != nil {
+		return nil, err
+	} else if ok {
+		return folded, nil
+	}
 	events, err := s.readAllLocked()
 	if err != nil {
 		return nil, err
 	}
-	return Fold(events), nil
+	return s.noteFoldedJobsLocked(Fold(events)), nil
 }
 
 // LoadOrdered reads every event and folds them to the current records, returning
@@ -238,11 +293,16 @@ func (s *Store) LoadOrdered() ([]*JobRecord, error) {
 	if err := s.ensureOpenLocked(); err != nil {
 		return nil, err
 	}
+	if folded, ok, err := s.foldOrderedHitLocked(); err != nil {
+		return nil, err
+	} else if ok {
+		return folded, nil
+	}
 	events, err := s.readAllLocked()
 	if err != nil {
 		return nil, err
 	}
-	return FoldOrdered(events), nil
+	return s.noteFoldedOrderedLocked(FoldOrdered(events)), nil
 }
 
 // LoadWatches reads every event and folds durable watch registry state.
@@ -252,11 +312,16 @@ func (s *Store) LoadWatches() (map[string]*WatchRecord, error) {
 	if err := s.ensureOpenLocked(); err != nil {
 		return nil, err
 	}
+	if folded, ok, err := s.foldWatchesHitLocked(); err != nil {
+		return nil, err
+	} else if ok {
+		return folded, nil
+	}
 	events, err := s.readAllLocked()
 	if err != nil {
 		return nil, err
 	}
-	return FoldWatches(events), nil
+	return s.noteFoldedWatchesLocked(FoldWatches(events)), nil
 }
 
 // LoadWatchSends reads every event and folds durable pending watch-send state.
@@ -266,11 +331,16 @@ func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
 	if err := s.ensureOpenLocked(); err != nil {
 		return WatchSendRecord{}, err
 	}
+	if folded, ok, err := s.foldSendsHitLocked(); err != nil {
+		return WatchSendRecord{}, err
+	} else if ok {
+		return folded, nil
+	}
 	events, err := s.readAllLocked()
 	if err != nil {
 		return WatchSendRecord{}, err
 	}
-	return FoldWatchSends(events), nil
+	return s.noteFoldedSendsLocked(FoldWatchSends(events)), nil
 }
 
 // LoadEvents reads every durable event in append order.
@@ -329,6 +399,12 @@ func (s *Store) readAllLocked() ([]Event, error) {
 			s.resetCursorLocked()
 			return nil, err
 		}
+		// The load observed bytes the cursor had not yet accounted for — the
+		// store's own appends between loads, or a foreign append that reset
+		// the cursor above. Fold state cached at the old generation describes
+		// the old bytes and must not be served for the new ones.
+		s.foldGen++
+		s.folds = foldCache{gen: s.foldGen}
 	}
 	s.cursor.size = info.Size()
 	s.cursor.mod = info.ModTime()
@@ -358,6 +434,12 @@ func (s *Store) cursorTrustedLocked(info os.FileInfo) bool {
 func (s *Store) resetCursorLocked() {
 	disabled := s.cursor.disabled
 	s.cursor = fileCursor{disabled: disabled}
+	// The journal the cursor described is gone (foreign rewrite, truncation,
+	// deleted log, decode error, or a disabled cursor re-reading from zero):
+	// no fold cached against it may be served again. Loads that observe new
+	// bytes bump the generation again below when the cursor re-advances, so
+	// this invalidation is never confused with the fresh state that follows.
+	s.folds = foldCache{}
 }
 
 // invalidateCursorLocked drops the cursor after the store itself changed the
@@ -365,6 +447,11 @@ func (s *Store) resetCursorLocked() {
 // trailing-line repair), so the next load re-reads the file from byte zero.
 func (s *Store) invalidateCursorLocked() {
 	s.cursor.valid = false
+	// The file changed under every cached fold: bump the generation so a
+	// fold cached before the repair is never served after it. The next load
+	// re-reads from byte zero and caches fresh folds at the new generation.
+	s.foldGen++
+	s.folds = foldCache{gen: s.foldGen}
 }
 
 // verifyCursorBeforeAppendLocked drops the cursor unless the file is still the
@@ -380,6 +467,11 @@ func (s *Store) verifyCursorBeforeAppendLocked() {
 	info, err := s.fs.Stat(s.path)
 	if err != nil || !s.cursorTrustedLocked(info) {
 		s.cursor.valid = false
+		// The bytes the cached folds describe may not be the file's bytes
+		// (foreign rewrite since the last load). Drop them; the append below
+		// bumps the generation again, and the next load folds fresh bytes.
+		s.foldGen++
+		s.folds = foldCache{gen: s.foldGen}
 	}
 }
 
@@ -392,6 +484,12 @@ func (s *Store) verifyCursorBeforeAppendLocked() {
 // as append failures: the bytes are already durable, and a dropped cursor costs
 // a reread, never a wrong answer.
 func (s *Store) noteAppendedLocked(startOffset, endOffset int64) {
+	// Every append changes the durable bytes, so the generation moves on all
+	// paths below — including the early returns that drop the cursor. A fold
+	// cached before this append must never be served after it, whether or not
+	// the cursor survived.
+	s.foldGen++
+	s.folds = foldCache{gen: s.foldGen}
 	if !s.cursor.valid {
 		return
 	}
@@ -691,4 +789,199 @@ func (s *Store) Close() error {
 	// Release the cached events; a closed store can no longer be loaded.
 	s.resetCursorLocked()
 	return nil
+}
+
+// foldHitLocked reports whether the cached fold of one kind is still current:
+// the slot is populated and its generation is the store's. Every path that
+// changes the accounted-for journal bytes bumps foldGen and clears the slots
+// (Append, AppendBatch, rollback, trailing-line repairs, loads that observe
+// new bytes — including foreign appends — and cursor resets), so a hit means
+// the journal is byte-for-byte the one that was folded.
+// A hit additionally requires the file on disk to still be the file the
+// cursor was built from: the helper stats the log and applies the same trust
+// check readAllLocked uses. A foreign append between two loads changes the
+// size or mtime, fails the check, and forces the full read-and-fold — so
+// callers that depend on seeing foreign appends instantly still see them.
+// The trust check alone is not the whole story: with stale filesystem
+// metadata an earlier load can leave the cursor's consumed offset ahead of
+// the size it recorded, and a stat that still reports that size would keep
+// passing while foreign appends pile up past it. A hit therefore also
+// requires the cursor to have consumed through the reported size — the same
+// condition readAllLocked uses to skip its rescan — so any such divergence
+// forces the full read-and-fold.
+// A store whose cursor is disabled (see fileCursor) never reports a hit:
+// its filesystem cannot resolve a write by size and mtime, so a stat cannot
+// prove the bytes are unchanged and every load re-reads, as before.
+func (s *Store) foldCurrentLocked() (bool, error) {
+	if s.cursor.disabled {
+		return false, nil
+	}
+	info, err := s.fs.Stat(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("jobstore: stat %s: %w", s.path, err)
+	}
+	return s.cursorTrustedLocked(info) && info.Size() == s.cursor.offset, nil
+}
+
+func (s *Store) foldJobsHitLocked() (map[string]*JobRecord, bool, error) {
+	if !s.folds.jobsOK || s.folds.gen != s.foldGen {
+		return nil, false, nil
+	}
+	ok, err := s.foldCurrentLocked()
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return cloneFoldJobs(s.folds.jobs), true, nil
+}
+
+func (s *Store) foldOrderedHitLocked() ([]*JobRecord, bool, error) {
+	if !s.folds.orderedOK || s.folds.gen != s.foldGen {
+		return nil, false, nil
+	}
+	ok, err := s.foldCurrentLocked()
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return cloneFoldOrdered(s.folds.ordered), true, nil
+}
+
+func (s *Store) foldWatchesHitLocked() (map[string]*WatchRecord, bool, error) {
+	if !s.folds.watchesOK || s.folds.gen != s.foldGen {
+		return nil, false, nil
+	}
+	ok, err := s.foldCurrentLocked()
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return cloneFoldWatches(s.folds.watches), true, nil
+}
+
+func (s *Store) foldSendsHitLocked() (WatchSendRecord, bool, error) {
+	if !s.folds.sendsOK || s.folds.gen != s.foldGen {
+		return WatchSendRecord{}, false, nil
+	}
+	ok, err := s.foldCurrentLocked()
+	if err != nil || !ok {
+		return WatchSendRecord{}, false, err
+	}
+	return cloneFoldSends(s.folds.sends), true, nil
+}
+
+// The noteFolded*Locked helpers cache a freshly computed fold at the current
+// generation and hand the caller its own deep copy. The cache keeps one copy
+// and the caller gets another, so later caller mutations reach neither the
+// cache nor each other — the same independence guarantee loads have always
+// carried (see TestStoreIncrementalReloadIndependentSnapshots).
+func (s *Store) noteFoldedJobsLocked(folded map[string]*JobRecord) map[string]*JobRecord {
+	s.folds.gen = s.foldGen
+	s.folds.jobs = cloneFoldJobs(folded)
+	s.folds.jobsOK = true
+	return cloneFoldJobs(folded)
+}
+
+func (s *Store) noteFoldedOrderedLocked(folded []*JobRecord) []*JobRecord {
+	s.folds.gen = s.foldGen
+	s.folds.ordered = cloneFoldOrdered(folded)
+	s.folds.orderedOK = true
+	return cloneFoldOrdered(folded)
+}
+
+func (s *Store) noteFoldedWatchesLocked(folded map[string]*WatchRecord) map[string]*WatchRecord {
+	s.folds.gen = s.foldGen
+	s.folds.watches = cloneFoldWatches(folded)
+	s.folds.watchesOK = true
+	return cloneFoldWatches(folded)
+}
+
+func (s *Store) noteFoldedSendsLocked(folded WatchSendRecord) WatchSendRecord {
+	s.folds.gen = s.foldGen
+	s.folds.sends = cloneFoldSends(folded)
+	s.folds.sendsOK = true
+	return cloneFoldSends(folded)
+}
+
+// cloneFoldJobs deep-copies folded job records. Every field that can carry a
+// caller-visible reference is copied: the time and int/bool pointers, the
+// provenance chains, and the StructuredResult payload, which is a value
+// decoded by encoding/json (see cloneJSONValue). Background, Phase and
+// LastActivity are live-only and never set by a fold, so there is nothing to
+// copy for them beyond the struct value itself — except LastActivity, which
+// is still cloned defensively in case a caller sets it on a returned record.
+func cloneFoldJobs(in map[string]*JobRecord) map[string]*JobRecord {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]*JobRecord, len(in))
+	for k, r := range in {
+		if r == nil {
+			out[k] = nil
+			continue
+		}
+		c := *r
+		c.LastActivity = clonePtr(r.LastActivity)
+		c.EndedAt = clonePtr(r.EndedAt)
+		c.ExitCode = clonePtr(r.ExitCode)
+		c.StructuredResult = cloneJSONValue(r.StructuredResult)
+		c.StructuredResultValid = clonePtr(r.StructuredResultValid)
+		c.Provenance = cloneCausal(r.Provenance)
+		c.NotificationProvenance = cloneCausal(r.NotificationProvenance)
+		out[k] = &c
+	}
+	return out
+}
+
+func cloneFoldOrdered(in []*JobRecord) []*JobRecord {
+	if in == nil {
+		return nil
+	}
+	out := make([]*JobRecord, len(in))
+	for i, r := range in {
+		if r == nil {
+			continue
+		}
+		c := *r
+		c.LastActivity = clonePtr(r.LastActivity)
+		c.EndedAt = clonePtr(r.EndedAt)
+		c.ExitCode = clonePtr(r.ExitCode)
+		c.StructuredResult = cloneJSONValue(r.StructuredResult)
+		c.StructuredResultValid = clonePtr(r.StructuredResultValid)
+		c.Provenance = cloneCausal(r.Provenance)
+		c.NotificationProvenance = cloneCausal(r.NotificationProvenance)
+		out[i] = &c
+	}
+	return out
+}
+
+// cloneFoldWatches deep-copies folded watch records. WatchRecord is strings,
+// ints and bools — no reference fields — so a struct copy per record is a
+// full deep copy.
+func cloneFoldWatches(in map[string]*WatchRecord) map[string]*WatchRecord {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]*WatchRecord, len(in))
+	for k, r := range in {
+		if r == nil {
+			out[k] = nil
+			continue
+		}
+		c := *r
+		out[k] = &c
+	}
+	return out
+}
+
+func cloneFoldSends(in WatchSendRecord) WatchSendRecord {
+	out := WatchSendRecord{}
+	if in.Pending == nil {
+		return out
+	}
+	out.Pending = make(map[WatchSendKey]*WatchSendState, len(in.Pending))
+	for k, v := range in.Pending {
+		out.Pending[k] = cloneWatchSend(v)
+	}
+	return out
 }

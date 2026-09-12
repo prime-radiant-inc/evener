@@ -25,6 +25,7 @@ import { useStore } from "zustand";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
+import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { useNavigationStore } from "../../stores/navigation/store";
@@ -34,9 +35,11 @@ import { configFingerprint, resolveEffectiveConfig } from "../../transcriptDispl
 import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
+import { SessionChrome } from "./chrome/SessionChrome";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
+import { useBlockedMutationEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
@@ -84,9 +87,12 @@ const EMPTY_THREADS = new Map<string, ThreadModel>();
 //
 // `status.type === "active"` is the wire vocabulary's word for "a turn is
 // running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
-// exactly the mid-first-turn window. Every other status with zero turns -
-// idle, notLoaded, closed, "" - has nothing running, so the invitation holds.
-function EmptyTranscript({ active }: { active: boolean }) {
+// exactly the mid-first-turn window. An incompatible session needs a restart;
+// other empty sessions invite their first message.
+function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
+  if (restartRequired) {
+    return <EmptyState title="Session unavailable until restart" hint="Stop the daemon, then resume this session." />;
+  }
   if (active) {
     return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
   }
@@ -100,8 +106,86 @@ function EmptyTranscript({ active }: { active: boolean }) {
 // actions) follows that shape. Automatic older-turn paging is the deliberate
 // exception: nobody pressed anything, so its failure reports inline at the top
 // of the transcript instead (useTranscript's olderError -> LoadOlderRow).
+function RestartRequiredNotice({
+  sessionRef,
+  resumeRequired = false,
+  ownerRef,
+}: {
+  sessionRef: string;
+  resumeRequired?: boolean;
+  ownerRef?: string;
+}) {
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      let refreshedRef = sessionRef;
+      if (resumeRequired) {
+        const { client, state } = connectionStore.getState();
+        if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
+        const { thread } = await client.resumeThread(sessionRef);
+        refreshedRef = thread.evener.ref;
+        if (refreshedRef !== sessionRef) {
+          const url = paneToURL("session", { ref: refreshedRef });
+          if (url !== null) navigate(url, { replace: true });
+        }
+      }
+      await threadsStore.getState().refreshThread(refreshedRef);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  return (
+    <div role="alert">
+      {ownerRef
+        ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
+        : resumeRequired
+          ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
+          : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
+      {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
+      <Button disabled={refreshing} onClick={() => void refresh()}>
+        {resumeRequired ? "Resume session" : "Refresh session"}
+      </Button>
+      {error && <span>{error}</span>}
+    </div>
+  );
+}
+
+function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const stop = async () => {
+    setError(null);
+    try {
+      await threadsStore.getState().forceStop(sessionRef);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+    try {
+      await threadsStore.getState().refreshThread(sessionRef);
+    } catch (err) {
+      setError(`Session stopped; couldn't refresh its view: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  return (
+    <>
+      <Button variant="quiet" onClick={() => setOpen(true)}>
+        Force stop…
+      </Button>
+      <ForceStopDialog open={open} onClose={() => setOpen(false)} onConfirm={stop} />
+      {error && <span role="alert">{error}</span>}
+    </>
+  );
+}
+
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const blockedMutations = useBlockedMutationEntries(ref);
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -168,6 +252,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // lets this pane render an honest terminal state instead of "Loading
   // transcript…" forever.
   const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
+  const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
+  const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
+  const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
   const navigation = useNavigationStore();
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
@@ -237,7 +324,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // The transcript's keyboard scroll (Alt+Arrow/Alt+Shift+Arrow, Phase 3):
   // per-pane handlers against the shared registry that decline unless THIS
   // pane is the workspace's focused one. Nothing registers on mobile.
-  useTranscriptScrollKeys({ paneId, listRef: virtualListRef, jumpToBottom: flow.jumpToBottom });
+  useTranscriptScrollKeys({
+    paneId,
+    listRef: virtualListRef,
+    jumpToBottom: flow.jumpToBottom,
+    markGesture: flow.markGesture,
+  });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.
@@ -288,10 +380,31 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     }
     return (
       <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
-        <EmptyState title="Loading transcript…" />
+        <EmptyState
+          title="Loading transcript…"
+          hint={
+            ref.startsWith("local:")
+              ? "If the session is unresponsive, you can stop its process to recover it."
+              : undefined
+          }
+          action={ref.startsWith("local:") ? <SessionForceStopRecovery sessionRef={ref} /> : undefined}
+        />
       </PaneScaffold>
     );
   }
+
+  const recoveryOwnerRef =
+    !mutationStateAuthoritative &&
+    model.status.type !== "notLoaded" &&
+    model.status.type !== "restartRequired" &&
+    model.parentRef?.startsWith("local:")
+      ? model.parentRef
+      : undefined;
+
+  const showRestartNotice =
+    model.status.type === "restartRequired" ||
+    restartPending ||
+    (blockedMutations.length > 0 && (model.status.type === "notLoaded" || !mutationStateAuthoritative));
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 
@@ -379,6 +492,29 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               retry={model.modelRetry}
               primaryModel={model.model}
             />
+            {showRestartNotice && (
+              <RestartRequiredNotice
+                sessionRef={ref}
+                ownerRef={recoveryOwnerRef}
+                resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
+              />
+            )}
+            {/* A FENCED notLoaded session (resumeRequired -> Send=false)
+                renders no composer card at all, which leaves the ⋯ menu -
+                the only force-stop surface - unmounted. Force stop matters
+                most in exactly that state: a stalled or fenced snapshot may
+                still have a daemon to stop. With Send=true the composer's
+                follow-up card exists and carries the menu, so this mount is
+                scoped to send === false to never render a second one.
+                Owner-retained sessions are excluded - their notice directs
+                recovery to the owner. */}
+            {model.status.type === "notLoaded" &&
+              !recoveryOwnerRef &&
+              ref.startsWith("local:") &&
+              !model.capabilities.send && <SessionChrome ref={ref} placement="menu" />}
+            {reconciliationFailed && (
+              <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
+            )}
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>
@@ -389,7 +525,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
         <ColdStartSkeleton />
       ) : isDormantTranscript(model.turns) ? (
-        <EmptyTranscript active={model.status.type === "active"} />
+        <EmptyTranscript
+          active={model.status.type === "active"}
+          restartRequired={model.status.type === "restartRequired"}
+        />
       ) : (
         transcript
       )}

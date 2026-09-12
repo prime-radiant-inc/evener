@@ -294,7 +294,10 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
+		s.appPendingStableTurnID = ""
+		s.appDeferredTerminalNotifications = nil
 		s.appReservedTurnID = ""
+		s.appProcessingReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
 		// daemon's session, so it is replaced in the SAME commit as the identity
@@ -407,9 +410,37 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.mu.Unlock()
 			return nil
 		}
+		if isAppTurnCarrier(event) && s.status.State == string(agent.SessionClosed) {
+			s.mu.Unlock()
+			return nil
+		}
+		if sessionEventClosesSession(event) {
+			s.setProcessingLocked(false)
+			s.status.State = string(agent.SessionClosed)
+			s.appDeferredTerminalNotifications = nil
+		}
 		s.ensureAppProjectorLocked(event.SessionID)
+		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
+		stableTurnID := eventStableTurnID(event)
+		pendingCarrier := stableTurnID != "" && stableTurnID == s.appPendingStableTurnID
+		if pendingCarrier {
+			s.appProjector.ReserveStableTurnID(stableTurnID)
+			s.appPendingStableTurnID = ""
+			// The carrier owns the new turn, so a terminal event from the
+			// previous turn must not be replayed after this boundary.
+			s.appDeferredTerminalNotifications = nil
+		}
 		projected := s.appProjector.Project(event)
-		s.appActiveTurnID = s.appProjector.ActiveTurnID()
+		projectedTurnID := s.appProjector.ActiveTurnID()
+		if isAppTurnCarrier(event) && projectedTurnID != "" && s.appPendingStableTurnID == "" {
+			// A carrier can arrive after processing cleanup and a queued
+			// terminal event. Reconcile the pull state before publishing the
+			// carrier's active notification so thread/read agrees with it.
+			s.status.State = appwire.ThreadStatusActive
+		}
+		if s.appPendingStableTurnID == "" {
+			s.appActiveTurnID = projectedTurnID
+		}
 		threadID := s.appThreadID
 		if threadID == "" {
 			threadID = event.SessionID
@@ -428,6 +459,14 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
 		for _, item := range projected {
+			// A queued terminal event can finish the old projector turn after a
+			// new stable turn has been admitted. Preserve its turn/item terminal
+			// notifications, but do not publish the old thread status or close
+			// frame over the newer durable active identity.
+			if supersededSessionEnd && (item.Method == appwire.NotifyThreadStatusChanged || item.Method == appwire.NotifyThreadClosed) {
+				s.appDeferredTerminalNotifications = append(s.appDeferredTerminalNotifications, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
+				continue
+			}
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
 				startSeed := start.CurrentWork
@@ -500,6 +539,102 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	})
 }
 
+// finishProcessing clears the processing identity and publishes any deferred
+// terminal status in one projection commit. A queued carrier therefore either
+// discards the prior terminal state or arrives after its publication. Completed
+// turn and item events are not replayed.
+func (s *Server) finishProcessing() {
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		s.setProcessingLocked(false)
+		if s.appPendingStableTurnID != "" || len(s.appDeferredTerminalNotifications) == 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		pending := s.appDeferredTerminalNotifications
+		s.appDeferredTerminalNotifications = nil
+		currentThreadID := s.appThreadID
+		if currentThreadID == "" {
+			currentThreadID = s.status.SessionID
+		}
+		currentRef := s.appRef
+		if currentRef == "" && currentThreadID != "" {
+			sourceID := s.appSourceID
+			if sourceID == "" {
+				sourceID = "local"
+			}
+			currentRef = appwire.Ref{SourceID: sourceID, ThreadID: currentThreadID}.String()
+		}
+		currentTurns := s.appTurns
+		retained := pending[:0]
+		for _, item := range pending {
+			if item.threadID == currentThreadID && item.ref == currentRef && item.snapshot == currentTurns {
+				retained = append(retained, item)
+			}
+		}
+		pending = retained
+		for _, item := range pending {
+			if item.method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok {
+				s.status.State = params.Status.Type
+			}
+		}
+		s.mu.Unlock()
+
+		committed := make([]appserver.SequencedNotification, 0, len(pending))
+		for _, item := range pending {
+			params := s.stampFailureCountOnStatusChange(item.method, item.params)
+			params = s.stampCapabilitiesOnStatusChange(item.method, params)
+			params = stampAppNotificationTarget(params, item.threadID, item.ref)
+			notificationTarget := item.threadID
+			s.mu.RLock()
+			isRoot := item.threadID == s.appThreadID
+			s.mu.RUnlock()
+			if isRoot {
+				notificationTarget = s.appNotificationTarget(item.threadID)
+			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
+			record := s.appNotifier.Record(notificationTarget, item.method, params)
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
+			committed = append(committed, record)
+		}
+		return committed
+	})
+}
+
+func eventStableTurnID(event events.SessionEvent) string {
+	switch data := event.Data.(type) {
+	case events.UserInputData:
+		return data.StableTurnID
+	case events.GoalContinuationData:
+		return data.StableTurnID
+	case events.TurnStartedData:
+		// A steering carrier announces the durable mutation identity on its
+		// turn boundary. RecordAppEvent's pending-identity check decides
+		// whether this boundary owns that identity; ordinary synthetic turns
+		// must not be treated as durable merely because they have a TurnID.
+		return data.TurnID
+	default:
+		return ""
+	}
+}
+
+func isAppTurnCarrier(event events.SessionEvent) bool {
+	switch event.Kind {
+	case events.EventTurnStarted, events.EventUserInput, events.EventGoalContinuation:
+		return true
+	default:
+		return false
+	}
+}
+
 // RecordDescendantAppEvent projects an in-process descendant onto its root
 // daemon's AppWire transport. ownerThreadID fences late events from a child of
 // a replaced root identity: those events must not bleed into the new tree.
@@ -518,6 +653,10 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			s.mu.Unlock()
 			return nil
 		}
+		parentRef := s.appRef
+		if parentRef == "" {
+			parentRef = appwire.Ref{SourceID: sourceIDForProjection(s.appSourceID), ThreadID: ownerThreadID}.String()
+		}
 		projection := s.appDescendants[threadID]
 		if projection == nil {
 			sourceID := s.appSourceID
@@ -532,7 +671,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					ID:        threadID,
 					SessionID: threadID,
 					Source:    sourceID,
-					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent"},
+					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent", ParentRef: parentRef},
 				},
 			}
 			s.installCostLookup(projection.projector)
@@ -567,6 +706,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					startSeed = currentWorkSeedWithoutTasks(startSeed)
 				}
 				mergeStartCurrentWork(&params.Thread.Evener, cachedTasks, projection.thread.Evener.Goal, startSeed)
+				params.Thread.Evener.ParentRef = parentRef
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
 				projection.thread.Evener.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
@@ -1149,6 +1289,9 @@ func (s *Server) appThreadReadSnapshotForTarget(params appwire.ThreadReadParams,
 			return appwire.ThreadReadResponse{}, err
 		}
 	}
+	// Descendant projections carry events and transcript windows, but not the
+	// addressed child's durable queue and mutation receipts.
+	thread.Evener.MutationStateAuthoritative = threadID == s.appProjectionThreadID()
 	response := appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
 	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
 		return appwire.ThreadReadResponse{}, err
@@ -1829,6 +1972,7 @@ func (s *Server) clearBlockedReasonLocked() string {
 
 func (s *Server) threadClearResponse(clientMutationID string, disposition appwire.MutationDisposition) appwire.ThreadClearResponse {
 	thread := s.appThread()
+	thread.Evener.MutationStateAuthoritative = true
 	return appwire.ThreadClearResponse{
 		Thread: thread,
 		Ref:    thread.Evener.Ref,

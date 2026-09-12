@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -52,6 +53,19 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	appClient.SetLogf(hubConnectionLogf)
 	appClient.Start(ctx)
 	if _, err := appClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
+		var wire appwire.WireError
+		var mismatch appwire.ProtocolVersionMismatchError
+		if errors.As(err, &mismatch) ||
+			(entry.Protocol != "" && entry.Protocol != appwire.ProtocolVersion &&
+				errors.As(err, &wire) && wire.Code == appwire.CodeInvalidRequest) {
+			id := entry.SessionID
+			if id == "" {
+				id = entry.ThreadID
+			}
+			if id != "" {
+				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, OK: true}
+			}
+		}
 		return ProbeResult{}
 	}
 	// Read descendants before the root diagnostics. A retained delegate can be
@@ -124,6 +138,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	return ProbeResult{
 		SessionID:             rootID,
 		Status:                root.Status.Type,
+		ActiveFlags:           append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:            root.Evener.AskPending,
 		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
 		RunningSubagentIDs:    runningSubagentIDs,

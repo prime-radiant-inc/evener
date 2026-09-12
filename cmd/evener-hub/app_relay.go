@@ -194,7 +194,7 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 // re-minting it from the fields this hub understands would silently drop
 // anything a newer daemon added (the shape enrichOutputImageNotification uses
 // on this same stream, for the same reason).
-func stampClosedThreadCapabilities(notification appwire.Notification) appwire.Notification {
+func stampClosedThreadCapabilities(notification appwire.Notification, allowFork bool) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
 	}
@@ -209,12 +209,54 @@ func stampClosedThreadCapabilities(notification appwire.Notification) appwire.No
 	if status.Type != appwire.ThreadStatusClosed {
 		return notification
 	}
-	capabilities, err := json.Marshal(pastThreadCapabilities())
+	set := pastThreadCapabilities()
+	if !allowFork {
+		set.ForkFromTurn = false
+	}
+	capabilities, err := json.Marshal(set)
 	if err != nil {
 		return notification
 	}
 	params["capabilities"] = capabilities
 	stamped, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = stamped
+	return notification
+}
+
+// stampForkCapability adds the hub-owned action to an existing capability
+// update. Other permissions and fields remain the daemon's current values.
+func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
+	if notification.Method != appwire.NotifyThreadStatusChanged {
+		return notification
+	}
+	var params struct {
+		Status       appwire.ThreadStatus       `json:"status"`
+		Capabilities map[string]json.RawMessage `json:"capabilities"`
+	}
+	if json.Unmarshal(notification.Params, &params) != nil || params.Capabilities == nil {
+		return notification
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(notification.Params, &raw); err != nil {
+		return notification
+	}
+	fenced := hubForkRecoveryFenced(appwire.Thread{Status: params.Status})
+	if allowFork && !fenced {
+		params.Capabilities["forkFromTurn"] = json.RawMessage("true")
+	} else {
+		// Clear a stale daemon value as well as refusing to add the action. The
+		// notification is the client's authoritative status transition.
+		params.Capabilities["forkFromTurn"] = json.RawMessage("false")
+	}
+	encoded, err := json.Marshal(params.Capabilities)
+	if err != nil {
+		return notification
+	}
+	raw["capabilities"] = encoded
+	stamped, err := json.Marshal(raw)
 	if err != nil {
 		return notification
 	}
@@ -571,7 +613,19 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				// gone.
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
-					notification = stampClosedThreadCapabilities(notification)
+					// Both stampers return the frame untouched for any other
+					// method, so the method is checked before the answer is
+					// computed rather than after. This is the hottest path the
+					// projection sits on — every frame of every subscribed
+					// session — and the projection is not free: it scans the
+					// roster, resolves the target session and reads the
+					// deletion store. enrichOutputImageNotification above
+					// guards itself the same way.
+					if notification.Method == appwire.NotifyThreadStatusChanged {
+						ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
+						notification = stampClosedThreadCapabilities(notification, ownsFork)
+						notification = stampForkCapability(notification, ownsFork)
+					}
 				}
 				if cfg.RelayHooks.BeforeCanonicalPublish != nil {
 					cfg.RelayHooks.BeforeCanonicalPublish(target.relayKey, notification)
@@ -596,7 +650,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.AfterCanonicalPublishEntry != nil {
 					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
 				}
-				_, publicationErr := withDeletionTargetOwnership(cfg, target.ref, target.threadID, "", func() (struct{}, error) {
+				_, publicationErr := withDeletionTargetOwnership(context.Background(), cfg, target.ref, target.threadID, "", func() (struct{}, error) {
 					server.Broadcast(target.relayKey, notification.Method, notification.Params)
 					return struct{}{}, nil
 				})
@@ -1216,7 +1270,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		relayKey := read.relayKey
 		captured, err := withDeletionTargetOwnership(
-			cfg,
+			ctx, cfg,
 			params.Ref,
 			read.response.Thread.ID,
 			"",
@@ -1274,7 +1328,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		threadID := read.response.Thread.ID
 		relayKey := read.relayKey
 		registered, err := withDeletionTargetOwnership(
-			cfg,
+			ctx, cfg,
 			params.Ref,
 			threadID,
 			"",
@@ -1373,7 +1427,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 				return true, nil
 			}
-			registered, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", registerExisting)
+			registered, err := withDeletionTargetOwnership(ctx, cfg, subscribeParams.Ref, threadID, "", registerExisting)
 			if err != nil {
 				return err
 			}
@@ -1706,9 +1760,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					return appwire.TurnStartResponse{}, fenceErr
 				}
 			}
+			if daemonOwnershipMayHaveChanged(err) {
+				if restartErr := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID); restartErr != nil {
+					return appwire.TurnStartResponse{}, restartErr
+				}
+			}
 			return appwire.TurnStartResponse{}, err
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
 			return source.StartTurn(ctx, params)
 		})
 	}
