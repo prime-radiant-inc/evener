@@ -122,6 +122,88 @@ func TestNavigationProjectionCarriesActiveAndCompletedJobs(t *testing.T) {
 	}
 }
 
+// An old daemon (or a past-index entry) carries no watch rows. The summary
+// must still build, with an empty watch list and no error.
+func TestNavigationWatchProjectionAbsentWatchesYieldsEmptyList(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-parent", Title: "parent", Kind: "session", State: "idle",
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatalf("projection with absent watches failed: %v", err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	row := resource.Current.Sessions[0]
+	if len(row.Watches) != 0 {
+		t.Fatalf("row.Watches = %+v, want empty when the tree node carries none", row.Watches)
+	}
+}
+
+// A receiver watch is visible to two sessions, but each summary carries only
+// its own daemon's rows. Carrying one session's rows onto another here would
+// double count the watch in a subtree rollup.
+func TestNavigationSummaryDoesNotAggregateWatchesAcrossSessions(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{
+			{
+				ID: "session-a", Title: "a", Kind: "session", State: "idle",
+				Watches: []appwire.EvenerWatchInfo{{
+					ID: "watch-a", Source: "timer", Target: "session-b", SendTo: "session-b",
+					Note: "owner watch", Cadence: []appwire.EvenerWatchCadence{{Kind: "every", Seconds: 600}},
+					Deliveries: 2, CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+				}},
+			},
+			{
+				ID: "session-b", Title: "b", Kind: "session", State: "idle",
+				Watches: []appwire.EvenerWatchInfo{{ID: "watch-b", Source: "output", Note: "receiver watch"}},
+			},
+		},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	rows := make(map[string]hubapi.NavigationSessionSummary, len(resource.Current.Sessions))
+	for _, row := range resource.Current.Sessions {
+		rows[row.SessionID] = row
+	}
+	rowA, okA := rows["session-a"]
+	rowB, okB := rows["session-b"]
+	if !okA || !okB {
+		t.Fatalf("sessions = %+v, want session-a and session-b", rows)
+	}
+	if len(rowA.Watches) != 1 || rowA.Watches[0].ID != "watch-a" {
+		t.Fatalf("session-a watches = %+v, want only watch-a", rowA.Watches)
+	}
+	watch := rowA.Watches[0]
+	if watch.Source != "timer" || watch.Note != "owner watch" || watch.SendTo != "session-b" ||
+		len(watch.Cadence) != 1 || watch.Cadence[0].Kind != "every" || watch.Cadence[0].Seconds != 600 ||
+		watch.Deliveries != 2 || !watch.Active {
+		t.Fatalf("session-a projected watch = %+v, want the carried fields", watch)
+	}
+	if len(rowB.Watches) != 1 || rowB.Watches[0].ID != "watch-b" {
+		t.Fatalf("session-b watches = %+v, want only watch-b", rowB.Watches)
+	}
+	for _, carried := range rowB.Watches {
+		if carried.ID == "watch-a" {
+			t.Fatalf("session-b aggregates session-a's watch: %+v", rowB.Watches)
+		}
+	}
+}
+
 func TestNavigationJobSummaryKeepsFullCommandForTooltip(t *testing.T) {
 	long := strings.Repeat("a", 600)
 	project := hubcore.TreeProject{

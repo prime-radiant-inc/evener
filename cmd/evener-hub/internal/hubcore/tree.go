@@ -115,6 +115,7 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 		out[index] = node
 		out[index].RunningJobs = appwire.CloneEvenerJobs(node.RunningJobs)
 		out[index].CompletedJobs = appwire.CloneEvenerJobs(node.CompletedJobs)
+		out[index].Watches = appwire.CloneEvenerWatches(node.Watches)
 		children, err := cloneTreeNodesContext(ctx, node.Children)
 		if err != nil {
 			return nil, err
@@ -434,6 +435,10 @@ type TreeNode struct {
 	// session. Delegate jobs remain represented by Children as subagents.
 	RunningJobs   []appwire.EvenerJobInfo
 	CompletedJobs []appwire.EvenerJobInfo
+	// Watches are this session's own live watches, carried from its daemon's
+	// diagnostics. Rows are never aggregated across sessions, so a receiver
+	// watch that two sessions can see is counted once per owning summary.
+	Watches       []appwire.EvenerWatchInfo
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Age           string // pre-formatted "now", "2m", "3h", "5d"
@@ -1155,6 +1160,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Age:           AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
 			RunningJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
 			CompletedJobs: appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
+			Watches:       appwire.CloneEvenerWatches(liveMap[m.ID].Watches),
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1388,6 +1394,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				Age:           AgeString(le.StartedAt),
 				RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
 				CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
+				Watches:       appwire.CloneEvenerWatches(le.Watches),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1479,6 +1486,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Dormant:       dormantFor(le.SessionID),
 			RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
 			CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
+			Watches:       appwire.CloneEvenerWatches(le.Watches),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
@@ -1675,7 +1683,7 @@ func clusterable(n TreeNode) bool {
 	if n.Kind != "session" {
 		return false
 	}
-	if len(n.Children) > 0 || len(n.RunningJobs) > 0 || len(n.CompletedJobs) > 0 {
+	if len(n.Children) > 0 || len(n.RunningJobs) > 0 || len(n.CompletedJobs) > 0 || len(n.Watches) > 0 {
 		return false
 	}
 	return n.State == "idle" || n.State == "ended"

@@ -145,6 +145,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		RunningSubagentStates: runningSubagentStates,
 		RunningJobs:           runningJobs,
 		CompletedJobs:         completedJobs,
+		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
 		OK:                    true,
 	}
 }
@@ -187,6 +188,18 @@ func splitNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) ([]appwire.Evener
 		return nil, nil
 	}
 	return SplitNonAgentJobs(diagnostics.Jobs)
+}
+
+// diagnosticsWatches returns a daemon's own live-watch rows. A nil diagnostics
+// (old daemon, or a probe that listed nothing) and a diagnostics that omits
+// Watches both yield an empty list: absence is never an error. It mirrors
+// diagnosticsJobs — the input is already the daemon's bounded watch inventory,
+// so no hub-side cap is introduced here.
+func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
+	if diagnostics == nil {
+		return nil
+	}
+	return diagnostics.Watches
 }
 
 // SplitNonAgentJobs separates non-delegate jobs into active and terminal

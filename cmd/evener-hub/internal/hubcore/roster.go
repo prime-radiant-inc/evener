@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -46,6 +47,12 @@ type LiveEntry struct {
 	// CompletedJobs contains recent terminal non-agent jobs. Delegate jobs stay
 	// represented by descendant sessions for the same reason as RunningJobs.
 	CompletedJobs []appwire.EvenerJobInfo
+	// Watches contains the live watches this daemon reports. The rows are this
+	// session's own; a receiver watch that two sessions can see is carried by
+	// each session's own diagnostics and is never aggregated across sessions,
+	// so a tree rollup cannot count one watch twice. An older daemon omits the
+	// source field entirely, which lands here as an empty list.
+	Watches []appwire.EvenerWatchInfo
 	Project       identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
@@ -60,6 +67,7 @@ type ProbeResult struct {
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
 	CompletedJobs         []appwire.EvenerJobInfo
+	Watches               []appwire.EvenerWatchInfo
 	OK                    bool
 }
 
@@ -87,6 +95,10 @@ func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
 	return appwire.CloneEvenerJobs(in)
 }
 
+func cloneWatches(in []appwire.EvenerWatchInfo) []appwire.EvenerWatchInfo {
+	return appwire.CloneEvenerWatches(in)
+}
+
 func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
@@ -94,6 +106,7 @@ func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
 	out.CompletedJobs = cloneRunningJobs(in.CompletedJobs)
+	out.Watches = cloneWatches(in.Watches)
 	return out
 }
 
@@ -312,6 +325,43 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		completedJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].CompletedJobs...)
 		writeJobs(completedJobs)
 		_, _ = h.Write([]byte{0})
+		// Watches are rendered on the session row, so any change the sidebar
+		// shows — a new watch, a delivery, a flip to inactive — must move the
+		// fingerprint or onChange never invalidates navigation. Sorted on a
+		// copy: a daemon listing its watches in another order is not a change.
+		watches := append([]appwire.EvenerWatchInfo(nil), bySess[id].Watches...)
+		sort.SliceStable(watches, func(i, j int) bool { return watches[i].ID < watches[j].ID })
+		for _, watch := range watches {
+			for _, field := range []string{
+				watch.ID, watch.Source, watch.Target, watch.SendTo, watch.Note,
+				watch.OutputMatch, watch.CreatedAt, watch.EndReason,
+			} {
+				_, _ = h.Write([]byte(field))
+				_, _ = h.Write([]byte{0})
+			}
+			if watch.WildcardEvents {
+				_, _ = h.Write([]byte{1})
+			}
+			_, _ = h.Write([]byte{0})
+			if watch.Active {
+				_, _ = h.Write([]byte{1})
+			}
+			_, _ = h.Write([]byte{0})
+			deliveries := int64(watch.Deliveries)
+			_, _ = h.Write([]byte(strconv.FormatInt(deliveries, 10)))
+			_, _ = h.Write([]byte{0})
+			for _, cadence := range watch.Cadence {
+				_, _ = h.Write([]byte(cadence.Kind))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(strconv.FormatFloat(cadence.Seconds, 'g', -1, 64)))
+				_, _ = h.Write([]byte{0})
+			}
+			for _, event := range watch.Events {
+				_, _ = h.Write([]byte(event))
+				_, _ = h.Write([]byte{0})
+			}
+			_, _ = h.Write([]byte{0})
+		}
 	}
 	return h.Sum64()
 }
@@ -852,6 +902,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
 		RunningJobs:           cloneRunningJobs(result.RunningJobs),
 		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
+		Watches:               cloneWatches(result.Watches),
 	}
 }
 
@@ -914,7 +965,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
-		RunningJobs: runningJobs, CompletedJobs: completedJobs}
+		RunningJobs: runningJobs, CompletedJobs: completedJobs,
+		Watches: diagnosticsWatches(root.Evener.Diagnostics)}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {
