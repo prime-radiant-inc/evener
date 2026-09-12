@@ -39,8 +39,8 @@ Five facts that change the shape of the whole migration.
    actually import is a deep relative path into the source tree: 229 web sites on
    `protocol/types.gen`, 129 on `protocol/model`, 88 on `protocol/errors`, 15 on
    `protocol/activityData`, 11 on `protocol/reducer`. `protocol/errors` ships in
-   the tarball but only three of its twenty exports are re-exported by
-   `index.ts`; the rest are reachable in-repo only.
+   the tarball but only three of its nineteen exported declarations are
+   re-exported by `index.ts`; the rest are reachable in-repo only.
 3. **The interface every web store is written against is a test double's.**
    `AppwireClientLike` is declared at `protocol/testing/fakeClient.ts:40`;
    136 web files import from `protocol/testing/fakeClient`, 20 of them
@@ -90,7 +90,7 @@ consumers share into a place both can name, not about discovering new sharing.
 "Wire surface" lists the methods/notifications the module names literally. A
 `none` means the module is pure and takes its data from a caller.
 
-## 2. Web `stores/` (32 modules, 12,362 lines)
+## 2. Web `stores/` (32 modules, 12,336 lines)
 
 | Module (lines) | Owns | Wire surface | Counterpart | Class | Seam needed to move |
 | --- | --- | --- | --- | --- | --- |
@@ -127,7 +127,7 @@ consumers share into a place both can name, not about discovering new sharing.
 | `stores/testing/stalledIndexedDB.ts` (33) | A deliberately stalled IDB double | none | none | PLATFORM-ONLY | — |
 | `stores/transcriptDisplay.ts` (707) | Hub + local transcript-display config, viewport-aware | `evener/settings/transcriptDisplay/{get,patch,changed}` | `mobile-native/src/nativePreferences.ts` (839) | DUPLICATED | depends on `shell/useIsMobile` and localStorage; the hub half is portable, the local half is not |
 
-## 3. Web state/projection/logic outside `stores/` (48 rows)
+## 3. Web state/projection/logic outside `stores/` (49 rows)
 
 The web has 497 non-test TS/TSX files and 87,278 lines outside `protocol/`.
 Most are React components and CSS modules and are out of scope. These are the
@@ -150,7 +150,7 @@ migration has to place.
 | `panes/session/composer/submitRouting.ts` (50) | send/queue/steer/drain routing decision | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `protocol/sendQueueAvailability` (also unpacked) |
 | `panes/session/composer/attachments/limits.ts` (29) | 8 files / 8 MiB attachment caps | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/composer/attachments/textareaMarkers.ts` (60) | `[image N]` marker splicing | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
-| `panes/session/composer/askDock/deriveAskQuestions.ts` (95) | Positional "which asks are live" snapshot | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `ThreadModel` |
+| `panes/session/composer/askDock/deriveAskQuestions.ts` (95) | Positional "which asks are live" snapshot | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `ThreadModel`, and pulls two modules with it: `:20-21` imports `panes/session/askShared.ts` (151), which at `:19` imports `parseAskUserQuestions`'s dependency `panes/session/transcript/tools/helpers.ts` (138, no imports of its own — pure). All three cross the boundary together |
 | `panes/session/composer/askDock/reconcileBatches.ts` (76) | Stateful in-flight ask-batch reconciliation | none | native imports this file (2 sites) via `questionBatches.ts` (63) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/composer/askDock/askDockStore.ts` (440) | Per-ref answering dock bookkeeping | none | `mobile-native/src/questionBatches.ts` + approval screens | DUPLICATED | subscribes to `threadsStore` at module load |
 | `panes/session/composer/queue/pendingTurnsStore.ts` (474) | Optimistic pending turns across outbox + model | none | `mobile/src/state/conversation.ts` queue half | DUPLICATED | imports `react`'s `act` at module scope (line 1) — that has to go before it can move |
@@ -160,6 +160,7 @@ migration has to place.
 | `panes/session/transcript/toolRenderers.ts:189` `toolCallFailed` (6) | A third settled-item failure predicate, registry-driven | none | the shared `protocol/itemFailure.ts` introduced by PR #1189 | DUPLICATED | does not trim `error`, does not treat `interrupted` as failure, ignores `exitCode`, and adds a per-tool `descriptor.failed` hook the other two have no equivalent for. Filed as issue #1190; 43 files reach the renderer registry |
 | `panes/session/transcript/{toolRuns,toolSupersession,turnFailure}.ts` (247) | Tool-run folding, supersession, turn-failure classification | none | `mobile/src/conversation/project.ts` `clusterActivities` (line 528) | DUPLICATED | pure on both sides |
 | `panes/session/transcript/messages/{format,systemGrouping,turnMeta}.ts` (212) | Message formatting, system-notice grouping, turn metadata | none | native imports `format` (1 site); `systemGrouping` ≈ `project.ts` `systemFamily` | DUPLICATED | pure |
+| `panes/session/askShared.ts` (151) + `panes/session/transcript/tools/helpers.ts` (138) | `ask_user` question parsing; tool-argument JSON helpers | none | `mobile/src/conversation/model.ts` `MobileAskQuestion`/`MobileAskOption` | DUPLICATED | `helpers.ts` is pure; `askShared.ts` reads `ItemModel`/`ThreadModel`. Reached transitively by `deriveAskQuestions.ts`, so C11 carries them |
 | `panes/session/transcript/tools/subagentModuleStore.ts` (138) | Per-delegate presentation state | none | `mobile-native/src/delegateDetails.ts` (116) | DUPLICATED | uses `protocol/stableDelegate.ts` (unpacked) |
 | `panes/session/transcript/useTranscript.ts` (66) | Selector + older-turn paging over `threadsStore` | none | `mobile/src/state/conversation.ts` `loadOlder` | DUPLICATED | React hook; the paging rule underneath is shared |
 | `panes/session/transcript/flow/seenWatermark.ts` (34) | Reader position watermark | none | `mobile-native/src/activityRetention.ts` (17)? unsure | PACKAGE CANDIDATE | pure |
@@ -185,7 +186,7 @@ migration has to place.
 | `auth.ts` (56) | Browser auth token handling for the socket URL | none | `mobile-native` uses expo-secure-store | PLATFORM-ONLY | — |
 | `panes/doc/{docFile,openDoc}.ts` (60) | Doc pane file loading | none (uses `protocol/docContent.ts`) | none | PACKAGE CANDIDATE | `docContent.ts` already exists unpacked and uses `fetch` + absolute URLs |
 
-## 4. `mobile/src` (9 modules, 7,595 lines)
+## 4. `mobile/src` (9 modules, 7,615 lines)
 
 The checkpoint doc (`docs/design/mobile/2026-09-09-iphone-main-checkpoint.md:7`)
 names eight runtime modules; the ninth below is dead.
@@ -279,7 +280,7 @@ duplication survives.
 **A `state/` subpath inside the package is smaller**, and `mobile/src` should
 not move as-is. Reasons, in order of weight:
 
-- `mobile/src` is 7,595 lines of which 3,864 (`state/conversation.ts` 3,369,
+- `mobile/src` is 7,615 lines of which 3,864 (`state/conversation.ts` 3,369,
   `state/activity.ts` 495) are zustand stores. Moving them wholesale imports zustand
   into a zero-dependency package and moves *one* app's state model into a
   package the other app does not use — the duplication would be enshrined, not
@@ -306,13 +307,13 @@ later PR a place to land. Both are now written: see "Since this was written".
 | Class | Rows |
 | --- | --- |
 | SHARED ALREADY | 6 |
-| DUPLICATED | 37 |
+| DUPLICATED | 38 |
 | PACKAGE CANDIDATE | 51 (of which 33 already have two consumers via deep relative import) |
 | PLATFORM-ONLY | 11 |
 | dead code | 1 |
-| **Total rows** | **106** |
+| **Total rows** | **107** |
 
-Rows cover 32 web `stores/` modules, 48 rows for web modules outside `stores/`
+Rows cover 32 web `stores/` modules, 49 rows for web modules outside `stores/`
 (several rows group a directory), 9 `mobile/src` modules, and 17 rows for
 `protocol/` (its 16 top-level modules plus the `testing/` directory).
 
@@ -325,6 +326,6 @@ re-query before acting.
 | --- | --- | --- | --- |
 | A1 | #1184 | open | Ships nine of the ten unpacked modules (`tsconfig.build.json` `files` goes 6 → 15); `docContent.ts` held back to C24 as planned. The qualification runner now smoke-calls every shipped module, not just imports it |
 | A2 | #1188 | open | `protocol/clientLike.ts` declares `AppwireClientLike`, exported from `index.ts` and in the build `files`. 25 importers rewritten, `FakeClient` imports left alone — §0 fact 3 above is corrected to match |
-| A5 | #1186 | **merged** (`2245f9715`) | Deleted the dead `mobile/src/dev/conversationFixtures.ts` and made `mobile-native` typecheck every file under `mobile/src`, so the gap that hid it is closed too |
+| A5 | #1186 | **merged** (`2245f9715`) | Deleted the dead `mobile/src/dev/conversationFixtures.ts`, which takes `mobile/src` from the 7,615 lines tabulated in §4 down to 6,841 and made `mobile-native` typecheck every file under `mobile/src`, so the gap that hid it is closed too |
 | B1 | #1189 | open | `protocol/itemFailure.ts`; the web and native predicates were byte-identical in behavior. Surfaced the third predicate now recorded above |
 | — | #1190 | open issue | The `toolRenderers.ts:189` divergence |
