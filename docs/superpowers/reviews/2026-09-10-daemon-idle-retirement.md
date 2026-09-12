@@ -1123,3 +1123,32 @@ both-orders flock test needs the `linux || darwin` build tag); `awaitPhase` in t
 polls with a 1ms sleep under a 10s deadline that the deadline audit does not reach because it
 scans `time.After` call sites; and the 200ms "grace, not a race" sleep for the negative
 absence assertion in the single-owner race test, matching the established codebase pattern.
+
+#### Task 8 — corroborating second review (`lunaroute/glm-5.3`)
+
+The first lunaroute reviewer dispatch died on a provider 401 and produced nothing, so the gate review
+ran on `openrouter-corp/anthropic/claude-sonnet-4.6`. When lunaroute recovered, the same assignment was
+re-run there as a **corroborating second opinion** rather than a duplicate, writing to a distinct
+artifact (`task-8-review-lunaroute.md`) so it could not overwrite the first review.
+
+It independently returned **spec compliant / quality Approved, 0 Critical, 0 Important, 3 Minor**, and
+produced stronger evidence than the first pass on the obligation that matters most: three sabotage
+variants instead of one. Variant A removed the identity comparison entirely — stale identity was acted
+on, the daemon went `retiring`, and all four subtests of `TestServeRetirementStaleIdentityRefused`
+failed. Variant B made the comparison trust PID only — a same-PID, drifted-state-dir identity was
+accepted and the daemon retired. Variant C removed the tick re-proof in `TryClaim` — a second consumer
+call appeared. A no-overlay control was GREEN. It also cross-compiled the platform files for darwin and
+windows, checked the fuzz-seed mechanism for the four edited `checkToArgs_*` goldens, and audited
+Hub-roster PID-only `Remove` liveness.
+
+It agreed with the first reviewer and stated plainly that it found nothing the first pass missed at
+Critical or Important severity. Three new record-only Minors go to the hardening list: the serve flag
+help text deviates from the plan's literal wording (semantics identical, implemented text names the
+Hub); shutdown-vs-preparing-retirement and clear-during-preparing have no dedicated serve-level test,
+their single-owner mechanics being proven by composition and constituent tests rather than one
+integration race; and the mid-race negative assertions rely on sanctioned "grace, not a race" windows.
+
+Two honesty notes from its report worth keeping: it accepted `-race` and the full-gate exits from the
+retained logs rather than re-running them, per its read-only mandate, and it observed that the
+`cmd/evener-hub` package it re-ran carried Task 9's in-progress edits and reasoned explicitly that they
+were orthogonal files. Task 8 remains accepted; this review corroborates that decision.
