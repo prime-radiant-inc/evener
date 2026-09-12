@@ -4081,3 +4081,57 @@ Verify each finding before touching it (Global Constraint 7 for refutations).
 2. `make test-native` green with counts; house style per file.
 3. Do not push. Do not merge main.
 4. Append a "Task 70" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-54-report.md`; reply with status, commit SHAs, one-line test summary, concerns.
+
+## Task 71: PR #1145 round 6 (head d6fc5fb) — CI tooling flake fix, RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/flake-ci-tools (branch claude/fix-ci-tooling-download-flakes). Flake lane: you push the branch and update PR #1145; you do not merge it.
+
+### RoboRev verdict (verbatim, 3 reviewers; review 2 clean)
+
+## roborev: Combined Review (`d6fc5fb`)
+
+## Code Review Summary
+
+**Verdict:** Two reviewers found issues (one reported clean); after deduplication there are 2 Medium and 2 Low findings, all in `scripts/gate/run-module-tests.sh`.
+
+---
+
+### Medium
+
+- **`scripts/gate/run-module-tests.sh:436-488` / `:448`** — Zombie/race in timeout completion handling. A `go list` process can exit and be reaped while the timeout handler inspects it. The process-group probe excludes zombies, and there is a race between `kill -0 "$list_pid"` and the subsequent `ps -o pgid= -p "$list_pid"`: if the process is reaped in that window, `ps` returns empty, `list_pgid` becomes empty, and the `[ "$list_pgid" != "$list_pid" ]` guard takes the "not its own process group" branch — failing the run with a bogus diagnostic instead of falling through to the completion path. Net effect: a successfully completed enumeration can be discarded (losing `wait`'s exit status), triggering a spurious retry or final-attempt failure.
+  **Fix:** Treat an empty/unreadable pgid as "process already gone" and break to the completion path; re-check `kill -0` after reading the pgid and only fail when the process is still alive; capture and inspect `wait`'s status after the group becomes empty and promote a completed attempt through the success path.
+
+- **`scripts/gate/run-module-tests.sh` (`run_bounded_package_list`) and `scripts/ops/install-golangci-lint.sh`** — No automated test coverage for the new timeout/retry/group-stop/refusal logic. Commit `49208883b` added `runmodulepackagelist_test.go` exercising these branches, but `f7a7a1d7d` reverted it, leaving the final aggregate with no tests. These branches only execute when discovery stalls or a process refuses to die, so a regression silently re-introduces the CI hang/flake this series exists to remove.
+  **Fix:** Restore those behavior-based tests (or equivalent) in the same series.
+
+---
+
+### Low
+
+- **`scripts/gate/run-module-tests.sh:329-334`** — Timeout diagnostics are emitted while inside the module directory. For an `agent` timeout, the suggested `scripts/gate/run-module-tests.sh` retry command resolves relative to `agent/` and fails because that path does not exist.
+  **Fix:** Emit a command that first changes to the repository root, or use an absolute path to the runner script.
+
+- **`scripts/gate/run-module-tests.sh:385-396`** — In `stop_package_list_group`, if the first `package_list_group_survivors` probe fails (`ps` unusable, status 2), the function returns 2 immediately after SIGTERM; SIGKILL is never sent. A TERM-ignoring `go list` survives and keeps holding Go's build/module cache locks, poisoning subsequent runs on the same host.
+  **Fix:** Send `kill -KILL -- -"$pgid"` before returning 2, so escalation is attempted even when the probe cannot confirm the outcome.
+
+---
+
+**Note:** Review 2 reported no issues; the race/zombie finding above overlaps with Review 1's Medium (436-488) and Review 3's Low (448) — merged as a single finding at the higher severity.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 24s | Total: 8m55s*
+
+
+### Coordinator rulings
+
+- **Medium 1 (race between `kill -0 "$list_pid"` and `ps -o pgid= -p "$list_pid"` in the timeout handler): real, fix.** If the attempt exits and is reaped inside that window, `ps` returns nothing, `list_pgid` is empty, and the "not its own process group" hard-failure branch fires for a run that actually completed. Fix per the finding's shape: treat an empty/unreadable pgid as "re-check liveness" — if `kill -0` now fails the attempt is gone, take the completion path (capture `wait`'s status and promote a successful attempt); only take the pgid-mismatch branch when the process is confirmed alive AND the pgid is readable and differs. Verify by mutation or a recorded run that forces the reap inside the window (a stub whose `go list` exits exactly at the timeout tick) — record the run in the PR body as rounds 2–5 did.
+- **Medium 2 (restore the automated tests): declined again — same refutation as round 4.** `docs/developing-evener/testing.md:145-155` bans faking the toolchain to test a script outright; `make/testing.mk:54-58` and issue #293 record the honest remedy (the port); `runtime_pair_build_test.go` is a pre-existing violation filed as #1163. Jesse has been asked whether he wants an exception; until he grants one the branch stays policy-compliant. Do NOT restore the test. The coordinator posts the refutation on the PR.
+- **Low 1 (diagnostic's suggested retry command is relative to the module directory): real, fix.** Emit the suggestion with the repository root made explicit (an absolute path to the runner, or a `cd <repo root> &&` prefix — pick the one that reads best in the existing diagnostic) so it works from any module's directory.
+- **Low 2 (`stop_package_list_group` returns 2 after SIGTERM without ever sending SIGKILL when the first probe fails): real, fix.** Send `kill -KILL -- -"$pgid"` before returning 2 so escalation is attempted even when the probe cannot confirm the outcome; keep the fail-closed return.
+
+### Requirements
+
+1. One commit per finding; conventional subjects; no trailers.
+2. `git fetch origin main` on its own line, then `git merge --no-ff --no-edit origin/main` (main is at least 8fb1ff8f6) before pushing; `bash -n` both scripts; run the gate once in the bounded path.
+3. Push; extend the PR body with a "Review round 6" section naming the commit per finding and carrying the Medium 2 refutation.
+4. Append "Round 6" to your report. Reply with status, commit SHAs, pushed head, the Medium 1 verification line, concerns.
