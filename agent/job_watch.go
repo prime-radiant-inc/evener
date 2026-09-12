@@ -54,6 +54,14 @@ const (
 	// tick counts a delivery but is a clock rather than a condition, so it never
 	// counts against this. Hard-coded, no config knob.
 	watchDeliveryBudget = 50
+	// watchDeliveryTimeCap bounds the per-watch ring of recent delivery instants
+	// that feeds the activity panel's delivery timeline. The ring is a display
+	// aid, not an audit log: progress ticks make a watch's delivery count
+	// unbounded, so the cap trades history older than the most recent deliveries
+	// for a small fixed per-watch footprint (32 × 24-byte time.Time) that stays
+	// bounded across an unbounded number of live watches. 32 is more instants
+	// than a readable timeline plots.
+	watchDeliveryTimeCap = 32
 	// maxLiveTimers caps timers per job manager; with the 60-second floor it
 	// bounds a session to eight timer wakes a minute.
 	maxLiveTimers = 8
@@ -231,6 +239,12 @@ type watchConfig struct {
 	// reconstructed into terminalFlush on restore are never built via
 	// newWatchConfig and so are intentionally left zero (they are not live).
 	createdAt time.Time
+	// deliveryTimes is a bounded ring of the most recent delivery instants for
+	// this config, oldest first and capped at watchDeliveryTimeCap. It is
+	// stamped from jm.now() in the same locked helper that increments
+	// deliveries, so the count and the ring can never diverge. It feeds the
+	// activity panel's timeline only; nothing schedules from it.
+	deliveryTimes []time.Time
 }
 
 type watchArgs struct {
@@ -1787,16 +1801,25 @@ func noteConditionFireLocked(cfg *watchConfig) (accepted, crossedBudget bool) {
 	return true, tripConditionFireBudgetLocked(cfg)
 }
 
-// countWatchDeliveryLocked increments the model-facing delivery count for cfg.
-// It says nothing about the breaker: the budget bounds CONDITION fires, so a
-// periodic progress tick counts a delivery here and never trips anything, and a
-// condition fire's crossing is reported by noteConditionFireLocked at the match.
-// The caller must hold jm.mu.
-func countWatchDeliveryLocked(cfg *watchConfig) {
+// countWatchDeliveryLocked increments the model-facing delivery count for cfg
+// and appends this delivery's instant to its bounded timeline ring, stamped
+// from the job manager's clock. Counting and stamping happen together here so
+// the count and the ring can never diverge. It says nothing about the breaker:
+// the budget bounds CONDITION fires, so a periodic progress tick counts a
+// delivery here and never trips anything, and a condition fire's crossing is
+// reported by noteConditionFireLocked at the match. The caller must hold jm.mu.
+func (jm *jobManager) countWatchDeliveryLocked(cfg *watchConfig) {
 	if cfg == nil {
 		return
 	}
 	cfg.deliveries++
+	now := jm.now()
+	if len(cfg.deliveryTimes) == watchDeliveryTimeCap {
+		copy(cfg.deliveryTimes, cfg.deliveryTimes[1:])
+		cfg.deliveryTimes[watchDeliveryTimeCap-1] = now
+		return
+	}
+	cfg.deliveryTimes = append(cfg.deliveryTimes, now)
 }
 
 // recordWatchDeliveryLocked counts a delivery at the send rail's settle end and
@@ -1805,7 +1828,7 @@ func countWatchDeliveryLocked(cfg *watchConfig) {
 // this is the second of the two ends that can report the crossing; the latch
 // keeps the pair to one teardown. The caller must hold jm.mu.
 func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
-	countWatchDeliveryLocked(cfg)
+	jm.countWatchDeliveryLocked(cfg)
 	return tripConditionFireBudgetLocked(cfg)
 }
 
@@ -2476,11 +2499,27 @@ func watchStatusInfoFromConfig(cfg *watchConfig) WatchStatusInfo {
 		Events:         append([]string(nil), cfg.events...),
 		WildcardEvents: cfg.wildcardEvents,
 		Deliveries:     cfg.deliveries,
+		DeliveryTimes:  watchDeliveryTimesOf(cfg),
 		CreatedAt:      cfg.createdAt.Format(time.RFC3339Nano),
 		// A one-shot that already fired but is still registered only until its
 		// durable teardown lands (firedPendingEnd) is no longer armed.
 		Active: !cfg.firedPendingEnd,
 	}
+}
+
+// watchDeliveryTimesOf renders cfg's bounded delivery-instant ring oldest
+// first, formatting each instant exactly the way watchStatusInfoFromConfig
+// formats CreatedAt (RFC3339Nano). An empty ring yields nil, which the
+// omitempty wire tag renders as an absent field.
+func watchDeliveryTimesOf(cfg *watchConfig) []string {
+	if cfg == nil || len(cfg.deliveryTimes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(cfg.deliveryTimes))
+	for _, at := range cfg.deliveryTimes {
+		out = append(out, at.Format(time.RFC3339Nano))
+	}
+	return out
 }
 
 // watchCadencesOf projects a config's orthogonal trigger sources into cadence
@@ -2658,7 +2697,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 				n = jobFinishedEventIdentity(n, data)
 			}
 			notifications = append(notifications, n)
-			countWatchDeliveryLocked(cfg)
+			jm.countWatchDeliveryLocked(cfg)
 		}
 		if crossedBudget {
 			overBudget = append(overBudget, cfg)
@@ -2953,7 +2992,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
 			} else {
 				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
-				countWatchDeliveryLocked(cfg)
+				jm.countWatchDeliveryLocked(cfg)
 			}
 			if crossedBudget {
 				overBudget = append(overBudget, cfg)
@@ -3070,7 +3109,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	jm.mu.Lock()
 	accepted, crossedBudget := noteConditionFireLocked(cfg)
 	if accepted {
-		countWatchDeliveryLocked(cfg)
+		jm.countWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
 	if !accepted {
@@ -3543,7 +3582,8 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
 		}
 		notifications = append(notifications, n)
-		cfg.deliveries++ // periodic ticks never trip the condition-fire budget
+		// Periodic ticks never trip the condition-fire budget.
+		jm.countWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
 

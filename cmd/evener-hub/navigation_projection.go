@@ -1155,6 +1155,10 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 		for _, event := range watch.Events {
 			events = append(events, truncateNavigationRunes(event, maxNavigationLabelRunes))
 		}
+		deliveryTimes := make([]string, 0, len(watch.DeliveryTimes))
+		for _, at := range watch.DeliveryTimes {
+			deliveryTimes = append(deliveryTimes, truncateNavigationRunes(at, maxNavigationLabelRunes))
+		}
 		out = append(out, hubapi.NavigationWatchSummary{
 			ID:             truncateNavigationRunes(watch.ID, maxNavigationLabelRunes),
 			Source:         truncateNavigationRunes(watch.Source, maxNavigationLabelRunes),
@@ -1166,6 +1170,7 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 			Events:         events,
 			WildcardEvents: watch.WildcardEvents,
 			Deliveries:     watch.Deliveries,
+			DeliveryTimes:  deliveryTimes,
 			CreatedAt:      truncateNavigationRunes(watch.CreatedAt, maxNavigationLabelRunes),
 			Active:         watch.Active,
 			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
@@ -1219,6 +1224,7 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	for index, watch := range summary.Watches {
 		clone.Watches[index].Cadence = append([]hubapi.NavigationWatchCadence(nil), watch.Cadence...)
 		clone.Watches[index].Events = append([]string(nil), watch.Events...)
+		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
 	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {

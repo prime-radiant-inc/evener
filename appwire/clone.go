@@ -220,8 +220,8 @@ func CloneEvenerJobs(jobs []EvenerJobInfo) []EvenerJobInfo {
 }
 
 // CloneEvenerWatches returns a defensive copy of typed watch diagnostics.
-// Cadence and event slices are copied so a consumer mutating its copy cannot
-// reach the shared wire value.
+// Cadence, event, and delivery-time slices are copied so a consumer mutating
+// its copy cannot reach the shared wire value.
 func CloneEvenerWatches(watches []EvenerWatchInfo) []EvenerWatchInfo {
 	if watches == nil {
 		return nil
@@ -231,6 +231,7 @@ func CloneEvenerWatches(watches []EvenerWatchInfo) []EvenerWatchInfo {
 		out[i] = watches[i]
 		out[i].Cadence = append([]EvenerWatchCadence(nil), watches[i].Cadence...)
 		out[i].Events = append([]string(nil), watches[i].Events...)
+		out[i].DeliveryTimes = append([]string(nil), watches[i].DeliveryTimes...)
 	}
 	return out
 }

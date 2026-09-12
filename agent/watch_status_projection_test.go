@@ -2,6 +2,7 @@ package agent
 
 import (
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -200,5 +201,147 @@ func TestSessionDetailedStatusProjectsWatches(t *testing.T) {
 	}
 	if output.OutputMatch != "ready" || !reflect.DeepEqual(output.Cadence, []WatchCadenceInfo{{Kind: "output"}}) || !output.Active {
 		t.Fatalf("output watch = %+v, want output_match/cadence/active", output)
+	}
+}
+
+// installOutputWatchForDeliveryTimes installs a real output-match watch through
+// the same configureWatch path job_watch uses and returns its id, target, and a
+// feeder that drives exactly one real delivery per call. The watch carries no
+// send, so each match counts a model-facing delivery through the notification
+// rail and never settles a frame.
+func installOutputWatchForDeliveryTimes(t *testing.T, jm *jobManager) (string, string, func()) {
+	t.Helper()
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	res, err := jm.configureWatch(watchArgs{
+		Operation: "create", Source: rec.JobID, Target: rec.JobID, OutputMatch: "hit",
+	})
+	if err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+	if res.WatchID == "" {
+		t.Fatal("configureWatch returned no watch id")
+	}
+	var offset int64
+	feed := func() {
+		chunk := []byte("hit\n")
+		offset += int64(len(chunk))
+		jm.feedJobOutput(rec.JobID, chunk, offset)
+	}
+	return res.WatchID, rec.JobID, feed
+}
+
+// TestWatchDeliveryTimesRingCapsOldestFirst installs a real output-match watch
+// and drives more deliveries than the ring holds, stepping the job manager
+// clock once per delivery. After every delivery the count and the ring must
+// have advanced together; once the ring is full it keeps exactly
+// watchDeliveryTimeCap instants, drops the oldest, and projects them
+// oldest-first while the delivery count still reports every delivery.
+func TestWatchDeliveryTimesRingCapsOldestFirst(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var seq atomic.Int64
+	jm.now = func() time.Time { return frozenTestTime.Add(time.Duration(seq.Load()) * time.Second) }
+
+	watchID, _, feed := installOutputWatchForDeliveryTimes(t, jm)
+
+	const dropped = 5
+	total := watchDeliveryTimeCap + dropped
+	for step := 1; step <= total; step++ {
+		seq.Store(int64(step))
+		feed()
+
+		jm.mu.Lock()
+		_, cfg, ok := jm.watchConfigByIDLocked(watchID)
+		var deliveries, ringLen int
+		var newest time.Time
+		if ok && cfg != nil {
+			deliveries = cfg.deliveries
+			ringLen = len(cfg.deliveryTimes)
+			newest = cfg.deliveryTimes[ringLen-1]
+		}
+		jm.mu.Unlock()
+		if !ok {
+			t.Fatalf("watch %s left the live set after delivery %d", watchID, step)
+		}
+		if deliveries != step {
+			t.Fatalf("after delivery %d: deliveries = %d, want the count to track every delivery", step, deliveries)
+		}
+		if want := min(step, watchDeliveryTimeCap); ringLen != want {
+			t.Fatalf("after delivery %d: deliveryTimes holds %d instants, want %d", step, ringLen, want)
+		}
+		if want := frozenTestTime.Add(time.Duration(step) * time.Second); !newest.Equal(want) {
+			t.Fatalf("after delivery %d: newest instant = %s, want the job manager clock's %s", step, newest, want)
+		}
+	}
+
+	statuses := jm.liveWatchStatuses()
+	if len(statuses) != 1 {
+		t.Fatalf("liveWatchStatuses = %+v, want exactly the one live watch", statuses)
+	}
+	if statuses[0].Deliveries != total {
+		t.Fatalf("Deliveries = %d, want %d", statuses[0].Deliveries, total)
+	}
+	got := statuses[0].DeliveryTimes
+	if len(got) != watchDeliveryTimeCap {
+		t.Fatalf("DeliveryTimes holds %d instants, want the %d-instant cap", len(got), watchDeliveryTimeCap)
+	}
+	prev := time.Time{}
+	for i, stamp := range got {
+		want := frozenTestTime.Add(time.Duration(dropped+i+1) * time.Second).Format(time.RFC3339Nano)
+		if stamp != want {
+			t.Fatalf("DeliveryTimes[%d] = %q, want %q (oldest-first, oldest %d dropped)", i, stamp, want, dropped)
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, stamp)
+		if err != nil {
+			t.Fatalf("DeliveryTimes[%d] = %q is not RFC3339Nano: %v", i, stamp, err)
+		}
+		if i > 0 && parsed.Before(prev) {
+			t.Fatalf("DeliveryTimes[%d] = %s moved backwards from %s", i, parsed, prev)
+		}
+		prev = parsed
+	}
+}
+
+// TestWatchDeliveryTimesStampFromTheJobManagerClock pins the instant source:
+// a delivery is stamped with jm.now() at delivery time, not with the config's
+// createdAt, and an empty ring projects as nil so the wire field stays omitted.
+func TestWatchDeliveryTimesStampFromTheJobManagerClock(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	watchID, _, feed := installOutputWatchForDeliveryTimes(t, jm)
+
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
+	var before []string
+	var createdAt time.Time
+	if ok && cfg != nil {
+		before = append([]string(nil), watchDeliveryTimesOf(cfg)...)
+		createdAt = cfg.createdAt
+	}
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatalf("watch %s is not installed", watchID)
+	}
+	if before != nil {
+		t.Fatalf("a watch with no deliveries projects %#v, want nil", before)
+	}
+
+	deliveredAt := frozenTestTime.Add(90 * time.Second)
+	jm.now = func() time.Time { return deliveredAt }
+	feed()
+
+	statuses := jm.liveWatchStatuses()
+	if len(statuses) != 1 {
+		t.Fatalf("liveWatchStatuses = %+v, want one row", statuses)
+	}
+	want := []string{deliveredAt.UTC().Format(time.RFC3339Nano)}
+	if !reflect.DeepEqual(statuses[0].DeliveryTimes, want) {
+		t.Fatalf("DeliveryTimes = %#v, want %#v", statuses[0].DeliveryTimes, want)
+	}
+	if statuses[0].CreatedAt == want[0] || !createdAt.Equal(frozenTestTime) {
+		t.Fatalf("createdAt = %s, want the distinct install time %s (a delivery must not re-stamp it)", statuses[0].CreatedAt, frozenTestTime)
 	}
 }

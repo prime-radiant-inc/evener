@@ -2377,6 +2377,7 @@ func appWatchFromDetailedStatus(watch agent.WatchStatusInfo) appwire.EvenerWatch
 		Events:         append([]string(nil), watch.Events...),
 		WildcardEvents: watch.WildcardEvents,
 		Deliveries:     watch.Deliveries,
+		DeliveryTimes:  append([]string(nil), watch.DeliveryTimes...),
 		CreatedAt:      watch.CreatedAt,
 		Active:         watch.Active,
 		EndReason:      watch.EndReason,

@@ -189,36 +189,40 @@ type NavigationWatchSummary struct {
 	Events         []string                 `json:"events,omitempty"`
 	WildcardEvents bool                     `json:"wildcard_events,omitempty"`
 	Deliveries     int                      `json:"deliveries"`
-	CreatedAt      string                   `json:"created_at"`
-	Active         bool                     `json:"active"`
-	EndReason      string                   `json:"end_reason,omitempty"`
+	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
+	// recent delivery instants, formatted like CreatedAt. Absent (and so
+	// absent-able, like Watches) when the watch has not delivered.
+	DeliveryTimes []string `json:"delivery_times,omitempty"`
+	CreatedAt     string   `json:"created_at"`
+	Active        bool     `json:"active"`
+	EndReason     string   `json:"end_reason,omitempty"`
 }
 
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
-	Ref                string                                    `json:"ref"`
-	HostID             string                                    `json:"host_id"`
-	SessionID          string                                    `json:"session_id"`
-	Title              string                                    `json:"title"`
-	Project            string                                    `json:"project"`
-	State              string                                    `json:"state"`
-	Kind               string                                    `json:"kind"`
-	Branch             string                                    `json:"branch,omitempty"`
-	ClusterCount       int                                       `json:"cluster_count,omitempty"`
-	Favorite           bool                                      `json:"favorite,omitempty"`
-	Rename             bool                                      `json:"rename,omitempty"`
-	Live               bool                                      `json:"live"`
-	AskPending         bool                                      `json:"ask_pending,omitempty"`
-	Dormant            bool                                      `json:"dormant,omitempty"`
-	UpdatedAt          *time.Time                                `json:"updated_at,omitempty"`
-	MoreSubagents      int                                       `json:"more_subagents,omitempty"`
-	OmittedDescendants int                                       `json:"omitted_descendants,omitempty"`
-	RunningJobs        NavigationArray[NavigationJobSummary]     `json:"running_jobs,omitempty"`
-	CompletedJobs      NavigationArray[NavigationJobSummary]     `json:"completed_jobs,omitempty"`
+	Ref                string                                `json:"ref"`
+	HostID             string                                `json:"host_id"`
+	SessionID          string                                `json:"session_id"`
+	Title              string                                `json:"title"`
+	Project            string                                `json:"project"`
+	State              string                                `json:"state"`
+	Kind               string                                `json:"kind"`
+	Branch             string                                `json:"branch,omitempty"`
+	ClusterCount       int                                   `json:"cluster_count,omitempty"`
+	Favorite           bool                                  `json:"favorite,omitempty"`
+	Rename             bool                                  `json:"rename,omitempty"`
+	Live               bool                                  `json:"live"`
+	AskPending         bool                                  `json:"ask_pending,omitempty"`
+	Dormant            bool                                  `json:"dormant,omitempty"`
+	UpdatedAt          *time.Time                            `json:"updated_at,omitempty"`
+	MoreSubagents      int                                   `json:"more_subagents,omitempty"`
+	OmittedDescendants int                                   `json:"omitted_descendants,omitempty"`
+	RunningJobs        NavigationArray[NavigationJobSummary] `json:"running_jobs,omitempty"`
+	CompletedJobs      NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
 	// Watches carries this session's own live watches. Absent on an older
 	// daemon (or a past-index entry) and therefore absent-able for consumers.
-	Watches NavigationArray[NavigationWatchSummary] `json:"watches,omitempty"`
-	Children           NavigationArray[NavigationSessionSummary] `json:"children"`
+	Watches  NavigationArray[NavigationWatchSummary]   `json:"watches,omitempty"`
+	Children NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 
 // NavigationMutation remains available to hubapi callers while the shared wire

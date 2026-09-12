@@ -1017,9 +1017,13 @@ type EvenerWatchInfo struct {
 	Events         []string             `json:"events,omitempty"`
 	WildcardEvents bool                 `json:"wildcardEvents,omitempty"`
 	Deliveries     int                  `json:"deliveries"`
-	CreatedAt      string               `json:"createdAt"`
-	Active         bool                 `json:"active"`
-	EndReason      string               `json:"endReason,omitempty"`
+	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
+	// recent delivery instants, formatted like CreatedAt. Absent when the
+	// watch has not delivered.
+	DeliveryTimes []string `json:"deliveryTimes,omitempty"`
+	CreatedAt     string   `json:"createdAt"`
+	Active        bool     `json:"active"`
+	EndReason     string   `json:"endReason,omitempty"`
 }
 
 // EvenerDelegateInfo is the turn-free stable delegate projection shared by live

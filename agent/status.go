@@ -81,7 +81,11 @@ type WatchStatusInfo struct {
 	Events         []string           `json:"events,omitempty"`
 	WildcardEvents bool               `json:"wildcard_events,omitempty"`
 	Deliveries     int                `json:"deliveries"`
-	CreatedAt      string             `json:"created_at"`
+	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
+	// recent delivery instants, formatted like CreatedAt. Nil (and omitted)
+	// when the watch has not delivered.
+	DeliveryTimes []string `json:"delivery_times,omitempty"`
+	CreatedAt     string   `json:"created_at"`
 	// Active is false for a one-shot that has already delivered its single
 	// fire and is only awaiting durable teardown (firedPendingEnd); every
 	// other live config is armed.

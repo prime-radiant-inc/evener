@@ -139,12 +139,13 @@ func TestCloneThreadClonesTaskAggregateCurrent(t *testing.T) {
 // the source, which stays aliased in caches otherwise.
 func TestCloneEvenerDiagnosticsOwnsWatches(t *testing.T) {
 	source := &EvenerDiagnostics{Watches: []EvenerWatchInfo{{
-		ID:      "w1",
-		Source:  "self",
-		Note:    "wake me",
-		Cadence: []EvenerWatchCadence{{Kind: "every", Seconds: 10}},
-		Events:  []string{"assistant.tool"},
-		Active:  true,
+		ID:            "w1",
+		Source:        "self",
+		Note:          "wake me",
+		Cadence:       []EvenerWatchCadence{{Kind: "every", Seconds: 10}},
+		Events:        []string{"assistant.tool"},
+		DeliveryTimes: []string{"1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"},
+		Active:        true,
 	}}}
 	clone := cloneEvenerDiagnostics(source)
 	if !reflect.DeepEqual(clone, source) {
@@ -153,9 +154,11 @@ func TestCloneEvenerDiagnosticsOwnsWatches(t *testing.T) {
 	clone.Watches[0].ID = "mutated"
 	clone.Watches[0].Cadence[0].Kind = "mutated"
 	clone.Watches[0].Events[0] = "mutated"
+	clone.Watches[0].DeliveryTimes[0] = "mutated"
 	if source.Watches[0].ID != "w1" ||
 		source.Watches[0].Cadence[0].Kind != "every" ||
-		source.Watches[0].Events[0] != "assistant.tool" {
+		source.Watches[0].Events[0] != "assistant.tool" ||
+		source.Watches[0].DeliveryTimes[0] != "1970-01-01T00:16:40Z" {
 		t.Fatalf("source watch changed through its clone: %+v", source.Watches[0])
 	}
 	clone.Watches = append(clone.Watches, EvenerWatchInfo{ID: "w2"})
