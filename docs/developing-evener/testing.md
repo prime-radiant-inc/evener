@@ -355,7 +355,9 @@ would do it too, but only by turning bash job control on for the whole
 runner, where `run_wave`'s background jobs, the `active_pids` bookkeeping and
 the cleanup traps all depend on the current semantics — so it is not used, and
 no `set -m` appears in the script. The runner therefore needs `perl` on `PATH`
-and says so at startup if it is missing.
+whenever a bounded enumeration runs — the root and agent modules — and says so,
+naming what is missing, before that module's first attempt spawns. A run that
+schedules neither never asks for it.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
