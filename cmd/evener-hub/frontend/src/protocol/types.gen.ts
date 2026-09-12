@@ -959,6 +959,7 @@ export interface ModelDescriptor {
   inputCostPerMillion?: number;
   outputCostPerMillion?: number;
   reasoningEffortLevels?: string[];
+  warnings?: string[];
 }
 
 export interface ModelListDiagnostic {
