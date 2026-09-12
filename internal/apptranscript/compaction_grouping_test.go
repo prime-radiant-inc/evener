@@ -57,6 +57,17 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 			fold(record(schema.TurnSteering, "steering", "turn_active")),
 			record(schema.TurnUserInput, "turn_next", ""),
 		}, []string{"turn_active", "turn_next"}},
+		// The reviewer's leading-replay case: the first record of the tail is
+		// a copy, so a bounded reader whose window opens on it has a
+		// non-opener with no group to join. It must allocate neither a
+		// logical group nor an entry ordinal, or the indexed keys drift from
+		// the full projection's.
+		{"a leading copy allocates no group", []schema.Turn{
+			fold(replay(record(schema.TurnAssistant, "assistant", ""))),
+			fold(replay(record(schema.TurnRoundTimings, "timing", "turn_active"))),
+			fold(record(schema.TurnSummary, "summary", "turn_active")),
+			record(schema.TurnUserInput, "turn_next", ""),
+		}, []string{"turn_active", "turn_next"}},
 		{"context recovery copies preserve a closed boundary", []schema.Turn{
 			record(schema.TurnSummary, "summary", ""),
 			replay(record(schema.TurnUserInput, "turn_active", "")),
