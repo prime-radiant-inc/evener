@@ -5,8 +5,10 @@
       "anser": ["./node_modules/anser"],
       "react": ["./node_modules/@types/react"],
       "tinykeys": ["./node_modules/tinykeys"],
+      "vitest": ["./node_modules/vitest"],
       "zustand": ["./node_modules/zustand"],
       "zustand/*": ["./node_modules/zustand/*"]
     }
-  }
+  },
+  "include": ["**/*", "../mobile/src"]
 }
