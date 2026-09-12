@@ -156,6 +156,14 @@ func isExcluded(rel string) bool {
 			return true
 		}
 	}
+	// Dependencies may be nested below a tracked project directory (for
+	// example mobile-native/node_modules). They are generated/vendor content
+	// and must not enter the repository's naming scan.
+	for seg := range strings.SplitSeq(rel, "/") {
+		if seg == "node_modules" {
+			return true
+		}
+	}
 	// Hidden dirs (anything whose path segment starts with a dot, e.g.
 	// .github, .git) are walked at top level but otherwise skipped.
 	for seg := range strings.SplitSeq(rel, "/") {

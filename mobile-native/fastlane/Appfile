@@ -1,0 +1,1 @@
+app_identifier(ENV.fetch("IOS_BUNDLE_IDENTIFIER", "com.primeradiant.evener.native"))
