@@ -46,6 +46,18 @@ test("an event arriving after release still reaches its listener", () => {
   expect(delivered).toBe(1);
 });
 
+// reached is the "the held event arrived" signal, and arriving is not the same
+// question as being held: a caller awaiting it after a release would otherwise
+// wait for a signal that can never come, even though its listener already ran.
+test("an event arriving after release still resolves reached", async () => {
+  const target = new EventTarget();
+  const hold = holdIndexedDBEvent(target, "success");
+  target.addEventListener("success", () => undefined);
+  hold.release();
+  target.dispatchEvent(new Event("success"));
+  await expect(hold.reached).resolves.toBeUndefined();
+});
+
 test("a read released before its success event still settles", async () => {
   const database = await openStore();
   const request = database.transaction("rows", "readonly").objectStore("rows").getAll();

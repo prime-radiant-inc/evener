@@ -25,12 +25,14 @@ export function holdIndexedDBEvent(target: EventTarget, type: string) {
         // wrapper for good. An event still in flight at release time would
         // otherwise land in a queue nobody drains again, which for an
         // IndexedDB request is a promise that never settles (issue #1187).
+        // reached answers "has the event arrived", which a release does not
+        // change, so it is signalled on both paths.
+        observed?.();
         if (released) {
           deliver();
           return;
         }
         held.push(deliver);
-        observed?.();
       },
       options,
     );
