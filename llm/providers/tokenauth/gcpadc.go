@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -21,8 +22,9 @@ const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 // application-default credentials found on the host, or — when the
 // registry resolved a credentials-store entry for the instance — the
 // service-account / authorized_user JSON stored there (spec 2026-09-04
-// google-vertex-express §4.3). Credentials are looked up at an instance's
-// first request, never at load, and the token source refreshes itself.
+// google-vertex-express §4.3). Credentials are looked up at request time,
+// never at load: the library's answer names the cached token source, so a
+// re-login reaches the next request, and the source refreshes itself.
 type GCPADC struct {
 	// FindCredentials is the ADC lookup seam; nil means google.FindDefaultCredentials.
 	FindCredentials func(ctx context.Context, scopes ...string) (*google.Credentials, error)
@@ -69,6 +71,18 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 	}
 	tok, err := src.ts.Token()
 	if err != nil {
+		// A refresh the token endpoint refused is a verdict on the credential,
+		// not on the endpoint: report it as an authentication failure so the
+		// classes layered on this error (the hub's credential test, the CLI's
+		// probe) offer "sign in again" instead of "check the network". Any
+		// other failure — a deadline, a transport error — keeps its own
+		// meaning.
+		if code := oauthRefusal(err); code != "" {
+			if res.Credential.Source == "store" {
+				return llm.NewAuthenticationError(res.Instance, fmt.Sprintf("instance %q: stored credential JSON was refused (%s)", res.Instance, code), err)
+			}
+			return llm.NewAuthenticationError(res.Instance, fmt.Sprintf("instance %q: application-default credentials were refused (%s) (run `gcloud auth application-default login`, set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)", res.Instance, code), err)
+		}
 		return fmt.Errorf("instance %q: gcp-adc token: %w", res.Instance, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
@@ -82,6 +96,18 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 		req.Header.Set("x-goog-user-project", project)
 	}
 	return nil
+}
+
+// oauthRefusal returns the OAuth error code when err is the token endpoint's
+// refusal of the credential itself — invalid_grant for an expired, revoked, or
+// replaced refresh token, invalid_client for a bad secret. Anything else (a
+// deadline, an unreachable endpoint) carries no code: nothing about the
+// credential was decided.
+func oauthRefusal(err error) string {
+	if refused, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
+		return refused.ErrorCode
+	}
+	return ""
 }
 
 // ValidateCredentialJSON reports whether data is a credential JSON the
@@ -99,34 +125,29 @@ func ValidateCredentialJSON(data []byte) error {
 }
 
 // credentialIdentity names the credential a source was built from: the
-// resolution's source alone for application-default credentials or none
-// (so a source that changes — an ADC file removed and the instance
-// re-resolved without a credential — rebuilds rather than reuses), and the
-// source plus a digest of the stored JSON for a stored credential. An ADC
-// file replaced in place keeps the identity "adc": the resolution does not
-// say which file backs it, so a re-login as another account takes effect
-// on the next process, not the next request.
-func credentialIdentity(res registry.Resolved) string {
-	if res.Credential.Source != "store" {
-		return res.Credential.Source
-	}
-	sum := sha256.Sum256([]byte(res.Credential.Value))
-	return res.Credential.Source + "\x00" + hex.EncodeToString(sum[:])
+// credential's own bytes, digested, so a replaced one — a rotated stored
+// value, or an ADC file a re-login rewrote — is noticed on the next request
+// and the source rebuilt rather than kept alongside the new one. The source
+// name keeps an ADC credential and a stored one distinguishable even when
+// their bytes coincide.
+func credentialIdentity(source string, raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return source + "\x00" + hex.EncodeToString(sum[:])
 }
 
 func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenSource, error) {
-	identity := credentialIdentity(res)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if c, ok := a.sources[res.Instance]; ok && c.identity == identity {
-		return c.tokenSource, nil
-	}
 	// The source outlives the request that created it, so it must not
 	// inherit that request's cancellation.
 	bg := context.WithoutCancel(ctx)
-	var creds *google.Credentials
-	var err error
 	if res.Credential.Source == "store" {
+		// A stored credential is named by the value resolution handed us, so
+		// the cache answers without parsing anything.
+		identity := credentialIdentity(res.Credential.Source, []byte(res.Credential.Value))
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if c, ok := a.sources[res.Instance]; ok && c.identity == identity {
+			return c.tokenSource, nil
+		}
 		if err := registry.CheckCredentialJSON([]byte(res.Credential.Value)); err != nil {
 			return tokenSource{}, err
 		}
@@ -134,27 +155,41 @@ func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenS
 		if fromJSON == nil {
 			fromJSON = google.CredentialsFromJSON //nolint:staticcheck // deprecated upstream in favour of typed parsers; this scheme must accept both authorized_user and service_account JSON (spec §4), and the cloud.google.com/go/auth migration is out of scope
 		}
-		creds, err = fromJSON(bg, []byte(res.Credential.Value), cloudPlatformScope)
-	} else {
-		find := a.FindCredentials
-		if find == nil {
-			find = google.FindDefaultCredentials
+		creds, err := fromJSON(bg, []byte(res.Credential.Value), cloudPlatformScope)
+		if err != nil {
+			return tokenSource{}, err
 		}
-		creds, err = find(bg, cloudPlatformScope)
+		return a.storeSource(res, identity, creds, []byte(res.Credential.Value)), nil
 	}
+	// Application-default credentials carry no value in the resolution: the
+	// library finds them, and the JSON it read is what names them. Reading
+	// them per request is what lets a re-login — which rewrites the ADC file
+	// — reach the next request instead of the next process (spec §4.3).
+	find := a.FindCredentials
+	if find == nil {
+		find = google.FindDefaultCredentials
+	}
+	creds, err := find(bg, cloudPlatformScope)
 	if err != nil {
 		return tokenSource{}, err
 	}
-	// A stored credential is classified from the bytes evener holds; only
-	// ADC has to trust the JSON the library read from the file.
-	credentialJSON := creds.JSON
-	if res.Credential.Source == "store" {
-		credentialJSON = []byte(res.Credential.Value)
+	identity := credentialIdentity(res.Credential.Source, creds.JSON)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if c, ok := a.sources[res.Instance]; ok && c.identity == identity {
+		return c.tokenSource, nil
 	}
+	return a.storeSource(res, identity, creds, creds.JSON), nil
+}
+
+// storeSource caches a freshly built source for the instance and returns it.
+// a.mu is held throughout, so the cache and the map it lives in are written
+// under one lock.
+func (a *GCPADC) storeSource(res registry.Resolved, identity string, creds *google.Credentials, credentialJSON []byte) tokenSource {
 	src := tokenSource{ts: oauth2.ReuseTokenSource(nil, creds.TokenSource), userCredential: isUserCredential(credentialJSON)}
 	if a.sources == nil {
 		a.sources = map[string]cachedSource{}
 	}
 	a.sources[res.Instance] = cachedSource{identity: identity, tokenSource: src}
-	return src, nil
+	return src
 }

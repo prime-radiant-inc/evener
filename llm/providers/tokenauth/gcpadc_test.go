@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,14 +20,24 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func TestGCPADCAppliesTokenOncePerInstance(t *testing.T) {
+// The credential is read per request — that is what lets a re-login reach the
+// next request — but an unchanged credential keeps the cached source, so the
+// token it minted is the one every request carries, and each instance has its
+// own source.
+func TestGCPADCCachesPerInstanceWhileTheCredentialStands(t *testing.T) {
 	calls := 0
+	minted := 0
+	credential := `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
 	a := &GCPADC{FindCredentials: func(ctx context.Context, scopes ...string) (*google.Credentials, error) {
 		calls++
 		if len(scopes) != 1 || scopes[0] != cloudPlatformScope {
 			t.Fatalf("scopes = %v", scopes)
 		}
-		return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "adc-token"})}, nil
+		minted++
+		return &google.Credentials{
+			JSON:        []byte(credential),
+			TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: fmt.Sprintf("adc-token-%d", minted)}),
+		}, nil
 	}}
 	res := registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}}
 	for range 2 {
@@ -34,14 +45,19 @@ func TestGCPADCAppliesTokenOncePerInstance(t *testing.T) {
 		if err := a.Apply(context.Background(), req, res); err != nil {
 			t.Fatal(err)
 		}
-		if got := req.Header.Get("Authorization"); got != "Bearer adc-token" {
-			t.Fatalf("Authorization = %q", got)
+		if got := req.Header.Get("Authorization"); got != "Bearer adc-token-1" {
+			t.Fatalf("Authorization = %q, want the cached source's token", got)
 		}
 	}
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
-	_ = a.Apply(context.Background(), req, registry.Resolved{Instance: "google-vertex", Credential: registry.Credential{Source: "adc"}})
-	if calls != 2 {
-		t.Fatalf("FindDefaultCredentials called %d times, want once per instance", calls)
+	if err := a.Apply(context.Background(), req, registry.Resolved{Instance: "google-vertex", Credential: registry.Credential{Source: "adc"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Authorization"); got == "Bearer adc-token-1" {
+		t.Fatalf("Authorization = %q, want the second instance's own source", got)
+	}
+	if calls != 3 {
+		t.Fatalf("FindDefaultCredentials called %d times, want one read per request", calls)
 	}
 }
 
@@ -62,6 +78,93 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 	}
 	if req.Header.Get("Authorization") != "" {
 		t.Fatal("no header on failure")
+	}
+}
+
+// failingTokenSource fails Token() the way a credential refresh does.
+type failingTokenSource struct{ err error }
+
+func (f failingTokenSource) Token() (*oauth2.Token, error) { return nil, f.err }
+
+// A refresh the token endpoint refused is a credential problem, not an
+// unreachable endpoint: the hub's credential test reports the class, and
+// "sign in again" is the remedy it offers for it.
+func TestGCPADCReportsARefusedRefreshAsAuthentication(t *testing.T) {
+	refused := &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: "Token has been expired or revoked."}
+	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return &google.Credentials{JSON: []byte(storedUserJSON), TokenSource: failingTokenSource{err: refused}}, nil
+	}}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}})
+	if err == nil {
+		t.Fatal("Apply accepted a refused refresh")
+	}
+	if llm.Kind(err) != llm.KindAuthentication {
+		t.Fatalf("Kind = %v, want authentication: the hub reports any other class as an unreachable endpoint", llm.Kind(err))
+	}
+	if !errors.Is(err, refused) {
+		t.Fatalf("err = %v, want the oauth error in the chain", err)
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Fatal("no header on failure")
+	}
+}
+
+// A token that could not be minted because the token endpoint was unreachable
+// keeps its transport meaning: nothing says the credential is bad.
+func TestGCPADCAFailingTransportIsNotAnAuthFailure(t *testing.T) {
+	unreachable := errors.New("dial tcp 169.254.169.254:80: connect: no route to host")
+	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return &google.Credentials{TokenSource: failingTokenSource{err: unreachable}}, nil
+	}}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}})
+	if err == nil {
+		t.Fatal("Apply accepted a failed token")
+	}
+	if llm.Kind(err) == llm.KindAuthentication {
+		t.Fatalf("Kind = authentication for a transport failure: %v", err)
+	}
+	if !errors.Is(err, unreachable) {
+		t.Fatalf("err = %v, want the transport error in the chain", err)
+	}
+}
+
+// A credential replaced under a long-running process (a re-login rewrites the
+// ADC file) must reach the next request: the cached source is dropped when the
+// credential it was built from no longer matches, while an unchanged
+// credential keeps it.
+func TestGCPADCRebuildsADCSourceWhenTheCredentialFileChanges(t *testing.T) {
+	credential := `{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"first"}`
+	token := "token-first"
+	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return &google.Credentials{
+			JSON:        []byte(credential),
+			TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}),
+		}, nil
+	}}
+	res := registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}}
+	apply := func() string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+		if err := a.Apply(context.Background(), req, res); err != nil {
+			t.Fatal(err)
+		}
+		return req.Header.Get("Authorization")
+	}
+	if got := apply(); got != "Bearer token-first" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	// Re-reading the same file must not disturb the cached source.
+	token = "token-reread"
+	if got := apply(); got != "Bearer token-first" {
+		t.Fatalf("Authorization = %q, want the cached source's token", got)
+	}
+	// The re-login: a new credential on disk, which the next request must use.
+	credential = `{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"second"}`
+	token = "token-second"
+	if got := apply(); got != "Bearer token-second" {
+		t.Fatalf("Authorization = %q, want the replaced credential's token", got)
 	}
 }
 
@@ -254,7 +357,7 @@ func TestGCPADCReplacesStoredSourceOnRotation(t *testing.T) {
 		if len(a.sources) != 1 {
 			t.Fatalf("len(a.sources) = %d, want 1", len(a.sources))
 		}
-		if got, want := a.sources["vertex"].identity, credentialIdentity(storedRes("vertex", value)); got != want {
+		if got, want := a.sources["vertex"].identity, credentialIdentity("store", []byte(value)); got != want {
 			t.Fatalf("identity = %q, want %q", got, want)
 		}
 	}
