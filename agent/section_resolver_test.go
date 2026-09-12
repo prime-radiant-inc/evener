@@ -742,11 +742,15 @@ func TestIdentitySection_CleanupRuleScopedToDeliverables(t *testing.T) {
 
 	// The scoped-cleanup contract: deliverables are not cleanup targets,
 	// cleanup is limited to transient scratch, and deliverables are handed
-	// off by name.
+	// off by name. The protection rules are scoped to cleanup so the
+	// handback-state rule stays governing when a task's requested end state
+	// itself includes teardown (roborev combined review on 2021d5f).
 	for _, want := range []string{
 		"is the deliverable, not clutter",
 		"needed to rebuild, rerun, or verify",
 		"hand off every deliverable",
+		"Never remove, tear down, or clean it up as part of cleanup",
+		"Removing a deliverable as cleanup",
 	} {
 		if !strings.Contains(section, want) {
 			t.Errorf("identity section missing scoped-cleanup guidance %q; got:\n%s", want, section)
@@ -754,11 +758,16 @@ func TestIdentitySection_CleanupRuleScopedToDeliverables(t *testing.T) {
 	}
 
 	// The old unscoped rule read a deliverable as "a temporary artifact you
-	// created" and made it a cleanup target; it must not come back.
+	// created" and made it a cleanup target; it must not come back. The
+	// negative is clause-level and case-folded: a revert that rewords the
+	// surrounding sentence but keeps removal guidance paired with
+	// artifacts-you-created must still fail here, not only the exact
+	// pre-fix sentence.
+	folded := strings.ToLower(section)
 	for _, bad := range []string{
-		"Leave the workspace clean. Remove scratch files, debug scripts, and temporary artifacts you created",
+		"temporary artifacts you created",
 	} {
-		if strings.Contains(section, bad) {
+		if strings.Contains(folded, strings.ToLower(bad)) {
 			t.Errorf("identity section should not contain %q (unscoped cleanup rule from #302)", bad)
 		}
 	}
