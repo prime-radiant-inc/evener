@@ -20,7 +20,15 @@ function boundary() {
                 ref: "local:test",
                 diagnostics: {
                   plugins: [{ name: "loaded" }],
-                  skills: [{ name: "testing", description: "fixture" }],
+                  skills: [
+                    {
+                      name: "testing",
+                      description: "fixture",
+                      disableModelInvocation: false,
+                      userInvocable: true,
+                      available: true,
+                    },
+                  ],
                 },
               },
             },
@@ -81,7 +89,16 @@ it("does not publish catalog responses after its owner leaves", async () => {
     thread: {
       evener: {
         ref: "local:test",
-        diagnostics: { skills: [{ name: "late" }] },
+        diagnostics: {
+          skills: [
+            {
+              name: "late",
+              disableModelInvocation: false,
+              userInvocable: true,
+              available: true,
+            },
+          ],
+        },
       },
     },
   });
