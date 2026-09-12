@@ -351,7 +351,16 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 // their tests replace the seam to prove they never invoke cold discovery.
 var discoverPastThreadSkillCatalog = discoverPastThreadSkills
 
-func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo {
+// pastThreadSkillCatalog is the past-thread discovery view: the user
+// advertisement plus the Stage 1 discovery diagnostics (collisions,
+// unreadable sources, invalid metadata or controls) as the explicit
+// source-detail view.
+type pastThreadSkillCatalog struct {
+	Skills      []appwire.EvenerSkillInfo
+	Diagnostics []appwire.EvenerSkillDiagnostic
+}
+
+func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
 	home, _ := os.UserHomeDir()
 	sources, _ := plugin.SkillSources(entry.Meta.Config.PluginDirs)
 	var env execenv.ExecutionEnvironment
@@ -381,18 +390,30 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo
 			AllowedTools:           append([]string(nil), entry.Meta.AllowedTools...),
 		})
 	}
-	return result
+	var diagnostics []appwire.EvenerSkillDiagnostic
+	for _, d := range catalog.Diagnostics {
+		diagnostics = append(diagnostics, appwire.EvenerSkillDiagnostic{
+			Category:    d.Category,
+			Name:        d.Name,
+			Source:      d.Source,
+			OtherSource: d.OtherSource,
+			Field:       d.Field,
+			Message:     d.Message,
+		})
+	}
+	return pastThreadSkillCatalog{Skills: result, Diagnostics: diagnostics}
 }
 
 func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
-	skills := discoverPastThreadSkillCatalog(entry)
-	if len(skills) == 0 {
+	catalog := discoverPastThreadSkillCatalog(entry)
+	if len(catalog.Skills) == 0 && len(catalog.Diagnostics) == 0 {
 		return thread
 	}
 	if thread.Evener.Diagnostics == nil {
 		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 	}
-	thread.Evener.Diagnostics.Skills = skills
+	thread.Evener.Diagnostics.Skills = catalog.Skills
+	thread.Evener.Diagnostics.SkillDiagnostics = catalog.Diagnostics
 	return thread
 }
 

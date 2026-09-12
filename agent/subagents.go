@@ -980,7 +980,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 			// permanent prompt carries the complete rendered document, and
 			// the typed preload metadata freezes its provenance for the
 			// delegate's lifetime.
-			invocationID := s.mintSkillOperationID()
+			invocationID, err := s.mintSkillOperationID()
+			if err != nil {
+				continue
+			}
 			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
 				Name: skillName, Route: "role_preload",
 				InvocationID: invocationID, AtomicGroupID: invocationID,

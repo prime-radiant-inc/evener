@@ -91,6 +91,11 @@ func (s *Session) prepareSelectedInput(ctx context.Context, input queuedInput, r
 	}
 	inputID := durableSkillGroupID(input)
 	invocations := make([]skillInvocation, 0, len(input.SkillNames))
+	// Normalization deliberately retains duplicate client selections, but one
+	// atomic group must not carry two invocations under the SAME identity
+	// (InvocationID derives from the name): the first occurrence wins and the
+	// request order is preserved.
+	seen := make(map[string]bool, len(input.SkillNames))
 	for _, name := range input.SkillNames {
 		descriptor, err := s.skills.ResolveExact(name)
 		if err != nil {
@@ -100,6 +105,10 @@ func (s *Session) prepareSelectedInput(ctx context.Context, input queuedInput, r
 				Err:        err,
 			}
 		}
+		if seen[descriptor.CatalogName] {
+			continue
+		}
+		seen[descriptor.CatalogName] = true
 		invocations = append(invocations, skillInvocation{
 			Name:             descriptor.CatalogName,
 			Route:            route,
@@ -230,15 +239,25 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 	return batch, nil
 }
 
-// mintSkillOperationID assigns the session's next persisted lifecycle
-// operation identity. The counter lives in the lifecycle snapshot so an
+// mintSkillOperationID assigns the session's next lifecycle operation identity
+// and persists the counter BEFORE the identity can reach any durable carrier
+// (a transcript SkillState or the lifecycle snapshot): an unpersisted mint
+// followed by a crash would let a post-restart mint reissue an identity that
+// is already recorded. The counter lives in the lifecycle snapshot so an
 // identity is never reused across a restart; it is not random and never comes
-// from client fields, model text, or copied history.
-func (s *Session) mintSkillOperationID() string {
+// from client fields, model text, or copied history. A failed save burns the
+// in-memory generation (harmless gap) and reports the error rather than
+// handing out an identity the next restart could reissue.
+func (s *Session) mintSkillOperationID() (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.skillLifecycle.NextOperationGen++
-	return fmt.Sprintf("skill-op-%d", s.skillLifecycle.NextOperationGen)
+	id := fmt.Sprintf("skill-op-%d", s.skillLifecycle.NextOperationGen)
+	s.mu.Unlock()
+	if err := s.saveMeta(); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("persisting skill operation identity failed", err))
+		return "", err
+	}
+	return id, nil
 }
 
 // skillContentIdentity pins a prepared activation's canonical name, declared
@@ -410,7 +429,10 @@ func (s *Session) skillToolActivate(ctx context.Context, skillName, toolCallID s
 	if err != nil {
 		return nil, err
 	}
-	invocationID := s.mintSkillOperationID()
+	invocationID, err := s.mintSkillOperationID()
+	if err != nil {
+		return nil, err
+	}
 	invocation := skillInvocation{
 		Name:          descriptor.CatalogName,
 		Route:         "model_tool",

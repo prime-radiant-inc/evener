@@ -351,6 +351,42 @@ func TestSkillCompaction_ClearNoteLeavesForcedOperation(t *testing.T) {
 	}
 }
 
+// TestSkillCompaction_ClearNotePersistsWithoutPendingOperation: a clear-only
+// request that cancels NO operation (the note's operation already retired,
+// e.g. delivered but not yet fold-consumed) mutates the durable pinned note —
+// it must be persisted, or the stale note reappears after a restart.
+func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	gen, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
+		schema.SkillReloadSelection{State: "absent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retire the pending operation while the note stays pinned (a delivered
+	// operation leaves the note pinned until a fold consumes it).
+	if err := s.cancelSkillCompaction(context.Background(), gen, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.PinnedNote(); got != "keep" {
+		t.Fatalf("note must still be pinned before the clear, got %q", got)
+	}
+	if _, err := s.requestSkillCompaction(context.Background(), "", "",
+		schema.SkillReloadSelection{State: "absent"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.PinnedNote(); got != "" {
+		t.Fatalf("note must be cleared, got %q", got)
+	}
+	loaded, err := schema.LoadSessionMeta(stateDir, s.Meta().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PinnedNote != "" {
+		t.Fatalf("the cleared note must be persisted empty even when no operation was cancelled, got %q", loaded.PinnedNote)
+	}
+}
+
 // breakSessionMetaPath replaces the session's real meta.json path with a
 // directory so the real filesystem refuses every subsequent metadata write,
 // and returns the repair that restores writability.

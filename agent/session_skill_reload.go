@@ -400,10 +400,12 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 
 // consumedReloadPublicationsLocked derives the publication identities whose
 // valid-selection receipts this preparation fully processed: every selected
-// name either has no ordinary record (a preload-only no-op) or produced a
-// typed outcome under the publication's invocation identity. Receipts that
-// appeared after the preparation snapshot stay for the next round, and
-// absent/invalid receipts were already consumed with their reminders.
+// name either has no ordinary record (a preload-only no-op), carries an
+// incomplete recorded identity (the same no-op the preparation guard takes),
+// or produced a typed outcome under the publication's invocation identity.
+// Receipts that appeared after the preparation snapshot stay for the next
+// round, and absent/invalid receipts were already consumed with their
+// reminders.
 // Callers hold s.mu.
 func (s *Session) consumedReloadPublicationsLocked(outcomes []schema.SkillActivationOutcome) map[string]bool {
 	seen := make(map[string]bool, len(outcomes))
@@ -420,8 +422,16 @@ func (s *Session) consumedReloadPublicationsLocked(outcomes []schema.SkillActiva
 		}
 		consumed := true
 		for _, name := range handoff.Operation.Selection.Names {
-			if s.skillLifecycle.Inventory[name].Ordinary == nil {
+			ordinary := s.skillLifecycle.Inventory[name].Ordinary
+			if ordinary == nil {
 				continue // preload-only names are no-ops
+			}
+			if ordinary.Identity.Name == "" || ordinary.Identity.DeclaredName == "" || ordinary.Identity.Source == "" {
+				// Preparation skips an incomplete-identity record as the same
+				// no-op (session_skill_reload.go's prepareCompactedSkillReloads
+				// guard); the consumption predicate must agree or the receipt
+				// wedges in PendingHandoffs forever.
+				continue
 			}
 			if !seen[handoff.Operation.PublicationID+":"+name] {
 				consumed = false

@@ -174,3 +174,48 @@ func TestThreadReadAdvertisesRealSkillControls(t *testing.T) {
 		t.Fatalf("wire completion predicate kept = %v, want [clean hidden]", kept)
 	}
 }
+
+// TestThreadReadCarriesSkillDiagnostics proves the Stage 1 discovery
+// diagnostics survive the whole projection (agent DetailedStatus -> server
+// DetailedStatus -> appwire EvenerDiagnostics): thread/read must surface
+// SkillDiagnostics with category/name/source detail verbatim, not drop them
+// at a conversion boundary.
+func TestThreadReadCarriesSkillDiagnostics(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "sess_1", State: "idle"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.detailedStatus = DetailedStatus{
+			Skills: []SkillInfo{{Name: "clean", Description: "a plain user skill", UserInvocable: true, Available: true}},
+			SkillDiagnostics: []SkillDiagnosticInfo{{
+				Category:    "collision",
+				Name:        "selected",
+				Source:      "/fixture/first/skills/probe/SKILL.md",
+				OtherSource: "/fixture/second/skills/probe/SKILL.md",
+				Message:     "higher-precedence skill replaces earlier source",
+			}},
+		}
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	diagnostics := data.Thread.Evener.Diagnostics
+	if diagnostics == nil || len(diagnostics.SkillDiagnostics) != 1 {
+		t.Fatalf("wire skill diagnostics = %+v, want the one collision entry", diagnostics)
+	}
+	got := diagnostics.SkillDiagnostics[0]
+	if got.Category != "collision" || got.Name != "selected" ||
+		got.Source != "/fixture/first/skills/probe/SKILL.md" ||
+		got.OtherSource != "/fixture/second/skills/probe/SKILL.md" ||
+		got.Message != "higher-precedence skill replaces earlier source" {
+		t.Fatalf("wire skill diagnostic = %+v, want the Stage 1 values verbatim", got)
+	}
+}
