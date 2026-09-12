@@ -254,11 +254,17 @@ stop_children() {
 stop_recorded_package_list_groups() {
 	local pgid_file recorded members leader_pgid
 	[ -n "$logdir" ] || return 0
+	# A record is dropped only once it has been acted on: a file removed before
+	# the probe takes the only name anyone had for a survivor with it, and a
+	# probe that cannot run is exactly when that name is worth keeping — the
+	# retained logs then say which group was left holding Go's cache locks.
 	for pgid_file in "$logdir"/*.pgid; do
 		[ -e "$pgid_file" ] || continue
 		recorded="$(cat "$pgid_file" 2>/dev/null)"
-		rm -f "$pgid_file"
-		[ -n "$recorded" ] || continue
+		if [ -z "$recorded" ]; then
+			rm -f "$pgid_file"
+			continue
+		fi
 		# What is recorded is a group, so ask about the group rather than
 		# about its leader alone: `go list` can exit with a child of the
 		# attempt still running in it, and a leader-only check would leave
@@ -266,15 +272,23 @@ stop_recorded_package_list_groups() {
 		# A probe that cannot run knows nothing about the group, and blind is
 		# the one state in which -PID could name a stranger, so it is left.
 		members="$(package_list_group_survivors "$recorded")" || continue
-		[ -n "$members" ] || continue
+		if [ -z "$members" ]; then
+			rm -f "$pgid_file"
+			continue
+		fi
 		# Only signal a group the attempt still owns. A live group whose
 		# leader has gone can only be this attempt's, since the kernel keeps
 		# the number reserved while the group has members; a leader that is
 		# alive under some other group is a recycled pid, and -PID would then
-		# name a group this runner has no business signalling.
+		# name a group this runner has no business signalling — and a record
+		# of someone else's pid is worth nothing to anyone, so it goes.
 		leader_pgid="$(ps -o pgid= -p "$recorded" 2>/dev/null | tr -d '[:space:]')"
-		[ -z "$leader_pgid" ] || [ "$leader_pgid" = "$recorded" ] || continue
+		if [ -n "$leader_pgid" ] && [ "$leader_pgid" != "$recorded" ]; then
+			rm -f "$pgid_file"
+			continue
+		fi
 		stop_package_list_group "$recorded" || :
+		rm -f "$pgid_file"
 	done
 }
 
