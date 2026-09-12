@@ -50,9 +50,8 @@ test.each(["test", "test:coverage"])("the %s script sizes vitest from spare capa
     script,
     `"${name}" must source scripts/lib/load-aware-workers.sh so concurrent gate runs share the machine`,
   ).toContain("../../../scripts/lib/load-aware-workers.sh");
-  expect(
-    script,
-    `"${name}" must pass the helper's computed count, not merely source it`,
-  ).toContain('--maxWorkers="$maxWorkers"');
+  expect(script, `"${name}" must pass the helper's computed count, not merely source it`).toContain(
+    '--maxWorkers="$maxWorkers"',
+  );
   expect(script, `"${name}" must not pin a fixed worker count`).not.toMatch(/--maxWorkers=\d/);
 });

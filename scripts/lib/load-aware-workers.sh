@@ -15,8 +15,21 @@
 # budgets) bounded each run but never their sum, which is how a 16-core box
 # reaches load 40. This narrows each run's claim as the load average rises.
 #
-# load_aware_cores — print this machine's usable CPU count, or an empty string
-# when nothing can answer. getconf is POSIX; nproc is the coreutils fallback.
+# load_aware_cores — print this machine's effective CPU count, or an empty
+# string when nothing can answer. Effective, not advertised: nproc reports the
+# CPUs the process may actually run on (its affinity mask, which getconf's
+# host-wide online count ignores), and a cgroup CPU quota clamps the result
+# again so a quota-limited container does not size to CPUs it cannot use.
+# Overstating the count here does not merely look wrong: it defeats the whole
+# back-off, because cores - load stays above the ceiling however loaded the
+# machine is.
+#
+# load_aware_cgroup_cores [QUOTA PERIOD] — print ceil(QUOTA/PERIOD), the
+# number of CPUs this process's cgroup allows, or an empty string when the
+# limit is absent, "max", or -1 (v1's unlimited spelling). QUOTA and PERIOD
+# default to this process's cgroup CPU-limit files (v2 keeps both on one
+# "quota period" line; v1 splits them across two files); passing them makes
+# the parse a pure function of its inputs.
 #
 # load_aware_load1 — print this machine's 1-minute load average, or an empty
 # string when nothing can answer. Linux reads /proc/loadavg; Darwin's
@@ -43,11 +56,11 @@
 
 load_aware_cores() {
 	_law_cores=
-	if command -v getconf >/dev/null 2>&1; then
-		_law_cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
-	fi
-	if [ -z "$_law_cores" ] && command -v nproc >/dev/null 2>&1; then
+	if command -v nproc >/dev/null 2>&1; then
 		_law_cores="$(nproc 2>/dev/null)"
+	fi
+	if [ -z "$_law_cores" ] && command -v getconf >/dev/null 2>&1; then
+		_law_cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
 	fi
 	case "$_law_cores" in
 	''|*[!0-9]*) _law_cores= ;;
@@ -55,7 +68,43 @@ load_aware_cores() {
 	if [ -n "$_law_cores" ] && [ "$_law_cores" -lt 1 ]; then
 		_law_cores=
 	fi
+	_law_quota="$(load_aware_cgroup_cores)"
+	if [ -n "$_law_quota" ]; then
+		if [ -z "$_law_cores" ] || [ "$_law_quota" -lt "$_law_cores" ]; then
+			_law_cores="$_law_quota"
+		fi
+	fi
 	printf '%s' "$_law_cores"
+}
+
+load_aware_cgroup_cores() {
+	_law_quota=${1-}
+	_law_period=${2-}
+	if [ -z "$_law_quota" ] && [ -z "$_law_period" ]; then
+		if [ -r /sys/fs/cgroup/cpu.max ]; then
+			_law_quota="$(cut -d' ' -f1 /sys/fs/cgroup/cpu.max 2>/dev/null)"
+			_law_period="$(cut -d' ' -f2 /sys/fs/cgroup/cpu.max 2>/dev/null)"
+		elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+			_law_quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null)"
+			_law_period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null)"
+		fi
+	fi
+	case "$_law_quota" in
+	''|*[!0-9]*) printf ''; return 0 ;;
+	esac
+	case "$_law_period" in
+	''|*[!0-9]*) printf ''; return 0 ;;
+	esac
+	if [ "$_law_period" -lt 1 ]; then
+		printf ''
+		return 0
+	fi
+	awk -v q="$_law_quota" -v p="$_law_period" '
+		BEGIN {
+			c = int((q + p - 1) / p)
+			if (c < 1) c = 1
+			print c
+		}'
 }
 
 load_aware_load1() {

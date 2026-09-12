@@ -325,8 +325,10 @@ unavailable setup is a reported prerequisite failure rather than a
 deterministic test pass.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
-`scripts/lib/load-aware-workers.sh`: worker count is machine cores minus the
-1-minute load average rounded up, clamped to at least one and at most four.
+`scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
+actually use (affinity- and cgroup-quota-aware, not the host's advertised
+count) minus the 1-minute load average rounded up, clamped to at least one and
+at most four.
 The four is a ceiling, not a fixed pool. Vitest's own default pool is
 `os.availableParallelism()`, which oversubscribed a 10-core host under the
 combined load of `make test`'s sibling Go streams and starved otherwise causal
