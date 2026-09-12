@@ -109,18 +109,33 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
 
-function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number } {
+function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
   const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
   const text = input
     .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("\n");
-  return { text, imageCount: input.filter((item) => item.type === "image").length };
+  const skillNames = input
+    .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+    .map((item) => item.name.trim())
+    .filter((name) => name !== "");
+  return { text, imageCount: input.filter((item) => item.type === "image").length, skillNames };
+}
+
+// skillMarkers renders a record's canonical skill selections for display and
+// copy: the name is the selection's whole user-visible identity (the complete
+// selection distinguishable from typed text. Without it a skill-only record
+// previews blank and copies as an empty string.
+function skillMarkers(names: readonly string[]): string {
+  return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
 function recordPreview(record: MutationOutboxRecord): string {
-  const { text, imageCount } = recordContent(record);
-  return truncateForDisplay(queueEntryPreviewText(text, imageCount));
+  const { text, imageCount, skillNames } = recordContent(record);
+  const preview = [queueEntryPreviewText(text, imageCount), skillMarkers(skillNames)]
+    .filter((part) => part !== "")
+    .join(" ");
+  return truncateForDisplay(preview);
 }
 
 function editDisabledReason(opts: {
@@ -319,7 +334,9 @@ export function QueueStrip({
   async function handleCopy(record: MutationRecoveryRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     try {
-      await copyToClipboard(recordContent(record).text);
+      const { text, skillNames } = recordContent(record);
+      const content = [text, skillMarkers(skillNames)].filter((part) => part !== "").join("\n");
+      await copyToClipboard(content);
       toasts.push("success", "Copied message");
     } catch (error) {
       toasts.push("error", `Couldn't copy message: ${errorText(error)}`);

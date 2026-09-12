@@ -5,7 +5,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
+import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import type { MutationRecoveryKind, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -103,10 +103,10 @@ function defaultProps(overrides: Partial<Parameters<typeof QueueStrip>[0]> = {})
 async function seedRecovery(
   recoveryKind: MutationRecoveryKind,
   text: string,
-  opts: { method?: string; reason?: string } = {},
+  opts: { method?: string; reason?: string; input?: InputItem[] } = {},
 ): Promise<MutationRecoveryRecord> {
   const storage = new MutationOutboxIndexedDB();
-  const input = [{ type: "text", text }];
+  const input = opts.input ?? [{ type: "text", text }];
   const method = opts.method ?? "turn/start";
   const outbox = await storage.enqueueIntent({
     targetRef: "ref_a",
@@ -123,16 +123,16 @@ async function seedRecovery(
   return recovery;
 }
 
-async function seedBlockedUnknown(text: string): Promise<void> {
+async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<void> {
   const storage = new MutationOutboxIndexedDB();
-  const input = [{ type: "text", text }];
+  const items = input ?? [{ type: "text", text }];
   const outbox = await storage.enqueueIntent({
     targetRef: "ref_a",
     threadId: "thr_ref_a",
     method: "turn/start",
-    payload: { ref: "ref_a", input },
+    payload: { ref: "ref_a", input: items },
     attachments: [],
-    optimisticDisplay: { method: "turn/start", input },
+    optimisticDisplay: { method: "turn/start", input: items },
   });
   await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
   storage.close();
@@ -344,6 +344,59 @@ describe("durable recovery rows", () => {
     await user.click(await screen.findByRole("button", { name: "Copy" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("first line\n  second line"));
+  });
+
+  // A skill-only record has no text item at all. Before the [skill: …]
+  // markers its preview rendered blank and Copy handed the user an empty
+  // string, losing the selection the record actually carries - the whole
+  // user-visible identity of a skill selection is its canonical name.
+  test("a skill-only record previews its selection and copies the marker", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedRecovery("orphaned", "", { input: [{ type: "skill", name: "pkg:probe" }] });
+    renderStrip(defaultProps());
+
+    await screen.findByText("[skill: pkg:probe]");
+    await user.click(await screen.findByRole("button", { name: "Copy" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("[skill: pkg:probe]"));
+  });
+
+  test("Copy keeps the typed text and appends the skill markers", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedRecovery("orphaned", "", {
+      input: [
+        { type: "text", text: "run the audit" },
+        { type: "skill", name: "pkg:probe" },
+      ],
+    });
+    renderStrip(defaultProps());
+
+    await user.click(await screen.findByRole("button", { name: "Copy" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("run the audit\n[skill: pkg:probe]"));
+  });
+
+  test("a blocked skill-bearing row previews text and selection together", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedBlockedUnknown("", [
+      { type: "text", text: "uncertain with skills" },
+      { type: "skill", name: "pkg:probe" },
+    ]);
+    renderStrip(defaultProps());
+
+    const status = await screen.findByText("Delivery uncertain");
+    const row = status.closest("li");
+    if (!row) throw new Error("missing blocked row");
+    expect(within(row).getByText("uncertain with skills [skill: pkg:probe]")).toBeTruthy();
   });
 });
 
