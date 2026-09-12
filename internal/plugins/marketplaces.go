@@ -398,7 +398,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	registryAsFound := reg
 	if renaming {
 		target = newName
-		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, mk)
+		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, registryKeyOwners(reg, mk))
 		if err != nil {
 			return fail(err)
 		}
@@ -480,7 +480,7 @@ func runUndo(undo []func() error) error {
 // On success it returns the ref and registry as they are to be recorded, and
 // the steps that put the directories back should a later step fail; a failure
 // puts back what it had moved itself and reports what it could not.
-func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg Registry, mk Marketplaces) (MarketplaceRef, Registry, []func() error, error) {
+func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg Registry, owners map[string]string) (MarketplaceRef, Registry, []func() error, error) {
 	var undo []func() error
 	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
 		if undoErr := runUndo(undo); undoErr != nil {
@@ -526,7 +526,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 		}
 		undo = append(undo, func() error { return restoreRename("plugin cache", newCache, oldCache) })
 	}
-	return ref, rekeyRegistry(reg, mk, name, newName, oldCache, newCache), undo, nil
+	return ref, rekeyRegistry(reg, owners, name, newName, oldCache, newCache), undo, nil
 }
 
 // errStoreBetweenNames marks the one rename failure that leaves the store
@@ -636,6 +636,22 @@ func registryKeyOwner(key string, mk Marketplaces) (string, bool) {
 	return best, found
 }
 
+// registryKeyOwners names, for every key in the registry, the marketplace it
+// belongs to as the store was found. Ownership is taken once, before any
+// rename: a rename rewrites keys, and the names it writes are recorded, so
+// recomputing ownership later would let a key rewritten for one marketplace be
+// claimed by a name the migration itself had just made — which is not a name
+// the key was ever keyed under.
+func registryKeyOwners(reg Registry, mk Marketplaces) map[string]string {
+	owners := make(map[string]string, len(reg.Plugins))
+	for key := range reg.Plugins {
+		if owner, ok := registryKeyOwner(key, mk); ok {
+			owners[key] = owner
+		}
+	}
+	return owners
+}
+
 // rekeyRegistry moves every <plugin>@oldName entry to <plugin>@newName, where
 // oldName is the longest recorded name the key ends in. An
 // install path under oldCache follows the cache directory to newCache; with
@@ -646,15 +662,15 @@ func registryKeyOwner(key string, mk Marketplaces) (string, bool) {
 // this runs, by refuseLeftoversUnder. Should one reach here anyway, the copy
 // pass runs first and the moved entries overwrite it, dropping the orphan
 // rather than letting map order decide whether a ghost replaces a live install.
-func rekeyRegistry(reg Registry, mk Marketplaces, oldName, newName, oldCache, newCache string) Registry {
+func rekeyRegistry(reg Registry, owners map[string]string, oldName, newName, oldCache, newCache string) Registry {
 	out := Registry{Version: reg.Version, Plugins: make(map[string][]InstallEntry, len(reg.Plugins))}
 	for key, entries := range reg.Plugins {
-		if name, ok := registryKeyOwner(key, mk); !ok || name != oldName {
+		if owner, ok := owners[key]; !ok || owner != oldName {
 			out.Plugins[key] = entries
 		}
 	}
 	for key, entries := range reg.Plugins {
-		if name, ok := registryKeyOwner(key, mk); !ok || name != oldName {
+		if owner, ok := owners[key]; !ok || owner != oldName {
 			continue
 		}
 		plugin := strings.TrimSuffix(key, "@"+oldName)
@@ -667,7 +683,11 @@ func rekeyRegistry(reg Registry, mk Marketplaces, oldName, newName, oldCache, ne
 			}
 			moved = append(moved, e)
 		}
-		out.Plugins[registryKey(plugin, newName)] = moved
+		movedKey := registryKey(plugin, newName)
+		out.Plugins[movedKey] = moved
+		// The key is new, so its owner is the name it was just keyed under:
+		// recorded, so the steps after this one in the same pass agree on it.
+		owners[movedKey] = newName
 	}
 	return out
 }
@@ -685,15 +705,16 @@ func rekeyRegistry(reg Registry, mk Marketplaces, oldName, newName, oldCache, ne
 // not what it once pointed at.
 func pathPresent(path string) (bool, error) {
 	if _, err := marketplaceStat(path); err != nil {
-		// A path the filesystem refuses for its length holds nothing: it will
-		// not even look at it. Counting it as absent is what lets the migration
-		// rename a legacy name whose derived path is too long to ask about,
-		// rather than failing every lock-taking operation on it.
-		if !errors.Is(err, fs.ErrNotExist) && !isNameTooLong(err) {
+		// A path the filesystem will not consider at all holds nothing, so it
+		// counts as absent rather than failing the operation that asked: the
+		// migration has to be able to look at a legacy name's directories in
+		// order to rename it, and failing here would leave every lock-taking
+		// operation failing on the store instead.
+		if !errors.Is(err, fs.ErrNotExist) && !pathCannotExist(err) {
 			return false, fmt.Errorf("checking %s: %w", path, err)
 		}
 		if _, err := marketplaceLstat(path); err != nil {
-			if errors.Is(err, fs.ErrNotExist) || isNameTooLong(err) {
+			if errors.Is(err, fs.ErrNotExist) || pathCannotExist(err) {
 				return false, nil
 			}
 			return false, fmt.Errorf("checking %s: %w", path, err)

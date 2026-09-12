@@ -1619,7 +1619,7 @@ func TestRekeyRegistry(t *testing.T) {
 		// key is already taken and the live install has to win it.
 		registryKey("widget", "beta"): {{InstallPath: filepath.Join(newCache, "widget", "ghost")}},
 	}}
-	got := rekeyRegistry(reg, Marketplaces{"acme": {}, "beta": {}, "zeta": {}}, "acme", "beta", oldCache, newCache)
+	got := rekeyRegistry(reg, registryKeyOwners(reg, Marketplaces{"acme": {}, "beta": {}, "zeta": {}}), "acme", "beta", oldCache, newCache)
 	for _, plugin := range []string{"widget", "wid@get", "elsewhere"} {
 		if _, still := got.Plugins[registryKey(plugin, "acme")]; still {
 			t.Fatalf("old key %s survived", registryKey(plugin, "acme"))
@@ -1642,7 +1642,7 @@ func TestRekeyRegistry(t *testing.T) {
 	}
 
 	// With no cache directory moved, the keys move and every path stays.
-	unmoved := rekeyRegistry(reg, Marketplaces{"acme": {}, "beta": {}, "zeta": {}}, "acme", "beta", "", "")
+	unmoved := rekeyRegistry(reg, registryKeyOwners(reg, Marketplaces{"acme": {}, "beta": {}, "zeta": {}}), "acme", "beta", "", "")
 	if p := unmoved.Plugins[registryKey("widget", "beta")][0].InstallPath; p != filepath.Join(oldCache, "widget", "abc") {
 		t.Fatalf("InstallPath = %q, want it left under the cache directory that did not move", p)
 	}
@@ -1661,7 +1661,7 @@ func TestRekeyRegistry_ALongerRecordedNameKeepsItsKeys(t *testing.T) {
 		registryKey("plug", "x@y@z"): {{InstallPath: "cache/x@y@z/plug/abc"}},
 	}}
 
-	got := rekeyRegistry(reg, mk, "z", "z-moved", "", "")
+	got := rekeyRegistry(reg, registryKeyOwners(reg, mk), "z", "z-moved", "", "")
 	for _, kept := range []string{
 		registryKey("plug", "y@z"),
 		registryKey("wid@x", "y@z"),
@@ -1673,5 +1673,37 @@ func TestRekeyRegistry_ALongerRecordedNameKeepsItsKeys(t *testing.T) {
 	}
 	if _, moved := got.Plugins[registryKey("plug", "z-moved")]; !moved {
 		t.Fatalf("keys = %v, want the shorter name's own key moved", got.Plugins)
+	}
+}
+
+// Ownership is taken once for a pass, from the store as found. A rename writes
+// a key under the name it took, and if ownership were recomputed against the
+// names as they stand, a later rename whose name happens to match that key's
+// suffix would claim it and assign its plugin and install path to the wrong
+// marketplace.
+func TestRekeyRegistry_KeepsOwnershipAcrossARenameInTheSamePass(t *testing.T) {
+	mk := Marketplaces{"x@y": {}, "get@x-y": {}}
+	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		"wid@get@x@y": {{InstallPath: "cache/x@y/wid@get/abc"}},
+	}}
+	owners := registryKeyOwners(reg, mk)
+
+	// The first rename writes "wid@get@x-y", whose suffix "get@x-y" matches
+	// another recorded name: this is the hazard the pass must not walk into.
+	after := rekeyRegistry(reg, owners, "x@y", "x-y", "", "")
+	if _, ok := after.Plugins["wid@get@x-y"]; !ok {
+		t.Fatalf("keys = %v, want the key moved onto the name the rename took", after.Plugins)
+	}
+	if recomputed, _ := registryKeyOwner("wid@get@x-y", mk); recomputed != "get@x-y" {
+		t.Fatalf("fixture no longer models the hazard: recomputing would name %q", recomputed)
+	}
+
+	// The second rename must leave it with the name it was keyed under.
+	after = rekeyRegistry(after, owners, "get@x-y", "get-x-y", "", "")
+	if _, stolen := after.Plugins["wid@get-x-y"]; stolen {
+		t.Fatalf("keys = %v, want the key left with the name the first rename wrote", after.Plugins)
+	}
+	if _, kept := after.Plugins["wid@get@x-y"]; !kept {
+		t.Fatalf("keys = %v, want the key kept under the name the first rename wrote", after.Plugins)
 	}
 }

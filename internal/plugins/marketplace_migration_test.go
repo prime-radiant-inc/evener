@@ -3753,7 +3753,76 @@ func TestPluginCacheMoves_LeavesACacheKeyALongerNameOwns(t *testing.T) {
 		"plug@y@z": {{InstallPath: install}},
 	}}
 
-	if moves := m.pluginCacheMoves(reg, "z", "z-moved", mk); len(moves) != 0 {
+	if moves := m.pluginCacheMoves(reg, "z", "z-moved", registryKeyOwners(reg, mk)); len(moves) != 0 {
 		t.Fatalf("moves = %+v, want none: the key belongs to y@z, not z", moves)
+	}
+}
+
+// The entries the recorded name already had win over the duplicate's, but only
+// the ones that name owns: a key ending in "@recorded" that belongs to a longer
+// recorded name is not this merge's to restore, and resurrecting it leaves a
+// stale duplicate beside the entry the merge moved.
+func TestMergeIntoMigrated_DoesNotResurrectAKeyALongerNameOwns(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	planted := time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC)
+	src := Source{Kind: SourceURL, URL: "https://example.invalid/x.git"}
+	mk := Marketplaces{
+		"x@a-b": {Source: src, LastUpdated: planted},
+		"a-b":   {Source: src, LastUpdated: planted},
+	}
+	if err := m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		// plugin "wid@x" in the marketplace recorded as "a-b", and the same key
+		// shape the duplicate "x@a-b" re-keys onto.
+		"wid@x@a-b": {{
+			InstallPath: filepath.Join(m.cacheDir(), "x@a-b", "wid@x", "sha1"),
+			Version:     "1.0.0", Enabled: true,
+			Source: Source{Kind: SourceGitHub, Repo: "o/wid"},
+		}},
+	}}
+	if err := m.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := m.mergeIntoMigrated(mk, registryKeyOwners(reg, mk), reg, "x@a-b", "a-b")
+	if err != nil {
+		t.Fatalf("mergeIntoMigrated: %v", err)
+	}
+	if _, still := got.Plugins["wid@x@a-b"]; still {
+		t.Fatalf("keys = %v, want no key restored that a longer recorded name owns", got.Plugins)
+	}
+	if _, moved := got.Plugins["wid@a-b"]; !moved {
+		t.Fatalf("keys = %v, want the duplicate's key moved onto the record", got.Plugins)
+	}
+}
+
+// A recorded key whose plugin is not one path component names no cache a rename
+// may build a path from: joining ".." onto the cache would move the cache root
+// itself, and everything under it.
+func TestPluginCacheMoves_SkipsAKeyWhosePluginIsNotAComponent(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	if err := os.MkdirAll(filepath.Join(m.cacheDir(), "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mk := Marketplaces{"a": {}}
+	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{
+		"..@a": {{
+			InstallPath: filepath.Join(m.cacheDir(), "x", "sha1"),
+			Version:     "1.0.0", Enabled: true,
+			Source: Source{Kind: SourceGitHub, Repo: "o/x"},
+		}},
+	}}
+
+	if moves := m.pluginCacheMoves(reg, "a", "b", registryKeyOwners(reg, mk)); len(moves) != 0 {
+		t.Fatalf("moves = %+v, want none: a plugin that is not one component names no cache to move", moves)
 	}
 }
