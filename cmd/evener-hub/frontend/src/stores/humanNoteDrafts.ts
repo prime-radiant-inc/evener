@@ -177,9 +177,12 @@ let teardownFlushInstalled = false;
 // documents for its layout debounce. Closing or reloading the page inside the
 // 10s window would otherwise discard the user's last edit. pagehide is the
 // reliable signal (it also fires for bfcache navigations); beforeunload is
-// ignored by many browsers and adds nothing here. The save itself is async, so
-// a real teardown makes it best-effort: what must not be dropped is the
-// durable enqueue it starts.
+// ignored by many browsers and adds nothing here. The save itself is async and
+// has to await the session's thread handle before it can enqueue durably, so a
+// hard teardown is best-effort: the flush starts the save without waiting for
+// the debounce, and a page that survives (a bfcache navigation) gets it; a
+// page torn down first can still end before the enqueue commits. That residual
+// window is inherent to an async store, not something the flush can close.
 function installTeardownFlush(): void {
   if (teardownFlushInstalled || typeof window === "undefined") return;
   teardownFlushInstalled = true;

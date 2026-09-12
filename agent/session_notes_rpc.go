@@ -445,11 +445,12 @@ func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.Session
 	return human, agent, urls
 }
 
-// notesProjectionSnapshot reads human note, agent note, URL list, and the
-// ever-projected flag together. The flag is decided under the same s.mu section
-// as the three fields it qualifies, so notesContextBlock's emptiness check and
-// cleared-marker decision observe one consistent state; only notesUpdateMu
-// prevents the notes store itself from changing between reads.
+// notesProjectionSnapshot reads the agent note, URL list, and ever-projected
+// flag under s.mu, then the canonical human note under clientMutations'
+// stateMu. The human note is owned by a different lock, so this is not one
+// atomic cut of all four: notesContextBlock's callers hold notesUpdateMu across
+// the render-compare-record unit, and that is what keeps a notes mutation from
+// landing between the emptiness check and the cleared-marker decision.
 func (s *Session) notesProjectionSnapshot() (human, agent string, urls []schema.SessionURL, everProjected bool) {
 	s.mu.Lock()
 	agent, everProjected = s.agentNote, s.notesEverProjected
