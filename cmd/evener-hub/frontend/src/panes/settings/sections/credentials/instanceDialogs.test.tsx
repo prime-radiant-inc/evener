@@ -6,6 +6,7 @@ import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "..
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 
 function connectFakeClient(): FakeClient {
@@ -329,6 +330,113 @@ describe("AddInstanceDialog", () => {
     });
     expect(onSuccess).toHaveBeenCalledWith("work2");
     expect(listingsAtSuccess[0]).toEqual([WORK2]);
+  });
+
+  // A consumer with its own missing-row recovery (the guided flow's
+  // not-ready/reload state) takes the unconfirmed create through its callback
+  // instead of the dialog claiming success or blocking on a re-confirm.
+  test("an unconfirmed create hands off to the consumer's recovery without a success toast", async () => {
+    const fake = connectFakeClient();
+    const WORK2 = instance({ name: "work2", providerId: "anthropic" });
+    const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
+    const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_WORK2);
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    let resolveCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const onSuccess = vi.fn();
+    const onUnconfirmedCreate = vi.fn();
+    // The toast queue is a module singleton shared across this file's tests;
+    // clear it so "no success toast" means this create pushed none.
+    resetToastStoreForTests();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog
+          availableProviders={[ANTHROPIC]}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+          onUnconfirmedCreate={onUnconfirmedCreate}
+        />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await act(async () => {
+      resolveCreate(WITH_WORK2);
+    });
+
+    await waitFor(() => expect(onUnconfirmedCreate).toHaveBeenCalledWith("work2"));
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Created instance work2/)).toBeNull();
+  });
+
+  // A resolved reconcile is only confirmation if the listing it applied
+  // actually contains the created row: reporting success on a listing that
+  // never showed the instance closes the editor on a connection the host may
+  // not have and steers the guided flow to a row that is not there. The retry
+  // re-confirms the listing instead of re-issuing the create, which already
+  // landed on the host.
+  test("a superseded create whose reconciled listing never shows the row stays open unconfirmed", async () => {
+    const fake = connectFakeClient();
+    const WORK2 = instance({ name: "work2", providerId: "anthropic" });
+    const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
+    const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_WORK2);
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    let resolveCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // A listing read issued after the create supersedes its response, so the
+    // create's own listing is discarded and the dialog must reconcile.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await act(async () => {
+      resolveCreate(WITH_WORK2);
+    });
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    expect(onSuccess).not.toHaveBeenCalled();
+
+    // The host catches up; re-confirming reports the create without a second one.
+    fake.on("evener/instance/list", () => WITH_WORK2);
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith("work2"));
+    expect(fake.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
   });
 
   // fetch() resolves normally even when its response was superseded or the

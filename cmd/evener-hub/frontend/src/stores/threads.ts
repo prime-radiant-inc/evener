@@ -908,13 +908,17 @@ export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): vo
 // listModels' own session-lifetime cache (models are not per-ref, so this
 // is a single slot, not a Map): modelsCache holds the last successful
 // response; inflightModelsList de-dupes concurrent non-refresh callers the
-// same way inflightHydrates does for ensureThread. A rejection is never
-// written to modelsCache (so a prior good cache survives a later failed
-// refresh, and a first-ever failure leaves nothing stale to keep serving),
-// and the call that owns inflightModelsList clears it in a `finally` so a
-// failed call never poisons the next one with a repeated rejection — only
-// while the slot still holds its own request, because evener/auth/updated
-// drops the slot and a newer call may have claimed it since.
+// same way inflightHydrates does for ensureThread, and always holds the
+// NEWEST request - a refresh supersedes whatever older non-refresh request
+// was waiting there, so a concurrent caller joins the newest request rather
+// than receiving the list the refresh was issued to replace. A rejection is
+// never written to modelsCache (so a prior good cache survives a later
+// failed refresh, and a first-ever failure leaves nothing stale to keep
+// serving), and the call that owns inflightModelsList clears it in a
+// `finally` so a failed call never poisons the next one with a repeated
+// rejection — only while the slot still holds its own request, because
+// evener/auth/updated drops the slot and a newer call may have claimed it
+// since.
 let modelsCache: ModelListResponse | null = null;
 // modelsEpoch advances on every evener/auth/updated: a credential change can
 // make models discoverable (a stored Vertex credential JSON enables the
@@ -2813,13 +2817,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const client = await requireReadyClient();
       return client.request("model/list", {});
     })();
-    if (!refresh) inflightModelsList = request;
+    // Supersede the shared in-flight slot with the newest request either way.
+    // A refresh must not leave an older non-refresh request there: a
+    // concurrent non-refresh caller would await that pre-refresh request and
+    // receive the list the refresh was issued to replace. Every caller still
+    // receives a response; de-dupe joins the newest one.
+    inflightModelsList = request;
     try {
       const resp = await request;
       if (epoch === modelsEpoch && generation === modelsListGeneration) modelsCache = resp;
       return resp;
     } finally {
-      if (!refresh && inflightModelsList === request) inflightModelsList = null;
+      if (inflightModelsList === request) inflightModelsList = null;
     }
   },
 

@@ -51,6 +51,12 @@ export interface AddInstanceDialogProps {
   initialBase?: string;
   onCancel: () => void;
   onSuccess: (name: string) => void;
+  // A create whose reconciled listing did not show the instance is NOT a
+  // success. A consumer that has its own recovery for a missing row (the
+  // guided flow's not-ready/reload state) takes it through this callback,
+  // without a success toast; a consumer without one gets the dialog's own
+  // error and re-confirm action.
+  onUnconfirmedCreate?: (name: string) => void;
 }
 
 /** The global "+ Add provider instance" form (parity-m7-settings.md §7f). */
@@ -59,6 +65,7 @@ export function AddInstanceDialog({
   initialBase = "",
   onCancel,
   onSuccess,
+  onUnconfirmedCreate,
 }: AddInstanceDialogProps) {
   const [base, setBase] = useState(initialBase);
   const [name, setName] = useState("");
@@ -70,8 +77,16 @@ export function AddInstanceDialog({
   const [credentialHeader, setCredentialHeader] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Set when the create succeeded but the listing could not be confirmed to
+  // contain it: the dialog stays open and offers a re-confirm rather than
+  // re-issuing a create that already landed on the host.
+  const [unconfirmedName, setUnconfirmedName] = useState<string | null>(null);
   const toast = useToasts();
   const active = useEditorLifetime();
+
+  function confirmCreate(instanceName: string): Promise<boolean> {
+    return confirmListingState((instances) => instances.some((instance) => instance.name === instanceName));
+  }
 
   const baseOptions: SelectOption[] = [
     { value: "", label: "" },
@@ -90,6 +105,12 @@ export function AddInstanceDialog({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    // While a create still needs confirming, a submit (the button or Enter)
+    // re-confirms instead of re-issuing a create the host already accepted.
+    if (unconfirmedName) {
+      await handleCheckAgain();
+      return;
+    }
     if (!base) {
       setError("Base provider is required.");
       return;
@@ -118,18 +139,29 @@ export function AddInstanceDialog({
         credentialHeader: trimmedCredentialHeader || undefined,
       });
       // The listing a superseded create answered with was discarded by the
-      // store's generation guard - reconcile before steering on the create.
-      // fetch() resolves normally even when its response was superseded (a
-      // newer read is in flight) or failed (the error landed in the store),
-      // so a resolved promise is never confirmation the listing moved: retry
-      // until a read actually applies. Whether the created row shows in the
-      // listing that applied is the consumer's call - ProviderConnection's
-      // Configure-provider flow keeps its own reload recovery for a missing
-      // row (a discarded create is its designed path), and the section's add
-      // action only closes the editor. Data refresh deliberately survives an
-      // unmount: the dialog is gone, but the store still owes the caller a
-      // current listing.
-      if (!applied) await confirmListingState(() => true);
+      // store's generation guard - reconcile before steering on the create,
+      // and require the listing that applied to actually contain the new
+      // instance. A resolved fetch is not confirmation (a newer read
+      // supersedes it, a failed read lands its error in the store), and
+      // neither is a listing that never reflected the create: reporting
+      // success there would close the editor on an instance the host may not
+      // have. A consumer with its own missing-row recovery (the guided flow's
+      // not-ready/reload state) takes over without a success claim; otherwise
+      // the dialog stays open with a re-confirm path rather than re-issuing
+      // the create. Data refresh deliberately survives an unmount: the dialog
+      // is gone, but the store still owes the caller a current listing.
+      if (!applied && !(await confirmCreate(trimmedName))) {
+        if (!active.current) return;
+        if (onUnconfirmedCreate) {
+          onUnconfirmedCreate(trimmedName);
+          return;
+        }
+        setUnconfirmedName(trimmedName);
+        setError(
+          `The connection was saved on the host, but the provider list could not confirm ${trimmedName}. Check again.`,
+        );
+        return;
+      }
       if (!active.current) return;
       toast.push("success", `Created instance ${trimmedName}`);
       onSuccess(trimmedName);
@@ -138,6 +170,29 @@ export function AddInstanceDialog({
       const message = errorText(err);
       setError(message);
       toast.push("error", `Create failed: ${message}`);
+    } finally {
+      if (active.current) setBusy(false);
+    }
+  }
+
+  // Re-confirms a create whose first reconcile could not see the instance.
+  // Only the listing read is retried: the create itself already succeeded on
+  // the host, so re-issuing it could fail on an instance that exists.
+  async function handleCheckAgain(): Promise<void> {
+    const instanceName = unconfirmedName;
+    if (!instanceName) return;
+    setBusy(true);
+    try {
+      const confirmed = await confirmCreate(instanceName);
+      if (!active.current) return;
+      if (!confirmed) {
+        setError(`The provider list still does not show ${instanceName}. Check again.`);
+        return;
+      }
+      setError(null);
+      setUnconfirmedName(null);
+      toast.push("success", `Created instance ${instanceName}`);
+      onSuccess(instanceName);
     } finally {
       if (active.current) setBusy(false);
     }
@@ -230,9 +285,15 @@ export function AddInstanceDialog({
           </p>
         )}
         <div className={CLASS.actions}>
-          <Button type="submit" disabled={busy}>
-            Create
-          </Button>
+          {unconfirmedName ? (
+            <Button type="button" disabled={busy} onClick={() => void handleCheckAgain()}>
+              Check again
+            </Button>
+          ) : (
+            <Button type="submit" disabled={busy}>
+              Create
+            </Button>
+          )}
           <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>

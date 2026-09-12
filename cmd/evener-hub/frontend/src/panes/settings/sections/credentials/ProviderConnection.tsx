@@ -524,6 +524,25 @@ function SelectedConnection({
   signedInRef.current = signedIn;
   const completeOAuth = useCallback(() => signedInRef.current(), []);
 
+  // A created instance becomes the flow's connection. An unconfirmed create
+  // (the listing never showed the row) reaches the same state without a
+  // success claim: findSetup finds nothing, so the flow shows its not-ready
+  // reload recovery instead of a working connection.
+  function adoptCreated(createdName: string): void {
+    operation.current += 1;
+    const created = findSetup(createdName);
+    setName(createdName);
+    setBaseline(created);
+    setConfigured(true);
+    setConfigure(false);
+    setSaved(false);
+    setMissingCredential(false);
+    setError("");
+    setReview(null);
+    setResult(null);
+    setPhase("idle");
+  }
+
   async function reloadCreated() {
     const token = ++operation.current;
     setPhase("refreshing");
@@ -547,20 +566,8 @@ function SelectedConnection({
         availableProviders={store.availableProviders}
         initialBase={effectiveProvider.id}
         onCancel={() => setConfigure(false)}
-        onSuccess={(createdName) => {
-          operation.current += 1;
-          const created = findSetup(createdName);
-          setName(createdName);
-          setBaseline(created);
-          setConfigured(true);
-          setConfigure(false);
-          setSaved(false);
-          setMissingCredential(false);
-          setError("");
-          setReview(null);
-          setResult(null);
-          setPhase("idle");
-        }}
+        onSuccess={adoptCreated}
+        onUnconfirmedCreate={adoptCreated}
       />
     );
   if (oauth?.kind === "device")

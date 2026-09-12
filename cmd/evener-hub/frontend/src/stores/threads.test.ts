@@ -4932,6 +4932,31 @@ describe("useThreadsStore.listModels", () => {
     expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
   });
 
+  test("a refresh supersedes the shared in-flight list so a concurrent caller awaits the newest request", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preRefresh = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // A refresh with no intervening evener/auth/updated (a keyless connection,
+    // a config-only save) leaves the dedupe slot in place, so the slot must be
+    // superseded here or the next caller joins the pre-refresh request.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    const concurrent = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2);
+
+    pending[1]?.(fresh);
+    pending[0]?.(stale);
+    // The older request still answers its own caller.
+    expect((await preRefresh).data[0]?.model).toBe("stale");
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    // The concurrent caller joined the refresh, not the pre-refresh listing.
+    expect((await concurrent).data[0]?.model).toBe("fresh");
+  });
+
   test("an older in-flight request landing first still loses the cache to a later refresh", async () => {
     const fake = connectFakeClient();
     const pending = deferredModelList(fake);
