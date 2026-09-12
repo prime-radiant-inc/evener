@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Round 3 — Fluent activity</title>
+    <link rel="stylesheet" href="mockup.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <p class="eyebrow">Sidebar watches · round 3, built on direction A</p>
+        <h1>Fluent activity</h1>
+        <p class="thesis">
+          A's rail, kept. What changes is the expanded view: instead of a stack of
+          monospace <span class="mono">key: value</span> lines and bullet lists, an
+          expanded row reads as a composed block — the watch's own note set as a
+          sentence, its facts written as a sentence, and its delivery history drawn
+          on a real time axis. Every mark on that axis is an event that actually
+          happened, with the clock time it happened at.
+        </p>
+        <button class="theme-toggle" type="button" onclick="toggleTheme()">Toggle light / dark</button>
+      </header>
+
+      <div class="stage">
+        <!-- ------------------------------------------------------- sidebar -->
+        <div class="rail">
+          <div class="rail-head"><span>Evener</span><span>⌕ ⋯</span></div>
+          <div class="rail-section">
+            <div class="rail-section-title">Live</div>
+
+            <div class="rail-row is-selected">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="signal signal--alive"></span>
+                  <span class="rail-title">Fix flaky sidebar tests</span>
+                  <span class="chev">▾</span>
+                </span>
+                <span class="rail-gloss">2 subagents working · 1 job running · 3 watches</span>
+              </span>
+              <span class="right">2m</span>
+            </div>
+
+            <div class="children">
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">go test ./cmd/evener-hub/...</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--alive">running 12m</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="rail-title">Prune stale fixtures</span></span>
+                </span>
+                <span class="right">13m</span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg wsvg--danger" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title" title="Ping me if the queue depth crosses 500.">Poll the queue depth</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--danger">every 10s · 8 dropped</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title" title="Check the deploy log for the rollback, and wake me if it happened.">Deploy rollback check</span>
+                  </span>
+                  <span class="rail-gloss">every 10m · 3 fires</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title" title="Wake me when the migration job prints DONE.">Migration prints DONE</span>
+                  </span>
+                  <span class="rail-gloss">on output · armed</span>
+                </span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Inactive subagents (3)</span></span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Completed jobs (7)</span></span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ------------------------------------------------------ activity -->
+        <div class="panel">
+          <div class="panel-head">
+            <span>▤</span>
+            <span>Activity</span>
+            <span class="spacer"></span>
+            <span class="count">3 watches · 2 running</span>
+          </div>
+
+          <div class="panel-body">
+            <div class="group">
+              <div class="group-title"><span>Watches</span><span>3 armed · 1 needs a look</span></div>
+
+              <!-- the abnormal watch: same composition, danger only on the
+                   facts that are actually failures -->
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <svg class="wsvg wsvg--danger" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname aname--live">Poll the queue depth</span>
+                <span class="ameta ameta--danger">every 10s · 8 dropped</span>
+              </div>
+
+              <div class="wblock">
+                <p class="lead">Ping me if the queue depth crosses 500.</p>
+                <p class="facts">
+                  Fires <b>every 10 seconds</b><span class="sep">·</span>armed
+                  <b>2h 12m</b> ago<span class="sep">·</span><b>214</b> deliveries,
+                  <b>8</b> dropped
+                </p>
+                <div class="timeline">
+                  <div class="timeline-rail">
+                    <span class="timeline-line"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 6%"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 19%"></span>
+                    <span class="timeline-dot timeline-dot--dropped" style="left: 26%"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 38%"></span>
+                    <span class="timeline-dot timeline-dot--dropped" style="left: 47%"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 61%"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 74%"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 88%"></span>
+                    <span class="timeline-now" style="left: 98%"></span>
+                  </div>
+                  <div class="timeline-labels"><span>17:02</span><span>now 19:14</span></div>
+                  <p class="timeline-caption">
+                    Red marks are the 8 the depth fuse dropped · deepest
+                    self-influence depth 4
+                  </p>
+                </div>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname">Deploy rollback check</span>
+                <span class="ameta">every 10m · 3 fires</span>
+              </div>
+              <div class="wblock">
+                <p class="lead">Check the deploy log for the rollback, and wake me if it happened.</p>
+                <p class="facts">
+                  Fires <b>every 10 minutes</b><span class="sep">·</span>armed
+                  <b>34m</b> ago<span class="sep">·</span><b>3</b> deliveries, all
+                  delivered<span class="sep">·</span>last at <b>19:10</b>
+                </p>
+                <div class="timeline">
+                  <div class="timeline-rail">
+                    <span class="timeline-line"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 29%"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 59%"></span>
+                    <span class="timeline-dot timeline-dot--delivered" style="left: 88%"></span>
+                    <span class="timeline-now" style="left: 100%"></span>
+                  </div>
+                  <div class="timeline-labels"><span>18:40</span><span>now 19:14</span></div>
+                  <p class="timeline-caption">Delivered to this session</p>
+                </div>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname">Migration prints DONE</span>
+                <span class="ameta">on output · armed</span>
+              </div>
+              <div class="wblock">
+                <p class="lead">Wake me when the migration job prints DONE.</p>
+                <p class="facts">
+                  Waiting on <b>job_ab12cd</b>, matching
+                  <b>/DONE/</b><span class="sep">·</span>armed
+                  <b>18m</b> ago<span class="sep">·</span>no deliveries yet
+                </p>
+                <p class="timeline-caption">
+                  There is no schedule to draw here — this one fires when the job
+                  says the word, not when a clock says so.
+                </p>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="group-title"><span>Running</span><span>2</span></div>
+
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <span class="aglyph aglyph--alive">$</span>
+                <span class="aname aname--live">go test ./cmd/evener-hub/...</span>
+                <span class="ameta">12m</span>
+              </div>
+              <div class="wblock">
+                <p class="lead">Run the hub test suite after the rail row change.</p>
+                <p class="facts">
+                  Running <b>12m</b><span class="sep">·</span>started
+                  <b>19:02</b><span class="sep">·</span>last output
+                  <b>4s</b> ago
+                </p>
+                <pre class="detailOutput" style="margin-left: 0">ok   primeradiant.com/evener/cmd/evener-hub/internal/hubcore   8.412s
+ok   primeradiant.com/evener/cmd/evener-hub/frontend          1.204s
+--- FAIL: TestRailRowMemo (0.03s)
+    railrow_test.go:214: row re-rendered on a tick</pre>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--alive">⌘</span>
+                <span class="aname aname--live">Audit row memo boundary</span>
+                <span class="ameta">↑41k ↓6k · 4s</span>
+              </div>
+              <div class="wblock">
+                <p class="lead">Find why a stable row re-renders on every tick.</p>
+                <p class="facts">
+                  Working <b>4s</b><span class="sep">·</span>delegated
+                  <b>19:10</b><span class="sep">·</span>↑41k ↓6k
+                  tokens<span class="sep">·</span>no warnings
+                </p>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="arow" style="color: var(--ink-mid)">
+                <span class="arow-toggle">▸</span>
+                <span class="aname" style="color: var(--ink-mid)">Ended watches (4)</span>
+                <span class="ameta">2 cleared · 1 fired · 1 budget</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ------------------------------------------------------ opt-in -->
+      <p class="caption" style="margin-top: 44px">Opt-in: “next firing” in the sidebar</p>
+      <div class="stage">
+        <div class="rail">
+          <div class="rail-section">
+            <div class="rail-section-title">Watches with a countdown</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline">
+                  <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <span class="sr">Watch:</span>
+                  <span class="rail-title">Deploy rollback check</span>
+                </span>
+                <span class="rail-gloss">every 10m · 3 fires</span>
+              </span>
+              <span class="right" style="color: var(--ink-hi)">in 6m</span>
+            </div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline">
+                  <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <span class="sr">Watch:</span>
+                  <span class="rail-title">Migration prints DONE</span>
+                </span>
+                <span class="rail-gloss">on output · armed</span>
+              </span>
+              <span class="right right--low">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="opt" style="max-width: 560px; margin-top: 0">
+          <p class="opt-head">What this costs, honestly</p>
+          <p class="facts" style="margin-bottom: 8px">
+            <b>Watch details are not on appwire today.</b> I checked: the only
+            watch-adjacent fields that cross it are
+            <span class="mono">ParentWatchGranted</span> on a delegate and
+            <span class="mono">SessionMeta.ObservedBy</span> for observer
+            subagents. Neither carries a watch id, note, cadence, or count. So the
+            sidebar rows and the panel need a protocol addition <em>either way</em>
+            — that is the feature, not the countdown.
+          </p>
+          <p class="facts" style="margin-bottom: 8px">
+            <b>“Next firing” is a second, separate cost.</b> The runtime holds a
+            <span class="mono">time.NewTicker</span> per watch — it never records a
+            next-fire instant. It could be derived for timers from arm time plus
+            interval, but a restarted daemon re-anchors the ticker, so the derived
+            time would silently drift wrong. Making it truthful means storing the
+            next-fire instant in the runtime <em>and</em> carrying it on the wire.
+          </p>
+          <p class="facts" style="margin-bottom: 0">
+            <b>My recommendation:</b> ship the watch projection without a
+            countdown. Show cadence (<span class="mono">every 10m</span>) and state
+            (<span class="mono">armed</span>), which is true of every watch kind.
+            Add “next firing” later as its own change, for timers only, once the
+            runtime records the instant. The countdown is shown above only so you
+            can see the shape — the <span class="mono">—</span> is what a
+            condition watch would honestly show.
+          </p>
+        </div>
+      </div>
+
+      <div class="legend">
+        <h2>Why the expanded block looks like this</h2>
+        <ul>
+          <li>
+            <b>The note as a sentence, not a field.</b> A watch's
+            <span class="mono">note</span> is written to be read aloud when it
+            fires — so it is set as prose, at prose size, and it leads.
+          </li>
+          <li>
+            <b>Facts as a sentence.</b> <span class="mono">every 10 seconds · armed
+            2h 12m · 214 deliveries, 8 dropped</span> says the same thing a
+            <span class="mono">key: value</span> grid said, in one pass, in reading
+            order. No definition list.
+          </li>
+          <li>
+            <b>The timeline is history, not forecast.</b> Every mark is a delivery
+            that happened, at the time it happened, with now marked. It makes no
+            claim about when the next one is — which is exactly why it is safe to
+            draw when a countdown is not.
+          </li>
+          <li>
+            <b>A condition watch gets no timeline</b> and says why in one line.
+            Drawing one would imply a schedule that does not exist.
+          </li>
+          <li>
+            <b>Jobs and delegates use the same composition</b> — intent as a
+            sentence, facts as a sentence — so the panel reads as one surface
+            rather than three formats. Terminal output stays preformatted, because
+            it is terminal output.
+          </li>
+          <li>
+            <b>Kept from A:</b> the count on the summary line, inline watch rows in
+            the fold-out, neutral ink, the drawn clock, and no third rail fold.
+          </li>
+        </ul>
+        <h2>Data each element needs</h2>
+        <ul>
+          <li>Row and summary line: watch id, note, cadence, state, delivery count — the existing live projection, once it crosses appwire.</li>
+          <li>Facts sentence: <span class="mono">createdAt</span> (exists), delivery counts (exists), last-delivery time (needs the timestamp <span class="mono">DeliveryView</span> currently drops).</li>
+          <li>Timeline: per-delivery timestamps and terminal state — durable in the event log today, needs projecting.</li>
+          <li>Runaway facts: <span class="mono">RunawayDrops</span> and <span class="mono">MaxSelfInfluenceDepth</span> (exist, durable-only).</li>
+          <li><b>Next firing: does not exist</b>; see the opt-in note above.</li>
+        </ul>
+      </div>
+    </div>
+
+    <script>
+      function toggleTheme() {
+        const root = document.documentElement;
+        root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      }
+    </script>
+  </body>
+</html>

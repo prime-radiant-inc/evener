@@ -718,3 +718,122 @@ body {
   white-space: nowrap;
   border: 0;
 }
+
+/* --------------------------------------------- round 3: fluent activity ---- */
+
+/* An expanded row reads as a composed block, not a record dump: a hairline
+ * rule and an indent, then a sentence, then a sentence of facts. No nested
+ * box, per design-system.md ("whitespace, aligned columns and fine rules"). */
+.wblock {
+  margin: 2px 12px 12px 32px;
+  padding-left: 12px;
+  border-left: 1px solid var(--edge);
+}
+
+/* The watch's own note, or the job's intent: prose, set as prose. */
+.lead {
+  font-family: "Source Serif 4 Variable", Georgia, "Times New Roman", serif;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-hi);
+  margin: 0 0 5px;
+  max-width: 62ch;
+}
+
+/* Facts as a sentence, not a definition list. */
+.facts {
+  color: var(--ink-mid);
+  font-size: 13px;
+  margin: 0 0 10px;
+  max-width: 70ch;
+}
+
+.facts b {
+  color: var(--ink-hi);
+  font-weight: 500;
+}
+
+.facts .sep {
+  color: var(--edge-strong);
+  padding: 0 7px;
+}
+
+/* Delivery history drawn on a real time axis: every mark is an event that
+ * actually happened, with the clock time it happened at. Nothing here implies
+ * a future fire. */
+.timeline {
+  margin: 0 0 4px;
+  max-width: 460px;
+}
+
+.timeline-rail {
+  position: relative;
+  height: 16px;
+  margin: 0 6px;
+}
+
+.timeline-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 7px;
+  height: 1px;
+  background: var(--edge-strong);
+}
+
+.timeline-dot {
+  position: absolute;
+  top: 4px;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--ink-mid);
+}
+
+.timeline-dot--delivered {
+  background: var(--ink-mid);
+}
+
+.timeline-dot--dropped {
+  background: var(--danger);
+}
+
+.timeline-now {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 1px;
+  background: var(--accent);
+}
+
+.timeline-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-low);
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-caption {
+  color: var(--ink-low);
+  font-size: 12px;
+  margin: 2px 0 0;
+}
+
+/* An opt-in block: shows a variant the reader must decide on, and says so. */
+.opt {
+  border: 1px dashed var(--edge-strong);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+
+.opt-head {
+  color: var(--ink-low);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 8px;
+}
