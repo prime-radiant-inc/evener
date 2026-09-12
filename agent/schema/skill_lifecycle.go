@@ -18,6 +18,10 @@ type SkillContentIdentity struct {
 	RenderedDigest string `json:"rendered_digest"`
 }
 
+// OrdinarySkillActivation is the durable record of one ordinary activation:
+// the exact content identity, description and controls observed at
+// activation, the invocation route, the invocation ID, and whether the user
+// explicitly authorized the skill.
 type OrdinarySkillActivation struct {
 	Identity       SkillContentIdentity    `json:"identity"`
 	Description    string                  `json:"description"`
@@ -37,6 +41,8 @@ type FrozenSkillPreload struct {
 	RenderedDigest string `json:"rendered_digest"`
 }
 
+// SkillInventoryEntry is one canonical skill's state in the session
+// inventory: its ordinary activation and/or frozen role preload, when present.
 type SkillInventoryEntry struct {
 	Ordinary *OrdinarySkillActivation `json:"ordinary,omitempty"`
 	Preload  *FrozenSkillPreload      `json:"preload,omitempty"`
@@ -120,6 +126,10 @@ type SkillCompactionReceipt struct {
 	Reason    string                   `json:"reason,omitempty"`
 }
 
+// SkillLifecycleSnapshot is the durable skill lifecycle state saved in
+// session metadata: the activation inventory, outstanding delivery
+// obligations, the pinned-note generation, the operation generation counter,
+// and the pending reload selection, compaction operation and handoff receipts.
 type SkillLifecycleSnapshot struct {
 	Revision         uint64                         `json:"revision"`
 	Inventory        map[string]SkillInventoryEntry `json:"inventory"`
@@ -142,6 +152,10 @@ type SkillLifecycleSnapshot struct {
 	PendingHandoffs []SkillCompactionReceipt `json:"pending_handoffs,omitempty"`
 }
 
+// SkillInputRecord is the typed record of one input that carried explicit
+// skill selections: the original text and arguments as submitted, the
+// canonical names selected, and the atomic group tying preparation to that
+// input.
 type SkillInputRecord struct {
 	OriginalText  string   `json:"original_text"`
 	Arguments     string   `json:"arguments"`
@@ -168,6 +182,9 @@ type SkillActivationOutcome struct {
 	PreviousControls *SkillInvocationControls `json:"previous_controls,omitempty"`
 }
 
+// SkillTurnState carries a turn's typed skill records: the selected input,
+// activation outcomes, outstanding delivery obligations, and the compaction
+// handoff and reload reminder a fold records on its checkpoint turns.
 type SkillTurnState struct {
 	Input       *SkillInputRecord         `json:"input,omitempty"`
 	Outcomes    []SkillActivationOutcome  `json:"outcomes"`

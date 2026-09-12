@@ -381,8 +381,8 @@ func TestSkillCompaction_SaveFailedRequestIsTypedAndRetryable(t *testing.T) {
 		if err == nil {
 			t.Fatal("a failed metadata save must not report success")
 		}
-		var saveErr *skillCompactionSaveError
-		if !errors.As(err, &saveErr) {
+		saveErr, ok := errors.AsType[*skillCompactionSaveError](err)
+		if !ok {
 			t.Fatalf("save failure must carry a typed outcome, got %T: %v", err, err)
 		}
 		if saveErr.Generation != generation {
@@ -418,8 +418,7 @@ func TestSkillCompaction_SaveFailedRequestIsTypedAndRetryable(t *testing.T) {
 		if err == nil || accepted {
 			t.Fatalf("a failed metadata save must not report an accepted elicitation: accepted=%v err=%v", accepted, err)
 		}
-		var saveErr *skillCompactionSaveError
-		if !errors.As(err, &saveErr) {
+		if _, ok := errors.AsType[*skillCompactionSaveError](err); !ok {
 			t.Fatalf("save failure must carry a typed outcome, got %T: %v", err, err)
 		}
 		if s.pendingSkillCompactionSnapshot() != nil {

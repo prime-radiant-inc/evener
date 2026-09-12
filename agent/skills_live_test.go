@@ -330,7 +330,7 @@ func TestSkillsLive(t *testing.T) {
 	}
 	if !t.Run("smoke", func(t *testing.T) {
 		sess := newCase(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // TRIPWIRE: live provider round-trip; measured smoke is ~3s, the bound only absorbs provider latency variance and fires on a genuine hang.
 		defer cancel()
 		output, err := sess.ProcessInput(ctx, "Return exactly SMOKE_37ab without using skills.", nil)
 		if err != nil || !strings.Contains(output, "SMOKE_37ab") {
@@ -353,7 +353,7 @@ func TestSkillsLive(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sess := newCase(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // TRIPWIRE: live provider round-trip; measured text cases run 3–15s, the bound only absorbs provider latency variance and fires on a genuine hang.
 			defer cancel()
 			out, err := sess.ProcessInput(ctx, tc.input, nil)
 			if err != nil {
@@ -383,7 +383,7 @@ func TestSkillsLive(t *testing.T) {
 	// position. The oracle is the typed selection/activation records.
 	t.Run("structured_inline", func(t *testing.T) {
 		sess, rec := newRecordingCase(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // TRIPWIRE: live provider round-trip; measured ~4s, the bound only absorbs provider latency variance and fires on a genuine hang.
 		defer cancel()
 		prose := "Please perform the fixture procedure for the selected skill and report its result."
 		if strings.Contains(prose, "/") {
@@ -441,7 +441,7 @@ func TestSkillsLive(t *testing.T) {
 		// age into the foldable prefix and the reload genuinely restores a
 		// folded body (the same knob forced_note_live_test.go uses).
 		sess.contextMgr.PreserveRecentTurns = 1
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute) // TRIPWIRE: multi-round live compaction case; measured 76s at worst, the bound only absorbs provider latency variance and fires on a genuine hang.
 		defer cancel()
 		out1, err := sess.ProcessInput(ctx, "Use /pkg:probe and /pkg:second to perform both fixture procedures.", nil)
 		if err != nil {
@@ -536,7 +536,7 @@ func TestSkillsLive(t *testing.T) {
 		wantReminderNames := []string{"pkg:probe", "pkg:second"}
 		sess, rec := newRecordingCase(t)
 		sess.contextMgr.PreserveRecentTurns = 1
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute) // TRIPWIRE: multi-round live compaction case; measured 47s at worst, the bound only absorbs provider latency variance and fires on a genuine hang.
 		defer cancel()
 		out1, err := sess.ProcessInput(ctx, "Use /pkg:probe and /pkg:second to perform both fixture procedures.", nil)
 		if err != nil {

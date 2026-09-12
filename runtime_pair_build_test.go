@@ -625,6 +625,10 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	// The built frontend is the browser gate's documented prerequisite
+	// (the web CI job builds before the browser gate runs); a present dist
+	// also keeps a successful run's output to exactly the verdict lines.
+	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
 
 	command := exec.Command("make", "test-web-browser")
 	command.Dir = fixture.root
@@ -634,10 +638,10 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 		t.Fatalf("make test-web-browser: %v\n%s", err, output)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 5 {
-		t.Fatalf("successful browser output has %d nonempty lines, want 5 verdicts; output = %q", len(lines), output)
+	if len(lines) != 6 {
+		t.Fatalf("successful browser output has %d nonempty lines, want 6 verdicts; output = %q", len(lines), output)
 	}
-	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard"} {
+	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "skillguard"} {
 		fields := strings.Fields(lines[index])
 		if len(fields) != 2 || fields[0] != "PASS" || fields[1] != "web-"+guard {
 			t.Errorf("browser verdict %d fields = %q, want PASS for %s", index, fields, guard)
@@ -897,6 +901,14 @@ func newRuntimeBuildFixture(t *testing.T) runtimeBuildFixture {
 	}
 	writeTestFile(t, filepath.Join(fakeBin, "go"), []byte(`#!/bin/sh
 set -eu
+
+if [ "$1" = "test" ]; then
+	# A "go test" invocation (the browser gate's web-skillguard step) is not a
+	# build: record the command the same way the build arm records its argv,
+	# then report success so the script's verdict logic is exercised.
+	printf 'go-test\t%s\n' "$*" >> "$EVENER_TEST_GO_LOG"
+	exit 0
+fi
 
 output=
 package=

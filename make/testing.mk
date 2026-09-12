@@ -22,14 +22,19 @@ test-web: web-preflight
 # The script runs every guard so one missing browser or failing case does not
 # hide the remaining guard's verdict; exit status is the first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
-## shellguard, spawnguard, transcriptscrollguard) that jsdom cannot evaluate.
+## shellguard, spawnguard, transcriptscrollguard) plus the full-stack
+##   `web-skillguard` (TestSkillComposerBrowser behind the `browserguard`
+##   tag) that jsdom cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
 ##   reducer/tree, the real Spawn staging/breakpoint path, and the real
-##   transcript scroll/jump-to-latest path.
+##   transcript scroll/jump-to-latest path; the skill guard additionally
+##   drives the production composer through a REAL hub and two REAL
+##   `evener serve` daemons with only the LLM provider scripted.
 ## trigger: Required CI web job; local pre-merge on a Chrome-capable host.
 ## requires: Chrome/Chromium; each guard gets a private process home,
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari
-##   runner.
+##   runner. The skill guard also needs the Go toolchain and the built
+##   frontend (built automatically when dist is missing).
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
 test-web-browser: web-preflight

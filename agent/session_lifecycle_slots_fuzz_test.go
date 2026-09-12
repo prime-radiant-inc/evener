@@ -167,7 +167,7 @@ func lcycRunDrain(t *testing.T, sess *Session, ops []lcycDrainOp) string {
 					if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 						Ref:              sess.ID(),
 						ClientMutationID: "lcyc_" + newQueueEntryID(),
-						Input:            clientMutationInput(op.text, lcycImages(op.images)),
+						Input:            clientMutationInput(op.text, lcycImages(op.images), nil),
 					}); err != nil {
 						t.Fatalf("enqueue op %d: %v", idx, err)
 					}

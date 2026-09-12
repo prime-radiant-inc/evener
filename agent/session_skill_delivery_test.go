@@ -287,8 +287,8 @@ func TestSkillDelivery_RevalidateAfterFold(t *testing.T) {
 	calls := 0
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		calls++
-		switch {
-		case calls%2 == 1:
+		switch calls % 2 {
+		case 1:
 			return toolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
 		default:
 			return toolCallResponse(communicateCall("done-1", "ok"))

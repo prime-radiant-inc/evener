@@ -17,12 +17,12 @@ func TestSkillRenderPreservesCompleteInstructions(t *testing.T) {
 	}}, Body: body, Digest: "fixture-digest"}
 
 	rendered := Render(loaded)
-	const open, close = "<skill-context>\n", "\n</skill-context>"
+	const open, closeTag = "<skill-context>\n", "\n</skill-context>"
 	encoded, ok := strings.CutPrefix(rendered.Content, open)
 	if !ok {
 		t.Fatal("missing typed context envelope")
 	}
-	encoded, ok = strings.CutSuffix(encoded, close)
+	encoded, ok = strings.CutSuffix(encoded, closeTag)
 	if !ok {
 		t.Fatal("missing typed context envelope terminator")
 	}
@@ -228,12 +228,12 @@ func writeLoadFixture(t *testing.T, path string, data []byte) {
 
 func decodeSkillDocument(t *testing.T, content string) SkillDocument {
 	t.Helper()
-	const open, close = "<skill-context>\n", "\n</skill-context>"
+	const open, closeTag = "<skill-context>\n", "\n</skill-context>"
 	encoded, ok := strings.CutPrefix(content, open)
 	if !ok {
 		t.Fatal("missing typed context envelope")
 	}
-	encoded, ok = strings.CutSuffix(encoded, close)
+	encoded, ok = strings.CutSuffix(encoded, closeTag)
 	if !ok {
 		t.Fatal("missing typed context envelope terminator")
 	}

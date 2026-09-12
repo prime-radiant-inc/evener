@@ -156,8 +156,7 @@ func (s *Session) skillTurnStateForToolRound(results []tool.ExecResult) *schema.
 		// present, else from the typed activation error riding res.Err.
 		outcome := recorded.Outcome
 		if outcome.InvocationID == "" {
-			var activationErr *skillActivationError
-			if errors.As(res.Err, &activationErr) {
+			if activationErr, ok := errors.AsType[*skillActivationError](res.Err); ok {
 				outcome.InvocationID = activationErr.Invocation.InvocationID
 				outcome.ToolCallID = activationErr.Invocation.ToolCallID
 				outcome.ClientMutationID = activationErr.Invocation.ClientMutationID

@@ -392,8 +392,7 @@ type skillToolState struct {
 
 // skillActivationErrorCode extracts the machine-readable failure code.
 func skillActivationErrorCode(err error) string {
-	var failure *skillActivationError
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*skillActivationError](err); ok {
 		return failure.Code
 	}
 	return "invalid_metadata"

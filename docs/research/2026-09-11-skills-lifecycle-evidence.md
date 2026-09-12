@@ -110,7 +110,7 @@ Failure categories, case-level counts across all live runs:
 configuration/credential (1: run 1's smoke, blocking the corpus that run),
 harness oracle shape (4: two compaction cases in each of runs 2 and 3),
 model behavior (1: run 3's `fenced`). No refusals, malformed selections, or
-quota/network failures were observed in runs 2–4.
+quota/network failures were observed in runs 2–5.
 
 ## Reproducing
 
@@ -128,3 +128,102 @@ every run.
 The five raw run logs (runs 1–5) are retained with the task record under
 `.superpowers/sdd/2026-09-11-skills-lifecycle/run-logs/`, beside the task
 report.
+
+## Final gate and acceptance evidence (Task 16)
+
+Task 16 ran the required gates and mapped every acceptance row of the plan's
+coverage table to the concrete committed test that proves it. Gate commands,
+exit codes and durations are recorded in the table below; the acceptance
+mapping follows.
+
+### Required gates
+
+| Command | Exit | Duration | Result |
+|---|---|---|---|
+| `make test-api-package` | 0 | 3.5s | `qualified @evener/appwire-client@0.1.0: installed imports, declarations and read-only example` (outside-checkout install, ESM + CommonJS entries) |
+| `make vet` | 0 | 8.0s | go vet across every non-fuzz workspace module; no diagnostics emitted |
+| `make merge-approval-gate` | 0 | 7m18s | all lint phases PASS (naming, gofmt, evenerfuzz, eval, internal, golangci, generated, fuzz-registry, secret-scan), build PASS, `ROOT_FULL=1 make test` waves PASS (root 105.1s, agent, llm, auth, envvars, invariant, identifier, web 114.7s); zero test failures |
+| `TMPDIR=/tmp make test-web-browser` | 0 | 3m16s | 6/6 guards PASS: web-layoutguard, web-overflowguard, web-shellguard, web-spawnguard, web-transcriptscrollguard, web-skillguard (the full-stack guard through the real hub; its nine scenarios are asserted present in the milestone report, so none can skip silently) |
+
+### Stage 2/3 gate families and affected suites (all serial, all exit 0)
+
+| Command | Result |
+|---|---|
+| `go test ./agent/internal/tool ./agent/schema -run '^Test' -count=1` | 379/379 PASS |
+| `go test ./agent -run '^(TestSkillActivation_|TestSkillDelivery_|TestUseSkill_|TestStandaloneSkillActivation|TestRestoreFrozenSkillBodies|TestPrepareModelRequest_)' -count=1` | 67/67 PASS, 0 skip |
+| `go test -race ./agent -run '^(TestSkillDelivery_|TestFoldPublication_)' -count=1` | 29/29 PASS, no race reports (34.9s) |
+| `go test ./agent/internal/contextmgr ./agent/schema -run '^Test' -count=1` | 384 PASS + 3 by-design fuzz-engine opt-in skips (`TestCompactionSeqFuzz` and siblings skip with an explicit `make test-fuzz` pointer in every default run; unchanged at the branch base) |
+| `go test ./agent -run '^(TestSkillActivation_|TestSkillDelivery_|TestSkillReload|TestSkillCompaction_|TestPinnedNote_|TestMaybeElicitNoteBeforeCompaction_|TestApplyPendingForceCompact_|TestSessionCompact_|TestFoldPublication_|TestPrepareModelRequest_)' -count=1` | 157/157 PASS |
+| `go test -race ./agent -run '^(TestSkillCompaction_|TestSkillDelivery_|TestSkillReload_|TestFoldPublication_)' -count=1` | 72/72 PASS, no race reports (64.9s) |
+| `go test ./agent -run '^(TestClientMutation_|TestSkillActivation_|TestSkillDelivery_)' -count=1` | 181/181 PASS |
+| `go test ./server -run '^TestAppWireMutation' -count=1` | 34/34 PASS |
+| `go test ./appwire/... ./internal/appwirets/... ./internal/appwiredoc/... -count=1` | all packages ok |
+| `go generate ./appwire/...` | exit 0, zero diff — generated outputs fresh |
+| `go run ./cmd/evener-dev/bin dev agent-shards -short -count=1` (the gate's agent stream invocation, reproduced standalone) | exit 0; 4 shards, 686 + 3685 + 686 + 691 = 5748 tests |
+
+### Gate findings fixed during this stage (each red → green)
+
+| Finding (gate, phase) | Root cause | Fix |
+|---|---|---|
+| `lint-evenerfuzz` compile failure (merge gate lint) | Two fuzz drivers still called pre-branch signatures: `ElicitNote` (now takes `[]schema.SkillInventorySummary`) and `clientMutationInput` (now takes `[]string` skill names) | Pass `nil` at the two drivers — the same convention every other caller of both signatures uses; both drivers' deterministic seed replays pass |
+| `lint-golangci`: 19 findings (merge gate lint) | Branch-added code never run under golangci before: 12 revive (missing doc comments on exported lifecycle/catalog types; `close` builtin shadowed by a test const), 5 modernize (`errors.As` → `errors.AsType`, `strings.Index` → `strings.Cut`), 1 nilerr, 1 staticcheck QF1002 | Doc comments added; const renamed to `closeTag`; `errors.AsType`/`strings.Cut`/tagged-switch rewrites; the one intentional nil return (`ResolveSkillContent`'s documented empty-body seam) carries a `//nolint:nilerr` with its reason, per repo convention |
+| `lint-generated` failure (merge gate lint) | Task 14 hand-wrote the `web-skillguard` row into the GENERATED `docs/developing-evener/testing.md` table without updating the `make/testing.mk` annotation it is generated from | The skillguard text was ported into the `test-web-browser` annotation; `make generate` now reproduces the committed table byte-for-byte |
+| `TestNoBareWallClockDeadlineInAgentTests` (merge gate test wave) | The live harness's five per-case wall-clock bounds had no tripwire marker | The audit's sanctioned `// TRIPWIRE:` markers added to each `context.WithTimeout` line, stating the measured case times the bound sits far above; no assertion or bound changed |
+| `TestMakeWebCommandsContainNodeProcessState`, `TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence` (merge gate test wave) | Task 14 registered `web-skillguard` in `test-web-browser.sh` without updating the fake-toolchain fixtures, and its `npm run build` step ran without `NODE_DISABLE_COMPILE_CACHE=1` — a real violation of the frontend gate contract the process-state test exists to pin | Fake `go` taught the `test` subcommand (records and exits 0); the concise test now models the built frontend (`dist/index.html`) and asserts six verdicts including `web-skillguard`; the production script sets `NODE_DISABLE_COMPILE_CACHE=1` on the skillguard build like every other frontend command |
+
+Every fix above was made against a reproduced standalone failure of the same
+phase, and the decisive gate (`make merge-approval-gate`) was rerun in full
+after the last one.
+
+### Acceptance coverage mapping
+
+Each row of the plan's acceptance table, mapped to the actual committed
+tests and runs that prove it (all names verified against the committed
+suites and exercised by the recorded gate runs):
+
+| Spec acceptance area | Actual evidence |
+|---|---|
+| Shared loading | `TestSkillRenderPreservesCompleteInstructions` and `TestSkillLoadUsesOneCurrentSourceVersion` (agent/skill, same source + complete body through the shared renderer); `TestSkillDelivery_CompleteBody` (complete body at the actual provider boundary); `TestUseSkill_ReturnsBody`; `TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes` (selected route loads current disk bytes); live `operative`/`multiple` (complete marker + typed activations). |
+| Input | `TestClientMutation_InputShapesMatchDaemonBoundary`, `TestClientMutation_SkillInputRoundTrip`, `TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary`, `TestClientMutation_SkillSelectionSameIDAlteredSelectionConflicts`, `TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim`, `TestClientMutation_SkillSelectionRestartAfterClaimRequeuesSelection`; frontend `skillSelections.test.ts`, `draft.test.ts`, `recoveryDraft.test.ts`; browser guard canonical/draft-remount/queue/attachment scenarios. |
+| Resolution | `TestSkillCatalogResolutionAndViews`, `TestResolveSkillUsesUniqueSuffixAndExactPrecedence`, `TestResolveSkillRejectsAmbiguousUnqualifiedName`, `TestResolveSkillContentRejectsAmbiguousSuffix`, `TestSkillDiscoveryPrecedence`, `TestSkillDiscoveryInvalidWinnerAndDiagnostics`, `TestSkillActivation_Resolution`, `TestNormalizeMutationInputSkillNameValidation`. |
+| Completeness | `TestSkillRenderPreservesCompleteInstructions` (full opaque bytes incl. delimiter collisions), `TestSkillDelivery_CompleteBody`, `TestSkillDelivery_PreDispatchCompaction`, `TestSkillDelivery_ConfiguredOutputLimit` (explicit limit is a complete-delivery failure, not a tail). |
+| Deduplication | `TestSkillDelivery_RevalidateAfterFold` (provisional dedupe corrected by a typed causal notification after a real fold), `TestSkillDelivery_ProjectionModelSwitch`, `TestSkillDelivery_ResponsesContinuationPlanning`, `TestSkillDelivery_FallbackSmallerWindow`, `TestSkillDelivery_TransportRetry`, `TestSkillDelivery_SaveRestore`, `TestSkillReload_Repeated_RetainedContentNotDuplicated`. |
+| Failure | `TestSkillActivation_Failure`, `TestSkillActivation_PrepareFailureIsAtomic`, `TestSkillActivation_SaveMetaReturnsFilesystemFailure`, `TestSkillDelivery_MandatoryBudgetFailure`, `TestSkillDelivery_FailedReinvocationPreservesInventory`, `TestSkillReload_Budget_MandatoryMetadataExceeds`, `TestSkillReload_CurrentSource_MissingReplacedSource`, `TestClientMutation_SkillSelectionMissingSecondNameFailsVisible` (zero activations, zero dependent requests), `TestClientMutation_SkillSelectionSteerFailedPreparationKeepsTurnRunning`, `TestSkillReloadSelection_CompactToolSchemaInvalidSchedulesNothing`. |
+| Compaction choice | `TestSkillReloadSelection_Presence`, `TestSkillReloadSelection_NudgeListsLoadedSkills`, `TestSkillReloadElicitation_SessionParsesBlockAndStoresSelection`, `TestSkillReloadElicitation_SessionInvalidSelectionPreservesNote`; live `reload_selection` (model's own exact selection). |
+| Automatic lifetime | `TestMaybeElicitNoteBeforeCompaction_FiresWhenEnabledAndHighPressure` / `_NoopWhenLowPressure` / `_SkipsWhenNoteAlreadySet`, `TestApplyPendingForceCompact_NoRequest_NoOp`, `TestApplyPendingForceCompact_CompactsWithNote`, `TestSkillCompaction_ClearNoteCancelsAutomaticOperation`, `TestSkillCompaction_ClearNoteLeavesForcedOperation`. |
+| Elicitation latch | `TestSkillCompaction_LatchFirstSelectionWins`, `TestSkillCompaction_LatchNonemptyNoteSkipsElicitation`, `TestSkillCompaction_LatchPendingOperationSkipsElicitation`, `TestSkillReloadElicitation_Blocks` (real selection-only and stale-response barriers). |
+| Tool availability | `TestSkillReloadSelection_NudgeListsLoadedSkills` (no-tool nudge), `TestSkillReload_Reminder_AbsentSelection` / `_InvalidSelection` / `_ExplicitEmptySelection` (complete reminder classification), `TestSkillActivation_RawRead` (untracked read fallback creates no activation); live `fallback_reminder`. |
+| Reload | `TestSkillReload_CurrentSource_ReloadsNewBytes`, `TestSkillReload_CurrentSource_MissingReplacedSource`, `TestSkillLoadUsesOneCurrentSourceVersion`, `TestSkillDelivery_ChangedSourceBeforeDispatch` (changed-content notice), `TestSkillDelivery_DeletedSourceBeforeDispatch` (failure, never false delivery). |
+| Repeated lifetime | `TestSkillReload_Repeated_RetainedContentNotDuplicated`, `TestSkillCompaction_AcceptanceSurvivesMetadataRoundTrip`, `TestSkillDelivery_SaveRestore`, `TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync`, `TestSkillLifecycleSnapshot_MetaRoundTrip`; handoff-receipt consumption asserted in `TestSkillReload_CurrentSource_ReloadsNewBytes` and the `TestSkillReload_Reminder_*` cases. |
+| Publication | `TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder`, `TestPrepareModelRequest_WinningFoldEmitsCompactionEvent`, `TestPrepareModelRequest_LosingFoldAttemptEmitsNoCompactionEvent`, `TestPrepareModelRequest_LosingFoldDoesNotMutateSharedPayloads`, `TestSkillCompaction_AcceptanceForcedRequestSupersedesAutomaticOperation`, `TestSkillCompaction_AcceptanceSecondRequestRejected`, `TestSkillCompaction_StaleCapturedGenerationRejected`. |
+| Invocation policy | `TestSkillActivation_PolicyMatrix` (full 5-route × control matrix), `TestSkillActivation_Routes`, `TestSkillControlsStrictBooleanValues`, `TestSkillCatalogResolutionAndViews` (filtered advertisements vs retained full catalog), `TestThreadReadAdvertisesRealSkillControls`, `TestPastThreadReadCarriesSkillCatalog`. |
+| Discovery | `TestSkillDiscoveryPrecedence` (every precedence level), `TestPortableProjectDirectory`, `TestSkillDiscoveryInvalidWinnerAndDiagnostics`, `TestSkillSourcesMetadataOnlyFirstManifestReservation`, the `TestPastThreadSkillCatalog*` family, `TestScanSkillsDir_MissingDirIsNoop`. |
+| Browser | `TestSkillComposerBrowser` (browserguard tag) via `TMPDIR=/tmp make test-web-browser`: nine scenarios — canonical, draft-remount, queue (held turn + drain), steering, attachment, capability-loss, failed-activation, delayed-send, transport-loss — each asserted present in the driver's milestone report (no silent skip), with actual provider-request/mutation evidence. |
+| Role lifetime | `TestRestoreFrozenSkillBodiesValid` and siblings (legacy bytes, optional provenance), `TestSkillActivation_PrepareFrozenAndLegacyDoNotAuthorize`, `TestSkillActivation_LegacyRestoreHasEmptyOrdinaryState` (no historical backfill), `TestSkillDelivery_FrozenPlusOrdinary`, `TestSkillReload_Preload_DualProvenanceReloadsOrdinary`, `TestSkillReload_Preload_OnlySelectionIsNoOp`. |
+| Raw file reads | `TestSkillActivation_RawRead` (full and partial `read_file` of the source create no activation or authorization). |
+| Budget priority | `TestSkillReload_Budget_OrderedPriority` (mandatory metadata first, new group retained, excess reloads fail individually), `TestSkillReload_Budget_MandatoryMetadataExceeds`, `TestSkillDelivery_MandatoryBudgetFailure` (visible failure, no additional fold). |
+| Pending operation | `TestSkillCompaction_SaveFailedRequestIsTypedAndRetryable` (visible typed save failure), `TestSkillCompaction_StaleAcceptanceRejectedWhileOperationPending`, `TestSkillCompaction_StaleCapturedGenerationRejected`, `TestSkillLifecycleSnapshot_PendingCompactionCloneDetached` (no unchanged writes / detached snapshots). |
+| Note semantics | `TestPinnedNote_MetaRoundTrip`, `TestPinnedNote_SurvivesResume`, `TestSkillCompaction_ClearNoteCancelsAutomaticOperation` (empty clears), `TestSkillCompaction_ClearNoteLeavesForcedOperation`, `TestSkillReloadSelection_CompactToolSelectionOnlyRequestsCompaction`, `TestSkillReloadSelection_CompactToolUnknownNameKeepsNote`, `TestSkillReloadSelection_CompactToolDoubleCallKeepsFirstSelection`. |
+| Historical sessions | `TestSkillActivation_LegacyRestoreHasEmptyOrdinaryState` (ordinary state born empty; pre-lifecycle sessions track future activations only), `TestSkillActivation_RestoreSessionFromMeta` (state round-trips from the saved snapshot, never reconstructed), `TestRestoreFrozenSkillBodiesNamesWithoutBodies`. |
+| Delegates | `TestSkillActivation_Routes` (child inventory seeded by exactly its own role preload; parent imports nothing), `TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit` (frozen skill bodies isolated from post-commit mutation). |
+| Protocol support | `TestSkillInputRejectsRawPathAndBody`, `TestSkillInputUnmarshalAcceptsOnlyTypeAndName`, `TestInputBearingParamsDecodeSkillSelection`, `TestInputBearingParamsRejectRawSkillBodyAndPath`, `TestNormalizeMutationInputSkillRejectsForbiddenStructFields`, `TestValidateSkillInputSupport` (false/absent capability fails closed), `TestTurnMutationsConsumeSkillInputWhenWired`, `TestThreadReadAdvertisesRealSkillControls`; frontend `skillInput.test.ts` pins the generated capability/controls/diagnostics type contract. |
+| Live behavior | `TestSkillsLive` (eval tag, `EVENER_LIVE_TESTS=1` opt-in + required `-skills-eval-model`): runs 4 and 5 both 11/11 PASS; the Task 15 review's independent sixth run also 11/11. Full per-case record above; the one model-variance failure (`fenced`, run 3) is recorded as measured (1 failure in 4 corpus executions of that case). |
+| Documentation/review/PR | `docs/skills.md` implements the delivered contract (coverage verified line-by-line by the Task 15 independent review §6); this evidence document; per-task independent reviews 1–15 committed under `.superpowers/sdd/2026-09-11-skills-lifecycle/`. The final independent implementation review and the PR open after this stage's report by design; they are the remaining delivery steps and are not claimed here. |
+
+The plan's table carries 26 data rows (the brief's "24-row" count
+undercounts by two); every row is mapped above.
+
+### Honest limitations
+
+- **Live model evaluation** requires the configured provider layer, its
+  credentials store, network access, and the explicit opt-in; without
+  `EVENER_LIVE_TESTS=1` the suite skips and issues no provider request
+  (verified twice, Task 15 and its review). The one recorded model-variance
+  failure (`fenced`, run 3 of the corpus) is documented as measured, not
+  smoothed over.
+- **Browser gates** require Chrome/Chromium on the host and the built
+  frontend; `TMPDIR=/tmp` is required for the Unix-socket path length limit.
+  The skill guard fails if any of its nine scenarios is missing from the
+  driver's milestone report, so a launch failure cannot masquerade as a pass.
+- **Deterministic suites** (the default gates, the Stage 2/3 families, and the
+  race runs) require neither credentials nor network.
