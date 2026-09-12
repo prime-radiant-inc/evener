@@ -261,6 +261,12 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res := mustResolve(t, r, "google-vertex-anthropic/claude-sonnet-4-6"); hasWarning(res, "regional") {
 		t.Fatal("Sonnet 4.6 and earlier are fine on regional endpoints")
 	}
+	if res := mustResolve(t, r, "google-vertex/gemini-3.5-flash"); !hasWarning(res, "regional") || !hasWarning(res, "Gemini 3") {
+		t.Fatalf("regional vertex gemini: %+v", res)
+	}
+	if res := mustResolve(t, r, "google-vertex/gemini-2.5-flash"); hasWarning(res, "regional") {
+		t.Fatal("Gemini 2.5 and earlier are fine on regional endpoints")
+	}
 	// The warning is about the location the URL was built with: an instance
 	// whose own base_url carries no location placeholder reaches no regional
 	// endpoint, whatever the environment says.

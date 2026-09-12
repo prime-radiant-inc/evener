@@ -16,7 +16,7 @@ import (
 )
 
 func (p *Protocol) call(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	return &protocolhttp.Call{Operation: operation, EndpointFamily: family, Method: method, URL: u, Body: body, Req: req, Res: res, Client: p.Client, Reclassify: reclassifyGemini(res.Instance)}
+	return &protocolhttp.Call{Operation: operation, EndpointFamily: family, Method: method, URL: u, Body: body, Req: req, Res: res, Client: p.Client, Reclassify: reclassifyGemini(res)}
 }
 
 func (p *Protocol) completionCall(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
@@ -30,15 +30,39 @@ func (p *Protocol) completionCall(operation, family, method, u string, body map[
 // reclassifyGemini applies the gRPC status remap of classifyGeminiError to
 // the runner's classified error (RESOURCE_EXHAUSTED on a 400 is a rate
 // limit, DEADLINE_EXCEEDED a timeout, UNAVAILABLE/INTERNAL a server error)
-// and keeps the instance name on the remapped error.
-func reclassifyGemini(instance string) func(status int, body []byte, err error) error {
+// and keeps the instance name on the remapped error. It then turns Vertex's
+// "Publisher model ... was not found" 404 on a regional location into an
+// actionable configuration error (regionalVertexGlobalOnlyRemedy).
+func reclassifyGemini(res registry.Resolved) func(status int, body []byte, err error) error {
 	return func(status int, body []byte, err error) error {
 		var retryAfter *time.Duration
 		if le, ok := errors.AsType[llm.Error](err); ok {
 			retryAfter = le.RetryAfter()
 		}
-		return llm.RewriteErrorProvider(classifyGeminiError(status, body, retryAfter, err), instance)
+		out := llm.RewriteErrorProvider(classifyGeminiError(status, body, retryAfter, err), res.Instance)
+		if remedy, ok := regionalVertexGlobalOnlyRemedy(res, status, body); ok {
+			return &llm.ConfigurationError{Message: remedy, Cause: out}
+		}
+		return out
 	}
+}
+
+// regionalVertexGlobalOnlyRemedy recognizes the 404 Vertex returns when a
+// publisher model is not served by the location the resolved transport was
+// built with, and returns the message naming the remedy. Vertex serves some
+// models (Gemini 3 and later, recent Claude ids) only from its global
+// endpoint; the raw 404 says to check the region but not which one works.
+// Only a regional location gets a remedy — a request already addressed to
+// global/us/eu is not helped by moving endpoints.
+func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []byte) (string, bool) {
+	if status != http.StatusNotFound || !strings.Contains(string(body), "Publisher model") {
+		return "", false
+	}
+	loc := res.Transport.Vars["GOOGLE_VERTEX_LOCATION"]
+	if loc == "" || loc == "global" || loc == "us" || loc == "eu" {
+		return "", false
+	}
+	return fmt.Sprintf("instance %q: Vertex location %q does not serve model %q; use global, us, or eu (set GOOGLE_VERTEX_LOCATION)", res.Instance, loc, res.WireID), true
 }
 
 // Complete implements llm.Protocol.

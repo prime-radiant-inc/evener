@@ -36,10 +36,23 @@ func IsChatModelID(id string) bool {
 	return true
 }
 
-// vertexGlobalOnly lists Claude ids Anthropic serves only from the global
-// and us/eu endpoints (spec §9.4: "regional endpoints support Sonnet 4.6
-// and earlier").
-var vertexGlobalOnly = []string{"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos"}
+// vertexGlobalOnly names the model families Vertex serves only from the
+// global and us/eu endpoints, each with the regional limitation its warning
+// states. Anthropic's regional endpoints stop at Sonnet 4.6 (spec §9.4);
+// Gemini 3 and later are global-only today.
+var vertexGlobalOnly = []vertexGlobalOnlyFamily{
+	{detail: "supports Claude Sonnet 4.6 and earlier", patterns: []string{
+		"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos",
+	}},
+	{detail: "does not serve Gemini 3 or later", patterns: []string{"gemini-3"}},
+}
+
+// vertexGlobalOnlyFamily is one such family: the id substrings it covers and
+// the regional limitation the warning spells out.
+type vertexGlobalOnlyFamily struct {
+	detail   string
+	patterns []string
+}
 
 var datedSuffixRe = regexp.MustCompile(`(-\d{8}(-v\d+(:\d+)?)?|@\d{8})$`)
 
@@ -460,9 +473,9 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		// The location the URL was actually built with (buildTransport's
 		// Vars), whichever mapping supplied it.
 		if loc, ok := transport.Vars["GOOGLE_VERTEX_LOCATION"]; ok && loc != "global" && loc != "us" && loc != "eu" {
-			for _, p := range vertexGlobalOnly {
-				if strings.Contains(hit.wireID, p) {
-					warnings = append(warnings, fmt.Sprintf("regional Vertex location %q supports Claude Sonnet 4.6 and earlier; use global, us, or eu for %s", loc, hit.wireID))
+			for _, family := range vertexGlobalOnly {
+				if slices.ContainsFunc(family.patterns, func(p string) bool { return strings.Contains(hit.wireID, p) }) {
+					warnings = append(warnings, fmt.Sprintf("regional Vertex location %q %s; use global, us, or eu for %s", loc, family.detail, hit.wireID))
 					break
 				}
 			}

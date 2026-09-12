@@ -174,6 +174,45 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 	}
 }
 
+// A publisher model Vertex serves from its global endpoint only 404s on a
+// regional one. The raw message tells the user to check the region without
+// naming the remedy; the reclassifier turns it into a configuration error
+// that does (the same class the registry warns about at resolve time).
+func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := protoLive(srv)
+	res.WireID = "gemini-3.8-flash"
+	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": "us-central1", "GOOGLE_VERTEX_PROJECT": "p"}
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	var cfgErr *llm.ConfigurationError
+	if !errors.As(err, &cfgErr) || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
+		t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
+	}
+}
+
+// The same 404 against the global endpoint already names the endpoint that
+// serves the model, so it stays the provider's own error.
+func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/global/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := protoLive(srv)
+	res.WireID = "gemini-3.8-flash"
+	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": "global", "GOOGLE_VERTEX_PROJECT": "p"}
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	var cfgErr *llm.ConfigurationError
+	if errors.As(err, &cfgErr) {
+		t.Fatalf("a global-endpoint 404 must not claim a regional remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("global 404 must stay the provider's 404: %v", err)
+	}
+}
+
 func TestProtocolListModelsAndCountTokens(t *testing.T) {
 	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":922000,"outputTokenLimit":128000,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
 	res := protoLive(srv)
