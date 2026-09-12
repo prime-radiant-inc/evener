@@ -5,7 +5,7 @@
 // pure functions OF (the expand-override map, the lazily-loaded archived
 // project detail map) and wires the results into <Tree>.
 
-import type { NavigationJobSummary, NavigationSessionSummary } from "../../protocol/types.gen";
+import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "../../protocol/types.gen";
 import { projectNodeExpansionKey } from "./railExpansion";
 
 export type TreeTier = "current" | "recent" | "archived";
@@ -66,15 +66,32 @@ export interface SessionRailNode extends WidgetTreeNode {
   // hasChildrenOf), so there's no reason to carry two representations of
   // the same "nothing to expand" case.
   //
-  // Its current subagents and jobs, followed by independent inactive-subagent
-  // and completed-job folds when either has rows (see splitChildren).
-  children: (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[];
+  // Its current subagents, running jobs, and own live watches, followed by
+  // independent inactive-subagent and completed-job folds when either has
+  // rows (see splitChildren).
+  children: (
+    | SessionRailNode
+    | JobRailNode
+    | WatchRailNode
+    | InactiveFoldRailNode
+    | CompletedJobsFoldRailNode
+    | OverflowRailNode
+  )[];
 }
 
 export interface JobRailNode extends WidgetTreeNode {
   kind: "job";
   job: RailJob;
   active: boolean;
+}
+
+/** One of a session's own live watches, as a quiet leaf row in that
+ * session's fold-out. Mirrors JobRailNode: it carries no children and no
+ * rail-side state of its own - the wire row ("active", cadence, note) is the
+ * whole truth RailRow renders. */
+export interface WatchRailNode extends WidgetTreeNode {
+  kind: "watch";
+  watch: NavigationWatchSummary;
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -127,11 +144,17 @@ export interface OverflowPage {
 /** A quiet "+N older" note standing for the rows the server capped away
  * (hubcore's maxSidebarSessionsPerTier, 50 per tier). Project overflow rows
  * carry the tier offsets needed to reveal those rows; synthetic child folds
- * leave pages empty because their omitted children are not project pages. */
+ * leave pages empty because their omitted children are not project pages.
+ *
+ * A capped WATCH list reuses this same row shape (see MAX_INLINE_WATCHES) with
+ * `suffix` set, so "+N more watches" reads in the rail's one existing overflow
+ * grammar instead of inventing a second one. */
 export interface OverflowRailNode extends WidgetTreeNode {
   kind: "overflow";
   count: number;
   pages: OverflowPage[];
+  /** The wording after the count. Absent means the tier cap's "older". */
+  suffix?: string;
 }
 
 export function sectionOverflowNode(
@@ -167,6 +190,7 @@ export function catalogOverflowNode(
 export type RailNode =
   | SessionRailNode
   | JobRailNode
+  | WatchRailNode
   | ProjectRailNode
   | LoadingRailNode
   | InactiveFoldRailNode
@@ -193,8 +217,8 @@ const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, Pro
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
 // and a hydrated archived project shows all three.
-function overflowNode(id: string, count: number, pages: OverflowPage[] = []): OverflowRailNode[] {
-  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages }] : [];
+function overflowNode(id: string, count: number, pages: OverflowPage[] = [], suffix?: string): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, suffix }] : [];
 }
 
 function tierOverflow(p: RailProject, tiers: ("current" | "recent" | "archived")[]): number {
@@ -288,6 +312,34 @@ function activeJobNode(parent: RailSession, job: NavigationJobSummary): JobRailN
   return { ...toJobNode(parent, job), active: true };
 }
 
+/** Watch rows a session renders inline before the rest fold behind one
+ * "+N more watches" note. Three keeps a fold-out scannable in the rail's
+ * ~280px column; past that the watches are inventory, and the count on the
+ * summary line is the honest summary of them. */
+const MAX_INLINE_WATCHES = 3;
+
+// Namespaced off the PARENT's row_id like the job rows are, so two sessions
+// carrying a same-id watch (each the watch's own receiver) still get distinct
+// tree ids.
+function toWatchNode(parent: RailSession, watch: NavigationWatchSummary): WatchRailNode {
+  const rowID = `watch:${parent.row_id}:${watch.id}`;
+  return { id: rowID, kind: "watch", watch, children: [] };
+}
+
+function watchOverflowId(parentRowID: string): string {
+  return `watches:${parentRowID}`;
+}
+
+/** How many of a session's OWN live watches are still armed. Deliberately not
+ * a subtree rollup: the hub projects each watch onto exactly the summary of
+ * the session that receives it (navigation_projection.go's navigationWatches),
+ * so summing descendants here would print a subagent's watch on every ancestor
+ * row as well as on the subagent's own - one watch, several counts. A receiver
+ * watch belongs to the session whose summary carries it. */
+export function activeWatchCount(node: RailSession): number {
+  return (node.watches ?? []).filter((watch) => watch.active).length;
+}
+
 function subagentIsCurrent(child: RailSession): boolean {
   const activity = activeWorkSummary(child);
   return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;
@@ -305,10 +357,7 @@ function subagentIsCurrent(child: RailSession): boolean {
 // "Inactive subagents" for rows that are neither inactive-in-that-sense nor
 // subagents. A cluster is already a disclosure; its members are ordinary
 // top-level sessions (parity-m3-sidebar-tree.md §3).
-function splitChildren(
-  parent: RailSession,
-  isExpanded: IsExpanded,
-): (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[] {
+function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRailNode["children"] {
   const cached = sessionChildrenCache.get(parent as object)?.get(isExpanded);
   if (cached) return cached;
   const current: SessionRailNode[] = [];
@@ -322,10 +371,21 @@ function splitChildren(
     (subagentIsCurrent(child) ? current : inactive).push(toSessionNode(child, isExpanded));
   }
   const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
-  const children: (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[] = [
+  const children: SessionRailNode["children"] = [
     ...current,
     ...(parent.running_jobs ?? []).map((job) => activeJobNode(parent, job)),
   ];
+  // The session's own live watches, after running work: an armed watch is
+  // pending, not happening, so it reads below the things currently running.
+  // Every row the wire sent stays reachable - the inline cap only hides the
+  // tail behind a count, it never drops it.
+  const watches = parent.watches ?? [];
+  children.push(...watches.slice(0, MAX_INLINE_WATCHES).map((watch) => toWatchNode(parent, watch)));
+  if (watches.length > MAX_INLINE_WATCHES) {
+    children.push(
+      ...overflowNode(watchOverflowId(parent.row_id), watches.length - MAX_INLINE_WATCHES, [], "more watches"),
+    );
+  }
   if (inactiveCount > 0) {
     const id = inactiveFoldId(parent.row_id);
     const omitted = overflowNode(id, parent.more_subagents ?? 0);
