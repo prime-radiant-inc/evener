@@ -167,9 +167,9 @@ export function ModelPicker({
               disabled={disabled}
               onPress={() => setSelected(item.model)}
             />
-            {item.warnings.map((warning) => (
+            {item.warnings.map((warning, warningIndex) => (
               <View
-                key={warning}
+                key={`${warning}-${warningIndex}`}
                 style={{ paddingLeft: 16, paddingRight: 8, paddingBottom: 4 }}
               >
                 <Copy muted>{`⚠ ${warning}`}</Copy>
