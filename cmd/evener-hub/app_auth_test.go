@@ -227,20 +227,57 @@ func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
 	}
 }
 
-// TestOpenAIStateDirFromEnvUsesLaunchEnvHome pins the other half of the launch
-// override: when the launch env redirects the home directory and XDG_STATE_HOME
-// is unset, the home arm must read that supplied home, not the process
-// environment. Delegating the whole arm to the process-based
+// TestOpenAIStateDirFromLookupUsesLaunchEnvHome pins the other half of the
+// launch override: when the launch env redirects the home directory and
+// XDG_STATE_HOME is unset, the home arm must read that supplied home, not the
+// process environment. Delegating the whole arm to the process-based
 // cmdutil.DefaultStateRoot() silently ignored the launch env, so a hub handed a
 // redirecting environment read and wrote OAuth state in the ambient home.
-func TestOpenAIStateDirFromEnvUsesLaunchEnvHome(t *testing.T) {
-	t.Setenv(envvars.XDGStateHome.Name, "")
-	t.Setenv(envvars.Home.Name, t.TempDir())
-	launchHome := t.TempDir()
-
-	got := openAIStateDirFromEnv(map[string]string{envvars.Home.Name: launchHome})
-	if want := filepath.Join(launchHome, ".local", "state", "evener"); got != want {
-		t.Fatalf("stateDir=%q, want launch home %q", got, want)
+//
+// goos is passed explicitly so the Windows arm is pinned from any host; a test
+// that only set HOME would pass on Unix and fail on Windows, where HOME is not
+// consulted.
+func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
+	lookup := func(env map[string]string) func(string) (string, bool) {
+		return func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
+		}
+	}
+	tests := []struct {
+		name      string
+		goos      string
+		env       map[string]string
+		wantParts []string
+	}{
+		{
+			name:      "unix home",
+			goos:      "linux",
+			env:       map[string]string{envvars.Home.Name: "/launch/home"},
+			wantParts: []string{"/launch/home", ".local", "state", "evener"},
+		},
+		{
+			name:      "windows userprofile",
+			goos:      "windows",
+			env:       map[string]string{envvars.UserProfile.Name: `C:\launch\u`},
+			wantParts: []string{`C:\launch\u`, ".local", "state", "evener"},
+		},
+		{
+			// A launch env that carries only the removed HOMEDRIVE/HOMEPATH
+			// spelling resolves like cmdutil: no profile, so the fallback.
+			name:      "windows homedrive and homepath are not a home",
+			goos:      "windows",
+			env:       map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
+			wantParts: []string{".local", "state", "evener"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			want := filepath.Join(tc.wantParts...)
+			if got := openAIStateDirFromLookup(tc.goos, lookup(tc.env)); got != want {
+				t.Fatalf("stateDir=%q, want launch home %q", got, want)
+			}
+		})
 	}
 }
 
@@ -264,6 +301,9 @@ func TestOpenAIStateDirFromEnvMatchesDefaultStateRoot(t *testing.T) {
 // launch env that deliberately carries no home therefore cannot silently read
 // or write OAuth state under the ambient one.
 func TestOpenAIStateDirFromEnvFallsBackWhenNoHome(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.Home.Name, t.TempDir())
+	t.Setenv(envvars.UserProfile.Name, t.TempDir())
 	processRoot := cmdutil.DefaultStateRoot()
 
 	got := openAIStateDirFromEnv(map[string]string{})

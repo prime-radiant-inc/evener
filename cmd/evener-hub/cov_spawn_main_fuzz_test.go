@@ -69,7 +69,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			want := filepath.Join(".local", "state", "evener")
 			if data == "xdg" {
 				stateHome := t.TempDir()
-				env[envvars.XDGStateHome.Name] = " " + stateHome + " "
+				env[envvars.XDGStateHome.Name] = stateHome
 				want = filepath.Join(stateHome, "evener")
 			}
 			if got := openAIStateDirFromEnvMap(env); got != want {

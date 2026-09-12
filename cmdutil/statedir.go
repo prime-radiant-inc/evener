@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/envvars"
@@ -35,13 +34,13 @@ func DefaultStateRoot() string {
 // with it, so the hub and the rest of evener cannot drift apart (#1012).
 //
 // goos selects the home-directory spelling the way os.UserHomeDir does, so
-// callers and tests can pin Windows behavior from any host. Surrounding
-// whitespace around XDG_STATE_HOME is trimmed, matching envvars.Var.Trimmed and
-// authopenai.DefaultStateDirWithStateHome.
+// callers and tests can pin Windows behavior from any host. XDG_STATE_HOME is
+// used verbatim, matching DefaultStateRoot's previous behavior and the
+// rendezvous/appwire mirrors that read it raw.
 func StateRootFromLookup(goos string, lookup func(string) (string, bool)) string {
 	base := ""
 	if stateHome, ok := lookup(envvars.XDGStateHome.Name); ok {
-		base = strings.TrimSpace(stateHome)
+		base = stateHome
 	}
 	if base == "" {
 		home := userHomeDirFromLookup(goos, lookup)
@@ -54,29 +53,29 @@ func StateRootFromLookup(goos string, lookup func(string) (string, bool)) string
 }
 
 // userHomeDirFromLookup resolves the home directory from a supplied environment
-// lookup using os.UserHomeDir's per-OS rules: USERPROFILE, then
-// HOMEDRIVE+HOMEPATH, on Windows; home on Plan 9; HOME elsewhere. It returns an
-// empty string when no home variable is set, the condition for which
-// os.UserHomeDir returns an error.
+// lookup using os.UserHomeDir's rules: USERPROFILE on Windows, home on Plan 9,
+// HOME elsewhere, and the /sdcard and / constants os.UserHomeDir returns on
+// Android and iOS. It returns an empty string when os.UserHomeDir returns an
+// error.
+//
+// It deliberately has no HOMEDRIVE/HOMEPATH arm: os.UserHomeDir has none, and
+// the hub's old arm for those was the Windows drift #1012 removed.
 func userHomeDirFromLookup(goos string, lookup func(string) (string, bool)) string {
+	name := envvars.Home.Name
 	switch goos {
 	case "windows":
-		if profile, ok := lookup(envvars.UserProfile.Name); ok && profile != "" {
-			return profile
-		}
-		drive, hasDrive := lookup(envvars.HomeDrive.Name)
-		path, hasPath := lookup(envvars.HomePath.Name)
-		if hasDrive && hasPath && drive != "" && path != "" {
-			return drive + path
-		}
+		name = envvars.UserProfile.Name
 	case "plan9":
-		if home, ok := lookup("home"); ok && home != "" {
-			return home
-		}
-	default:
-		if home, ok := lookup(envvars.Home.Name); ok && home != "" {
-			return home
-		}
+		name = "home"
+	}
+	if home, ok := lookup(name); ok && home != "" {
+		return home
+	}
+	switch goos {
+	case "android":
+		return "/sdcard"
+	case "ios":
+		return "/"
 	}
 	return ""
 }
