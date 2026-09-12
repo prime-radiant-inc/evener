@@ -1,7 +1,16 @@
 # Provider connection design study
 
-Design exploration for Jesse, 2026-09-10. Production behavior is unchanged.
+Design exploration for Jesse, 2026-09-10. The previews remain historical simulations.
 Source baseline: `2664cc881d128d8b0c4a0af96683126e70d13cd7`.
+
+## Implementation selection — 2026-09-11
+
+Jesse selected **Option A** and approved implementation ("ok. go implement this").
+The compact provider connector now feeds Settings, New session, and the session
+model chooser. Production uses real save/check and catalogue operations, not
+the preview's simulated outcomes. See [Connecting a provider](../../connecting-a-provider.md).
+The panel rankings and alternative designs below remain the historical study;
+this selection does not rewrite them.
 
 ## Brief
 
