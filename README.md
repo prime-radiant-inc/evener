@@ -17,7 +17,8 @@ contracts that subagents, plugins, and hooks operate under, see
 [docs/subagent-runtime-contracts.md](docs/subagent-runtime-contracts.md). For
 background jobs, see [docs/job-control.md](docs/job-control.md). To confine a
 session's file, process, and network access with `--sandbox`, see
-[docs/sandboxing.md](docs/sandboxing.md). To build, test, and lint this repo,
+[docs/sandboxing.md](docs/sandboxing.md). For how sessions are titled, see
+[docs/session-auto-naming.md](docs/session-auto-naming.md). To build, test, and lint this repo,
 see [docs/developing-evener/README.md](docs/developing-evener/README.md) — or
 run `make help` for every target with a one-line summary.
 

@@ -13,7 +13,7 @@
 // remember and type exactly. Every browsable path-valued field (the path and
 // pathList kinds) renders the shared PathField the same way, for the same
 // reason.
-import { type ReactNode, useId, useState } from "react";
+import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
 import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -46,6 +46,23 @@ export interface AdvancedOptionsProps {
   /** Already filtered to perLaunch evener options (schema.perLaunchEvenerOptions). */
   options: LaunchOption[];
   onOverridesChange: (overrides: LaunchConfigLayer) => void;
+  /** Optional draft-owned raw fields, including incomplete/invalid edits. */
+  values?: AdvancedValues;
+  onValuesChange?: (values: AdvancedValues) => void;
+  /** Reads the originating draft after an asynchronous validation or remount. */
+  readValues?: () => AdvancedValues;
+  /** Optional draft-owned path-validation messages, keyed by wireField and
+   * mirroring `values`/`onValuesChange`. A draft that owns them keeps its error
+   * visible across an inactive spell or a remount; callers without a durable
+   * draft fall back to component-local state. */
+  errors?: Record<string, string>;
+  onErrorsChange?: Dispatch<SetStateAction<Record<string, string>>>;
+  /** Stable identity of the draft these values belong to. Async validation and
+   * resolve results are dropped when it changes, but a same-draft remount -
+   * which recreates readValues' own identity - must NOT drop them. Defaults to
+   * readValues when absent, preserving callback-identity behavior for callers
+   * that do not own a durable draft object. */
+  draftId?: unknown;
   /** evener/path/validate. Both the scalar path fields' live validation and the
    * pathList add rows go through it; `path` (the server-canonicalized spelling)
    * is used by an add when the caller's closure forwards it. */
@@ -72,6 +89,12 @@ export interface AdvancedOptionsProps {
 export function AdvancedOptions({
   options,
   onOverridesChange,
+  values: draftValues,
+  onValuesChange,
+  readValues,
+  errors: draftErrors,
+  onErrorsChange,
+  draftId,
   validatePath,
   createDirectory,
   resolveConfig,
@@ -81,30 +104,75 @@ export function AdvancedOptions({
   resolvedDefaults,
 }: AdvancedOptionsProps) {
   const [open, setOpen] = useState(false);
-  const [values, setValues] = useState<AdvancedValues>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [localValues, setLocalValues] = useState<AdvancedValues>({});
+  const values = draftValues ?? localValues;
+  const setValues = onValuesChange ?? setLocalValues;
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+  // A draft's identity is durable (the draft object itself); readValues is a
+  // callback the parent recreates whenever the draft changes - and, for the
+  // same draft, whenever it remounts. Key ownership on the durable identity so
+  // an in-flight result for the SAME draft is not dropped on remount, while a
+  // different draft still resets feedback.
+  const ownerKey = draftId !== undefined ? draftId : readValues;
+  const activeOwner = useRef(ownerKey);
+  activeOwner.current = ownerKey;
+  // Validation messages are transient feedback for a caller that has no durable
+  // draft to attach them to. When the draft owns them (Spawn passes a map), the
+  // async result below writes to the ORIGINATING draft even while a different
+  // draft is active - exactly as the `invalid` flag it explains already does.
+  const [localErrors, setLocalErrors] = useState<Record<string, string>>({});
+  const errors = draftErrors ?? localErrors;
+  const setErrors = onErrorsChange ?? setLocalErrors;
+  const draftOwnedErrors = onErrorsChange !== undefined;
   const [resolved, setResolved] = useState<string | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
+  // useState(ownerKey) would treat a function ownerKey (readValues) as a lazy
+  // initializer and CALL it, so the identity is carried inside a wrapper object.
+  const [owner, setOwner] = useState({ key: ownerKey });
+  // The draft identity identifies the project. Reset only transient feedback,
+  // before rendering children; keep the disclosure and picker controls mounted.
+  if (owner.key !== ownerKey) {
+    setOwner({ key: ownerKey });
+    // Only component-local feedback resets on a draft change: a draft-owned
+    // error map travels with its draft, so the newly active draft shows its own.
+    setLocalErrors({});
+    setResolved(null);
+    setResolveError(null);
+  }
   const panelId = useId();
 
+  function currentValues(): AdvancedValues {
+    return readValues ? readValues() : valuesRef.current;
+  }
+
   function update(wireField: string, field: AdvancedFieldValue): void {
-    const next = { ...values, [wireField]: field };
+    const next = { ...currentValues(), [wireField]: field };
+    if (!readValues) valuesRef.current = next;
     setValues(next);
     onOverridesChange(collectAdvancedOverrides(options, next));
   }
 
   function updateScalar(opt: LaunchOption, value: string): void {
-    update(opt.wireField, { value });
+    const field = { value };
+    update(opt.wireField, field);
     if (opt.pathKind && value.trim() !== "") {
       validatePath(value, schemaPathKind(opt.pathKind)).then(
         (result) => {
-          setErrors((prev) => ({ ...prev, [opt.wireField]: result.valid ? "" : (result.error ?? "invalid path") }));
+          // A later edit owns this field now, even if it returned to the same
+          // text. Other fields may have changed too: update merges live state.
+          if (currentValues()[opt.wireField] !== field) return;
+          if (draftOwnedErrors || activeOwner.current === ownerKey) {
+            setErrors((prev) => ({ ...prev, [opt.wireField]: result.valid ? "" : (result.error ?? "invalid path") }));
+          }
           // Re-mark the stored value invalid so collect drops it (floor §1.11).
           update(opt.wireField, { value, invalid: !result.valid });
         },
         () => {
           // A failing validator never blocks (fail-open), matching preflight.
-          setErrors((prev) => ({ ...prev, [opt.wireField]: "" }));
+          if (currentValues()[opt.wireField] === field && (draftOwnedErrors || activeOwner.current === ownerKey)) {
+            setErrors((prev) => ({ ...prev, [opt.wireField]: "" }));
+          }
         },
       );
     } else if (opt.pathKind) {
@@ -115,9 +183,14 @@ export function AdvancedOptions({
   async function showResolved(): Promise<void> {
     setResolveError(null);
     try {
-      const result = await resolveConfig(collectAdvancedOverrides(options, values));
+      // Resolve from the CURRENT draft values (readValues), not the render
+      // snapshot: an edit merged by a just-settled async validation would
+      // otherwise be missing from the preview.
+      const result = await resolveConfig(collectAdvancedOverrides(options, currentValues()));
+      if (activeOwner.current !== ownerKey) return;
       setResolved(JSON.stringify(result.effective, null, 2));
     } catch (err) {
+      if (activeOwner.current !== ownerKey) return;
       setResolveError(err instanceof Error ? err.message : String(err));
     }
   }
