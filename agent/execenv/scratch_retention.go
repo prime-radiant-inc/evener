@@ -119,10 +119,10 @@ func (e *LocalExecutionEnvironment) ScratchRetentionBinding() (sandbox.ScratchBi
 	if binding.Slots == nil {
 		binding.Slots = make(map[string]sandbox.ScratchSlot)
 	}
-	if e.ownedSessionTmp != nil {
+	if e.ownedSessionTmp != nil && e.ownedSessionTmp.HasLease() {
 		binding.Slots[sandbox.ScratchKindSandbox] = sandbox.ScratchSlot{Dir: e.ownedSessionTmp.Dir, OwnsLease: true}
 	}
-	if e.unsandboxedScratch != nil {
+	if e.unsandboxedScratch != nil && e.unsandboxedScratch.HasLease() {
 		binding.Slots[sandbox.ScratchKindUnsandboxed] = sandbox.ScratchSlot{Dir: e.unsandboxedScratch.Dir, OwnsLease: true}
 	}
 	return binding, nil

@@ -49,7 +49,7 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		if !ok {
 			return nil
 		}
-		consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: stored.BindingID}
+		consumer := scratchConsumerPreservingRoles(manifest, sessionID, stored.BindingID)
 		return sandbox.UpsertScratchBinding(owner, stored, consumer)
 	}
 	bindingID, err := identifier.NewSessionID()
@@ -71,7 +71,7 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	if err != nil {
 		return nil
 	}
-	consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: published.BindingID}
+	consumer := scratchConsumerPreservingRoles(manifest, sessionID, published.BindingID)
 	return sandbox.UpsertScratchBinding(owner, published, consumer)
 }
 
@@ -82,6 +82,25 @@ func findScratchBinding(manifest sandbox.ScratchManifest, bindingID string) (san
 		}
 	}
 	return sandbox.ScratchBinding{}, false
+}
+
+// scratchConsumerPreservingRoles builds the consumer record for a transition
+// that changes only sessionID's current binding. The session's already-recorded
+// role fields (parent-shared, worktree-restore, abandoned) are carried forward
+// rather than wiped, so an interruption before the full role registration that
+// follows cannot lose them (plan 650).
+func scratchConsumerPreservingRoles(manifest sandbox.ScratchManifest, sessionID, currentBindingID string) sandbox.ScratchConsumerBinding {
+	consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: currentBindingID}
+	for _, existing := range manifest.Consumers {
+		if existing.SessionID != sessionID {
+			continue
+		}
+		consumer.ParentSharedBindingID = existing.ParentSharedBindingID
+		consumer.WorktreeRestoreBindingID = existing.WorktreeRestoreBindingID
+		consumer.AbandonedBindingIDs = existing.AbandonedBindingIDs
+		break
+	}
+	return consumer
 }
 
 // stageScratchSwapBinding persists the allocation-ownership transition a moving
@@ -123,12 +142,12 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 		}
 	}
 	moved := sourceBinding.Slots
-	consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: targetID}
 	for attempt := 0; attempt < 5; attempt++ {
 		manifest, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
 			return err
 		}
+		consumer := scratchConsumerPreservingRoles(manifest, sessionID, targetID)
 		targetRecord, ok := findScratchBinding(manifest, targetID)
 		if !ok {
 			targetRecord = sandbox.ScratchBinding{
@@ -187,6 +206,51 @@ func (s *Session) ensureScratchBindingID(env *execenv.LocalExecutionEnvironment,
 		return "", err
 	}
 	return bindingID, nil
+}
+
+// inheritScratchRetentionBinding gives target the installed binding identity of
+// source, so a clone that adopted source's scratch represents the same logical
+// environment (plan 646's "retain that ID on ... reuse"). A source with no
+// durable identity is a no-op. Slots are cleared: they are derived from the
+// environment's owned handles, never carried as stale ownership.
+func (s *Session) inheritScratchRetentionBinding(target, source *execenv.LocalExecutionEnvironment) error {
+	if target == nil || source == nil {
+		return nil
+	}
+	binding, err := source.ScratchRetentionBinding()
+	if err != nil || binding.BindingID == "" {
+		return nil
+	}
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		return nil
+	}
+	binding.Slots = nil
+	return target.SetScratchRetentionBinding(owner, binding)
+}
+
+// assignRetainedScratchBinding installs the persisted binding record for
+// bindingID onto env, so an environment reconstructed by a cold resume keeps
+// its own opaque identity rather than being left unbound (plan 654). An unknown
+// or empty id is a no-op; slots are derived from owned handles.
+func (s *Session) assignRetainedScratchBinding(env *execenv.LocalExecutionEnvironment, bindingID string) error {
+	if env == nil || bindingID == "" {
+		return nil
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		return nil
+	}
+	binding, ok := pool.bindings[bindingID]
+	if !ok {
+		return nil
+	}
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		return nil
+	}
+	binding.Slots = nil
+	return env.SetScratchRetentionBinding(owner, binding)
 }
 
 // installChildScratchRetention registers a delegate child's own durable binding

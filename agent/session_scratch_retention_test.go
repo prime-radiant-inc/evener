@@ -8,9 +8,64 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
+
+// newResumeScratchLane builds a scripted-lane root session with an isolated
+// state dir and NO Close registration, so a test can crash it (release the
+// scratch lease and close its stores the way process death does) and then
+// resume the same id, exactly as a daemon restart does. It mirrors
+// newScriptedLaneRepoWithConfig without newSession's t.Cleanup(Close).
+func newResumeScratchLane(t *testing.T) (*scriptedLaneRepo, *Session) {
+	t.Helper()
+	root := scriptedCanonicalDir(t, t.TempDir())
+	stateDir := scriptedCanonicalDir(t, t.TempDir())
+	if err := os.MkdirAll(filepath.Join(root, ".git", "worktrees"), 0o755); err != nil {
+		t.Fatalf("create scripted main git dir: %v", err)
+	}
+	git := newScriptedWorktreeGit(root)
+	cfg := worktreeTestSessionConfig()
+	cfg.StateDir = stateDir
+	cfg.NoProjectPrompts = true
+	cfg.MaxSubagentDepth = 1
+	cfg.testOnly.skipGitSnapshot = true
+	cfg.testOnly.minimalSystemPrompt = true
+	cfg.testOnly.noSyncJobStore = true
+	cfg.testOnly.environmentInfo = scriptedEnvironmentInfo
+	cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+		return git.run
+	}
+	sess, err := NewSession(w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.stateDir = stateDir
+	sess.mu.Lock()
+	sess.worktreeGitVersionOK = true
+	sess.mu.Unlock()
+	return &scriptedLaneRepo{t: t, s: sess, git: git, mainRoot: root, stateDir: stateDir}, sess
+}
+
+// crashResumeScratchRoot abandons the live session's runtime the way process
+// death does: release the scratch leases (keeping the directories) and close
+// the transcript and job store with no teardown appends, so the same id can be
+// resumed over the same state dir.
+func crashResumeScratchRoot(t *testing.T, sess *Session, envs ...*execenv.LocalExecutionEnvironment) {
+	t.Helper()
+	for _, env := range envs {
+		if env != nil {
+			env.RetainSessionScratch()
+		}
+	}
+	if err := sess.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close crashed transcript: %v", err)
+	}
+	if sess.jobManager != nil {
+		_ = sess.jobManager.closeStoreOnly()
+	}
+}
 
 // scratchBindingOwning reports the binding that holds the lease-owning slot for
 // dir in the loaded manifest, plus that slot's kind.
@@ -131,6 +186,21 @@ func TestRetirementRootWorktreeMoveKeepsPerEnvironmentBindings(t *testing.T) {
 	consumer := scratchConsumerFor(t, manifest, root.id)
 	if consumer.CurrentBindingID != aBinding.BindingID {
 		t.Fatalf("root current binding = %q, want the A-owning clone %q", consumer.CurrentBindingID, aBinding.BindingID)
+	}
+	// The parked environment and a real child consumer of it must both resolve
+	// to E0's persisted identity.
+	if consumer.WorktreeRestoreBindingID != e0ID {
+		t.Fatalf("worktree-restore role = %q, want the parked E0 %q", consumer.WorktreeRestoreBindingID, e0ID)
+	}
+	if err := root.installChildScratchRetention(launch, "shared-child"); err != nil {
+		t.Fatalf("register shared child: %v", err)
+	}
+	manifest, err = sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child := scratchConsumerFor(t, manifest, "shared-child"); child.CurrentBindingID != e0ID {
+		t.Fatalf("shared child consumer binding = %q, want the shared E0 %q", child.CurrentBindingID, e0ID)
 	}
 }
 
@@ -295,6 +365,199 @@ func TestRetirementRootWorktreeExitKeepsParkedIdentityAndMintedSlot(t *testing.T
 		t.Fatalf("A was not retained as a pinned reference: %v", err)
 	}
 	_ = handle.Retain()
+}
+
+// TestRetirementResumedWorktreeKeepsBindingIdentityAcrossBackswap is plan
+// 646/648/650/654's cold-resume case: a root crashes while occupied in a real
+// worktree and is resumed over the same state dir. The re-entered environment
+// must carry the persisted binding identity for the environment it represents
+// (E1, the one that owned A), its parked worktreeRestoreEnv must carry the
+// parked environment's identity (E0), and a post-resume backswap must persist
+// the ownership transition before the move, leaving no stale owning slot on E1.
+func TestRetirementResumedWorktreeKeepsBindingIdentityAcrossBackswap(t *testing.T) {
+	sr, root := newResumeScratchLane(t)
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	launch, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("launch env = %T, want a local environment", root.currentEnv())
+	}
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	aDir := launch.SessionScratchDir()
+	if aDir == "" {
+		t.Fatal("launch environment minted no scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(aDir) })
+	launchBinding, err := launch.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e0ID := launchBinding.BindingID
+	if e0ID == "" {
+		t.Fatal("launch environment has no binding id")
+	}
+
+	r := sr.wt()
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entered, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || entered == launch {
+		t.Fatal("enter did not install a distinct clone")
+	}
+	enteredBinding, err := entered.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1ID := enteredBinding.BindingID
+	if e1ID == "" || e1ID == e0ID {
+		t.Fatalf("clone binding = %q, want a distinct id beside %q", e1ID, e0ID)
+	}
+	meta := root.Meta()
+	if meta.WorktreePath == "" || meta.WorktreeRestoreRoot == "" {
+		t.Fatalf("crashed meta records no worktree occupancy: %+v", meta)
+	}
+
+	// Crash: release the lease the entered environment holds and abandon the
+	// runtime, then resume the same id over the same state dir.
+	crashResumeScratchRoot(t, root, entered)
+	restored, err := RestoreSessionFromMetaWithConfig(w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(sr.mainRoot), meta, sr.restoreConfig())
+	if err != nil {
+		t.Fatalf("resume root: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+
+	reentered, ok := restored.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("re-entered env = %T, want a local environment", restored.currentEnv())
+	}
+	if got := reentered.WorkingDirectory(); got != meta.WorktreePath {
+		t.Fatalf("re-entered working dir = %q, want the persisted worktree %q", got, meta.WorktreePath)
+	}
+	reenteredBinding, err := reentered.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("re-entered env binding: %v (want the persisted E1 %q)", err, e1ID)
+	}
+	if reenteredBinding.BindingID != e1ID {
+		t.Fatalf("re-entered env binding id = %q, want the persisted E1 %q", reenteredBinding.BindingID, e1ID)
+	}
+	if got := reentered.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(aDir) {
+		t.Fatalf("re-entered scratch = %q, want the restored A %q", got, aDir)
+	}
+	// The resumed environment owns A's lease under its own identity, so
+	// PinOwnedScratch (which no-ops only when an env carries no binding) now
+	// publishes any later mint durably instead of dropping it.
+	if slot := reenteredBinding.Slots[sandbox.ScratchKindUnsandboxed]; !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(aDir) {
+		t.Fatalf("re-entered binding slot = %+v, want it owning A at %q", slot, aDir)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumer := scratchConsumerFor(t, manifest, restored.id); consumer.WorktreeRestoreBindingID != e0ID {
+		t.Fatalf("resumed worktree-restore role = %q, want the parked E0 %q", consumer.WorktreeRestoreBindingID, e0ID)
+	}
+
+	// The hook runs after AdoptSessionScratch (the source E1's handles have
+	// already moved) and before the install, so observing E0 owning A there
+	// proves the transition was persisted before the lease moved, not after.
+	e0OwnedAAtMove := false
+	restored.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		current, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Errorf("load manifest during post-resume exit: %v", err)
+			return
+		}
+		owning, _, ok := scratchBindingOwning(t, current, aDir)
+		e0OwnedAAtMove = ok && owning.BindingID == e0ID
+	}
+	if _, ok, err := restored.exitWorktree(); err != nil || !ok {
+		t.Fatalf("post-resume exit = ok=%v err=%v, want a backswap", ok, err)
+	}
+	if !e0OwnedAAtMove {
+		t.Fatal("post-resume backswap had not persisted E0 owning A before the move completed")
+	}
+
+	manifest, err = sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owning, _, ok := scratchBindingOwning(t, manifest, aDir)
+	if !ok || owning.BindingID != e0ID {
+		t.Fatalf("A owner after the post-resume backswap = %+v ok=%v, want E0 %q", owning, ok, e0ID)
+	}
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == e1ID {
+			if slot, still := binding.Slots[sandbox.ScratchKindUnsandboxed]; still && slot.OwnsLease {
+				t.Fatalf("stale lease-owning A slot survived on the pre-crash binding %q: %+v", e1ID, binding.Slots)
+			}
+		}
+	}
+	if consumer := scratchConsumerFor(t, manifest, restored.id); consumer.CurrentBindingID != e0ID {
+		t.Fatalf("resumed root current binding = %q, want E0 %q", consumer.CurrentBindingID, e0ID)
+	}
+}
+
+// TestRetirementSwapStagePreservesRecordedRoles covers plan 650's role
+// durability across a swap: the stage transaction may change only the session's
+// current binding, so the role ids it already recorded (the parked
+// worktree-restore binding here) must survive the seconds-wide window before
+// the swap completes and re-registers roles. A crash or refusal in that window
+// must not leave the manifest without them.
+func TestRetirementSwapStagePreservesRecordedRoles(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	root := r.s
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	launch, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("launch env = %T, want a local environment", root.currentEnv())
+	}
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	aDir := launch.SessionScratchDir()
+	t.Cleanup(func() { _ = os.RemoveAll(aDir) })
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parkedID := scratchConsumerFor(t, manifest, root.id).WorktreeRestoreBindingID
+	if parkedID == "" {
+		t.Fatal("the live enter recorded no worktree-restore role to preserve")
+	}
+
+	wiped := false
+	root.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		current, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Errorf("load manifest during exit: %v", err)
+			return
+		}
+		for _, consumer := range current.Consumers {
+			if consumer.SessionID == root.id && consumer.WorktreeRestoreBindingID == "" {
+				wiped = true
+			}
+		}
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if wiped {
+		t.Fatal("the swap stage durably wiped the session's recorded worktree-restore role before the swap completed")
+	}
 }
 
 // TestRetirementColdDelegateScratchManifest proves the root-owned manifest

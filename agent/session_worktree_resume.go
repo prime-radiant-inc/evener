@@ -58,6 +58,15 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 	restoreRoot := strings.TrimSpace(meta.WorktreeRestoreRoot)
 	target := filepath.Clean(path)
+	// The persisted parked environment's identity, so the restore target the
+	// session re-creates below carries the same binding it had before the crash
+	// (plan 648/654). Empty when the root had no parked role recorded.
+	parkedBindingID := ""
+	if pool := s.retainedScratch.Load(); pool != nil {
+		if consumer, ok := pool.consumers[s.id]; ok {
+			parkedBindingID = consumer.WorktreeRestoreBindingID
+		}
+	}
 
 	// Every environment the session leaves this function on is a clone of local,
 	// and a clone owns nothing of its original: the scratch local already
@@ -68,10 +77,18 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// through swapEnvAndRefresh (see the doc comment above), which makes the
 	// same move for every later enter and exit. worktreeRestoreEnv is not the
 	// session's environment, so it adopts nothing until an exit swaps onto it.
-	reroot := func(dir string) *execenv.LocalExecutionEnvironment {
+	reroot := func(dir string) (*execenv.LocalExecutionEnvironment, error) {
 		next := local.WithWorkingDirectory(dir)
 		next.AdoptSessionScratch(local)
-		return next
+		// The scratch (and so the logical environment) follows the session onto
+		// the clone, so its opaque binding identity must follow too: without it
+		// the resumed environment owns a lease the manifest cannot attribute and
+		// the next swap stages nothing, releasing that lease with no transition
+		// persisted (plan 648/654).
+		if err := s.inheritScratchRetentionBinding(next, local); err != nil {
+			return next, err
+		}
+		return next, nil
 	}
 
 	// notice lands the env at the persisted restore root (when one was
@@ -80,7 +97,11 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// the restore root... with a notice").
 	notice := func(reason string) {
 		if restoreRoot != "" {
-			s.env = reroot(restoreRoot)
+			next, err := reroot(restoreRoot)
+			s.env = next
+			if err != nil {
+				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("could not carry scratch binding identity into %s: %v", restoreRoot, err)})
+			}
 			reason += "; resuming at " + restoreRoot
 		}
 		// Buffered, not emitted directly: this runs before initSessionState
@@ -189,11 +210,19 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 
 	// Re-enter: root the env in the worktree directly. No swapEnvAndRefresh
 	// here — see the doc comment above.
-	s.env = reroot(target)
+	reentered, err := reroot(target)
+	if err != nil {
+		return fmt.Errorf("carry scratch binding identity into %s: %w", target, err)
+	}
+	s.env = reentered
 	s.worktreeCurrentPath = target
 	s.worktreeCurrentManaged = meta.WorktreeManaged
 	if restoreRoot != "" {
-		s.worktreeRestoreEnv = local.WithWorkingDirectory(restoreRoot)
+		parked := local.WithWorkingDirectory(restoreRoot)
+		if err := s.assignRetainedScratchBinding(parked, parkedBindingID); err != nil {
+			return fmt.Errorf("restore scratch binding identity for %s: %w", restoreRoot, err)
+		}
+		s.worktreeRestoreEnv = parked
 	}
 	return nil
 }
