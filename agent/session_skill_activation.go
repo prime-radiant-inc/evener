@@ -313,6 +313,12 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 	if batch == nil {
 		return nil
 	}
+	type admission struct {
+		obligation schema.SkillDeliveryObligation
+		carrier    schema.Turn
+		duplicate  bool
+	}
+	admissions := make([]admission, 0, len(batch.Items))
 	for _, item := range batch.Items {
 		identity := skillContentIdentity(item)
 		obligation := schema.SkillDeliveryObligation{
@@ -329,10 +335,12 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 		s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, obligation)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
+		adm := admission{obligation: obligation, duplicate: duplicate}
 		if duplicate {
 			// Identical complete content was already admitted; the obligation
 			// stands and final dispatch revalidation decides whether the carrier
 			// survived. No duplicate body joins the history.
+			admissions = append(admissions, adm)
 			continue
 		}
 		outcome := schema.SkillActivationOutcome{
@@ -348,12 +356,39 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 			Outcomes:    []schema.SkillActivationOutcome{outcome},
 			Obligations: []schema.SkillDeliveryObligation{obligation},
 		}
-		s.recordTurn(carrier, carrier)
+		adm.carrier = carrier
+		admissions = append(admissions, adm)
 	}
-	// Obligations must be durable before a retry or restart can lose them.
+	// Obligations must be durable BEFORE any carrier is published: a crash or
+	// failed save in between must never leave a durable carrier whose
+	// obligation a restart would lose. The reverse window is safe — an
+	// obligation whose carrier never landed re-delivers from its recorded
+	// source at the next dispatch seam.
 	if err := s.saveMeta(); err != nil {
+		// Roll the batch's obligations back out of memory: no carrier has been
+		// published for them yet, so nothing half-admits.
+		drop := make(map[string]bool, len(admissions))
+		for _, adm := range admissions {
+			drop[adm.obligation.InvocationID] = true
+		}
+		s.mu.Lock()
+		kept := s.skillLifecycle.Obligations[:0]
+		for _, obligation := range s.skillLifecycle.Obligations {
+			if !drop[obligation.InvocationID] {
+				kept = append(kept, obligation)
+			}
+		}
+		s.skillLifecycle.Obligations = kept
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
 		return err
+	}
+	for _, adm := range admissions {
+		if adm.duplicate {
+			continue
+		}
+		s.recordTurn(adm.carrier, adm.carrier)
 	}
 	return nil
 }
