@@ -306,17 +306,29 @@ func steeringCarrierTurnIDFromContext(ctx context.Context) string {
 // treats every case the same way -- stand down -- because the steering that
 // prompted the wake, if still queued, stays queued for whichever turn runs
 // next; nothing is lost by waiting.
-// wakeHasClaimableWork reports whether this wake has work it could actually
-// take, by the same predicates the two claims below decide with.
-func (s *Session) wakeHasClaimableWork() bool {
-	snapshot := s.clientMutations.snapshot()
-	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot)
+func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
+	if err := s.ensureClientMutationStore(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
+		return "", false
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if !steeringCarrierRailOpen(snapshot) {
+			return nil
+		}
+		if id := claimableSteeringCarrierTurnID(snapshot); id != "" {
+			snapshot.ActiveTurnID = id
+			turnID = id
+		}
+		return nil
+	}); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v", err)})
+		return "", false
+	}
+	return turnID, turnID != ""
 }
 
-// steeringCarrierClaimable reports whether claimSteeringCarrierTurn may take a
-// carrier turn. Like queueHeadClaimable it is the whole of that decision, so a
-// caller asking whether this session has steering it could actually run asks the
-// question the claim asks.
+// steeringCarrierRailOpen reports whether the steering rail is open to a claim
+// at all, before asking whether any steer is ready to use it.
 //
 // A Stop parks pending user steering until the user asks for something to run,
 // the same way QueueHeld parks the input queue. Claiming the steering carrier
@@ -324,15 +336,14 @@ func (s *Session) wakeHasClaimableWork() bool {
 // is refused -- mirroring popQueueHead's QueueHeld gate (issue #174). The steer
 // stays in PendingExecutions/SteeringOrder; nothing moves, so its causal
 // provenance is never at risk (issue #146, Option C).
-func steeringCarrierClaimable(snapshot *clientMutationSnapshot) bool {
-	if snapshot.InterruptFence != nil || snapshot.ActiveTurnID != "" || snapshot.SteeringHeld {
-		return false
-	}
-	return claimableSteeringCarrierTurnID(snapshot) != ""
+func steeringCarrierRailOpen(snapshot *clientMutationSnapshot) bool {
+	return snapshot.InterruptFence == nil && snapshot.ActiveTurnID == "" && !snapshot.SteeringHeld
 }
 
 // claimableSteeringCarrierTurnID names the reserved turn the first eligible
-// pending steer already owns, or "" when no steer is ready to carry one.
+// pending steer already owns, or "" when no steer is ready to carry one. The
+// claim above walks the order once through this; the gate's predicate asks it
+// the same question without taking anything.
 func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
 	for _, id := range snapshot.SteeringOrder {
 		pending, exists := snapshot.PendingExecutions[id]
@@ -344,23 +355,20 @@ func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
 	return ""
 }
 
-func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
-	if err := s.ensureClientMutationStore(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return "", false
-	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if !steeringCarrierClaimable(snapshot) {
-			return nil
-		}
-		snapshot.ActiveTurnID = claimableSteeringCarrierTurnID(snapshot)
-		turnID = snapshot.ActiveTurnID
-		return nil
-	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v", err)})
-		return "", false
-	}
-	return turnID, turnID != ""
+// steeringCarrierClaimable reports whether claimSteeringCarrierTurn would take a
+// carrier turn: the rail is open and a steer is ready to use it. Like
+// queueHeadClaimable it is the whole of that decision, so a caller asking
+// whether this session has steering it could actually run asks the question the
+// claim asks.
+func steeringCarrierClaimable(snapshot *clientMutationSnapshot) bool {
+	return steeringCarrierRailOpen(snapshot) && claimableSteeringCarrierTurnID(snapshot) != ""
+}
+
+// wakeHasClaimableWork reports whether this wake has work it could actually
+// take, by the same predicates the two claims decide with.
+func (s *Session) wakeHasClaimableWork() bool {
+	snapshot := s.clientMutations.snapshot()
+	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot)
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored

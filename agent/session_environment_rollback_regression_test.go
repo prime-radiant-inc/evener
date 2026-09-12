@@ -1113,43 +1113,25 @@ func TestPoisonedWriterRefusesAWakeCarryingSteering(t *testing.T) {
 	}
 }
 
-// holdParkedWork parks the queue and pending steering the way a Stop does. The
-// Stop path itself needs an active turn to fence, which is a whole turn fixture
-// that exercises nothing this gate reads; the durable flags are what both claim
-// sites consult, and setting them directly is how the existing held-state tests
-// reach this state (session_stop_and_queued_work_test.go, session_steering_held_test.go).
-func holdParkedWork(t *testing.T, sess *Session) {
-	t.Helper()
-	if err := sess.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.QueueHeld = true
-		snapshot.SteeringHeld = true
-		return nil
-	}); err != nil {
-		t.Fatalf("park the queued work: %v", err)
-	}
-}
-
 // TestPoisonedWriterStandsDownOnParkedQueuedWork: a Stop parks the queue, and
 // parked work is not work this wake can take — popQueueHead refuses it at the
 // same flag. A refusal here would answer every wake with an error for a message
 // the session was never going to claim, which is the idle case in a different
 // coat.
 func TestPoisonedWriterStandsDownOnParkedQueuedWork(t *testing.T) {
-	sess := newTestSessionForEnvctx(t)
-	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
-		ClientMutationID: "parked-behind-a-stop",
-		Input:            []appwire.InputItem{{Type: "text", Text: "parked"}},
-	}); err != nil {
-		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+
+	queueOneMutation(t, sess, "parked-behind-a-stop", "parked")
+	if _, err := sess.InterruptClientMutation(t.Context(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-over-the-parked-queue",
+	}, func() {}); err != nil {
+		t.Fatalf("stop over the queue: %v", err)
+	}
+	if !sess.clientMutations.queueHeld() {
+		t.Fatal("setup: the Stop did not park the queue")
 	}
 	poisonSessionTranscript(t, sess)
-	holdParkedWork(t, sess)
-	if got := sess.QueueDepth(); got != 1 {
-		t.Fatalf("setup: queue depth = %d, want the parked message still counted", got)
-	}
 
 	result, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if result != "" || ran || err != nil {
@@ -1158,19 +1140,35 @@ func TestPoisonedWriterStandsDownOnParkedQueuedWork(t *testing.T) {
 	if got := sess.QueueDepth(); got != 1 {
 		t.Fatalf("queue depth after the stand-down = %d, want the parked message untouched", got)
 	}
+	if !sess.clientMutations.queueHeld() {
+		t.Fatal("the stand-down released the Stop's hold on the queue")
+	}
 }
 
 // TestPoisonedWriterStandsDownOnParkedSteering: the same, through the steering
-// rail. hasPendingUserSteering still answers yes for a parked steer — the steer
-// never moves — so the raw count says work and the claim gate says none.
+// rail. A parked steer stays pending — it never moves — so the raw count says
+// work while the claim gate says none.
 func TestPoisonedWriterStandsDownOnParkedSteering(t *testing.T) {
-	sess := newTestSessionForEnvctx(t)
-	sess.SteerFromUser("parked behind a stop")
-	poisonSessionTranscript(t, sess)
-	holdParkedWork(t, sess)
-	if !sess.hasPendingUserSteering() {
-		t.Fatal("setup: the parked steer is not pending")
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	serveSession(t, sess)
+
+	runningStartTurn(t, sess, "running-turn", "do the thing")
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-parked-by-the-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "actually do it this way"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
+	if _, err := sess.InterruptClientMutation(t.Context(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-over-the-pending-steer",
+	}, func() {}); err != nil {
+		t.Fatalf("stop over the steer: %v", err)
+	}
+	if !sess.clientMutations.steeringHeld() {
+		t.Fatal("setup: the Stop did not park the steering rail")
+	}
+	poisonSessionTranscript(t, sess)
 
 	result, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if result != "" || ran || err != nil {
@@ -1178,5 +1176,8 @@ func TestPoisonedWriterStandsDownOnParkedSteering(t *testing.T) {
 	}
 	if !sess.hasPendingUserSteering() {
 		t.Fatal("the stand-down consumed the parked steer")
+	}
+	if !sess.clientMutations.steeringHeld() {
+		t.Fatal("the stand-down released the Stop's hold on the steering rail")
 	}
 }

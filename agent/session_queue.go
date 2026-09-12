@@ -661,27 +661,6 @@ func queuedEntryPreviewLine(entry queuedInput) string {
 
 // popQueueHead removes and returns the next queued entry. Returns a zero
 // value when the queue is empty.
-// queueHeadClaimable reports whether the queue head is one popQueueHead may
-// take. It is the whole of that decision, so every caller that needs to know
-// whether this session has a queued message it could actually run asks the same
-// question the pop asks -- a wake that answered it differently would act on work
-// the pop would refuse.
-//
-// A Stop is accepted before it is finalized, and the runner is being cancelled
-// for the whole of that window. Claiming the queue head there hands the message
-// to a turn that is already dying, so it is refused -- the same rule
-// AcceptClientMutationStart and claimClientMutationStart hold at the other two
-// claim sites. QueueHeld is the same refusal held past the fence's finalize: a
-// Stop parks the queue until the user asks for something to run, and this is the
-// single gate both restart rails claim through -- the drain loop and
-// ProcessPendingUserInput behind the wake (kata wms7).
-func queueHeadClaimable(snapshot *clientMutationSnapshot) bool {
-	if len(snapshot.InputQueue) == 0 || snapshot.InterruptFence != nil || snapshot.QueueHeld {
-		return false
-	}
-	return !clientMutationQueueEntryReserved(snapshot, snapshot.InputQueue[0].ID)
-}
-
 func (s *Session) popQueueHead() queuedInput {
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
@@ -727,6 +706,27 @@ func (s *Session) popQueueHead() queuedInput {
 		s.reflectDurableInputQueue()
 	}
 	return queued
+}
+
+// queueHeadClaimable reports whether the queue head is one popQueueHead may
+// take. It is the whole of that decision, so every caller that needs to know
+// whether this session has a queued message it could actually run asks the same
+// question the pop asks -- a wake that answered it differently would act on work
+// the pop would refuse.
+//
+// A Stop is accepted before it is finalized, and the runner is being cancelled
+// for the whole of that window. Claiming the queue head there hands the message
+// to a turn that is already dying, so it is refused -- the same rule
+// AcceptClientMutationStart and claimClientMutationStart hold at the other two
+// claim sites. QueueHeld is the same refusal held past the fence's finalize: a
+// Stop parks the queue until the user asks for something to run, and this is the
+// single gate both restart rails claim through -- the drain loop and
+// ProcessPendingUserInput behind the wake (kata wms7).
+func queueHeadClaimable(snapshot *clientMutationSnapshot) bool {
+	if len(snapshot.InputQueue) == 0 || snapshot.InterruptFence != nil || snapshot.QueueHeld {
+		return false
+	}
+	return !clientMutationQueueEntryReserved(snapshot, snapshot.InputQueue[0].ID)
 }
 
 func (s *Session) pushQueueHead(entry queuedInput) error {
