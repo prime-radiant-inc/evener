@@ -130,6 +130,61 @@ func TestGCPADCAFailingTransportIsNotAnAuthFailure(t *testing.T) {
 	}
 }
 
+// The token endpoint reports its own transient conditions through the same
+// RFC 6749 error field (temporarily_unavailable on a 503, server_error): those
+// are not verdicts on the credential, and must keep their retryable meaning
+// rather than telling the reader to sign in again.
+func TestGCPADCATransientTokenFailureKeepsItsRetryableMeaning(t *testing.T) {
+	transient := &oauth2.RetrieveError{ErrorCode: "temporarily_unavailable", ErrorDescription: "The authorization server is currently unable to handle the request."}
+	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return &google.Credentials{JSON: []byte(storedUserJSON), TokenSource: failingTokenSource{err: transient}}, nil
+	}}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}})
+	if err == nil {
+		t.Fatal("Apply accepted a failed token")
+	}
+	if llm.Kind(err) == llm.KindAuthentication {
+		t.Fatalf("Kind = authentication for a transient token failure: %v", err)
+	}
+	if got := llm.Classify(err); got != llm.ErrorClassRetryable {
+		t.Fatalf("Classify = %v, want retryable: a token endpoint that is briefly unavailable is worth retrying", got)
+	}
+	var cfg *llm.ConfigurationError
+	if errors.As(err, &cfg) {
+		t.Fatalf("a transient token failure was reported as configuration: %v", err)
+	}
+}
+
+// A stored credential the token endpoint refuses is reported as a refused
+// credential too, with the stored JSON named as the thing to replace.
+func TestGCPADCReportsAStoredCredentialRefusal(t *testing.T) {
+	refused := &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: "Token has been expired or revoked."}
+	a := &GCPADC{
+		CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
+			return &google.Credentials{JSON: []byte(storedUserJSON), TokenSource: failingTokenSource{err: refused}}, nil
+		},
+		FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+			t.Fatal("a stored credential must not fall back to application-default credentials")
+			return nil, errors.New("unreachable")
+		},
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req, storedRes("vertex", storedUserJSON))
+	if err == nil {
+		t.Fatal("Apply accepted a refused stored credential")
+	}
+	if llm.Kind(err) != llm.KindAuthentication {
+		t.Fatalf("Kind = %v, want authentication", llm.Kind(err))
+	}
+	if !strings.Contains(err.Error(), "stored credential JSON") {
+		t.Fatalf("err = %v, want the stored credential named", err)
+	}
+	if !errors.Is(err, refused) {
+		t.Fatalf("err = %v, want the oauth error in the chain", err)
+	}
+}
+
 // A credential replaced under a long-running process (a re-login rewrites the
 // ADC file) must reach the next request: the cached source is dropped when the
 // credential it was built from no longer matches, while an unchanged

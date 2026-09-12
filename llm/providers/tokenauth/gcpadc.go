@@ -100,11 +100,18 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 
 // oauthRefusal returns the OAuth error code when err is the token endpoint's
 // refusal of the credential itself — invalid_grant for an expired, revoked, or
-// replaced refresh token, invalid_client for a bad secret. Anything else (a
-// deadline, an unreachable endpoint) carries no code: nothing about the
-// credential was decided.
+// replaced refresh token, invalid_client for a bad secret. The same RFC 6749
+// error field carries the endpoint's own transient conditions
+// (temporarily_unavailable on a 503, server_error), which are not verdicts on
+// the credential and must keep their retryable meaning; so does any failure
+// that carries no code at all (a deadline, an unreachable endpoint).
 func oauthRefusal(err error) string {
-	if refused, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
+	refused, ok := errors.AsType[*oauth2.RetrieveError](err)
+	if !ok {
+		return ""
+	}
+	switch refused.ErrorCode {
+	case "invalid_grant", "invalid_client":
 		return refused.ErrorCode
 	}
 	return ""
