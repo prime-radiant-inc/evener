@@ -383,6 +383,7 @@ type retirementMutationRecord struct {
 	Method           string          `json:"method"`
 	Payload          json.RawMessage `json:"payload"`
 	StableTurnID     string          `json:"stable_turn_id"`
+	OperationState   string          `json:"operation_state"`
 	ExecutionState   string          `json:"execution_state"`
 }
 
@@ -683,6 +684,23 @@ func TestRetirementResumeSequentialDistinctIDsAccepted(t *testing.T) {
 	}
 	close(f.providerGate)
 	f.awaitTurnEnd(t, ctx)
+
+	// The turn-ended event can precede the journal's terminal transition, which
+	// is what clears the session's active-turn fence
+	// (agent/session_client_mutation.go: OperationState=terminal alongside
+	// ActiveTurnID=""). The second distinct start must wait for that reflection
+	// — the plan's "settlement event and journal reflection" — or a loaded host
+	// can hand it a "turn is already active" conflict.
+	for {
+		if rec, ok := f.journal(t)["sequential-first"]; ok && rec.OperationState == "terminal" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("first mutation never reached terminal reflection: %v; journal = %+v", ctx.Err(), f.journal(t))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 
 	// The replacement is the live owner now: a distinct id starts a fresh turn
 	// without any wait, and both records stay intact in the shared journal.
