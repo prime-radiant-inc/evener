@@ -679,7 +679,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, reg Registry, name, ne
 	var undo []func() error
 	if itsOwn {
 		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg); err != nil {
-			return registryAsFound, err
+			return registryAsFound, m.markerAfterFailedMove(err)
 		}
 	} else {
 		// An entry whose directories another marketplace owns leaves that
@@ -693,7 +693,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, reg Registry, name, ne
 		if owner == "" {
 			reg = rekeyRegistry(reg, name, newName, "", "")
 		} else if reg, undo, err = m.movePluginCachesToNewName(reg, name, newName); err != nil {
-			return registryAsFound, err
+			return registryAsFound, m.markerAfterFailedMove(err)
 		}
 	}
 	if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
@@ -712,6 +712,20 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, reg Registry, name, ne
 	}
 	m.removeRenameMarker()
 	return reg, nil
+}
+
+// markerAfterFailedMove decides the marker's fate after one of the move helpers
+// failed. A helper that put every directory back (no
+// errRenameRollbackIncomplete) leaves the store at the old name with nothing to
+// resume, so the marker goes and the failure is reported as it stands; one that
+// could not leaves the store between the two names, which is what the marker is
+// for, so it stays and the error names it for the next lock holder.
+func (m *Manager) markerAfterFailedMove(err error) error {
+	if errors.Is(err, errRenameRollbackIncomplete) {
+		return errors.Join(err, m.markerLeftForRecovery("rename"))
+	}
+	m.removeRenameMarker()
+	return err
 }
 
 // pluginCacheMove is one plugin's cache directory moving with the name of an
@@ -742,7 +756,10 @@ func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string) 
 	}
 	var undo []func() error
 	fail := func(err error) (Registry, []func() error, error) {
-		return Registry{}, nil, errors.Join(err, runUndo(undo))
+		if undoErr := runUndo(undo); undoErr != nil {
+			return Registry{}, nil, errors.Join(err, undoErr, errRenameRollbackIncomplete)
+		}
+		return Registry{}, nil, err
 	}
 	newCache := filepath.Join(m.cacheDir(), newName)
 	// Nothing occupies the new name (refuseLeftoversUnder), so the cache

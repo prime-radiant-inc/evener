@@ -1988,6 +1988,94 @@ func TestMarketplaceNameMigration_AFailedSaveRemovesTheMarker(t *testing.T) {
 	mustNotExist(t, filepath.Join(m.cacheDir(), "a-b"))
 }
 
+// A move that fails and puts back everything it moved leaves the store at the
+// old name, so there is nothing for a marker to resume: it is dropped and the
+// failure is reported. A marker left here makes every later lock holder retry
+// the same rename, and refuse the whole store once something else takes the
+// destination.
+func TestMarketplaceNameMigration_AFailedMoveThatRollsBackRemovesTheMarker(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	widget := plantLegacyMarketplace(t, m, "a/b", "widget")
+	orig := marketplaceRename
+	t.Cleanup(func() { marketplaceRename = orig })
+	marketplaceRename = func(from, to string) error {
+		if to == m.marketplaceDir("a-b") {
+			return errors.New("boom")
+		}
+		return orig(from, to)
+	}
+
+	_, err := m.ListMarketplaces(context.Background())
+	marketplaceRename = orig
+	if err == nil {
+		t.Fatal("expected the clone move to fail")
+	}
+	mustNotExist(t, renameMarkerFile(m))
+	mustExist(t, widget)
+	mustExist(t, filepath.Join(m.marketplaceDir("a/b"), ".claude-plugin", "marketplace.json"))
+	mustNotExist(t, m.marketplaceDir("a-b"))
+	mustNotExist(t, filepath.Join(m.cacheDir(), "a-b"))
+}
+
+// The same holds when the plugin cache is what fails to move: the clone the
+// move already made is put back, so the store is at the old name again and the
+// marker goes with the failure.
+func TestMarketplaceNameMigration_AFailedCacheMoveThatRollsBackRemovesTheMarker(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/b", "widget")
+	orig := marketplaceRename
+	t.Cleanup(func() { marketplaceRename = orig })
+	marketplaceRename = func(from, to string) error {
+		if to == filepath.Join(m.cacheDir(), "a-b") {
+			return errors.New("boom")
+		}
+		return orig(from, to)
+	}
+
+	_, err := m.ListMarketplaces(context.Background())
+	marketplaceRename = orig
+	if err == nil {
+		t.Fatal("expected the cache move to fail")
+	}
+	mustNotExist(t, renameMarkerFile(m))
+	mustExist(t, filepath.Join(m.marketplaceDir("a/b"), ".claude-plugin", "marketplace.json"))
+	mustNotExist(t, m.marketplaceDir("a-b"))
+	mustExist(t, filepath.Join(m.cacheDir(), "a/b", "widget", "sha1"))
+	mustNotExist(t, filepath.Join(m.cacheDir(), "a-b"))
+}
+
+// The marker's other half: a move that fails and cannot put back what it moved
+// leaves the store between the two names, so the marker stays and the error
+// names it, for the next lock holder to finish the rename from.
+func TestMarketplaceNameMigration_AnIncompleteMoveRollbackKeepsTheMarker(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/b", "widget")
+	orig := marketplaceRename
+	t.Cleanup(func() { marketplaceRename = orig })
+	// The clone moves, the cache move then fails, and the clone cannot be
+	// renamed back: the move's own rollback fails, so the store is left
+	// between the two names rather than at either.
+	marketplaceRename = func(from, to string) error {
+		if to == filepath.Join(m.cacheDir(), "a-b") || from == m.marketplaceDir("a-b") {
+			return errors.New("boom")
+		}
+		return orig(from, to)
+	}
+
+	_, err := m.ListMarketplaces(context.Background())
+	marketplaceRename = orig
+	if err == nil {
+		t.Fatal("expected the cache move to fail")
+	}
+	mustExist(t, renameMarkerFile(m))
+	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	}
+}
+
 // A save that fails and cannot put the registry back leaves the old record
 // beside the new keys, which is the store between the two names and exactly
 // what the marker is for: the rollback reached neither state, so the marker

@@ -483,7 +483,10 @@ func runUndo(undo []func() error) error {
 func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg Registry) (MarketplaceRef, Registry, []func() error, error) {
 	var undo []func() error
 	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
-		return MarketplaceRef{}, Registry{}, nil, errors.Join(err, runUndo(undo))
+		if undoErr := runUndo(undo); undoErr != nil {
+			return MarketplaceRef{}, Registry{}, nil, errors.Join(err, undoErr, errRenameRollbackIncomplete)
+		}
+		return MarketplaceRef{}, Registry{}, nil, err
 	}
 	if ref.Source.Kind != SourceDirectory {
 		oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
@@ -533,6 +536,14 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 // half-state from the two it rolls back to, so a caller whose rename wrote a
 // marker keeps it for that state (migrateMarketplaceName).
 var errStoreBetweenNames = errors.New("the store is left between the two names")
+
+// errRenameRollbackIncomplete marks a move helper's failure that could not put
+// every directory back where it found it. A move writes neither store file, so
+// a failure whose undo succeeded leaves the store at the old name with nothing
+// left to resume; only one that could not leaves it between the two names. A
+// rename that wrote a marker keeps it for this state alone
+// (migrateMarketplaceName).
+var errRenameRollbackIncomplete = errors.New("a failed move could not be put back completely")
 
 // saveRename records a rename in both store files, the registry first: a
 // marketplaces file naming a marketplace whose plugins are still keyed under
