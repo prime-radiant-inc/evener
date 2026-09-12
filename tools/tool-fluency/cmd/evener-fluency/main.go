@@ -546,8 +546,7 @@ func isTestCommand(argsJSON string) bool {
 // computeProbeMetrics walks the ROOT session's transcript (delegate and
 // subagent sessions share the state dir but run their own rounds, so they are
 // excluded the same way rootSessionID excludes them) and computes the
-// phase-discipline metrics. Rounds are 1-based tool rounds: assistant turns
-// that carry at least one tool call. Zero means "never".
+// phase-discipline metrics defined on probeMetrics.
 func computeProbeMetrics(stateDir string, wireNames map[string]string) (probeMetrics, error) {
 	var m probeMetrics
 	rootID, err := rootSessionID(stateDir)
@@ -757,8 +756,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
 		res.ModelToolCounts = counts
 	}
-	// Phase-discipline metrics (#187): computed from the same transcripts
-	// the counts above already walk, reported per the probe's metrics block.
+	// Phase-discipline metrics (#187): read from the root session's transcript
+	// rather than through the enumeration the counts above walk, and reported
+	// per the probe's metrics block.
 	applyProbeMetrics(&res, probe, stateDir, wireNames)
 	if err != nil {
 		res.Error = err.Error()
@@ -1021,8 +1021,8 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 
 // walkTranscripts calls fn with every session transcript under stateDir in
 // session-file order. It returns the first error from fn or from reading a
-// transcript. Both the tool-count aggregation and the phase metrics walk
-// the same transcripts in the same order through this single enumeration.
+// transcript. The tool-count aggregation walks every transcript through this
+// enumeration; the phase metrics read the root session's transcript directly.
 func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) error {
 	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
 	if err != nil {

@@ -230,10 +230,11 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int
 			if part.ToolCall == nil {
 				continue
 			}
+			arguments := strings.TrimSpace(string(part.ToolCall.Arguments))
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
-				Arguments:  strings.TrimSpace(string(part.ToolCall.Arguments)),
-				ArgPreview: truncate(strings.TrimSpace(string(part.ToolCall.Arguments)), argPreviewMax),
+				Arguments:  arguments,
+				ArgPreview: truncate(arguments, argPreviewMax),
 				Intent:     toolIntentFromArguments(part.ToolCall.Arguments),
 				IsResult:   part.ToolCall.Name == resultTool,
 			})
