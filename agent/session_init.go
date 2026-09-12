@@ -305,7 +305,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	if inheritedContext != nil {
 		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
-		s.history = ResumeHistory(inheritedContext)
+		// The inherited prefix comes from the parent's transcript, which keeps the
+		// raw notes block for display; the child's model context gets only the
+		// escaped copy, exactly as the parent's own requests do. The child's own
+		// transcript is seeded from inheritedContext below, so it keeps the raw
+		// text for display.
+		s.history = escapeNotesHistoryTurns(ResumeHistory(inheritedContext))
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
@@ -823,6 +828,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
 	}
+	// The durable transcript keeps the raw notes block for display, so model
+	// context must receive the escaped copy: rewrite those turns before the
+	// history becomes model context. The projection record is read first, because
+	// it is compared against raw renders (see lastNotesProjection).
+	restoredNotesBlock, notesEverProjected := lastNotesProjection(resumeHistory)
+	resumeHistory = escapeNotesHistoryTurns(resumeHistory)
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {
@@ -1005,15 +1016,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.pinnedNote = meta.PinnedNote
 	s.agentNote = meta.AgentNote
 	s.sessionURLs = append([]schema.SessionURL(nil), meta.SessionURLs...)
-	// Seed the notes-projection record from the restored history so the
+	// Seed the notes-projection record from the raw form captured above, so the
 	// change-gated projection (maybeAppendNotesContext) does not re-emit a
-	// snapshot the model already saw: the last NOTES_CONTEXT turn in the
-	// resumed history is the model's latest truth. Any NOTES_CONTEXT turn at
-	// all marks the store as having been projected (the transition-to-empty
-	// rule), even when the current store is empty — in that case the next
-	// projection after new content still emits, and a still-empty store
-	// stays silent.
-	s.seedNotesProjectionLocked(resumeHistory)
+	// snapshot the model already saw: the last NOTES_CONTEXT turn in the resumed
+	// history is the model's latest truth. Any NOTES_CONTEXT turn at all marks
+	// the store as having been projected (the transition-to-empty rule), even
+	// when the current store is empty — in that case the next projection after
+	// new content still emits, and a still-empty store stays silent.
+	s.notesLastProjected = restoredNotesBlock
+	s.notesEverProjected = notesEverProjected
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
 	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read

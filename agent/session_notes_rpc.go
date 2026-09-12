@@ -392,20 +392,41 @@ func (s *Session) notesSnapshot() (human, agentNote string) {
 // session whose store was NEVER non-empty this process renders nothing, so a
 // fresh session's context is byte-identical to today.
 func (s *Session) notesContextBlock() string {
-	return s.renderNotesContextBlock(false)
+	return s.renderNotesContextBlock()
 }
 
 // notesContextBlockForModel renders the model-facing copy of the block: the
-// framing tags stay literal and every dynamic field is escaped, so a note or
+// framing tags stay literal and everything between them is escaped, so a note or
 // label carrying the closing tag cannot terminate the block and make the model
 // read attacker-chosen text as harness-authored context (persistent indirect
 // prompt injection). Only this copy escapes — the raw block is what persists,
 // displays, and feeds tool output, so real URLs and text survive.
 func (s *Session) notesContextBlockForModel() string {
-	return s.renderNotesContextBlock(true)
+	return escapeNotesContextBlock(s.renderNotesContextBlock())
 }
 
-func (s *Session) renderNotesContextBlock(escape bool) string {
+// escapeNotesContextBlock returns the model-facing copy of a rendered
+// shared-notes block. It is the single definition of the escaping contract: the
+// renderer applies it to the live copy, and every path that puts a persisted
+// (raw) block back into model context applies it to that turn — a restored
+// transcript turn or a forked delegate's inherited prefix. The framing tags are
+// written at fixed ends of the block, so everything between them, including an
+// injected closing tag, is escaped and the block cannot be terminated from
+// inside. Text that is not a rendered block is escaped whole rather than passed
+// through raw.
+func escapeNotesContextBlock(block string) string {
+	inner, ok := strings.CutPrefix(block, notesBlockOpen)
+	if !ok {
+		return html.EscapeString(block)
+	}
+	inner, ok = strings.CutSuffix(inner, notesBlockClose)
+	if !ok {
+		return html.EscapeString(block)
+	}
+	return notesBlockOpen + html.EscapeString(inner) + notesBlockClose
+}
+
+func (s *Session) renderNotesContextBlock() string {
 	human, agentNote, urls, everProjected := s.notesProjectionSnapshot()
 	if human == "" && agentNote == "" && len(urls) == 0 {
 		if !everProjected {
@@ -413,24 +434,18 @@ func (s *Session) renderNotesContextBlock(escape bool) string {
 		}
 		return notesClearedBlock
 	}
-	field := func(value string) string {
-		if escape {
-			return html.EscapeString(value)
-		}
-		return value
-	}
 	var b strings.Builder
-	b.WriteString("<shared-notes>\n")
+	b.WriteString(notesBlockOpen)
 	if human != "" {
-		b.WriteString("Human: " + field(human) + "\n")
+		b.WriteString("Human: " + human + "\n")
 	}
 	if agentNote != "" {
-		b.WriteString("Agent: " + field(agentNote) + "\n")
+		b.WriteString("Agent: " + agentNote + "\n")
 	}
 	for _, u := range urls {
-		b.WriteString(field(formatNotesLinkLine(u)) + "\n")
+		b.WriteString(formatNotesLinkLine(u) + "\n")
 	}
-	b.WriteString("</shared-notes>")
+	b.WriteString(notesBlockClose)
 	return b.String()
 }
 
@@ -443,7 +458,15 @@ func (s *Session) renderNotesContextBlock(escape bool) string {
 // would stand as the model's latest truth. Distinct from "" (never
 // populated: project nothing) so the fill→remove-all→next-request sequence
 // shows empty rather than stale rows.
-const notesClearedBlock = "<shared-notes>\n(empty — all shared notes and links cleared)\n</shared-notes>"
+const notesClearedBlock = notesBlockOpen + "(empty — all shared notes and links cleared)\n" + notesBlockClose
+
+// The literal framing shared-notes blocks are rendered with. Kept as constants
+// so the escaping helper can re-frame a raw block exactly as the renderer wrote
+// it, without parsing attacker-influenced text.
+const (
+	notesBlockOpen  = "<shared-notes>\n"
+	notesBlockClose = "</shared-notes>"
+)
 
 // formatNotesLinkLine renders one session URL list entry for the model
 // context block and the notes_read tool output. The entry id rides alongside
@@ -550,20 +573,41 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 	s.notesLastProjected = ""
 }
 
-// seedNotesProjectionLocked records the last NOTES_CONTEXT turn of a restored
-// history as the already-projected block, so a resumed session's first
-// maybeAppendNotesContext call appends only when the current store differs
-// from what the model last saw. Callers must hold no lock; the seeding takes
-// s.mu itself (restore runs single-threaded before the session is visible).
-func (s *Session) seedNotesProjectionLocked(history []schema.Turn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// escapeNotesHistoryTurns returns history with every NOTES_CONTEXT turn replaced
+// by its model-facing escaped copy. A history built from a persisted source — a
+// resumed transcript, or a forked delegate's inherited prefix — carries the raw
+// block, which is only safe for display there: the raw block is what the
+// transcript must keep so renderers and tool output show the user's real text,
+// but model context must receive the escaped copy (see escapeNotesContextBlock),
+// or a note carrying the closing tag regains the harness framing on every
+// request the session serves. The input is not modified.
+func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
+	out := make([]schema.Turn, len(history))
+	copy(out, history)
+	for i := range out {
+		if out[i].Kind != schema.TurnNotesContext {
+			continue
+		}
+		if text := out[i].Message.Text(); text != "" {
+			out[i].Message = llm.User(escapeNotesContextBlock(text))
+		}
+	}
+	return out
+}
+
+// lastNotesProjection returns the raw block of the last NOTES_CONTEXT turn in a
+// restored history and whether any such turn was present. The projection record
+// holds the raw render, because that is what a fresh render is compared against
+// to gate the next append, so this must be read before escapeNotesHistoryTurns
+// rewrites those turns for model context. Any NOTES_CONTEXT turn at all marks the
+// store as having been projected (the transition-to-empty rule), even when the
+// current store is empty.
+func lastNotesProjection(history []schema.Turn) (block string, present bool) {
 	for i := range slices.Backward(history) {
 		if history[i].Kind != schema.TurnNotesContext {
 			continue
 		}
-		s.notesLastProjected = history[i].Message.Text()
-		s.notesEverProjected = true
-		return
+		return history[i].Message.Text(), true
 	}
+	return "", false
 }
